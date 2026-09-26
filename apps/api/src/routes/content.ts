@@ -41,6 +41,31 @@ export function contentRoutes(app: FastifyInstance) {
     if (item.mime.startsWith("application/x-kreatix-")) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
     }
+    // PDF files: head blob may be our annotation wrapper JSON — detect and unwrap.
+    // (v1 is always the raw PDF upload; later versions are {kind:"pdf",…} JSON)
+    if (item.kind === "pdf" && blob[0] === 0x7b /* '{' */) {
+      try {
+        const parsed = JSON.parse(blob.toString("utf8"));
+        if (parsed?.kind === "pdf") return { version: v.number, content: parsed };
+      } catch { /* fall through to raw */ }
+    }
+    reply.header("content-type", item.mime).header("content-length", blob.length);
+    return reply.send(blob);
+  });
+
+  /** GET the original uploaded binary (version 1) — used by the PDF viewer to fetch
+   *  the document bytes even when later head versions hold annotation JSON. */
+  app.get("/api/files/:id/raw", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+      return reply.code(404).send({ error: "not_found", message: "File not found" });
+    }
+    const v = db
+      .prepare("SELECT * FROM versions WHERE file_id = ? ORDER BY number ASC LIMIT 1")
+      .get(item.id) as VersionRow | undefined;
+    const blob = v && getBlob(v.blob_key);
+    if (!v || !blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
     reply.header("content-type", item.mime).header("content-length", blob.length);
     return reply.send(blob);
   });
@@ -99,7 +124,13 @@ export function contentRoutes(app: FastifyInstance) {
       .get(item.id, Number(n)) as VersionRow | undefined;
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
-    return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
+    try {
+      return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
+    } catch {
+      // binary version (e.g. the original PDF upload) — stream it raw
+      reply.header("content-type", item.mime).header("content-length", blob.length);
+      return reply.send(blob);
+    }
   });
 
   /** Restore an older version — implemented as a new head version copying the old blob (SRS §19) */

@@ -409,3 +409,53 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 @keyframes e-slide-left{from{opacity:0;transform:translateX(80px)}to{opacity:1;transform:none}}
 @keyframes e-zoom{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
 @keyframes e-wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+
+/* ===================== Kreatix PDF ===================== */
+.pdf-rail{width:190px;min-width:190px;background:var(--sidebar,#FBF9F7);border-right:1px solid var(--line);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.pdf-thumb{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px;border:1.5px solid transparent;border-radius:10px;cursor:pointer}
+.pdf-thumb:hover{background:#F3EFEB}
+.pdf-thumb.active{border-color:#D84B57;background:#FFF1E8}
+.pdf-thumb canvas{max-width:150px;height:auto;box-shadow:0 2px 8px rgba(0,0,0,.15);border-radius:3px}
+.pdf-thumb span{font-size:10px;color:#8B8480}
+.pdf-ol-item{padding:7px 10px;font-size:12px;color:#5B554F;cursor:pointer;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pdf-ol-item:hover{background:#F3EFEB;color:#171717}
+.pdf-search{display:flex;flex-direction:column;gap:4px}
+.pdf-results{overflow-y:auto;margin-top:6px;display:flex;flex-direction:column;gap:4px}
+.pdf-match{font-size:11px;color:#5B554F;padding:7px 9px;border:1px solid var(--line);border-radius:8px;cursor:pointer;line-height:1.4}
+.pdf-match:hover{border-color:#D8D2CC}
+.pdf-match.on{border-color:#D84B57;background:#FFF1E8}
+.pdf-match b{color:#D84B57;font-weight:600}
+
+.pdf-pages{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:22px;padding:26px;background:#E9E4DE}
+.pdf-page-wrap{flex:none}
+.pdf-page{position:relative;background:#fff;box-shadow:0 10px 34px rgba(23,18,15,.22)}
+.pdf-page.draw{cursor:crosshair}
+.pdf-canvas{display:block}
+.pdf-page .textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;z-index:2}
+.pdf-page .annotationLayer{position:absolute;inset:0;z-index:3}
+.ann-layer{position:absolute;inset:0;z-index:4}
+.pdf-pageno{position:absolute;bottom:6px;right:10px;font-size:10px;color:#B3ABA5;z-index:5;pointer-events:none}
+.pdf-searchmark{position:absolute;background:rgba(242,120,46,.45);border:1px solid #F2782E;border-radius:2px;z-index:3;pointer-events:none;animation:smark .9s ease}
+@keyframes smark{0%{opacity:0;transform:scale(1.15)}100%{opacity:1;transform:none}}
+
+.ann-note{position:absolute;z-index:6;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:move;box-shadow:0 2px 6px rgba(0,0,0,.25);user-select:none}
+.ann-note.sel{outline:2px solid #3578E5}
+.ann-pop{position:absolute;top:26px;left:0;z-index:10;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);padding:8px;width:190px;display:flex;flex-direction:column;gap:6px}
+.ann-pop textarea{width:100%;height:74px;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:12px;font-family:inherit;resize:vertical}
+.ann-stamp{position:absolute;z-index:6;display:flex;align-items:center;justify-content:center;border:2.5px solid;border-radius:6px;font-weight:800;font-size:14px;letter-spacing:1.5px;opacity:.85;cursor:move;user-select:none}
+.ann-stamp.sel{outline:1.5px dashed #3578E5;outline-offset:3px}
+.ann-textbox{position:absolute;z-index:6;font-size:12px;padding:4px 6px;cursor:move;min-width:30px}
+.ann-textbox[contenteditable="true"]{cursor:text;background:rgba(255,255,255,.75);outline:1.5px dashed #3578E5}
+.ann-textbox.sel{outline:1.5px dashed #3578E5;outline-offset:2px}
+.pg-in{width:38px;height:22px;border:1px solid var(--line);border-radius:6px;font-size:11px;text-align:center;margin:0 2px}
+.rb-colors{display:flex;gap:4px;align-items:center;padding:0 4px}
+.rb-colors .sw{width:16px;height:16px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.rb-colors .sw.on{border-color:#171717}
+.rb.on{background:#FFE4D3;color:#D84B57}
+.print-pdf-page{position:relative;margin:0 auto 14px;background:#fff}
+@media print{
+  body>*{display:none!important}
+  .print-deck{display:block!important;position:static}
+  .print-pdf-page{page-break-after:always;box-shadow:none;margin:0}
+  @page{size:letter landscape;margin:8mm}
+}
