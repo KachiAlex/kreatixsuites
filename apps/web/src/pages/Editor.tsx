@@ -4,6 +4,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { WriterEditor } from "../writer/WriterEditor";
 import { SheetsEditor } from "../sheets/SheetsEditor";
+import { PresentEditor } from "../present/PresentEditor";
 import { KIND_META } from "../lib/format";
 
 export function Editor() {
@@ -48,8 +49,11 @@ export function Editor() {
   if (item.kind === "sheets") {
     return <SheetsEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
   }
+  if (item.kind === "present") {
+    return <PresentEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+  }
 
-  // Present / PDF land here until their editors ship (SRS roadmap phases)
+  // PDF lands here until its editor ships (SRS roadmap phase)
   const meta = KIND_META[item.kind] ?? KIND_META.file;
   return (
     <div className="auth-wrap">
