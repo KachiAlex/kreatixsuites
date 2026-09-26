@@ -1,4 +1,4 @@
-# VPS deployment: app + Caddy (automatic HTTPS)
+# VPS deployment: app + Caddy (automatic HTTPS when SITE_ADDRESS is a domain)
 services:
   app:
     build: .
@@ -12,6 +12,8 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-:80}
     ports:
       - "80:80"
       - "443:443"

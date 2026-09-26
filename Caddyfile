@@ -1,5 +1,6 @@
-# Replace with your domain — Caddy provisions TLS automatically.
-# For local/IP-only testing use ":80" instead.
-suite.example.com {
+# SITE_ADDRESS comes from .env (docker compose).
+# Default :80 serves over plain HTTP — fine for IP-only access.
+# Set SITE_ADDRESS=suite.yourdomain.com in .env for automatic HTTPS.
+{$SITE_ADDRESS::80} {
 	reverse_proxy app:3001
 }
