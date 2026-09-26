@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --target=node20 --external:better-sqlite3 --outfile=dist/server.js",
-    "start": "node dist/server.js",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --target=node20 --external:better-sqlite3 --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

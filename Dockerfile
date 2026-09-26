@@ -24,4 +24,4 @@ ENV KREATIX_DATA_DIR=/data
 ENV KREATIX_WEB_DIST=/app/apps/web/dist
 VOLUME /data
 EXPOSE 3001
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/server.cjs"]

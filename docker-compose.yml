@@ -1,4 +1,7 @@
-# VPS deployment: app + Caddy (automatic HTTPS when SITE_ADDRESS is a domain)
+# VPS deployment: app + optional Caddy for automatic HTTPS.
+# Default: app publishes on APP_PORT (3001) — works behind an existing
+# reverse proxy or directly on an IP. For managed TLS with a domain:
+#   SITE_ADDRESS=suite.example.com docker compose --profile tls up -d
 services:
   app:
     build: .
@@ -6,10 +9,13 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET:?set in .env}
       - PORT=3001
+    ports:
+      - "${APP_PORT:-3001}:3001"
     volumes:
       - kreatix-data:/data
 
   caddy:
+    profiles: ["tls"]
     image: caddy:2-alpine
     restart: unless-stopped
     environment:
