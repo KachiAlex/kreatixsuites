@@ -23,10 +23,12 @@
     "@tiptap/react": "^3.31.3",
     "@tiptap/starter-kit": "^3.31.3",
     "docx": "^9.7.2",
+    "hot-formula-parser": "^4.0.0",
     "mammoth": "^1.12.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-router-dom": "^7.9.4"
+    "react-router-dom": "^7.9.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

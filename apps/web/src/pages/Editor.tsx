@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { WriterEditor } from "../writer/WriterEditor";
+import { SheetsEditor } from "../sheets/SheetsEditor";
 import { KIND_META } from "../lib/format";
 
 export function Editor() {
@@ -44,8 +45,11 @@ export function Editor() {
   if (item.kind === "writer") {
     return <WriterEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
   }
+  if (item.kind === "sheets") {
+    return <SheetsEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+  }
 
-  // Sheets / Present / PDF land here until their editors ship (SRS roadmap phases)
+  // Present / PDF land here until their editors ship (SRS roadmap phases)
   const meta = KIND_META[item.kind] ?? KIND_META.file;
   return (
     <div className="auth-wrap">
