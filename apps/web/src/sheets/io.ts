@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import type * as XLSX from "xlsx";
 import type { CellData, SheetData, Workbook } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange } from "./model";
 import { evaluateSheet } from "./engine";
@@ -53,7 +53,8 @@ export function csvToSheet(name: string, text: string): SheetData {
 
 // ---------- XLSX (KBS-SHEETS-001) ----------
 
-export function workbookToXLSX(wb: Workbook, filename: string) {
+export async function workbookToXLSX(wb: Workbook, filename: string) {
+  const XLSX = await import("xlsx");
   const out = XLSX.utils.book_new();
   for (const sheet of wb.sheets) {
     const evals = evaluateSheet(sheet.cells);
@@ -81,6 +82,7 @@ export function workbookToXLSX(wb: Workbook, filename: string) {
 }
 
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
+  const XLSX = await import("xlsx");
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { cellFormula: true });
   const sheets: SheetData[] = wb.SheetNames.map((name) => {

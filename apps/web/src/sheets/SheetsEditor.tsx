@@ -7,7 +7,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1 } from "./model";
+import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula } from "./model";
 import { evaluateSheet } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1 } from "./io";
@@ -172,14 +172,15 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         const srcCell = s.cells[sr];
         if (srcCell) {
           const copy = structuredClone(srcCell);
-          if (copy.f) copy.f = shiftFormula(copy.f, p.col - (parseA1(sr)!.col), p.row - (parseA1(sr)!.row));
+          if (copy.f) copy.f = shiftForFill(copy.f, p.col - (parseA1(sr)!.col), p.row - (parseA1(sr)!.row));
           s.cells[ref] = copy;
         }
       }
     });
   }, [mutateSheet]);
 
-  // sort selected rows by anchor column
+  // sort selected rows by anchor column; formula refs pointing into the
+  // sorted block are remapped to the rows' new positions (Excel semantics)
   const sortSel = useCallback((asc: boolean) => {
     mutateSheet((s) => {
       const ev = evaluateSheet(s.cells);
@@ -197,6 +198,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         const cmp = !isNaN(na) && !isNaN(nb) ? na - nb : String(va ?? "").localeCompare(String(vb ?? ""));
         return asc ? cmp : -cmp;
       });
+      const rowMap = new Map<number, number>();
+      rows.forEach((srcRow, i) => rowMap.set(srcRow, selection.r1 + i));
       const next: Record<string, (typeof s.cells)[string] | undefined> = {};
       rows.forEach((srcRow, i) => {
         for (let c = selection.c1; c <= selection.c2; c++) {
@@ -208,6 +211,46 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           const ref = toA1(c, r);
           if (next[ref]) s.cells[ref] = next[ref]!; else delete s.cells[ref];
         }
+      for (const cell of Object.values(s.cells)) {
+        if (cell.f) cell.f = translateFormula(cell.f, (r) =>
+          r.col >= selection.c1 && r.col <= selection.c2 && rowMap.has(r.row)
+            ? { col: r.col, row: rowMap.get(r.row)! }
+            : { col: r.col, row: r.row });
+      }
+    });
+  }, [mutateSheet, selection]);
+
+  // insert / delete rows & cols (formulas, merges, cf, charts all shift)
+  const insRows = useCallback(() => {
+    mutateSheet((s) => adjustForRowsCols(s, "row", selection.r1, Math.max(1, selection.r2 - selection.r1 + 1)));
+  }, [mutateSheet, selection]);
+  const delRows = useCallback(() => {
+    mutateSheet((s) => adjustForRowsCols(s, "row", selection.r1, -(selection.r2 - selection.r1 + 1)));
+  }, [mutateSheet, selection]);
+  const insCols = useCallback(() => {
+    mutateSheet((s) => adjustForRowsCols(s, "col", selection.c1, Math.max(1, selection.c2 - selection.c1 + 1)));
+  }, [mutateSheet, selection]);
+  const delCols = useCallback(() => {
+    mutateSheet((s) => adjustForRowsCols(s, "col", selection.c1, -(selection.c2 - selection.c1 + 1)));
+  }, [mutateSheet, selection]);
+
+  // merge / unmerge
+  const mergeSel = useCallback(() => {
+    if (selection.c1 === selection.c2 && selection.r1 === selection.r2) return toast("Select a range to merge");
+    mutateSheet((s) => {
+      s.merges = (s.merges ?? []).filter((m) =>
+        !(m.c1 <= selection.c2 && m.c2 >= selection.c1 && m.r1 <= selection.r2 && m.r2 >= selection.r1));
+      for (const ref of rangeRefs(selection)) {
+        if (ref !== toA1(selection.c1, selection.r1)) delete s.cells[ref];
+      }
+      s.merges.push({ ...selection });
+    });
+    return undefined;
+  }, [mutateSheet, selection, toast]);
+  const unmergeSel = useCallback(() => {
+    mutateSheet((s) => {
+      s.merges = (s.merges ?? []).filter((m) =>
+        !(m.c1 <= selection.c2 && m.c2 >= selection.c1 && m.r1 <= selection.r2 && m.r2 >= selection.r1));
     });
   }, [mutateSheet, selection]);
 
@@ -326,7 +369,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-primary btn-sm" onClick={() => workbookToXLSX(wb, title)}>Export .xlsx</button>
+        <button className="btn-primary btn-sm" onClick={() => void workbookToXLSX(wb, title)}>Export .xlsx</button>
       </div>
 
       {canEdit && (
@@ -367,6 +410,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             ❄ {selection.c1 || "No"} cols
           </button>
           <button className="rb" title="Conditional formatting" onClick={() => setCfOpen(true)}>◐</button>
+          <button className="rb" title="Merge selection" onClick={mergeSel}>▦</button>
+          <button className="rb" title="Unmerge" onClick={unmergeSel}>▢</button>
+          <div className="rb-sep" />
+          <button className="rb" title="Insert rows above" onClick={insRows}>R+</button>
+          <button className="rb" title="Delete rows" onClick={delRows}>R−</button>
+          <button className="rb" title="Insert columns left" onClick={insCols}>C+</button>
+          <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
           <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
           <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
           <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
@@ -504,22 +554,4 @@ function CfDialog({ selection, onAdd, onClose }: {
   );
 }
 
-/** Shift cell references in a formula by dCol/dRow (fill handle) */
-function shiftFormula(f: string, dCol: number, dRow: number): string {
-  return f.replace(/(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g, (_m, dc, cl, dr, rn) => {
-    const col = dc ? null : cl;
-    const row = dr ? null : Number(rn);
-    const newCol = col ? cl : shiftCol(cl, dCol);
-    const newRow = row ? rn : String(Math.max(1, Number(rn) + dRow));
-    return `${dc}${newCol}${dr}${newRow}`;
-  });
-}
 
-function shiftCol(label: string, d: number): string {
-  let n = 0;
-  for (const ch of label.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
-  n = Math.max(1, n + d);
-  let s = "";
-  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
-  return s;
-}
