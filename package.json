@@ -2,6 +2,7 @@
   "name": "kreatix-business-suite",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.29.2",
   "description": "Kreatix Business Suite — Writer, Sheets, Present, PDF, Drive and Kreatix AI",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
