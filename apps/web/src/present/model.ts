@@ -30,8 +30,14 @@ export interface SlideObject {
   // table
   table?: string[][];
 
-  // chart
-  chart?: { type: "bar" | "line" | "pie"; labels: string[]; values: number[]; title?: string };
+  // chart — multi-series; `values` kept as the legacy single-series shortcut
+  chart?: {
+    type: "bar" | "line" | "pie";
+    labels: string[];
+    values?: number[];
+    series?: { name: string; values: number[] }[];
+    title?: string;
+  };
 
   // line
   x2?: number; y2?: number;
@@ -53,8 +59,12 @@ export interface Slide {
 
 export interface Deck {
   theme?: string;
+  customTheme?: Theme; // set when a file brings its own palette (e.g. PPTX import)
   slides: Slide[];
 }
+
+export const chartSeries = (c: NonNullable<SlideObject["chart"]>): { name: string; values: number[] }[] =>
+  c.series ?? [{ name: "Series 1", values: c.values ?? [] }];
 
 export const SLIDE_W = 960;
 export const SLIDE_H = 540;
@@ -72,7 +82,7 @@ export const THEMES: Theme[] = [
 ];
 
 export const themeOf = (deck: Deck): Theme =>
-  THEMES.find((t) => t.id === deck.theme) ?? THEMES[0];
+  deck.customTheme ?? THEMES.find((t) => t.id === deck.theme) ?? THEMES[0];
 
 export interface LayoutSpec {
   id: string; name: string;

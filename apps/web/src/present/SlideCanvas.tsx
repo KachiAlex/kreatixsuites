@@ -1,6 +1,6 @@
 import { Fragment, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from "react";
 import type { Slide, SlideObject, Theme } from "./model";
-import { SLIDE_W, SLIDE_H } from "./model";
+import { SLIDE_W, SLIDE_H, chartSeries } from "./model";
 
 const GRID = 8;
 const HANDLE = 8;
@@ -219,8 +219,7 @@ export function ObjView({ o, theme, selected, editing, hidden, enterAnim, onMous
     pointerEvents: hidden ? "none" : undefined,
   };
   const common = {
-    className: `s-obj ${selected ? "selected" : ""} ${enterAnim ? `enter-${enterAnim}` : ""}`,
-    style: base,
+    className: `s-obj ${selected ? "selected" : ""}`,
     onMouseDown, onPointerDown, onDoubleClick: onDblClick,
   };
   void theme;
@@ -240,63 +239,71 @@ export function ObjView({ o, theme, selected, editing, hidden, enterAnim, onMous
         dangerouslySetInnerHTML={{ __html: (o.html ?? "").replace(/\n/g, "<br/>") }} />
     );
 
+  let content: React.ReactNode = null;
+  const style: CSSProperties = { ...base };
   switch (o.type) {
     case "text":
-      return <div {...common}>{textEl(!!editing)}</div>;
+      content = textEl(!!editing);
+      break;
     case "shape":
-      return (
-        <div {...common}>
+      content = (
+        <>
           <ShapeSvg o={o} />
           {o.html !== undefined || editing ? (
             <div className="s-shape-text">{textEl(!!editing)}</div>
           ) : null}
-        </div>
+        </>
       );
+      break;
     case "image":
-      return (
-        <div {...common}>
-          <img src={o.src} alt={o.alt ?? ""} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-        </div>
-      );
+      content = <img src={o.src} alt={o.alt ?? ""} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />;
+      break;
     case "table": {
       const rows = o.table ?? [["", ""]];
-      return (
-        <div {...common} style={{ ...base, overflow: editing ? "auto" : "hidden" }}>
-          <table className={`s-table ${editing ? "editing" : ""}`}>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={i}>{r.map((c, j) => editing ? (
-                  <td key={j} contentEditable suppressContentEditableWarning
-                    style={{ fontSize: o.fontSize ?? 14, color: o.color, minWidth: 40 }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onBlur={(e) => {
-                      const next = rows.map((row, ri) => ri === i ? row.map((cell, cj) => cj === j ? (e.target as HTMLElement).innerText : cell) : row);
-                      onTableEdit?.(next);
-                    }}>{c}</td>
-                ) : (
-                  <td key={j} style={{ fontSize: o.fontSize ?? 14, color: o.color }}>{c}</td>
-                ))}</tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      style.overflow = editing ? "auto" : "hidden";
+      content = (
+        <table className={`s-table ${editing ? "editing" : ""}`}>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>{r.map((c, j) => editing ? (
+                <td key={j} contentEditable suppressContentEditableWarning
+                  style={{ fontSize: o.fontSize ?? 14, color: o.color, minWidth: 40 }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onBlur={(e) => {
+                    const next = rows.map((row, ri) => ri === i ? row.map((cell, cj) => cj === j ? (e.target as HTMLElement).innerText : cell) : row);
+                    onTableEdit?.(next);
+                  }}>{c}</td>
+              ) : (
+                <td key={j} style={{ fontSize: o.fontSize ?? 14, color: o.color }}>{c}</td>
+              ))}</tr>
+            ))}
+          </tbody>
+        </table>
       );
+      break;
     }
     case "chart":
-      return <div {...common}><ChartSvg o={o} /></div>;
+      content = <ChartSvg o={o} />;
+      break;
     case "line": {
       const x2 = o.x2 ?? o.w, y2 = o.y2 ?? 0;
-      return (
-        <div {...common} style={{ ...base, height: Math.max(o.h, Math.abs(y2 - 0)) }}>
-          <svg width={o.w} height={Math.max(o.h, Math.abs(y2))}>
-            <line x1={0} y1={0} x2={x2} y2={y2} stroke={o.stroke ?? "#171717"} strokeWidth={o.strokeW ?? 2} markerEnd={o.shape === "arrow" ? "url(#arr)" : undefined} />
-          </svg>
-        </div>
+      style.height = Math.max(o.h, Math.abs(y2));
+      content = (
+        <svg width={o.w} height={Math.max(o.h, Math.abs(y2))}>
+          <line x1={0} y1={0} x2={x2} y2={y2} stroke={o.stroke ?? "#171717"} strokeWidth={o.strokeW ?? 2} markerEnd={o.shape === "arrow" ? "url(#arr)" : undefined} />
+        </svg>
       );
+      break;
     }
     default:
-      return <div {...common} />;
+      break;
   }
+  // enter-* animates an inner wrapper so it never fights the object's own rotate transform
+  return (
+    <div {...common} style={style}>
+      {enterAnim ? <div className={`s-enter enter-${enterAnim}`}>{content}</div> : content}
+    </div>
+  );
 }
 
 function ShapeSvg({ o }: { o: SlideObject }) {
@@ -332,49 +339,66 @@ const CHART_COLORS = ["#F2782E", "#3578E5", "#1F9D66", "#D84B57", "#8E6BC8"];
 export function ChartSvg({ o }: { o: SlideObject }) {
   const c = o.chart;
   if (!c) return null;
+  const series = chartSeries(c);
   const w = o.w, h = o.h;
-  const max = Math.max(1, ...c.values.map(Math.abs));
-  const PL = 30, PB = 20, PT = c.title ? 26 : 10;
-  const pw = w - PL - 8, ph = h - PT - PB;
+  const max = Math.max(1, ...series.flatMap((s) => s.values.map(Math.abs)));
+  const showLegend = series.length > 1 && series.some((s) => s.name);
+  const PL = 30, PB = 20, PT = c.title ? 26 : 10, LG = showLegend ? 18 : 0;
+  const pw = w - PL - 8, ph = h - PT - PB - LG;
+  const labels = c.labels;
+  const legend = showLegend && (
+    <>
+      {series.map((s, si) => (
+        <g key={si}>
+          <rect x={PL + si * 110} y={h - LG + 4} width={9} height={9} rx={2} fill={CHART_COLORS[si % CHART_COLORS.length]} />
+          <text x={PL + si * 110 + 13} y={h - LG + 12} fontSize={9} fill="#8B8480">{s.name || `Series ${si + 1}`}</text>
+        </g>
+      ))}
+    </>
+  );
   if (c.type === "pie") {
-    const total = c.values.reduce((a, b) => a + Math.max(0, b), 0) || 1;
+    const vals = series[0]?.values ?? [];
+    const total = vals.reduce((a, b) => a + Math.max(0, b), 0) || 1;
     let angle = -Math.PI / 2;
     const cx = w / 2, cy = PT + ph / 2, r = Math.min(pw, ph) / 2 - 4;
     return (
       <svg width={w} height={h}>
         {c.title && <text x={w / 2} y={16} textAnchor="middle" fontSize={13} fontWeight={700} fill="#5B554F">{c.title}</text>}
-        {c.values.map((v, i) => {
+        {vals.map((v, i) => {
           const a0 = angle; angle += (Math.max(0, v) / total) * Math.PI * 2;
           const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
           const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
-          return <path key={i} d={`M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${angle - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`} fill={CHART_COLORS[i % CHART_COLORS.length]}><title>{c.labels[i]}: {v}</title></path>;
+          return <path key={i} d={`M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${angle - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`} fill={CHART_COLORS[i % CHART_COLORS.length]}><title>{labels[i]}: {v}</title></path>;
         })}
+        {legend}
       </svg>
     );
   }
-  const bw = pw / c.values.length;
+  const n = Math.max(1, labels.length);
+  const bw = pw / n;
   return (
     <svg width={w} height={h}>
       {c.title && <text x={w / 2} y={16} textAnchor="middle" fontSize={13} fontWeight={700} fill="#5B554F">{c.title}</text>}
       <line x1={PL} y1={PT} x2={PL} y2={PT + ph} stroke="#D8D2CC" />
       <line x1={PL} y1={PT + ph} x2={w - 4} y2={PT + ph} stroke="#D8D2CC" />
-      {c.values.map((v, i) => {
-        if (c.type === "bar") {
+      {c.type === "bar" && series.map((s, si) => {
+        const gw = bw * 0.8 / series.length;
+        return s.values.map((v, i) => {
           const bh = (v / max) * ph;
-          return <rect key={i} x={PL + i * bw + bw * 0.15} y={PT + ph - bh} width={bw * 0.7} height={bh} rx={3} fill={CHART_COLORS[0]} />;
-        }
-        return null;
+          return <rect key={`${si}-${i}`} x={PL + i * bw + bw * 0.1 + si * gw} y={PT + ph - bh} width={Math.max(1, gw - 1)} height={bh} rx={2} fill={CHART_COLORS[si % CHART_COLORS.length]} />;
+        });
       })}
-      {c.type === "line" && (
-        <>
-          <path d={c.values.map((v, i) => `${i ? "L" : "M"}${PL + i * bw + bw / 2},${PT + ph - (v / max) * ph}`).join(" ")}
-            fill="none" stroke={CHART_COLORS[0]} strokeWidth={2.4} />
-          {c.values.map((v, i) => <circle key={i} cx={PL + i * bw + bw / 2} cy={PT + ph - (v / max) * ph} r={3} fill={CHART_COLORS[0]} />)}
-        </>
-      )}
-      {c.labels.map((l, i) => (
+      {c.type === "line" && series.map((s, si) => (
+        <Fragment key={si}>
+          <path d={s.values.map((v, i) => `${i ? "L" : "M"}${PL + i * bw + bw / 2},${PT + ph - (v / max) * ph}`).join(" ")}
+            fill="none" stroke={CHART_COLORS[si % CHART_COLORS.length]} strokeWidth={2.4} />
+          {s.values.map((v, i) => <circle key={i} cx={PL + i * bw + bw / 2} cy={PT + ph - (v / max) * ph} r={3} fill={CHART_COLORS[si % CHART_COLORS.length]} />)}
+        </Fragment>
+      ))}
+      {labels.map((l, i) => (
         <text key={i} x={PL + i * bw + bw / 2} y={PT + ph + 13} textAnchor="middle" fontSize={8.5} fill="#A19A95">{String(l).slice(0, 7)}</text>
       ))}
+      {legend}
     </svg>
   );
 }

@@ -8,7 +8,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Deck, Slide, SlideObject, TransitionType } from "./model";
-import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H } from "./model";
+import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries } from "./model";
 import { SlideCanvas, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
@@ -244,7 +244,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const onImportPptx = async (f: File) => {
     try {
       const d = await importPptx(f);
-      mutate((deck) => { deck.theme = d.theme; deck.slides = d.slides; });
+      mutate((deck) => { deck.theme = d.theme; deck.customTheme = d.customTheme; deck.slides = d.slides; });
       setSlideIdx(0);
       setSelection(new Set());
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
@@ -315,7 +315,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
     mutate((d) => { d.slides[slideIdx] = applyLayout(d.slides[slideIdx], layoutId, theme); });
   };
   const setTheme = (themeId: string) => {
-    mutate((d) => { d.theme = themeId; d.slides.forEach((s) => { s.bg = THEMES.find((t) => t.id === themeId)?.bg ?? s.bg; }); });
+    if (themeId === "imported") return; // reselecting the active custom theme is a no-op
+    mutate((d) => { d.theme = themeId; d.customTheme = undefined; d.slides.forEach((s) => { s.bg = THEMES.find((t) => t.id === themeId)?.bg ?? s.bg; }); });
   };
 
   // ---- comments ----
@@ -408,7 +409,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <select className="rb-sel" value={slide.layout ?? "blank"} onChange={(e) => setLayout(e.target.value)} title="Layout (replaces objects)">
             {LAYOUTS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
-          <select className="rb-sel" value={deck.theme ?? "kreatix"} onChange={(e) => setTheme(e.target.value)} title="Theme">
+          <select className="rb-sel" value={deck.customTheme ? "imported" : deck.theme ?? "kreatix"} onChange={(e) => setTheme(e.target.value)} title="Theme">
+            {deck.customTheme && <option value="imported">Imported ({deck.customTheme.name})</option>}
             {THEMES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
           <div className="rb-sep" />
@@ -686,16 +688,23 @@ function ChartDialog({ initial, onSave, onClose }: {
 }) {
   const [type, setType] = useState(initial?.type ?? "bar");
   const [title, setTitle] = useState(initial?.title ?? "");
-  const [data, setData] = useState(
-    initial ? initial.labels.map((l, i) => `${l},${initial.values[i]}`).join("\n") : "Q1,24\nQ2,38\nQ3,31\nQ4,45",
+  const [data, setData] = useState(() =>
+    initial
+      ? initial.labels.map((l, i) => [l, ...chartSeries(initial).map((s) => s.values[i] ?? 0)].join(",")).join("\n")
+      : "Q1,24\nQ2,38\nQ3,31\nQ4,45",
   );
   const save = () => {
-    const labels: string[] = [], values: number[] = [];
+    const labels: string[] = [];
+    const cols: number[][] = [];
     for (const line of data.split("\n")) {
-      const [l, v] = line.split(",");
-      if (l?.trim()) { labels.push(l.trim()); values.push(Number(v) || 0); }
+      const parts = line.split(",");
+      if (!parts[0]?.trim()) continue;
+      labels.push(parts[0].trim());
+      if (parts.length === 1) (cols[0] ??= []).push(0);
+      parts.slice(1).forEach((p, ci) => { (cols[ci] ??= []).push(Number(p) || 0); });
     }
-    onSave({ type: type as "bar" | "line" | "pie", labels, values, title: title || undefined });
+    const series = (cols.length ? cols : [labels.map(() => 0)]).map((values, i) => ({ name: `Series ${i + 1}`, values }));
+    onSave({ type: type as "bar" | "line" | "pie", labels, series, title: title || undefined });
   };
   return (
     <div className="dlg-back" onClick={onClose}>
@@ -710,7 +719,7 @@ function ChartDialog({ initial, onSave, onClose }: {
         <input placeholder="Chart title" value={title} onChange={(e) => setTitle(e.target.value)}
           style={{ width: "100%", height: 32, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginTop: 10 }} />
         <textarea value={data} onChange={(e) => setData(e.target.value)} rows={6}
-          placeholder="label,value per line"
+          placeholder="label,series1,series2,… per line"
           style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: 8, fontSize: 12, marginTop: 10, fontFamily: "monospace" }} />
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>

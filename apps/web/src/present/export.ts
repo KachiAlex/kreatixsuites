@@ -1,4 +1,5 @@
 import type { Deck, SlideObject } from "./model";
+import { chartSeries } from "./model";
 
 // slide is 960×540 px → 10in × 5.625in at 96dpi
 const IN = 1 / 96;
@@ -67,7 +68,7 @@ function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: {
     case "chart": {
       const c = o.chart!;
       const types: Record<string, string> = { bar: pptx.ChartType.bar, line: pptx.ChartType.line, pie: pptx.ChartType.pie };
-      slide.addChart(types[c.type] as never, [{ name: "Series 1", labels: c.labels, values: c.values }], {
+      slide.addChart(types[c.type] as never, chartSeries(c).map((s) => ({ name: s.name, labels: c.labels, values: s.values })), {
         ...pos, showTitle: !!c.title, title: c.title, chartColors: ["F2782E", "3578E5", "1F9D66", "D84B57", "8E6BC8"],
       });
       break;
