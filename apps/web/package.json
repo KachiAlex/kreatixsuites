@@ -24,6 +24,7 @@
     "@tiptap/starter-kit": "^3.31.3",
     "docx": "^9.7.2",
     "hot-formula-parser": "^4.0.0",
+    "jszip": "3.10.1",
     "mammoth": "^1.12.3",
     "pptxgenjs": "4.0.1",
     "react": "^19.2.8",

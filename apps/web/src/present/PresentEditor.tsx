@@ -7,11 +7,12 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Deck, Slide, SlideObject } from "./model";
+import type { Deck, Slide, SlideObject, TransitionType } from "./model";
 import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H } from "./model";
 import { SlideCanvas, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
+import { importPptx } from "./import";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -25,7 +26,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects">("none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -48,6 +49,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const undoStack = useRef<Deck[]>([]);
   const redoStack = useRef<Deck[]>([]);
   const dragBase = useRef<Deck | null>(null);
+  const lastAction = useRef<string | null>(null);
+  const pptxRef = useRef<HTMLInputElement>(null);
 
   const theme = themeOf(deck);
   const slide = deck.slides[Math.min(slideIdx, deck.slides.length - 1)];
@@ -87,12 +90,15 @@ export function PresentEditor({ item, initialDoc, permission }: {
     saveTimer.current = setTimeout(flushSave, 1200);
   };
 
-  const mutate = useCallback((fn: (d: Deck) => void) => {
+  const mutate = useCallback((fn: (d: Deck) => void, actionKey?: string) => {
     setDeck((prev) => {
       const next = structuredClone(prev);
       fn(next);
-      undoStack.current.push(prev);
-      if (undoStack.current.length > 60) undoStack.current.shift();
+      if (!actionKey || lastAction.current !== actionKey) {
+        undoStack.current.push(prev);
+        if (undoStack.current.length > 60) undoStack.current.shift();
+        lastAction.current = actionKey ?? null;
+      }
       redoStack.current = [];
       return next;
     });
@@ -100,13 +106,14 @@ export function PresentEditor({ item, initialDoc, permission }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const mutateSlide = useCallback((fn: (s: Slide) => void) => {
-    mutate((d) => fn(d.slides[slideIdx]));
+  const mutateSlide = useCallback((fn: (s: Slide) => void, actionKey?: string) => {
+    mutate((d) => fn(d.slides[slideIdx]), actionKey);
   }, [mutate, slideIdx]);
 
   const undo = useCallback(() => {
     const prev = undoStack.current.pop();
     if (!prev) return;
+    lastAction.current = null;
     redoStack.current.push(deck);
     setDeck(prev); scheduleSave();
   }, [deck]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -114,6 +121,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const redo = useCallback(() => {
     const next = redoStack.current.pop();
     if (!next) return;
+    lastAction.current = null;
     undoStack.current.push(deck);
     setDeck(next); scheduleSave();
   }, [deck]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,6 +131,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
     if (!patches.length && commit) {
       // drag ended — push pre-drag snapshot as one undo step
       if (dragBase.current) {
+        lastAction.current = null;
         undoStack.current.push(dragBase.current);
         if (undoStack.current.length > 60) undoStack.current.shift();
         redoStack.current = [];
@@ -150,8 +159,9 @@ export function PresentEditor({ item, initialDoc, permission }: {
     return id;
   };
 
-  const delSelected = () => {
-    mutateSlide((s) => { s.objects = s.objects.filter((o) => !selection.has(o.id)); });
+  const delSelected = (ids?: Set<string>) => {
+    const del = ids ?? selection;
+    mutateSlide((s) => { s.objects = s.objects.filter((o) => !del.has(o.id)); });
     setSelection(new Set());
   };
 
@@ -159,9 +169,10 @@ export function PresentEditor({ item, initialDoc, permission }: {
     mutateSlide((s) => s.objects.forEach((o) => { if (selection.has(o.id)) Object.assign(o, patch); }));
   };
 
-  const setZ = (mode: "front" | "back" | "up" | "down") => {
+  const setZ = (mode: "front" | "back" | "up" | "down", ids?: Set<string>) => {
+    const pick = ids ?? selection;
     mutateSlide((s) => {
-      const sel = s.objects.filter((o) => selection.has(o.id));
+      const sel = s.objects.filter((o) => pick.has(o.id));
       if (!sel.length) return;
       const zs = s.objects.map((o) => o.z).sort((a, b) => a - b);
       if (mode === "front") sel.forEach((o) => { o.z = zs[zs.length - 1] + 1; });
@@ -221,6 +232,45 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const onTextCommit = (id: string, html: string) => {
     mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.html = html; });
   };
+
+  const onTableCommit = (id: string, rows: string[][]) => {
+    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.table = rows; });
+  };
+
+  const onObjDblClick = (o: SlideObject) => {
+    if (o.type === "chart") setChartDlg({ id: o.id });
+  };
+
+  const onImportPptx = async (f: File) => {
+    try {
+      const d = await importPptx(f);
+      mutate((deck) => { deck.theme = d.theme; deck.slides = d.slides; });
+      setSlideIdx(0);
+      setSelection(new Set());
+      toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
+    } catch {
+      toast("Could not read that .pptx file");
+    }
+  };
+
+  const setTransition = (type: TransitionType) => {
+    mutateSlide((s) => { s.transition = type === "none" ? undefined : { type, duration: 500 }; });
+  };
+
+  const setAnim = (type: string) => {
+    mutateSlide((s) => s.objects.forEach((o) => {
+      if (!selection.has(o.id)) return;
+      if (!type) o.anim = undefined;
+      else {
+        const maxOrder = Math.max(0, ...s.objects.map((x) => x.anim?.order ?? 0));
+        o.anim = { type: type as never, order: o.anim?.order ?? maxOrder + 1 };
+      }
+    }));
+  };
+
+  const objName = (o: SlideObject, i: number) =>
+    o.type === "text" ? `Text ${i + 1}` : o.type === "shape" ? `${o.shape ?? "shape"} ${i + 1}`
+      : `${o.type} ${i + 1}`;
 
   // ---- insert objects ----
   const insertText = () => addObject({ type: "text", x: 120, y: 120, w: 480, h: 60, html: "Double-click to edit", fontSize: 24, color: theme.ink });
@@ -337,6 +387,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
+        <button className="btn-ghost btn-sm" onClick={() => pptxRef.current?.click()}>Import</button>
+        <input ref={pptxRef} type="file" accept=".pptx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Export PDF</button>
         <button className="btn-ghost btn-sm" onClick={() => void exportPptx(deck, title).catch(() => toast("Export failed"))}>Export .pptx</button>
         <button className="btn-primary btn-sm" onClick={() => setPresenting("present")}>▶ Present</button>
@@ -370,6 +422,15 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Image" onClick={() => imageRef.current?.click()}>🖼</button>
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
+          <button className="rb" title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
+          <select className="rb-sel" value={slide.transition?.type ?? "none"} title="Slide transition"
+            onChange={(e) => setTransition(e.target.value as TransitionType)}>
+            <option value="none">No transition</option>
+            <option value="fade">Fade</option>
+            <option value="slide">Slide</option>
+            <option value="zoom">Zoom</option>
+            <option value="push">Push</option>
+          </select>
           <div className="rb-sep" />
           {firstSel?.type === "text" && (
             <>
@@ -430,7 +491,18 @@ export function PresentEditor({ item, initialDoc, permission }: {
               <button className="rb" title="Ungroup" onClick={ungroupSel}>⧈</button>
             </>
           )}
-          {selCount > 0 && <button className="rb" title="Delete" onClick={delSelected}>⌫</button>}
+          {selCount > 0 && (
+            <select className="rb-sel" value={firstSel?.anim?.type ?? ""} title="Entrance animation"
+              onChange={(e) => setAnim(e.target.value)}>
+              <option value="">No animation</option>
+              <option value="fade">Fade in</option>
+              <option value="slide-up">Slide up</option>
+              <option value="slide-left">Slide left</option>
+              <option value="zoom">Zoom in</option>
+              <option value="wipe">Wipe</option>
+            </select>
+          )}
+          {selCount > 0 && <button className="rb" title="Delete" onClick={() => delSelected()}>⌫</button>}
           <div className="rb-sep" />
           <button className="rb" title="Add comment" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <input ref={imageRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && void insertImage(e.target.files[0])} />
@@ -472,12 +544,13 @@ export function PresentEditor({ item, initialDoc, permission }: {
             <div style={{ width: SLIDE_W * zoom, height: SLIDE_H * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
               <SlideCanvas slide={slide} theme={theme} scale={zoom} interactive
                 canEdit={canEdit} selection={selection} onSelect={setSelection}
-                onPatch={onPatch} onTextCommit={onTextCommit} />
+                onPatch={onPatch} onTextCommit={onTextCommit}
+                onTableCommit={onTableCommit} onObjDblClick={onObjDblClick} />
             </div>
           </div>
           <textarea className="notes-box" placeholder="Speaker notes…" disabled={!canEdit}
             value={slide.notes ?? ""}
-            onChange={(e) => mutateSlide((s) => { s.notes = e.target.value; })} />
+            onChange={(e) => mutateSlide((s) => { s.notes = e.target.value; }, `notes:${slide.id}`)} />
         </div>
       </div>
 
@@ -519,6 +592,35 @@ export function PresentEditor({ item, initialDoc, permission }: {
           }} />
       )}
 
+      {panel === "objects" && (
+        <div className="side-panel">
+          <div className="sp-head">
+            <h3>Objects — slide {slideIdx + 1}</h3>
+            <button className="sp-close" onClick={() => setPanel("none")}>✕</button>
+          </div>
+          <div className="sp-body">
+            {[...slide.objects].sort((a, b) => b.z - a.z).map((o) => (
+              <div key={o.id} className={`obj-row ${selection.has(o.id) ? "sel" : ""}`}
+                onClick={(e) => {
+                  const grp = o.groupId ? slide.objects.filter((x) => x.groupId === o.groupId) : [o];
+                  const next = e.shiftKey ? new Set(selection) : new Set<string>();
+                  grp.forEach((g) => next.add(g.id));
+                  setSelection(next);
+                }}>
+                <span className="obj-ico">{o.type === "text" ? "T" : o.type === "shape" ? "▭" : o.type === "image" ? "🖼" : o.type === "table" ? "⊞" : o.type === "chart" ? "📊" : "╱"}</span>
+                <span className="obj-name">{objName(o, slide.objects.indexOf(o))}</span>
+                {o.anim && <span className="obj-anim" title={`Animates on click ${o.anim.order}`}>✦{o.anim.order}</span>}
+                <span className="obj-ops">
+                  <button title="Raise" onClick={(e) => { e.stopPropagation(); setSelection(new Set([o.id])); setZ("up", new Set([o.id])); }}>↑</button>
+                  <button title="Lower" onClick={(e) => { e.stopPropagation(); setSelection(new Set([o.id])); setZ("down", new Set([o.id])); }}>↓</button>
+                  <button title="Delete" onClick={(e) => { e.stopPropagation(); delSelected(new Set([o.id])); }}>✕</button>
+                </span>
+              </div>
+            ))}
+            {!slide.objects.length && <div className="empty">No objects on this slide</div>}
+          </div>
+        </div>
+      )}
       {panel === "comments" && (
         <CommentsPanel fileId={item.id} comments={comments}
           canComment={canEdit || permission === "commenter" || permission === "reviewer"}

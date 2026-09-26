@@ -35,7 +35,12 @@ export interface SlideObject {
 
   // line
   x2?: number; y2?: number;
+
+  // entrance animation (KBS-PRESENT-005)
+  anim?: { type: "fade" | "slide-up" | "slide-left" | "zoom" | "wipe"; order: number };
 }
+
+export type TransitionType = "none" | "fade" | "slide" | "zoom" | "push";
 
 export interface Slide {
   id: string;
@@ -43,6 +48,7 @@ export interface Slide {
   notes?: string;
   bg?: string;
   layout?: string;
+  transition?: { type: TransitionType; duration?: number };
 }
 
 export interface Deck {

@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from "react";
+import { Fragment, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from "react";
 import type { Slide, SlideObject, Theme } from "./model";
 import { SLIDE_W, SLIDE_H } from "./model";
 
@@ -7,7 +7,7 @@ const HANDLE = 8;
 
 export interface ObjPatch { id: string; patch: Partial<SlideObject> }
 
-export function SlideCanvas({ slide, theme, scale, interactive, selection, onSelect, onPatch, onTextCommit, canEdit }: {
+export function SlideCanvas({ slide, theme, scale, interactive, selection, onSelect, onPatch, onTextCommit, onTableCommit, onObjDblClick, canEdit, animStep }: {
   slide: Slide;
   theme: Theme;
   scale: number;
@@ -16,15 +16,19 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   onSelect?: (ids: Set<string>, additive: boolean) => void;
   onPatch?: (patches: ObjPatch[], commit: boolean) => void;
   onTextCommit?: (id: string, html: string) => void;
+  onTableCommit?: (id: string, rows: string[][]) => void;
+  onObjDblClick?: (o: SlideObject) => void;
   canEdit?: boolean;
+  animStep?: number;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [guides, setGuides] = useState<{ v?: number; h?: number }>({});
+  const boxRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
-    mode: "move" | "resize";
+    mode: "move" | "resize" | "rotate";
     handle?: string;
     startX: number; startY: number;
-    orig: Map<string, { x: number; y: number; w: number; h: number }>;
+    orig: Map<string, { x: number; y: number; w: number; h: number; rotate?: number }>;
   } | null>(null);
 
   const objs = [...slide.objects].sort((a, b) => a.z - b.z);
@@ -52,8 +56,8 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
     if (e.shiftKey) return; // shift+click is selection-only
     const ids = selection.has(o.id) ? selection : new Set(groupOf(o).map((g) => g.id));
     onSelect?.(ids, false);
-    const orig = new Map<string, { x: number; y: number; w: number; h: number }>();
-    for (const so of objs) if (ids.has(so.id)) orig.set(so.id, { x: so.x, y: so.y, w: so.w, h: so.h });
+    const orig = new Map<string, { x: number; y: number; w: number; h: number; rotate?: number }>();
+    for (const so of objs) if (ids.has(so.id)) orig.set(so.id, { x: so.x, y: so.y, w: so.w, h: so.h, rotate: so.rotate });
     dragRef.current = { mode: "move", startX: e.clientX, startY: e.clientY, orig };
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   };
@@ -61,8 +65,16 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   const startResize = (e: RPointerEvent, o: SlideObject, handle: string) => {
     if (!interactive || !canEdit) return;
     e.stopPropagation();
-    const orig = new Map([[o.id, { x: o.x, y: o.y, w: o.w, h: o.h }]]);
+    const orig = new Map([[o.id, { x: o.x, y: o.y, w: o.w, h: o.h, rotate: o.rotate }]]);
     dragRef.current = { mode: "resize", handle, startX: e.clientX, startY: e.clientY, orig };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+
+  const startRotate = (e: RPointerEvent, o: SlideObject) => {
+    if (!interactive || !canEdit) return;
+    e.stopPropagation();
+    const orig = new Map([[o.id, { x: o.x, y: o.y, w: o.w, h: o.h, rotate: o.rotate }]]);
+    dragRef.current = { mode: "rotate", startX: e.clientX, startY: e.clientY, orig };
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   };
 
@@ -95,6 +107,19 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
         patches.push({ id, patch: { x: Math.round(nx), y: Math.round(ny) } });
       }
       setGuides({ v: guideV, h: guideH });
+    } else if (d.mode === "rotate") {
+      const [id, o] = [...d.orig][0];
+      const box = boxRef.current?.getBoundingClientRect();
+      if (box) {
+        const cx = box.left + (o.x + o.w / 2) * scale;
+        const cy = box.top + (o.y + o.h / 2) * scale;
+        const a0 = Math.atan2(d.startY - cy, d.startX - cx);
+        const a1 = Math.atan2(e.clientY - cy, e.clientX - cx);
+        let deg = ((o.rotate ?? 0) + (a1 - a0) * 180 / Math.PI) % 360;
+        if (deg < 0) deg += 360;
+        if (!e.shiftKey) deg = Math.round(deg / 15) * 15;
+        patches.push({ id, patch: { rotate: Math.round(deg) } });
+      }
     } else {
       const [id, o] = [...d.orig][0];
       let { x, y, w, h } = o;
@@ -126,25 +151,41 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   });
 
   return (
-    <div className="slide-box" style={{ width: SLIDE_W, height: SLIDE_H, transform: `scale(${scale})`, background: slide.bg ?? theme.bg }}
+    <div ref={boxRef} className="slide-box" style={{ width: SLIDE_W, height: SLIDE_H, transform: `scale(${scale})`, background: slide.bg ?? theme.bg }}
       onPointerDown={interactive ? (e) => { if (e.target === e.currentTarget) onSelect?.(new Set(), false); } : undefined}
       onPointerMove={interactive ? onMove : undefined}
       onPointerUp={interactive ? onUp : undefined}>
-      {objs.map((o) => (
+      {objs.map((o) => {
+        const hidden = animStep !== undefined && o.anim && o.anim.order > animStep;
+        const entering = animStep !== undefined && o.anim && o.anim.order === animStep ? o.anim.type : undefined;
+        return (
         <ObjView key={o.id} o={o} theme={theme}
           selected={interactive && selection.has(o.id)}
           editing={editingId === o.id}
+          hidden={!!hidden}
+          enterAnim={entering}
           onMouseDown={(e) => selectObj(o, e)}
           onPointerDown={(e) => startDrag(e, o)}
-          onDblClick={() => o.type === "text" && canEdit && setEditingId(o.id)}
-          onTextBlur={(html) => { onTextCommit?.(o.id, html); setEditingId(null); }} />
-      ))}
+          onDblClick={() => {
+            if (!canEdit) return;
+            if (o.type === "text" || o.type === "shape" || o.type === "table") setEditingId(o.id);
+            else onObjDblClick?.(o);
+          }}
+          onTextBlur={(html) => { onTextCommit?.(o.id, html); setEditingId(null); }}
+          onTableEdit={onTableCommit ? (rows) => onTableCommit(o.id, rows) : undefined} />
+        );
+      })}
       {interactive && canEdit && [...selection].map((id) => {
         const o = slide.objects.find((x) => x.id === id);
         if (!o || editingId === o.id) return null;
         return (
           <Fragment key={`h${id}`}>
             <div className="sel-outline" style={{ left: o.x, top: o.y, width: o.w, height: o.h }} />
+            {/* rotate handle */}
+            <div className="rot-handle" style={{ left: o.x + o.w / 2 - 5, top: o.y - 24 }}
+              title="Drag to rotate (hold Shift for free angle)"
+              onPointerDown={(e) => startRotate(e, o)} />
+            <div className="rot-stem" style={{ left: o.x + o.w / 2 - 0.5, top: o.y - 14 }} />
             {handles.map((h) => (
               <div key={h} className="rs-handle"
                 style={{ left: o.x + handlePos(o, h).left, top: o.y + handlePos(o, h).top, width: HANDLE, height: HANDLE, cursor: handlePos(o, h).cursor }}
@@ -161,46 +202,56 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
 
 // ---------- object renderer (also used for thumbnails & presenter) ----------
 
-export function ObjView({ o, theme, selected, editing, onMouseDown, onPointerDown, onDblClick, onTextBlur }: {
+export function ObjView({ o, theme, selected, editing, hidden, enterAnim, onMouseDown, onPointerDown, onDblClick, onTextBlur, onTableEdit }: {
   o: SlideObject; theme: Theme;
-  selected?: boolean; editing?: boolean;
+  selected?: boolean; editing?: boolean; hidden?: boolean;
+  enterAnim?: string;
   onMouseDown?: (e: RMouseEvent) => void;
   onPointerDown?: (e: RPointerEvent) => void;
   onDblClick?: () => void;
   onTextBlur?: (html: string) => void;
+  onTableEdit?: (rows: string[][]) => void;
 }) {
-  const base: React.CSSProperties = {
+  const base: CSSProperties = {
     left: o.x, top: o.y, width: o.w, height: o.h,
     transform: o.rotate ? `rotate(${o.rotate}deg)` : undefined,
+    opacity: hidden ? 0 : 1,
+    pointerEvents: hidden ? "none" : undefined,
   };
   const common = {
-    className: `s-obj ${selected ? "selected" : ""}`,
+    className: `s-obj ${selected ? "selected" : ""} ${enterAnim ? `enter-${enterAnim}` : ""}`,
     style: base,
     onMouseDown, onPointerDown, onDoubleClick: onDblClick,
   };
   void theme;
   void selected;
 
+  const textEl = (editingNow: boolean) =>
+    editingNow ? (
+      <div className="s-text editing" contentEditable suppressContentEditableWarning
+        style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
+        dangerouslySetInnerHTML={{ __html: o.html ?? "" }}
+        onBlur={(e) => onTextBlur?.((e.target as HTMLElement).innerHTML)}
+        onPointerDown={(e) => e.stopPropagation()}
+        ref={(el) => { el?.focus(); }} />
+    ) : (
+      <div className="s-text"
+        style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
+        dangerouslySetInnerHTML={{ __html: (o.html ?? "").replace(/\n/g, "<br/>") }} />
+    );
+
   switch (o.type) {
     case "text":
+      return <div {...common}>{textEl(!!editing)}</div>;
+    case "shape":
       return (
         <div {...common}>
-          {editing ? (
-            <div className="s-text editing" contentEditable suppressContentEditableWarning
-              style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
-              dangerouslySetInnerHTML={{ __html: o.html ?? "" }}
-              onBlur={(e) => onTextBlur?.((e.target as HTMLElement).innerHTML)}
-              onPointerDown={(e) => e.stopPropagation()}
-              ref={(el) => { el?.focus(); }} />
-          ) : (
-            <div className="s-text"
-              style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
-              dangerouslySetInnerHTML={{ __html: (o.html ?? "").replace(/\n/g, "<br/>") }} />
-          )}
+          <ShapeSvg o={o} />
+          {o.html !== undefined || editing ? (
+            <div className="s-shape-text">{textEl(!!editing)}</div>
+          ) : null}
         </div>
       );
-    case "shape":
-      return <div {...common}><ShapeSvg o={o} /></div>;
     case "image":
       return (
         <div {...common}>
@@ -210,11 +261,21 @@ export function ObjView({ o, theme, selected, editing, onMouseDown, onPointerDow
     case "table": {
       const rows = o.table ?? [["", ""]];
       return (
-        <div {...common} style={{ ...base, overflow: "hidden" }}>
-          <table className="s-table">
+        <div {...common} style={{ ...base, overflow: editing ? "auto" : "hidden" }}>
+          <table className={`s-table ${editing ? "editing" : ""}`}>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i}>{r.map((c, j) => <td key={j} style={{ fontSize: o.fontSize ?? 14, color: o.color }}>{c}</td>)}</tr>
+                <tr key={i}>{r.map((c, j) => editing ? (
+                  <td key={j} contentEditable suppressContentEditableWarning
+                    style={{ fontSize: o.fontSize ?? 14, color: o.color, minWidth: 40 }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onBlur={(e) => {
+                      const next = rows.map((row, ri) => ri === i ? row.map((cell, cj) => cj === j ? (e.target as HTMLElement).innerText : cell) : row);
+                      onTableEdit?.(next);
+                    }}>{c}</td>
+                ) : (
+                  <td key={j} style={{ fontSize: o.fontSize ?? 14, color: o.color }}>{c}</td>
+                ))}</tr>
               ))}
             </tbody>
           </table>

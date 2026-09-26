@@ -371,3 +371,40 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
   .print-slide{page-break-after:always;position:relative}
   @page{size:960px 540px;margin:0}
 }
+
+/* Present: objects pane, rotate handle, transitions, animations */
+.obj-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;font-size:12px}
+.obj-row.sel{border-color:var(--present);background:var(--k-orange-soft)}
+.obj-ico{width:20px;text-align:center;color:#8B8480}
+.obj-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.obj-anim{font-size:9px;color:var(--present);font-weight:700}
+.obj-ops{display:flex;gap:2px}
+.obj-ops button{border:0;background:transparent;font-size:10px;color:#A19A95;cursor:pointer;padding:2px 4px;border-radius:4px}
+.obj-ops button:hover{background:#EFE9E4;color:#171717}
+.rot-handle{position:absolute;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid var(--present);cursor:grab;z-index:52;touch-action:none}
+.rot-stem{position:absolute;width:1px;height:10px;background:var(--present);z-index:51;pointer-events:none}
+.s-shape-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.s-shape-text .s-text{pointer-events:none;width:92%;height:auto;max-height:92%}
+.s-shape-text .s-text.editing{pointer-events:auto}
+.s-table.editing td{min-width:48px;outline:none}
+.s-table.editing td:focus{background:rgba(233,106,44,.08)}
+
+.pres-slide.anim-fade{animation:t-fade .5s ease}
+.pres-slide.anim-slide{animation:t-slide .45s ease}
+.pres-slide.anim-zoom{animation:t-zoom .45s ease}
+.pres-slide.anim-push{animation:t-push .45s ease}
+@keyframes t-fade{from{opacity:0}to{opacity:1}}
+@keyframes t-slide{from{opacity:0;transform:translateX(120px)}to{opacity:1;transform:none}}
+@keyframes t-zoom{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+@keyframes t-push{from{opacity:0;transform:translateY(80px)}to{opacity:1;transform:none}}
+
+.s-obj.enter-fade{animation:e-fade .4s ease}
+.s-obj.enter-slide-up{animation:e-slide-up .45s ease}
+.s-obj.enter-slide-left{animation:e-slide-left .45s ease}
+.s-obj.enter-zoom{animation:e-zoom .45s ease}
+.s-obj.enter-wipe{animation:e-wipe .45s ease}
+@keyframes e-fade{from{opacity:0}to{opacity:1}}
+@keyframes e-slide-up{from{opacity:0;transform:translateY(60px)}to{opacity:1;transform:none}}
+@keyframes e-slide-left{from{opacity:0;transform:translateX(80px)}to{opacity:1;transform:none}}
+@keyframes e-zoom{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+@keyframes e-wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
