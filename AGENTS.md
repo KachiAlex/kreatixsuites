@@ -33,10 +33,18 @@ Every content save writes an **immutable version** (SRS §19) — never mutate b
 ## Deploy (VPS)
 
 ```bash
-cp .env.example .env   # set JWT_SECRET
-# set your domain in Caddyfile
-docker compose up -d --build
+cp .env.example .env   # set JWT_SECRET (+ APP_PORT / APP_BIND if behind a proxy)
+docker compose up -d --build        # app only, on ${APP_BIND:-127.0.0.1}:${APP_PORT:-3001}
+SITE_ADDRESS=suite.example.com docker compose --profile tls up -d   # + Caddy managed TLS
 ```
+
+### Live deployment (67.211.210.8)
+
+- **URL**: https://kreatixsuite.67-211-210-8.sslip.io (sslip.io → box IP, LetsEncrypt cert via certbot)
+- App: `docker compose` in `/opt/kreatix` (git clone of this repo), bound to `127.0.0.1:3017`
+- nginx site: `/etc/nginx/sites-enabled/kreatixsuite` → `127.0.0.1:3017` (copy in `deploy/`)
+- Shared host: only 22/80/443 public (ufw); all apps route through host nginx — do NOT open extra ports
+- Redeploy: `cd /opt/kreatix && git pull && docker compose up -d --build`
 
 ## Implemented (SRS refs)
 
