@@ -1,0 +1,28 @@
+{
+  "name": "@kreatix/api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --target=node20 --external:better-sqlite3 --outfile=dist/server.js",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@fastify/static": "^10.1.5",
+    "@kreatix/shared": "workspace:*",
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.6.1",
+    "jose": "^6.1.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "~6.0.2"
+  }
+}

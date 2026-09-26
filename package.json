@@ -1,0 +1,16 @@
+{
+  "name": "kreatix-business-suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kreatix Business Suite — Writer, Sheets, Present, PDF, Drive and Kreatix AI",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @kreatix/api dev",
+    "dev:web": "pnpm --filter @kreatix/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,5 @@
+# Replace with your domain — Caddy provisions TLS automatically.
+# For local/IP-only testing use ":80" instead.
+suite.example.com {
+	reverse_proxy app:3001
+}

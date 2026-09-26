@@ -1,0 +1,26 @@
+# VPS deployment: app + Caddy (automatic HTTPS)
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      - JWT_SECRET=${JWT_SECRET:?set in .env}
+      - PORT=3001
+    volumes:
+      - kreatix-data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  kreatix-data:
+  caddy-data:
+  caddy-config:
