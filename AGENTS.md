@@ -21,6 +21,7 @@ pnpm dev:api                       # API on :3001
 pnpm dev:web                       # Vite on :5173 (proxies /api → :3001)
 pnpm build                         # builds web dist + api bundle
 pnpm typecheck
+pnpm --filter @kreatix/web test:roundtrip   # OOXML DOCX/XLSX/PPTX export→import harness
 ```
 
 API serves `apps/web/dist` automatically in production (single process on `:3001`).
@@ -50,7 +51,8 @@ SITE_ADDRESS=suite.example.com docker compose --profile tls up -d   # + Caddy ma
 
 - KBS-SHARED-001/002/003/004/007/008: auth+tenancy, home hub, autosave→versions, perm modes, share links
 - KBS-DRIVE-001/003/004/005/007: folders, versions+restore, named shares, 5 roles, recycle bin
-- KBS-SHARED-009: permission-trimmed name search (content index is P1)
+- KBS-SHARED-009: permission-trimmed name + full-text search (encrypted `search_index`, JS-side matching)
+- Encryption at rest: `KREATIX_DATA_KEY` → AES-256-GCM on blobs + sensitive DB free-text (item names, index bodies, comments, AI prompts/ops, audit details). `enc:v1:`/`KX1\0` markers keep plaintext rows readable.
 - KBS-WRITER-001/003/005/013/017/018: TipTap editor, styles/tables/images, comments+anchors, find/replace, word count, DOCX import (mammoth) / export (docx)
 - KBS-SEC-004/005: RBAC, per-file permissions
 

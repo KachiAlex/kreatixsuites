@@ -152,13 +152,13 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
       <NavLink to="/drive/trash" className={navCls}><span className="dot" />Recycle bin</NavLink>
 
       <div className="section-label">Applications</div>
-      <a className="nav" onClick={() => createFile("writer")}><span style={{ color: "var(--writer)", fontWeight: 900 }}>W</span>Writer</a>
-      <a className="nav" onClick={() => createFile("sheets")}><span style={{ color: "var(--sheets)", fontWeight: 900 }}>S</span>Sheets</a>
-      <a className="nav" onClick={() => createFile("present")}><span style={{ color: "var(--present)", fontWeight: 900 }}>P</span>Present</a>
-      <a className="nav" onClick={() => fileInput.current?.click()}><span style={{ color: "var(--pdf)", fontWeight: 900, fontSize: 9 }}>PDF</span>PDF</a>
+      <button type="button" className="nav" onClick={() => createFile("writer")}><span style={{ color: "var(--writer)", fontWeight: 900 }}>W</span>Writer</button>
+      <button type="button" className="nav" onClick={() => createFile("sheets")}><span style={{ color: "var(--sheets)", fontWeight: 900 }}>S</span>Sheets</button>
+      <button type="button" className="nav" onClick={() => createFile("present")}><span style={{ color: "var(--present)", fontWeight: 900 }}>P</span>Present</button>
+      <button type="button" className="nav" onClick={() => fileInput.current?.click()}><span style={{ color: "var(--pdf)", fontWeight: 900, fontSize: 9 }}>PDF</span>PDF</button>
 
       <div className="section-label">Workspace tools</div>
-      <a className="nav" onClick={onTemplates}><span className="dot" />Templates</a>
+      <button type="button" className="nav" onClick={onTemplates}><span className="dot" />Templates</button>
       {(user?.role === "owner" || user?.role === "admin") && (
         <NavLink to="/admin" className={navCls}><span className="dot" />Administration</NavLink>
       )}
@@ -267,11 +267,14 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
         <span style={{ color: "#8A817B" }}>⌕</span>
         <input
           placeholder="Search your workspace or ask Kreatix AI…"
+          aria-label="Search your workspace"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => results.length && setOpen(true)}
         />
-        <kbd onClick={onPalette} style={{ cursor: "pointer" }} title="Open command palette">⌘ K</kbd>
+        <kbd onClick={onPalette} role="button" tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPalette(); } }}
+          style={{ cursor: "pointer" }} title="Open command palette">⌘ K</kbd>
         {open && results.length > 0 && (
           <div className="file-menu" style={{ top: 50, left: 0, right: 0, minWidth: 0 }}>
             {results.map((it) => (
@@ -283,10 +286,11 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
           </div>
         )}
       </div>
-      <button className="iconbtn" title="Toggle theme">☼</button>
+      <button className="iconbtn" title="Toggle theme" aria-label="Toggle theme">☼</button>
       <MentionsBell />
       <div style={{ position: "relative" }}>
-        <button className="user" onClick={() => setUserMenu((v) => !v)}>{user?.initials ?? "…"}</button>
+        <button className="user" aria-label="Account menu" aria-haspopup="menu" aria-expanded={userMenu}
+          onClick={() => setUserMenu((v) => !v)}>{user?.initials ?? "…"}</button>
         {userMenu && (
           <div className="user-menu">
             <div className="um-head"><b>{user?.displayName}</b><span>{user?.email}</span></div>

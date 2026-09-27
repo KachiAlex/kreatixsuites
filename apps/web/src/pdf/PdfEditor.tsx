@@ -6,6 +6,7 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import type { DriveItem, Comment } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { saveContent } from "../lib/drafts";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { PresenceBar } from "../collab/PresenceBar";
@@ -166,14 +167,18 @@ export function PdfEditor({ item, initialDoc, permission }: {
 
   const flushSave = useCallback(async () => {
     setSaveState("saving");
-    try {
-      const form = formValues();
-      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, {
-        content: { ...annDoc, form: Object.keys(form).length ? form : annDoc.form },
-      });
-      setSaveState("saved");
-    } catch { setSaveState("error"); }
+    const form = formValues();
+    const ok = await saveContent(item.id,
+      { ...annDoc, form: Object.keys(form).length ? form : annDoc.form }, !!session);
+    setSaveState(ok ? "saved" : "error");
   }, [annDoc, formValues, item.id, session]);
+
+  // replay pending saves when connectivity returns (annDoc holds latest edits)
+  useEffect(() => {
+    const on = () => { void flushSave(); };
+    window.addEventListener("online", on);
+    return () => window.removeEventListener("online", on);
+  }, [flushSave]);
 
   const scheduleSave = useCallback(() => {
     setSaveState("unsaved");

@@ -1,9 +1,10 @@
-// Search indexer — extracts plain text from each doc kind's canonical JSON and
-// keeps the FTS5 `search_index` table in sync. PDF body text isn't extracted
-// server-side (pdf.js lives in the client); PDFs index annotation text + form
-// values. Name search is handled separately in routes/search.ts.
+// Search indexer — extracts plain text from each doc kind's canonical JSON
+// (plus PDF body text server-side via pdf.js) and stores it in search_index.
+// Bodies are AES-256-GCM encrypted when KREATIX_DATA_KEY is set; matching runs
+// JS-side over permission-scoped candidates in routes/search.ts.
 import { db } from "./db.js";
 import { getBlob } from "./blobs.js";
+import { encryptField, decryptField } from "./crypto.js";
 
 const stripTags = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
@@ -54,12 +55,45 @@ export function extractText(kind: string, content: unknown): string {
   return out.join(" ").slice(0, 100000);
 }
 
-/** Rebuild the FTS row for a file from its canonical content JSON. */
-export function indexFile(fileId: string, kind: string, content: unknown) {
-  const body = extractText(kind, content);
+/** Extract embedded text from raw PDF bytes (Node legacy build, no worker). */
+async function extractPdfText(pdfBytes: Buffer): Promise<string> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const task = pdfjs.getDocument({ data: new Uint8Array(pdfBytes) } as never);
+  const doc = await task.promise;
+  const parts: string[] = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const tc = await page.getTextContent();
+    for (const item of tc.items) {
+      if ("str" in item) parts.push(item.str);
+    }
+  }
+  void task.destroy();
+  return parts.join(" ");
+}
+
+/**
+ * Rebuild the index row for a file. For PDFs, also extracts the raw document's
+ * embedded text (version 1 blob) alongside annotation/form text.
+ */
+export async function indexFile(fileId: string, kind: string, content: unknown) {
+  let body = extractText(kind, content);
+  if (kind === "pdf") {
+    const v1 = db
+      .prepare("SELECT blob_key FROM versions WHERE file_id = ? ORDER BY number ASC LIMIT 1")
+      .get(fileId) as { blob_key: string } | undefined;
+    const raw = v1 && getBlob(v1.blob_key);
+    if (raw && raw.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+      try {
+        body = `${body} ${await extractPdfText(raw)}`.trim();
+      } catch (err) {
+        console.warn("[pdf-index]", err instanceof Error ? err.message : err);
+      }
+    }
+  }
   db.prepare("DELETE FROM search_index WHERE file_id = ?").run(fileId);
   if (body.trim()) {
-    db.prepare("INSERT INTO search_index (file_id, body) VALUES (?,?)").run(fileId, body);
+    db.prepare("INSERT INTO search_index (file_id, body) VALUES (?,?)").run(fileId, encryptField(body)!);
   }
 }
 
@@ -67,8 +101,16 @@ export function deindexFile(fileId: string) {
   db.prepare("DELETE FROM search_index WHERE file_id = ?").run(fileId);
 }
 
+/** Decrypted index body for a file (used by search + DLP checks). */
+export function indexBody(fileId: string): string {
+  const row = db.prepare("SELECT body FROM search_index WHERE file_id = ?").get(fileId) as
+    | { body: string }
+    | undefined;
+  return decryptField(row?.body ?? null) ?? "";
+}
+
 /** One-shot backfill — index every file's head version. Called at boot. */
-export function reindexAll() {
+export async function reindexAll() {
   const items = db.prepare("SELECT id, kind FROM items").all() as { id: string; kind: string }[];
   const head = db.prepare("SELECT blob_key FROM versions WHERE file_id = ? ORDER BY number DESC LIMIT 1");
   let n = 0;
@@ -76,10 +118,15 @@ export function reindexAll() {
     const v = head.get(item.id) as { blob_key: string } | undefined;
     const blob = v && getBlob(v.blob_key);
     if (!blob) continue;
+    let content: unknown = null;
     try {
-      indexFile(item.id, item.kind, JSON.parse(blob.toString("utf8")));
+      content = JSON.parse(blob.toString("utf8"));
+    } catch { /* binary blob */ }
+    if (content === null && item.kind !== "pdf") continue;
+    try {
+      await indexFile(item.id, item.kind, content);
       n++;
-    } catch { /* binary blob (e.g. raw PDF v1) — nothing to index */ }
+    } catch { /* indexing is best-effort */ }
   }
   return n;
 }

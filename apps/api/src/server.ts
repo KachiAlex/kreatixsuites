@@ -15,6 +15,7 @@ import { aiRoutes } from "./routes/ai.js";
 import { adminRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
+import { onResponseMetric } from "./metrics.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
@@ -40,6 +41,12 @@ async function main() {
     if (err.statusCode) return reply.code(err.statusCode).send({ error: "error", message: err.message });
     app.log.error(err);
     return reply.code(500).send({ error: "internal", message: "Internal server error" });
+  });
+
+  // lightweight request metrics for the admin observability surface
+  app.addHook("onResponse", (_req, reply, done) => {
+    onResponseMetric(reply.statusCode);
+    done();
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
@@ -70,8 +77,9 @@ async function main() {
 
   // backfill the search index in the background (fast: JSON head blobs only)
   setImmediate(() => {
-    try { app.log.info({ indexed: reindexAll() }, "search index rebuilt"); }
-    catch (e) { app.log.warn(e, "search reindex failed"); }
+    reindexAll()
+      .then((n) => app.log.info({ indexed: n }, "search index rebuilt"))
+      .catch((e) => app.log.warn(e, "search reindex failed"));
   });
 
   app.log.info(

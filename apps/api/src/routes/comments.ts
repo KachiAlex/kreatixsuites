@@ -111,7 +111,7 @@ export function commentRoutes(app: FastifyInstance) {
     ).all(user.id) as MentionRow[];
     return {
       mentions: rows.map((r) => ({
-        id: r.id, fileId: r.file_id, fileName: r.file_name, fileKind: r.file_kind,
+        id: r.id, fileId: r.file_id, fileName: decryptField(r.file_name), fileKind: r.file_kind,
         from: { displayName: r.from_name, initials: r.from_initials },
         excerpt: (decryptField(r.body) ?? "").slice(0, 120), read: !!r.read_at, createdAt: r.created_at,
       })),

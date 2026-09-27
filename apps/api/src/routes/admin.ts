@@ -6,6 +6,9 @@ import { db } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
+import { metrics } from "../metrics.js";
+import { activeCollabRooms, collabPeers } from "../collab.js";
+import { ssoEnabled } from "./sso.js";
 
 const policiesSchema = z.object({
   blockPublicLinksForConfidential: z.boolean().optional(),
@@ -99,9 +102,34 @@ export function adminRoutes(app: FastifyInstance) {
         user: q.user || null,
         file: q.file || null,
         limit,
-      }) as { detail: string | null }[];
+      }) as { detail: string | null; file_name: string | null }[];
     return {
-      entries: rows.map((r) => ({ ...r, detail: decryptField(r.detail) })),
+      entries: rows.map((r) => ({
+        ...r,
+        detail: decryptField(r.detail),
+        file_name: decryptField(r.file_name),
+      })),
+    };
+  });
+
+  /** Observability: process + data + request stats (org admin only). */
+  app.get("/api/admin/metrics", async () => {
+    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+    return {
+      uptimeSec: Math.floor((Date.now() - metrics.startedAt) / 1000),
+      requests: { total: metrics.requests, errors5xx: metrics.errors, byStatus: metrics.byStatus },
+      collab: { rooms: activeCollabRooms(), peers: collabPeers() },
+      data: {
+        users: count("SELECT COUNT(*) n FROM users"),
+        items: count("SELECT COUNT(*) n FROM items"),
+        versions: count("SELECT COUNT(*) n FROM versions"),
+        comments: count("SELECT COUNT(*) n FROM comments"),
+        shareLinks: count("SELECT COUNT(*) n FROM share_links"),
+        aiActions: count("SELECT COUNT(*) n FROM ai_actions"),
+        indexRows: count("SELECT COUNT(*) n FROM search_index"),
+      },
+      security: { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled },
+      memory: process.memoryUsage().heapUsed,
     };
   });
 }

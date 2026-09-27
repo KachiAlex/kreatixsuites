@@ -65,7 +65,9 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
         const meta = KIND_META[it.kind] ?? KIND_META.file;
         return (
           <div className="file" key={it.id} style={{ position: "relative" }}>
-            <div className={`thumb ${meta.cls}`} onClick={() => onOpen(it)}>{meta.short}</div>
+            <div className={`thumb ${meta.cls}`} onClick={() => onOpen(it)} role="button" tabIndex={0}
+              aria-label={`Open ${it.name}`}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(it); } }}>{meta.short}</div>
             <div onClick={() => onOpen(it)}>
               {renaming === it.id ? (
                 <input
@@ -91,9 +93,10 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
             <div className="people">
               {(it.collaborators ?? []).map((c, i) => <span key={i} title={c.displayName}>{c.initials}</span>)}
             </div>
-            <button className="kebab" onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === it.id ? null : it.id); }}>•••</button>
+            <button className="kebab" aria-label={`Actions for ${it.name}`} aria-haspopup="menu" aria-expanded={menuFor === it.id}
+              onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === it.id ? null : it.id); }}>•••</button>
             {menuFor === it.id && (
-              <div className="file-menu" style={{ right: 8, top: 40 }} onMouseLeave={() => setLabelFor(null)}>
+              <div className="file-menu" role="menu" style={{ right: 8, top: 40 }} onMouseLeave={() => setLabelFor(null)}>
                 {labelFor === it.id ? (
                   <>
                     <div className="menu-title">Sensitivity label</div>

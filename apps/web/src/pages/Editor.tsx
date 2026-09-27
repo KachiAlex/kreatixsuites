@@ -1,12 +1,23 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
-import { WriterEditor } from "../writer/WriterEditor";
-import { SheetsEditor } from "../sheets/SheetsEditor";
-import { PresentEditor } from "../present/PresentEditor";
-import { PdfEditor } from "../pdf/PdfEditor";
-import { KIND_META } from "../lib/format";
+import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
+import { KIND_META, timeAgo } from "../lib/format";
+
+// Each editor is a separate chunk — only fetched when its file type opens.
+const WriterEditor = lazy(() =>
+  import("../writer/WriterEditor").then((m) => ({ default: m.WriterEditor })));
+const SheetsEditor = lazy(() =>
+  import("../sheets/SheetsEditor").then((m) => ({ default: m.SheetsEditor })));
+const PresentEditor = lazy(() =>
+  import("../present/PresentEditor").then((m) => ({ default: m.PresentEditor })));
+const PdfEditor = lazy(() =>
+  import("../pdf/PdfEditor").then((m) => ({ default: m.PdfEditor })));
+
+const Fallback = () => (
+  <div className="auth-wrap"><div className="empty">Opening…</div></div>
+);
 
 export function Editor() {
   const { id } = useParams();
@@ -14,21 +25,39 @@ export function Editor() {
   const [item, setItem] = useState<DriveItem | null>(null);
   const [content, setContent] = useState<unknown>(null);
   const [error, setError] = useState("");
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const meta = await api.get<{ item: DriveItem & { ownerName?: string } }>(`/api/drive/${id}`);
         setItem(meta.item);
-        if (meta.item.kind !== "folder") {
-          const c = await api.get<{ content: unknown }>(`/api/files/${id}/content`).catch(() => null);
-          setContent(c?.content ?? null);
-        }
+        if (meta.item.kind === "folder") { setReady(true); return; }
+        const [c, d] = await Promise.all([
+          api.get<{ content: unknown }>(`/api/files/${id}/content`).catch(() => null),
+          getDraft(id!),
+        ]);
+        setContent(c?.content ?? null);
+        // A staged draft newer than the last server save = unsaved work
+        // (crash or offline close). Offer to restore it.
+        if (d && d.savedAt > Date.parse(meta.item.updatedAt)) setDraft(d);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not open file");
+      } finally {
+        setReady(true);
       }
     })();
   }, [id]);
+
+  const restoreDraft = async () => {
+    if (!draft || !item) return;
+    const restored = JSON.parse(draft.content) as unknown;
+    setContent(restored);
+    setDraft(null);
+    const ok = await saveContent(item.id, restored, false);
+    if (!ok) setDraft(draft); // still offline — keep the draft + banner
+  };
 
   if (error) {
     return (
@@ -42,32 +71,49 @@ export function Editor() {
       </div>
     );
   }
-  if (!item) return <div className="auth-wrap"><div className="empty">Opening…</div></div>;
+  if (!item || !ready) return <Fallback />;
 
-  if (item.kind === "writer") {
-    return <WriterEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
-  }
-  if (item.kind === "sheets") {
-    return <SheetsEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
-  }
-  if (item.kind === "present") {
-    return <PresentEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
-  }
-  if (item.kind === "pdf") {
-    return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
-  }
-
-  const meta = KIND_META[item.kind] ?? KIND_META.file;
-  return (
-    <div className="auth-wrap">
-      <div className="auth-card" style={{ textAlign: "center" }}>
-        <div className={`brand-mark ${meta.cls}`} style={{ background: undefined }}>
-          <span className={`app-ico ${meta.cls}`} style={{ width: 48, height: 48, borderRadius: 15 }}>{meta.short}</span>
-        </div>
-        <h1>{item.name}</h1>
-        <p>{meta.label} editor is on the roadmap — file is safely stored in Kreatix Drive.</p>
-        <button className="btn-ghost" onClick={() => navigate(-1)}>Back</button>
-      </div>
+  const banner = draft && (
+    <div className="draft-banner" role="alert">
+      <span>Unsaved changes recovered from {timeAgo(new Date(draft.savedAt).toISOString())}</span>
+      <button className="btn-primary" onClick={() => void restoreDraft()}>Restore</button>
+      <button className="btn-ghost" onClick={() => { void clearDraft(item.id); setDraft(null); }}>Discard</button>
     </div>
+  );
+
+  const inner = (() => {
+    if (item.kind === "writer") {
+      return <WriterEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+    }
+    if (item.kind === "sheets") {
+      return <SheetsEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+    }
+    if (item.kind === "present") {
+      return <PresentEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+    }
+    if (item.kind === "pdf") {
+      return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+    }
+
+    const meta = KIND_META[item.kind] ?? KIND_META.file;
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card" style={{ textAlign: "center" }}>
+          <div className={`brand-mark ${meta.cls}`} style={{ background: undefined }}>
+            <span className={`app-ico ${meta.cls}`} style={{ width: 48, height: 48, borderRadius: 15 }}>{meta.short}</span>
+          </div>
+          <h1>{item.name}</h1>
+          <p>{meta.label} editor is on the roadmap — file is safely stored in Kreatix Drive.</p>
+          <button className="btn-ghost" onClick={() => navigate(-1)}>Back</button>
+        </div>
+      </div>
+    );
+  })();
+
+  return (
+    <>
+      {banner}
+      <Suspense fallback={<Fallback />}>{inner}</Suspense>
+    </>
   );
 }

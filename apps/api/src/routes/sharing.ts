@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db, now } from "../db.js";
-import { getItem, toDriveItem, logActivity } from "../items.js";
+import { getItem, toDriveItem, logActivity, itemName } from "../items.js";
 import {
   requireAuth, permissionFor, hasPermission, hashPassword, verifyPassword,
   type AuthedRequest, type UserRow,
@@ -109,8 +109,8 @@ export function sharingRoutes(app: FastifyInstance) {
         });
       }
       // DLP: content patterns block share links regardless of label
-      if (dlpHit(item.id, item.name, user.orgId)) {
-        logActivity(user.orgId, user.id, item.id, "dlp-blocked-link", item.name);
+      if (dlpHit(item.id, itemName(item), user.orgId)) {
+        logActivity(user.orgId, user.id, item.id, "dlp-blocked-link", itemName(item));
         return reply.code(403).send({
           error: "policy_blocked",
           message: "Org DLP policy blocks share links for content matching a restricted pattern",
@@ -161,7 +161,7 @@ export function sharingRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")), blockDownload: !!row.link.block_download };
     }
     if (row.link.block_download) return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
-    return sendRawBlob(reply, item.mime, blob, item.name);
+    return sendRawBlob(reply, item.mime, blob, itemName(item));
   });
 }
 

@@ -2,11 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db, now } from "../db.js";
-import { getItem, toDriveItem, touchItem, logActivity, type ItemRow } from "../items.js";
+import { getItem, toDriveItem, touchItem, logActivity, itemName, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
+import { indexFile } from "../indexer.js";
+import { encryptField } from "../crypto.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(255),
@@ -27,6 +29,33 @@ const BLOCKED_EXTS = new Set([
 ]);
 
 const SCAN_CMD = process.env.KREATIX_SCAN_CMD;
+
+// EICAR anti-virus test signature — always rejected.
+const EICAR = Buffer.from("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR");
+
+/** Executable binary magic — rejected regardless of declared extension. */
+const EXEC_MAGIC = [Buffer.from("MZ"), Buffer.from("\x7fELF"), Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), Buffer.from([0xfe, 0xed, 0xfa, 0xcf])];
+
+/** Extension → required magic bytes (content sniffing; catches renamed .exe). */
+const EXT_MAGIC: Record<string, Buffer> = {
+  pdf: Buffer.from("%PDF-"),
+  docx: Buffer.from("PK\x03\x04"), xlsx: Buffer.from("PK\x03\x04"),
+  pptx: Buffer.from("PK\x03\x04"), zip: Buffer.from("PK\x03\x04"),
+  png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  jpg: Buffer.from([0xff, 0xd8, 0xff]), jpeg: Buffer.from([0xff, 0xd8, 0xff]),
+  gif: Buffer.from("GIF8"),
+};
+
+/** Returns a rejection reason, or null when the buffer passes the gate. */
+function sniffReject(buf: Buffer, ext: string): string | null {
+  if (buf.includes(EICAR)) return "EICAR test signature";
+  if (EXEC_MAGIC.some((m) => buf.subarray(0, m.length).equals(m))) return "executable binary";
+  const want = EXT_MAGIC[ext];
+  if (want && !buf.subarray(0, want.length).equals(want)) {
+    return `'.${ext}' file content does not match its type`;
+  }
+  return null;
+}
 
 /** Write buffer to a temp file, run KREATIX_SCAN_CMD, return stderr verdict or null. */
 async function scanBuffer(buf: Buffer, name: string): Promise<string | null> {
@@ -98,7 +127,17 @@ export function driveRoutes(app: FastifyInstance) {
         .all({ uid: user.id }) as ItemRow[];
     }
 
-    return { items: rows.map((r) => toDriveItem(r, permissionFor(user.id, r) ?? undefined)) };
+    const items = rows.map((r) => toDriveItem(r, permissionFor(user.id, r) ?? undefined));
+    // names are encrypted at rest — ciphertext can't sort in SQL, so folder
+    // browsing re-sorts on the decrypted name
+    if (q.parent !== undefined) {
+      items.sort(
+        (a, b) =>
+          (b.kind === "folder" ? 1 : 0) - (a.kind === "folder" ? 1 : 0) ||
+          a.name.localeCompare(b.name),
+      );
+    }
+    return { items };
   });
 
   app.get("/api/drive/:id", async (req, reply) => {
@@ -127,7 +166,7 @@ export function driveRoutes(app: FastifyInstance) {
       `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?)`,
     ).run(
-      id, user.orgId, body.parentId ?? null, user.id, body.name, body.kind,
+      id, user.orgId, body.parentId ?? null, user.id, encryptField(body.name), body.kind,
       `application/x-kreatix-${body.kind}`, now(), now(),
     );
 
@@ -164,6 +203,11 @@ export function driveRoutes(app: FastifyInstance) {
     if (BLOCKED_EXTS.has(ext)) {
       return reply.code(415).send({ error: "blocked_file_type", message: `'.${ext}' files are not allowed` });
     }
+    const sniff = sniffReject(buf, ext);
+    if (sniff) {
+      logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${sniff}`);
+      return reply.code(415).send({ error: "blocked_file_type", message: `Upload rejected: ${sniff}` });
+    }
     if (SCAN_CMD) {
       const verdict = await scanBuffer(buf, name ?? "upload");
       if (verdict !== null) {
@@ -172,20 +216,26 @@ export function driveRoutes(app: FastifyInstance) {
       }
     }
 
-    const fileKind = FILE_KINDS.includes(kind as never) ? (kind as ItemRow["kind"]) : "file";
+    const fileKind = FILE_KINDS.includes(kind as never)
+      ? (kind as ItemRow["kind"])
+      : ext === "pdf" || buf.subarray(0, 5).equals(Buffer.from("%PDF-"))
+        ? "pdf"
+        : "file";
     const id = randomUUID();
     const { key, size } = putBlob(buf);
 
     db.prepare(
       `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).run(id, user.orgId, parent || null, user.id, name ?? "Untitled", fileKind,
+    ).run(id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
       (req.headers["content-type"] as string) ?? "application/octet-stream", size, now(), now());
     db.prepare(
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
     ).run(randomUUID(), id, 1, "Initial upload", key, size, user.id, now());
 
     logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
+    // index PDF uploads immediately (body text + later annotation text)
+    if (fileKind === "pdf") void indexFile(id, "pdf", null).catch(() => {});
     return { item: toDriveItem(getItem(id)!, "owner") };
   });
 
@@ -201,7 +251,8 @@ export function driveRoutes(app: FastifyInstance) {
        label = COALESCE(?, label),
        parent_id = CASE WHEN ? THEN ? ELSE parent_id END, updated_at = ? WHERE id = ?`,
     ).run(
-      body.name ?? null, body.starred === undefined ? null : body.starred ? 1 : 0,
+      body.name === undefined ? null : encryptField(body.name),
+      body.starred === undefined ? null : body.starred ? 1 : 0,
       body.label ?? null,
       body.parentId !== undefined ? 1 : 0, body.parentId ?? null, now(), item.id,
     );
@@ -217,11 +268,11 @@ export function driveRoutes(app: FastifyInstance) {
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
       purgeItem(item.id);
-      logActivity(user.orgId, user.id, item.id, "delete-permanent", item.name);
+      logActivity(user.orgId, user.id, item.id, "delete-permanent", itemName(item));
       return { ok: true };
     }
     db.prepare("UPDATE items SET trashed = 1, updated_at = ? WHERE id = ?").run(now(), item.id);
-    logActivity(user.orgId, user.id, item.id, "trash", item.name);
+    logActivity(user.orgId, user.id, item.id, "trash", itemName(item));
     return { ok: true };
   });
 

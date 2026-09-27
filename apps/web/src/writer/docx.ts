@@ -96,8 +96,8 @@ function tableOf(node: Block): Table | null {
   });
 }
 
-/** TipTap JSON → .docx download (KBS-WRITER-001) */
-export async function exportDocx(doc: Block, name: string) {
+/** TipTap JSON → .docx bytes (no download side effect — used by tests + export). */
+export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
   const children: (Paragraph | Table)[] = [];
   for (const node of (doc.content ?? []) as Block[]) {
     if (node.type === "table") {
@@ -112,7 +112,12 @@ export async function exportDocx(doc: Block, name: string) {
     title: name,
     sections: [{ children: children.length ? children : [new Paragraph({})] }],
   });
-  const blob = await Packer.toBlob(file);
+  return Packer.toBlob(file);
+}
+
+/** TipTap JSON → .docx download (KBS-WRITER-001) */
+export async function exportDocx(doc: Block, name: string) {
+  const blob = await exportDocxBytes(doc, name);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -124,7 +129,9 @@ export async function exportDocx(doc: Block, name: string) {
 /** .docx file → HTML string for editor.setContent (mammoth preserves structure) */
 export async function importDocx(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.convertToHtml({ arrayBuffer });
+  // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
+  const result = await mammoth.convertToHtml({ arrayBuffer }).catch(() =>
+    mammoth.convertToHtml({ buffer: Buffer.from(arrayBuffer) } as never));
   return result.value;
 }
 

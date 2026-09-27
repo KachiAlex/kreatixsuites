@@ -18,7 +18,8 @@ function stripHtml(html: string): string {
 
 const hex = (c?: string) => (c ?? "#000000").replace("#", "");
 
-export async function exportPptx(deck: Deck, title: string) {
+/** Deck → .pptx bytes (no download side effect — used by tests + export). */
+export async function exportPptxBytes(deck: Deck, title: string): Promise<ArrayBuffer> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
   pptx.defineLayout({ name: "K", width: 10, height: 5.625 });
@@ -31,7 +32,20 @@ export async function exportPptx(deck: Deck, title: string) {
     for (const o of [...s.objects].sort((a, b) => a.z - b.z)) addObj(pptx, slide, o);
     if (s.notes) slide.addNotes(stripHtml(s.notes));
   }
-  await pptx.writeFile({ fileName: `${title.replace(/\.[^.]+$/, "")}.pptx` });
+  return (await pptx.write({ outputType: "arraybuffer" })) as ArrayBuffer;
+}
+
+export async function exportPptx(deck: Deck, title: string) {
+  const buf = await exportPptxBytes(deck, title);
+  const blob = new Blob([buf], {
+    type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${title.replace(/\.[^.]+$/, "")}.pptx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: { addText: Function; addShape: Function; addImage: Function; addTable: Function; addChart: Function }, o: SlideObject) {

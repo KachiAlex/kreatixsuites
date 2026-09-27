@@ -53,8 +53,20 @@ export function csvToSheet(name: string, text: string): SheetData {
 
 // ---------- XLSX (KBS-SHEETS-001) ----------
 
+/** Workbook → .xlsx bytes (no download side effect — used by tests + export). */
+export async function workbookToXLSXBytes(wb: Workbook): Promise<Uint8Array> {
+  const XLSX = await import("xlsx");
+  const out = buildBook(XLSX, wb);
+  return XLSX.write(out, { type: "array", bookType: "xlsx" }) as Uint8Array;
+}
+
 export async function workbookToXLSX(wb: Workbook, filename: string) {
   const XLSX = await import("xlsx");
+  const out = buildBook(XLSX, wb);
+  XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".xlsx");
+}
+
+function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
   const out = XLSX.utils.book_new();
   for (const sheet of wb.sheets) {
     const evals = evaluateSheet(sheet.cells);
@@ -78,7 +90,7 @@ export async function workbookToXLSX(wb: Workbook, filename: string) {
     }
     XLSX.utils.book_append_sheet(out, ws, sheet.name.slice(0, 31));
   }
-  XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".xlsx");
+  return out;
 }
 
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {

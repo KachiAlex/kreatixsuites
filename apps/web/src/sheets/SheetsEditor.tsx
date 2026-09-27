@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { saveContent } from "../lib/drafts";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
@@ -170,14 +171,23 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     const payload = pendingJson.current;
     pendingJson.current = null;
     setSaveState("saving");
-    try {
-      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, { content: payload });
-      setSaveState("saved");
-    } catch {
+    const ok = await saveContent(item.id, payload, !!session);
+    if (ok) setSaveState("saved");
+    else {
+      pendingJson.current = payload;
       setSaveState("error");
-      toast("Could not save — will retry on next edit");
+      toast(navigator.onLine
+        ? "Could not save — will retry on next edit"
+        : "Offline — changes saved locally, syncing on reconnect");
     }
   }, [item.id, session, toast]);
+
+  // replay pending saves when connectivity returns
+  useEffect(() => {
+    const on = () => { void flushSave(); };
+    window.addEventListener("online", on);
+    return () => window.removeEventListener("online", on);
+  }, [flushSave]);
 
   useEffect(() => {
     const flush = () => { if (saveTimer.current) { clearTimeout(saveTimer.current); flushSave(); } };

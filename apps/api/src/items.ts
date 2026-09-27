@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, now } from "./db.js";
-import { encryptField } from "./crypto.js";
+import { encryptField, decryptField } from "./crypto.js";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 
 export interface ItemRow {
@@ -23,6 +23,11 @@ export function getItem(id: string): ItemRow | undefined {
   return db.prepare("SELECT * FROM items WHERE id = ?").get(id) as ItemRow | undefined;
 }
 
+/** Decrypt an item's stored name (plaintext passthrough when key unset). */
+export function itemName(row: { name: string }): string {
+  return decryptField(row.name) ?? row.name;
+}
+
 export function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]): DriveItem {
   const collaborators = db
     .prepare(
@@ -35,7 +40,7 @@ export function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]):
     orgId: row.org_id,
     parentId: row.parent_id,
     ownerId: row.owner_id,
-    name: row.name,
+    name: itemName(row),
     kind: row.kind,
     mimeType: row.mime,
     size: row.size,

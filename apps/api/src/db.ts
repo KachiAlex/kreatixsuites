@@ -130,8 +130,13 @@ CREATE TABLE IF NOT EXISTS ai_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_actions_file ON ai_actions(file_id, created_at DESC);
 
--- full-text document index (populated on save + at boot by indexer.ts)
-CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(file_id UNINDEXED, body);
+-- document text index — body is AES-256-GCM encrypted when KREATIX_DATA_KEY is
+-- set, so full-text search runs JS-side over permission-scoped candidates
+-- (indexer.ts / routes/search.ts). Populated on save + at boot.
+CREATE TABLE IF NOT EXISTS search_index (
+  file_id TEXT PRIMARY KEY,
+  body TEXT NOT NULL
+);
 
 -- per-org admin policies (DLP/retention/etc.) — JSON document, one row per org
 CREATE TABLE IF NOT EXISTS org_policies (
@@ -145,6 +150,17 @@ CREATE TABLE IF NOT EXISTS org_policies (
 const itemCols = (db.pragma("table_info(items)") as { name: string }[]).map((c) => c.name);
 if (!itemCols.includes("label")) {
   db.exec("ALTER TABLE items ADD COLUMN label TEXT NOT NULL DEFAULT 'internal'");
+}
+
+// migrate FTS5 virtual table → encrypted plain table (bodies re-indexed at boot)
+const idxSql = (
+  db.prepare("SELECT sql FROM sqlite_master WHERE name = 'search_index'").get() as
+    | { sql: string }
+    | undefined
+)?.sql ?? "";
+if (idxSql.toLowerCase().includes("fts5")) {
+  db.exec("DROP TABLE search_index");
+  db.exec("CREATE TABLE search_index (file_id TEXT PRIMARY KEY, body TEXT NOT NULL)");
 }
 
 export const now = () => new Date().toISOString();

@@ -2,6 +2,7 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, db } from "./db.js";
+import { indexBody } from "./indexer.js";
 
 export const LABELS = ["internal", "public", "confidential", "restricted"] as const;
 export type Label = (typeof LABELS)[number];
@@ -41,10 +42,7 @@ export function compileDlp(patterns: string[]): RegExp[] {
 export function dlpHit(fileId: string, fileName: string, orgId: string): boolean {
   const patterns = compileDlp(getPolicies(orgId).dlpPatterns);
   if (!patterns.length) return false;
-  const row = db.prepare("SELECT body FROM search_index WHERE file_id = ?").get(fileId) as
-    | { body: string }
-    | undefined;
-  const haystack = `${fileName}\n${row?.body ?? ""}`;
+  const haystack = `${fileName}\n${indexBody(fileId)}`;
   return patterns.some((re) => re.test(haystack));
 }
 

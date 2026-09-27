@@ -20,6 +20,14 @@ interface AuditEntry {
   actor_name: string | null; actor_email: string | null;
   file_name: string | null; file_id: string | null;
 }
+interface Metrics {
+  uptimeSec: number;
+  requests: { total: number; errors5xx: number; byStatus: Record<string, number> };
+  collab: { rooms: number; peers: number };
+  data: Record<string, number>;
+  security: { encryptionAtRest: boolean; sso: boolean };
+  memory: number;
+}
 
 const ROLE_LABELS: Record<string, string> = {
   owner: "Owner", admin: "Admin", member: "Member", guest: "Guest",
@@ -31,18 +39,21 @@ export function Admin() {
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [filter, setFilter] = useState("");
 
   const load = useCallback(async () => {
-    const [m, p, a] = await Promise.all([
+    const [m, p, a, mx] = await Promise.all([
       api.get<{ members: Member[] }>("/api/admin/members"),
       api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
       api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
+      api.get<Metrics>("/api/admin/metrics"),
     ]);
     setMembers(m.members);
     setPolicies(p.policies);
     setEncryption(p.encryptionAtRest);
     setAudit(a.entries);
+    setMetrics(mx);
   }, []);
 
   useEffect(() => { load().catch((e) => toast(e instanceof Error ? e.message : "Load failed")); }, [load, toast]);
@@ -82,10 +93,30 @@ export function Admin() {
         <div className="admin-flags">
           <div className={`flag ${encryption ? "on" : "off"}`}>
             <b>Encryption at rest</b>
-            <span>{encryption ? "Enabled (AES-256-GCM blob store)" : "Not configured — set KREATIX_DATA_KEY"}</span>
+            <span>{encryption ? "Enabled (AES-256-GCM blobs + DB fields)" : "Not configured — set KREATIX_DATA_KEY"}</span>
+          </div>
+          <div className={`flag ${metrics?.security.sso ? "on" : "off"}`}>
+            <b>Single sign-on</b>
+            <span>{metrics?.security.sso ? "OIDC provider configured" : "Not configured — set KREATIX_OIDC_*"}</span>
           </div>
         </div>
       </section>
+
+      {metrics && (
+        <section className="admin-card">
+          <h2>Health &amp; metrics</h2>
+          <div className="admin-flags">
+            <div className="flag on"><b>Uptime</b><span>{Math.floor(metrics.uptimeSec / 3600)}h {Math.floor((metrics.uptimeSec % 3600) / 60)}m</span></div>
+            <div className={`flag ${metrics.requests.errors5xx ? "off" : "on"}`}>
+              <b>Requests</b>
+              <span>{metrics.requests.total} total · {metrics.requests.errors5xx} 5xx · {Object.entries(metrics.requests.byStatus).map(([k, v]) => `${k}:${v}`).join(" ")}</span>
+            </div>
+            <div className="flag on"><b>Live collab</b><span>{metrics.collab.rooms} rooms · {metrics.collab.peers} peers</span></div>
+            <div className="flag on"><b>Data</b><span>{metrics.data.items} items · {metrics.data.versions} versions · {metrics.data.indexRows} indexed · {metrics.data.users} users</span></div>
+            <div className="flag on"><b>Memory</b><span>{Math.round(metrics.memory / 1048576)} MB heap</span></div>
+          </div>
+        </section>
+      )}
 
       <section className="admin-card">
         <h2>Data policies</h2>

@@ -39,6 +39,14 @@ interface Room {
 }
 const rooms = new Map<string, Room>();
 
+/** Live collab room count (observability). */
+export const activeCollabRooms = () => rooms.size;
+export const collabPeers = () => {
+  let n = 0;
+  for (const r of rooms.values()) n += r.conns.size;
+  return n;
+};
+
 const send = (ws: WebSocket, enc: encoding.Encoder) => {
   if (ws.readyState === WS_OPEN) ws.send(encoding.toUint8Array(enc));
 };

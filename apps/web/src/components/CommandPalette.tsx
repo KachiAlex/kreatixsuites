@@ -103,10 +103,11 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
   let lastGroup = "";
   return (
     <div className="dlg-back palette-back" onMouseDown={onClose}>
-      <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()}>
         <input ref={inputRef} className="palette-input" placeholder="Search files, run a command…"
+          aria-label="Search files and commands" aria-expanded="true" role="combobox" aria-controls="palette-list"
           value={q} onChange={(e) => { setQ(e.target.value); setIdx(0); }} onKeyDown={onKey} />
-        <div className="palette-list" ref={listRef}>
+        <div className="palette-list" ref={listRef} id="palette-list" role="listbox">
           {rows.length === 0 && <div className="empty" style={{ padding: 18 }}>No matches.</div>}
           {rows.map((r, i) => {
             const head = r.group !== lastGroup ? r.group : null;
@@ -114,7 +115,8 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
             return (
               <div key={r.id}>
                 {head && <div className="palette-group">{head}</div>}
-                <button data-i={i} className={`palette-row ${i === activeIdx ? "on" : ""}`}
+                <button data-i={i} role="option" aria-selected={i === activeIdx}
+                  className={`palette-row ${i === activeIdx ? "on" : ""}`}
                   onMouseEnter={() => setIdx(i)}
                   onClick={() => { onClose(); void r.run(); }}>
                   <span className={`cm-ico ${r.iconCls ?? ""}`}>{r.icon}</span>

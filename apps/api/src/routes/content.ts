@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db, now } from "../db.js";
-import { getItem, touchItem, logActivity } from "../items.js";
+import { getItem, touchItem, logActivity, itemName } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -72,7 +72,7 @@ export function contentRoutes(app: FastifyInstance) {
         if (parsed?.kind === "pdf") return { version: v.number, content: parsed };
       } catch { /* fall through to raw */ }
     }
-    return sendRawBlob(reply, item.mime, blob, item.name);
+    return sendRawBlob(reply, item.mime, blob, itemName(item));
   });
 
   /** GET the original uploaded binary (version 1) — used by the PDF viewer to fetch
@@ -88,7 +88,7 @@ export function contentRoutes(app: FastifyInstance) {
       .get(item.id) as VersionRow | undefined;
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
-    return sendRawBlob(reply, item.mime, blob, item.name);
+    return sendRawBlob(reply, item.mime, blob, itemName(item));
   });
 
   /** PUT new content — creates an immutable version (autosave calls this, debounced client-side) */
@@ -114,7 +114,7 @@ export function contentRoutes(app: FastifyInstance) {
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
     ).run(randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now());
     db.prepare("UPDATE items SET size = ? WHERE id = ?").run(size, item.id);
-    try { indexFile(item.id, item.kind, body.content); } catch { /* indexing is best-effort */ }
+    void indexFile(item.id, item.kind, body.content).catch(() => { /* best-effort */ });
     touchItem(item.id);
     return { version: next };
   });
@@ -155,7 +155,7 @@ export function contentRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
     } catch {
       // binary version (e.g. the original PDF upload) — stream it raw
-      return sendRawBlob(reply, item.mime, blob, item.name);
+      return sendRawBlob(reply, item.mime, blob, itemName(item));
     }
   });
 
