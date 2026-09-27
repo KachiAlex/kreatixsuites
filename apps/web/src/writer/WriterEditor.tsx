@@ -39,7 +39,8 @@ import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, readPageSetup, applyPageSetup } from "./PageSetup";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
-import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop } from "./controls";
+import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
+import { Ruler } from "./Ruler";
 import { exportDocx, importDocx } from "./docx";
 import { ensureDocFonts } from "./fonts";
 import { ShareDialog } from "../components/ShareDialog";
@@ -58,6 +59,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
 }) {
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
+  const forcedMode = permission === "reviewer" ? "suggest" : undefined;
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
@@ -73,6 +75,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [specialChars, setSpecialChars] = useState(false);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [zoom, setZoom] = useState(100);
   const importRef = useRef<HTMLInputElement>(null);
   const textImportRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
@@ -857,8 +860,6 @@ export function WriterEditor({ item, initialDoc, permission }: {
         </span>
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
         <PresenceBar session={session} />
-        {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
-        {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={permission === "reviewer" ? "suggest" : undefined} />}
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-primary btn-sm" onClick={() => void download("docx")}>Export .docx</button>
@@ -870,6 +871,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
         <div className="ribbon">
           <button className="rb" title="Undo (Ctrl+Z)" disabled={!state?.canUndo} onClick={() => editor?.chain().focus().undo().run()}>↶</button>
           <button className="rb" title="Redo (Ctrl+Y)" disabled={!state?.canRedo} onClick={() => editor?.chain().focus().redo().run()}>↷</button>
+          <button className="rb" title="Print / PDF (Ctrl+P)" onClick={print}>🖨</button>
+          <div className="rb-sep" />
+          <ZoomDrop zoom={zoom} onZoom={setZoom} />
           <div className="rb-sep" />
           <select className="rb-sel" value={state?.block ?? "p"} onChange={(e) => setBlock(e.target.value)} title="Style">
             <option value="p">Normal</option>
@@ -884,12 +888,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <button className={`rb ${state?.italic ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
           <button className={`rb ${state?.underline ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
           <button className={`rb ${state?.strike ? "on" : ""}`} title="Strikethrough" onClick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
-          <button className={`rb ${state?.code ? "on" : ""}`} title="Inline code" onClick={() => editor?.chain().focus().toggleCode().run()}>{"</>"}</button>
           {editor && <ColorSwatch editor={editor} kind="color" current={state?.color ?? ""} />}
           {editor && <ColorSwatch editor={editor} kind="highlight" current={state?.bgColor ?? ""} />}
           <div className="rb-sep" />
-          <button className={`rb ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
-          <button className={`rb ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
+          <button className={`rb ${state?.link ? "on" : ""}`} title="Link (Ctrl+K)" onClick={insertLink}>🔗</button>
+          <button className="rb" title="Add comment" onClick={startComment}>💬</button>
+          <button className="rb" title="Insert image" onClick={() => imageRef.current?.click()}>🖼</button>
+          <button className="rb" title="Insert table" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</button>
           <div className="rb-sep" />
           {(["left", "center", "right", "justify"] as const).map((a) => (
             <button key={a} className={`rb ${state?.align === a ? "on" : ""}`} title={`Align ${a}`}
@@ -898,26 +903,26 @@ export function WriterEditor({ item, initialDoc, permission }: {
             </button>
           ))}
           {editor && <LineSpacingDrop editor={editor} />}
-          <button className="rb" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
-          <button className="rb" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
-          <div className="rb-sep" />
+          <button className={`rb ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
           <button className={`rb ${state?.bullet ? "on" : ""}`} title="Bullet list" onClick={() => editor?.chain().focus().toggleBulletList().run()}>•≡</button>
           <button className={`rb ${state?.ordered ? "on" : ""}`} title="Numbered list" onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1≡</button>
-          <button className={`rb ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
+          <button className="rb" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
+          <button className="rb" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
           <div className="rb-sep" />
-          <button className={`rb ${state?.link ? "on" : ""}`} title="Link (Ctrl+K)" onClick={insertLink}>🔗</button>
-          <button className="rb" title="Insert table" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</button>
-          <button className="rb" title="Insert image" onClick={() => imageRef.current?.click()}>🖼</button>
-          <button className="rb" title="Page break (Ctrl+Enter)" onClick={() => editor?.chain().focus().setPageBreak().run()}>⏎</button>
+          <button className={`rb ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
+          <button className={`rb ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
+          <button className={`rb ${state?.code ? "on" : ""}`} title="Inline code" onClick={() => editor?.chain().focus().toggleCode().run()}>{"</>"}</button>
           <button className="rb" title="Inline math" onClick={() => editor?.chain().focus().insertInlineMath({ latex: "" }).run()}>∑</button>
+          <button className="rb" title="Page break (Ctrl+Enter)" onClick={() => editor?.chain().focus().setPageBreak().run()}>⏎</button>
           <button className="rb" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
-          <div className="rb-sep" />
-          <button className="rb" title="Add comment" onClick={startComment}>💬</button>
-          <span style={{ marginLeft: "auto", fontSize: 10, color: "#A19A95", cursor: "pointer" }}
-            role="button" tabIndex={0} title="Word count"
-            onClick={() => setWordCountOpen(true)} onKeyDown={(e) => e.key === "Enter" && setWordCountOpen(true)}>
-            {state?.words ?? 0} words
-          </span>
+          <div className="ribbon-end">
+            {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
+            {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode} />}
+            <span className="word-count" role="button" tabIndex={0} title="Word count"
+              onClick={() => setWordCountOpen(true)} onKeyDown={(e) => e.key === "Enter" && setWordCountOpen(true)}>
+              {state?.words ?? 0} words
+            </span>
+          </div>
         </div>
       )}
 
@@ -957,8 +962,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ))}
           </div>
         )}
-        <div className="doc-page">
-          <EditorContent editor={editor} />
+        <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
+          {editor && <Ruler editor={editor} />}
+          <div className="doc-page">
+            <EditorContent editor={editor} />
+          </div>
         </div>
       </div>
 

@@ -111,6 +111,25 @@ export function ColorSwatch({ editor, kind, current }: { editor: Editor; kind: "
   );
 }
 
+const ZOOMS = [50, 75, 90, 100, 125, 150, 200];
+
+export function ZoomDrop({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
+  return (
+    <Drop title="Zoom" label={<span>{zoom}%</span>}>
+      {(close) => (
+        <>
+          {ZOOMS.map((z) => (
+            <button key={z} className={`menu-li ${z === zoom ? "font-opt on" : ""}`}
+              onClick={() => { onZoom(z); close(); }}>{z}%</button>
+          ))}
+          <div className="menu-divider" />
+          <button className="menu-li" onClick={() => { onZoom(100); close(); }}>Reset (100%)</button>
+        </>
+      )}
+    </Drop>
+  );
+}
+
 export function LineSpacingDrop({ editor }: { editor: Editor }) {
   return (
     <Drop title="Line & paragraph spacing" label="↕≡">
