@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { db } from "../db.js";
+import { q as dbq } from "../db.js";
 import { toDriveItem, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, type AuthedRequest } from "../auth.js";
 import { indexBody } from "../indexer.js";
@@ -33,23 +33,22 @@ export function searchRoutes(app: FastifyInstance) {
     const terms = q.trim().toLowerCase().split(/\s+/);
     const needle = q.trim().toLowerCase();
 
-    const rows = db
-      .prepare(
-        `SELECT DISTINCT i.* FROM items i
-         LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = :uid
-         WHERE i.trashed = 0 AND (i.owner_id = :uid OR s.user_id IS NOT NULL)
-         ORDER BY i.updated_at DESC`,
-      )
-      .all({ uid: user.id }) as ItemRow[];
+    const rows = await dbq<ItemRow>(
+      `SELECT DISTINCT i.* FROM items i
+       LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = $1
+       WHERE i.trashed = false AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+       ORDER BY i.updated_at DESC`,
+      [user.id],
+    );
 
-    type ResultItem = ReturnType<typeof toDriveItem> & { match: "name" | "content"; snippet?: string };
+    type ResultItem = Awaited<ReturnType<typeof toDriveItem>> & { match: "name" | "content"; snippet?: string };
     const items: ResultItem[] = [];
     const contentQueue: ItemRow[] = [];
 
     for (const r of rows) {
-      const name = toDriveItem(r).name; // decrypted
+      const name = (await toDriveItem(r)).name; // decrypted
       if (terms.every((t) => name.toLowerCase().includes(t))) {
-        items.push({ ...toDriveItem(r, permissionFor(user.id, r) ?? undefined), match: "name" });
+        items.push({ ...(await toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined)), match: "name" });
         if (items.length >= 15) break;
       } else {
         contentQueue.push(r);
@@ -60,14 +59,14 @@ export function searchRoutes(app: FastifyInstance) {
     for (const r of contentQueue) {
       if (items.length >= 30) break;
       if (seen.has(r.id)) continue;
-      const body = indexBody(r.id);
+      const body = await indexBody(r.id);
       if (!body) continue;
       const lower = body.toLowerCase();
       if (!terms.every((t) => lower.includes(t))) continue;
       const pos = Math.max(0, lower.indexOf(needle) !== -1 ? lower.indexOf(needle) : lower.indexOf(terms[0]));
       seen.add(r.id);
       items.push({
-        ...toDriveItem(r, permissionFor(user.id, r) ?? undefined),
+        ...(await toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined)),
         match: "content",
         snippet: snippet(body, terms, pos),
       });

@@ -2,7 +2,7 @@
 // (plus PDF body text server-side via pdf.js) and stores it in search_index.
 // Bodies are AES-256-GCM encrypted when KREATIX_DATA_KEY is set; matching runs
 // JS-side over permission-scoped candidates in routes/search.ts.
-import { db } from "./db.js";
+import { q, one, run } from "./db.js";
 import { getBlob } from "./blobs.js";
 import { encryptField, decryptField } from "./crypto.js";
 
@@ -79,9 +79,10 @@ async function extractPdfText(pdfBytes: Buffer): Promise<string> {
 export async function indexFile(fileId: string, kind: string, content: unknown) {
   let body = extractText(kind, content);
   if (kind === "pdf") {
-    const v1 = db
-      .prepare("SELECT blob_key FROM versions WHERE file_id = ? ORDER BY number ASC LIMIT 1")
-      .get(fileId) as { blob_key: string } | undefined;
+    const v1 = await one<{ blob_key: string }>(
+      "SELECT blob_key FROM versions WHERE file_id = $1 ORDER BY number ASC LIMIT 1",
+      [fileId],
+    );
     const raw = v1 && getBlob(v1.blob_key);
     if (raw && raw.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
       try {
@@ -91,31 +92,32 @@ export async function indexFile(fileId: string, kind: string, content: unknown) 
       }
     }
   }
-  db.prepare("DELETE FROM search_index WHERE file_id = ?").run(fileId);
+  await run("DELETE FROM search_index WHERE file_id = $1", [fileId]);
   if (body.trim()) {
-    db.prepare("INSERT INTO search_index (file_id, body) VALUES (?,?)").run(fileId, encryptField(body)!);
+    await run("INSERT INTO search_index (file_id, body) VALUES ($1,$2)", [fileId, encryptField(body)!]);
   }
 }
 
 export function deindexFile(fileId: string) {
-  db.prepare("DELETE FROM search_index WHERE file_id = ?").run(fileId);
+  return run("DELETE FROM search_index WHERE file_id = $1", [fileId]);
 }
 
 /** Decrypted index body for a file (used by search + DLP checks). */
-export function indexBody(fileId: string): string {
-  const row = db.prepare("SELECT body FROM search_index WHERE file_id = ?").get(fileId) as
-    | { body: string }
-    | undefined;
+export async function indexBody(fileId: string): Promise<string> {
+  const row = await one<{ body: string }>(
+    "SELECT body FROM search_index WHERE file_id = $1",
+    [fileId],
+  );
   return decryptField(row?.body ?? null) ?? "";
 }
 
 /** One-shot backfill — index every file's head version. Called at boot. */
 export async function reindexAll() {
-  const items = db.prepare("SELECT id, kind FROM items").all() as { id: string; kind: string }[];
-  const head = db.prepare("SELECT blob_key FROM versions WHERE file_id = ? ORDER BY number DESC LIMIT 1");
+  const items = await q<{ id: string; kind: string }>("SELECT id, kind FROM items");
+  const headSql = "SELECT blob_key FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1";
   let n = 0;
   for (const item of items) {
-    const v = head.get(item.id) as { blob_key: string } | undefined;
+    const v = await one<{ blob_key: string }>(headSql, [item.id]);
     const blob = v && getBlob(v.blob_key);
     if (!blob) continue;
     let content: unknown = null;

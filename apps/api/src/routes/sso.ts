@@ -11,7 +11,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { db, now } from "../db.js";
+import { one, run, now } from "../db.js";
 import { initials, signToken, type UserRow } from "../auth.js";
 
 const ISSUER = process.env.KREATIX_OIDC_ISSUER?.replace(/\/$/, "");
@@ -111,18 +111,19 @@ export function ssoRoutes(app: FastifyInstance) {
       }
       const name = String(payload.name ?? payload.preferred_username ?? email.split("@")[0]);
 
-      let row = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as UserRow | undefined;
+      let row = await one<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
       if (!row) {
         // first SSO login → new user in their own workspace org (same as register)
         const orgId = randomUUID();
         const userId = randomUUID();
-        db.prepare("INSERT INTO orgs (id, name, created_at) VALUES (?,?,?)").run(
+        await run("INSERT INTO orgs (id, name, created_at) VALUES ($1,$2,$3)", [
           orgId, `${name}'s workspace`, now(),
+        ]);
+        await run(
+          "INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+          [userId, orgId, email, `sso:${randomUUID()}`, name, initials(name), "owner", now()],
         );
-        db.prepare(
-          "INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        ).run(userId, orgId, email, `sso:${randomUUID()}`, name, initials(name), "owner", now());
-        row = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow;
+        row = (await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!;
       }
       const token = await signToken(row.id);
       // Hand the token to the SPA via a short-lived, single-purpose HttpOnly

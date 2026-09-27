@@ -5,7 +5,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { db } from "../db.js";
+import { q, one, run } from "../db.js";
 import { getItem, logActivity } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -138,20 +138,20 @@ export function aiRoutes(app: FastifyInstance) {
   interface Prepared {
     user: AuthedRequest["user"];
     body: z.infer<typeof chatSchema>;
-    item: NonNullable<ReturnType<typeof getItem>>;
+    item: NonNullable<Awaited<ReturnType<typeof getItem>>>;
     lastUser: { role: "user" | "assistant"; content: string };
     messages: { role: string; content: string }[];
   }
 
   /** Shared auth/rate-limit/permission/prompt assembly for both chat endpoints. */
-  function prepare(req: FastifyRequest, reply: FastifyReply): Prepared | null {
+  async function prepare(req: FastifyRequest, reply: FastifyReply): Promise<Prepared | null> {
     const { user } = req as AuthedRequest;
     if (!AI_KEY) { reply.code(503).send({ error: "ai_disabled", message: "AI is not configured on this server" }); return null; }
     if (!rateOk(user.id)) { reply.code(429).send({ error: "rate_limited", message: "Too many AI requests — slow down" }); return null; }
     const body = chatSchema.parse(req.body);
-    const item = getItem(body.fileId);
+    const item = await getItem(body.fileId);
     const need = body.mode === "edit" || body.mode === "plan" ? "editor" : "viewer";
-    if (!item || !hasPermission(permissionFor(user.id, item), need)) {
+    if (!item || !hasPermission(await permissionFor(user.id, item), need)) {
       reply.code(need === "editor" ? 403 : 404).send({ error: "forbidden", message: need === "editor" ? "Edit access required for Edit/Plan modes" : "File not found" });
       return null;
     }
@@ -169,7 +169,7 @@ export function aiRoutes(app: FastifyInstance) {
   }
 
   /** Parse + validate model output and record provenance. */
-  function finalize(p: Prepared, raw: string) {
+  async function finalize(p: Prepared, raw: string) {
     const parsed = extractJson(raw) ?? { reply: raw };
     const replyText = typeof parsed.reply === "string" ? parsed.reply.slice(0, 8000) : "(no reply)";
     const plan = Array.isArray(parsed.plan) ? (parsed.plan as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 20) : undefined;
@@ -184,11 +184,12 @@ export function aiRoutes(app: FastifyInstance) {
     }
 
     const actionId = randomUUID();
-    db.prepare(
-      "INSERT INTO ai_actions (id, file_id, user_id, mode, prompt, ops, applied, created_at) VALUES (?,?,?,?,?,?,0,?)",
-    ).run(actionId, p.item.id, p.user.id, p.body.mode, encryptField(p.lastUser.content.slice(0, 2000)),
-      ops.length ? encryptField(JSON.stringify(ops)) : null, new Date().toISOString());
-    logActivity(p.user.orgId, p.user.id, p.item.id, "ai-chat", `${p.body.mode}: ${p.lastUser.content.slice(0, 80)}`);
+    await run(
+      "INSERT INTO ai_actions (id, file_id, user_id, mode, prompt, ops, applied, created_at) VALUES ($1,$2,$3,$4,$5,$6,false,$7)",
+      [actionId, p.item.id, p.user.id, p.body.mode, encryptField(p.lastUser.content.slice(0, 2000)),
+       ops.length ? encryptField(JSON.stringify(ops)) : null, new Date().toISOString()],
+    );
+    void logActivity(p.user.orgId, p.user.id, p.item.id, "ai-chat", `${p.body.mode}: ${p.lastUser.content.slice(0, 80)}`);
     return { actionId, reply: replyText, plan, ops };
   }
 
@@ -196,7 +197,7 @@ export function aiRoutes(app: FastifyInstance) {
     JSON.stringify({ model: AI_MODEL, messages, temperature: 0.2, max_tokens: 3000, stream });
 
   app.post("/api/ai/chat", async (req, reply) => {
-    const p = prepare(req, reply);
+    const p = await prepare(req, reply);
     if (!p) return;
 
     let raw: string;
@@ -220,11 +221,12 @@ export function aiRoutes(app: FastifyInstance) {
     return finalize(p, raw);
   });
 
+
   /** Streaming variant — SSE deltas forwarded as they arrive, then a final
    *  validated result event. Wire format: `data: {"t":"token"}` lines and a
    *  closing `data: {"done":true,...}`. */
   app.post("/api/ai/chat/stream", async (req, reply) => {
-    const p = prepare(req, reply);
+    const p = await prepare(req, reply);
     if (!p) return;
 
     reply.hijack();
@@ -278,9 +280,9 @@ export function aiRoutes(app: FastifyInstance) {
           } catch { /* partial/non-data line */ }
         }
       }
-      send({ done: true, ...finalize(p, raw) });
+      send({ done: true, ...(await finalize(p, raw)) });
     } catch (e) {
-      if (raw) send({ done: true, ...finalize(p, raw) });
+      if (raw) send({ done: true, ...(await finalize(p, raw)) });
       else send({ error: `AI stream failed: ${(e as Error).message.slice(0, 120)}` });
     }
     done();
@@ -290,28 +292,30 @@ export function aiRoutes(app: FastifyInstance) {
   app.post("/api/ai/applied", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { actionId } = z.object({ actionId: z.string() }).parse(req.body);
-    const row = db.prepare("SELECT id, file_id FROM ai_actions WHERE id = ?").get(actionId) as { id: string; file_id: string } | undefined;
+    const row = await one<{ id: string; file_id: string }>(
+      "SELECT id, file_id FROM ai_actions WHERE id = $1", [actionId]);
     if (!row) return reply.code(404).send({ error: "not_found" });
-    const item = getItem(row.file_id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "editor")) {
+    const item = await getItem(row.file_id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden" });
     }
-    db.prepare("UPDATE ai_actions SET applied = 1 WHERE id = ?").run(actionId);
+    await run("UPDATE ai_actions SET applied = true WHERE id = $1", [actionId]);
     return { ok: true };
   });
 
   /** AI action history for a file (provenance panel) */
   app.get("/api/files/:id/ai/actions", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const rows = db.prepare(
+    const rows = await q<{ id: string; mode: string; prompt: string; ops: string | null; applied: boolean; created_at: string; display_name: string }>(
       `SELECT a.id, a.mode, a.prompt, a.ops, a.applied, a.created_at, u.display_name
        FROM ai_actions a JOIN users u ON u.id = a.user_id
-       WHERE a.file_id = ? ORDER BY a.created_at DESC LIMIT 30`,
-    ).all(item.id) as { id: string; mode: string; prompt: string; ops: string | null; applied: number; created_at: string; display_name: string }[];
+       WHERE a.file_id = $1 ORDER BY a.created_at DESC LIMIT 30`,
+      [item.id],
+    );
     return {
       actions: rows.map((r) => {
         const prompt = decryptField(r.prompt) ?? "";

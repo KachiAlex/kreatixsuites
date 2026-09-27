@@ -3,11 +3,32 @@
 # reverse proxy or directly on an IP. For managed TLS with a domain:
 #   SITE_ADDRESS=suite.example.com docker compose --profile tls up -d
 services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=kreatix
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set in .env}
+      - POSTGRES_DB=kreatix
+    volumes:
+      - kreatix-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kreatix -d kreatix"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    # internal-only — never published to the host
+
   app:
     build: .
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       - JWT_SECRET=${JWT_SECRET:?set in .env}
+      - KREATIX_DATABASE_URL=postgres://kreatix:${POSTGRES_PASSWORD}@db:5432/kreatix
+      - KREATIX_DATA_DIR=/data
       - PORT=3001
       # optional config — empty values are ignored by the app
       - KREATIX_DATA_KEY=${KREATIX_DATA_KEY:-}
@@ -41,5 +62,6 @@ services:
 
 volumes:
   kreatix-data:
+  kreatix-pgdata:
   caddy-data:
   caddy-config:

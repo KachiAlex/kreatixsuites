@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { db, now } from "../db.js";
+import { q as dbq, run, now } from "../db.js";
 import { getItem, toDriveItem, touchItem, logActivity, itemName, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob } from "../blobs.js";
@@ -97,37 +97,45 @@ export function driveRoutes(app: FastifyInstance) {
     let rows: ItemRow[];
     const base = `
       SELECT DISTINCT i.* FROM items i
-      LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = :uid`;
+      LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = $1`;
 
     if (q.parent !== undefined) {
-      rows = db
-        .prepare(`${base} WHERE i.trashed = 0 AND (i.owner_id = :uid OR s.user_id IS NOT NULL)
-                  AND i.parent_id IS :parent ORDER BY i.kind = 'folder' DESC, i.name`)
-        .all({ uid: user.id, parent: q.parent === "" ? null : q.parent }) as ItemRow[];
+      // IS NOT DISTINCT FROM — null-safe equality (parent_id IS NULL at root)
+      rows = await dbq<ItemRow>(
+        `${base} WHERE i.trashed = false AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+         AND i.parent_id IS NOT DISTINCT FROM $2`,
+        [user.id, q.parent === "" ? null : q.parent],
+      );
     } else if (q.view === "starred") {
-      rows = db
-        .prepare(`${base} WHERE i.trashed = 0 AND i.starred = 1 AND (i.owner_id = :uid OR s.user_id IS NOT NULL)
-                  ORDER BY i.updated_at DESC`)
-        .all({ uid: user.id }) as ItemRow[];
+      rows = await dbq<ItemRow>(
+        `${base} WHERE i.trashed = false AND i.starred AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+         ORDER BY i.updated_at DESC`,
+        [user.id],
+      );
     } else if (q.view === "shared") {
-      rows = db
-        .prepare(`SELECT i.* FROM items i JOIN shares s ON s.file_id = i.id
-                  WHERE s.user_id = ? AND i.trashed = 0 ORDER BY i.updated_at DESC`)
-        .all(user.id) as ItemRow[];
+      rows = await dbq<ItemRow>(
+        `SELECT i.* FROM items i JOIN shares s ON s.file_id = i.id
+         WHERE s.user_id = $1 AND i.trashed = false ORDER BY i.updated_at DESC`,
+        [user.id],
+      );
     } else if (q.view === "trash") {
-      rows = db
-        .prepare("SELECT * FROM items WHERE owner_id = ? AND trashed = 1 ORDER BY updated_at DESC")
-        .all(user.id) as ItemRow[];
+      rows = await dbq<ItemRow>(
+        "SELECT * FROM items WHERE owner_id = $1 AND trashed ORDER BY updated_at DESC",
+        [user.id],
+      );
     } else {
       // home + recent: items I own or that are shared with me
       const limit = q.view === "home" ? 8 : 50;
-      rows = db
-        .prepare(`${base} WHERE i.trashed = 0 AND i.kind != 'folder' AND (i.owner_id = :uid OR s.user_id IS NOT NULL)
-                  ORDER BY i.updated_at DESC LIMIT ${limit}`)
-        .all({ uid: user.id }) as ItemRow[];
+      rows = await dbq<ItemRow>(
+        `${base} WHERE i.trashed = false AND i.kind != 'folder' AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+         ORDER BY i.updated_at DESC LIMIT ${limit}`,
+        [user.id],
+      );
     }
 
-    const items = rows.map((r) => toDriveItem(r, permissionFor(user.id, r) ?? undefined));
+    const items = await Promise.all(
+      rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined)),
+    );
     // names are encrypted at rest — ciphertext can't sort in SQL, so folder
     // browsing re-sorts on the decrypted name
     if (q.parent !== undefined) {
@@ -142,12 +150,12 @@ export function driveRoutes(app: FastifyInstance) {
 
   app.get("/api/drive/:id", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const owner = db.prepare("SELECT display_name FROM users WHERE id = ?").get(item.owner_id) as { display_name: string } | undefined;
-    return { item: { ...toDriveItem(item, permissionFor(user.id, item) ?? undefined), ownerName: owner?.display_name } };
+    const owner = await dbq<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [item.owner_id]);
+    return { item: { ...(await toDriveItem(item, (await permissionFor(user.id, item)) ?? undefined)), ownerName: owner[0]?.display_name } };
   });
 
   app.post("/api/drive", async (req, reply) => {
@@ -156,32 +164,32 @@ export function driveRoutes(app: FastifyInstance) {
     const id = randomUUID();
 
     if (body.parentId) {
-      const parent = getItem(body.parentId);
-      if (!parent || parent.kind !== "folder" || !hasPermission(permissionFor(user.id, parent), "editor")) {
+      const parent = await getItem(body.parentId);
+      if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
         return reply.code(403).send({ error: "forbidden", message: "Cannot create in this folder" });
       }
     }
 
-    db.prepare(
+    await run(
       `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      id, user.orgId, body.parentId ?? null, user.id, encryptField(body.name), body.kind,
-      `application/x-kreatix-${body.kind}`, now(), now(),
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, user.orgId, body.parentId ?? null, user.id, encryptField(body.name), body.kind,
+       `application/x-kreatix-${body.kind}`, now(), now()],
     );
 
     // Seed initial immutable version for suite-native docs (SRS §19)
     const doc = DEFAULT_DOCS[body.kind];
     if (doc) {
       const { key, size } = putBlob(Buffer.from(JSON.stringify(doc)));
-      db.prepare(
-        "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
-      ).run(randomUUID(), id, 1, "Initial version", key, size, user.id, now());
-      db.prepare("UPDATE items SET size = ? WHERE id = ?").run(size, id);
+      await run(
+        "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        [randomUUID(), id, 1, "Initial version", key, size, user.id, now()],
+      );
+      await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
     }
 
-    logActivity(user.orgId, user.id, id, "create", body.name);
-    return { item: toDriveItem(getItem(id)!, "owner") };
+    await logActivity(user.orgId, user.id, id, "create", body.name);
+    return { item: await toDriveItem((await getItem(id))!, "owner") };
   });
 
   /** Binary upload (PDFs, office files, media): raw body + ?name=&parent= */
@@ -205,13 +213,13 @@ export function driveRoutes(app: FastifyInstance) {
     }
     const sniff = sniffReject(buf, ext);
     if (sniff) {
-      logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${sniff}`);
+      void logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${sniff}`);
       return reply.code(415).send({ error: "blocked_file_type", message: `Upload rejected: ${sniff}` });
     }
     if (SCAN_CMD) {
       const verdict = await scanBuffer(buf, name ?? "upload");
       if (verdict !== null) {
-        logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${verdict}`);
+        void logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${verdict}`);
         return reply.code(415).send({ error: "upload_rejected", message: `Upload rejected by scanner: ${verdict}` });
       }
     }
@@ -224,66 +232,69 @@ export function driveRoutes(app: FastifyInstance) {
     const id = randomUUID();
     const { key, size } = putBlob(buf);
 
-    db.prepare(
+    await run(
       `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).run(id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
-      (req.headers["content-type"] as string) ?? "application/octet-stream", size, now(), now());
-    db.prepare(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(randomUUID(), id, 1, "Initial upload", key, size, user.id, now());
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
+       (req.headers["content-type"] as string) ?? "application/octet-stream", size, now(), now()],
+    );
+    await run(
+      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [randomUUID(), id, 1, "Initial upload", key, size, user.id, now()],
+    );
 
-    logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
+    void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
     // index PDF uploads immediately (body text + later annotation text)
     if (fileKind === "pdf") void indexFile(id, "pdf", null).catch(() => {});
-    return { item: toDriveItem(getItem(id)!, "owner") };
+    return { item: await toDriveItem((await getItem(id))!, "owner") };
   });
 
   app.patch("/api/drive/:id", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "editor")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
     const body = patchSchema.parse(req.body);
-    db.prepare(
-      `UPDATE items SET name = COALESCE(?, name), starred = COALESCE(?, starred),
-       label = COALESCE(?, label),
-       parent_id = CASE WHEN ? THEN ? ELSE parent_id END, updated_at = ? WHERE id = ?`,
-    ).run(
-      body.name === undefined ? null : encryptField(body.name),
-      body.starred === undefined ? null : body.starred ? 1 : 0,
-      body.label ?? null,
-      body.parentId !== undefined ? 1 : 0, body.parentId ?? null, now(), item.id,
+    await run(
+      `UPDATE items SET name = COALESCE($1, name), starred = COALESCE($2, starred),
+       label = COALESCE($3, label),
+       parent_id = CASE WHEN $4 THEN $5 ELSE parent_id END, updated_at = $6 WHERE id = $7`,
+      [
+        body.name === undefined ? null : encryptField(body.name),
+        body.starred === undefined ? null : body.starred,
+        body.label ?? null,
+        body.parentId !== undefined, body.parentId ?? null, now(), item.id,
+      ],
     );
-    if (body.label) logActivity(user.orgId, user.id, item.id, "label", body.label);
-    return { item: toDriveItem(getItem(item.id)!, permissionFor(user.id, item) ?? undefined) };
+    if (body.label) void logActivity(user.orgId, user.id, item.id, "label", body.label);
+    return { item: await toDriveItem((await getItem(item.id))!, (await permissionFor(user.id, item)) ?? undefined) };
   });
 
   app.delete("/api/drive/:id", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
+    const item = await getItem((req.params as { id: string }).id);
     if (!item || item.owner_id !== user.id) {
       return reply.code(403).send({ error: "forbidden", message: "Only the owner can delete" });
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
-      purgeItem(item.id);
-      logActivity(user.orgId, user.id, item.id, "delete-permanent", itemName(item));
+      await purgeItem(item.id);
+      void logActivity(user.orgId, user.id, item.id, "delete-permanent", itemName(item));
       return { ok: true };
     }
-    db.prepare("UPDATE items SET trashed = 1, updated_at = ? WHERE id = ?").run(now(), item.id);
-    logActivity(user.orgId, user.id, item.id, "trash", itemName(item));
+    await run("UPDATE items SET trashed = true, updated_at = $1 WHERE id = $2", [now(), item.id]);
+    void logActivity(user.orgId, user.id, item.id, "trash", itemName(item));
     return { ok: true };
   });
 
   app.post("/api/drive/:id/restore", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
+    const item = await getItem((req.params as { id: string }).id);
     if (!item || item.owner_id !== user.id) {
       return reply.code(403).send({ error: "forbidden" });
     }
-    db.prepare("UPDATE items SET trashed = 0, updated_at = ? WHERE id = ?").run(now(), item.id);
-    return { item: toDriveItem(getItem(item.id)!, "owner") };
+    await run("UPDATE items SET trashed = false, updated_at = $1 WHERE id = $2", [now(), item.id]);
+    return { item: await toDriveItem((await getItem(item.id))!, "owner") };
   });
 }
 

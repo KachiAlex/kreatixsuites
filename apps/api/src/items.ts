@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db, now } from "./db.js";
+import { q, one, run, now } from "./db.js";
 import { encryptField, decryptField } from "./crypto.js";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 
@@ -12,15 +12,15 @@ export interface ItemRow {
   kind: FileKind;
   mime: string;
   size: number;
-  starred: number;
-  trashed: number;
+  starred: boolean;
+  trashed: boolean;
   label: string;
   created_at: string;
   updated_at: string;
 }
 
-export function getItem(id: string): ItemRow | undefined {
-  return db.prepare("SELECT * FROM items WHERE id = ?").get(id) as ItemRow | undefined;
+export function getItem(id: string): Promise<ItemRow | undefined> {
+  return one<ItemRow>("SELECT * FROM items WHERE id = $1", [id]);
 }
 
 /** Decrypt an item's stored name (plaintext passthrough when key unset). */
@@ -28,13 +28,12 @@ export function itemName(row: { name: string }): string {
   return decryptField(row.name) ?? row.name;
 }
 
-export function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]): DriveItem {
-  const collaborators = db
-    .prepare(
-      `SELECT u.initials, u.display_name FROM shares s JOIN users u ON u.id = s.user_id
-       WHERE s.file_id = ? LIMIT 4`,
-    )
-    .all(row.id) as { initials: string; display_name: string }[];
+export async function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]): Promise<DriveItem> {
+  const collaborators = await q<{ initials: string; display_name: string }>(
+    `SELECT u.initials, u.display_name FROM shares s JOIN users u ON u.id = s.user_id
+     WHERE s.file_id = $1 LIMIT 4`,
+    [row.id],
+  );
   return {
     id: row.id,
     orgId: row.org_id,
@@ -55,11 +54,12 @@ export function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]):
 }
 
 export function touchItem(id: string) {
-  db.prepare("UPDATE items SET updated_at = ? WHERE id = ?").run(now(), id);
+  return run("UPDATE items SET updated_at = $1 WHERE id = $2", [now(), id]);
 }
 
 export function logActivity(orgId: string, actorId: string, fileId: string | null, action: string, detail?: string) {
-  db.prepare(
-    "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, created_at) VALUES (?,?,?,?,?,?,?)",
-  ).run(randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), now());
+  return run(
+    "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+    [randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), now()],
+  );
 }

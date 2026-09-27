@@ -16,11 +16,13 @@ import { adminRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
 import { onResponseMetric } from "./metrics.js";
+import { migrate } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
 
 async function main() {
+  await migrate(); // Postgres schema — idempotent, auto-creates the database
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
   await app.register(cors, { origin: true, credentials: true });
@@ -89,10 +91,9 @@ async function main() {
 
   // trash-retention sweep: at boot, then daily
   const sweep = () => {
-    try {
-      const purged = sweepRetention();
-      if (purged) app.log.info({ purged }, "retention sweep purged trashed items");
-    } catch (e) { app.log.warn(e, "retention sweep failed"); }
+    sweepRetention()
+      .then((purged) => { if (purged) app.log.info({ purged }, "retention sweep purged trashed items"); })
+      .catch((e) => app.log.warn(e, "retention sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

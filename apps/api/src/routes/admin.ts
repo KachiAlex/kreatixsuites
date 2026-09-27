@@ -2,7 +2,7 @@
 // All endpoints require owner or admin role.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { db } from "../db.js";
+import { q as dbq, one, run } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
@@ -33,9 +33,10 @@ export function adminRoutes(app: FastifyInstance) {
   /** Org members (role management lives here) */
   app.get("/api/admin/members", async (req) => {
     const { user } = req as AuthedRequest;
-    const rows = db
-      .prepare("SELECT id, email, display_name, initials, role, created_at FROM users WHERE org_id = ? ORDER BY created_at")
-      .all(user.orgId) as UserRow[];
+    const rows = await dbq<UserRow>(
+      "SELECT id, email, display_name, initials, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
+      [user.orgId],
+    );
     return {
       members: rows.map((u) => ({
         id: u.id, email: u.email, displayName: u.display_name,
@@ -47,9 +48,10 @@ export function adminRoutes(app: FastifyInstance) {
   /** Change a member's role (cannot change your own, owner role is immutable here) */
   app.patch("/api/admin/members/:id", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const target = db
-      .prepare("SELECT * FROM users WHERE id = ? AND org_id = ?")
-      .get((req.params as { id: string }).id, user.orgId) as UserRow | undefined;
+    const target = await one<UserRow>(
+      "SELECT * FROM users WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId],
+    );
     if (!target) return reply.code(404).send({ error: "not_found" });
     if (target.id === user.id) {
       return reply.code(400).send({ error: "bad_request", message: "Cannot change your own role" });
@@ -58,20 +60,20 @@ export function adminRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Cannot change the owner's role" });
     }
     const { role } = roleSchema.parse(req.body);
-    db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, target.id);
+    await run("UPDATE users SET role = $1 WHERE id = $2", [role, target.id]);
     return { ok: true, role };
   });
 
   /** Org policies (DLP + retention) */
   app.get("/api/admin/policies", async (req) => {
     const { user } = req as AuthedRequest;
-    return { policies: getPolicies(user.orgId), encryptionAtRest: encryptionEnabled() };
+    return { policies: await getPolicies(user.orgId), encryptionAtRest: encryptionEnabled() };
   });
 
   app.put("/api/admin/policies", async (req) => {
     const { user } = req as AuthedRequest;
     const patch = policiesSchema.parse(req.body);
-    return { policies: setPolicies(user.orgId, patch) };
+    return { policies: await setPolicies(user.orgId, patch) };
   });
 
   /**
@@ -82,27 +84,20 @@ export function adminRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const q = req.query as { action?: string; user?: string; file?: string; limit?: string };
     const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 500);
-    const rows = db
-      .prepare(
-        `SELECT a.id, a.action, a.detail, a.created_at,
-                u.display_name AS actor_name, u.email AS actor_email,
-                i.name AS file_name, a.file_id
-         FROM activity a
-         LEFT JOIN users u ON u.id = a.actor_id
-         LEFT JOIN items i ON i.id = a.file_id
-         WHERE a.org_id = :org
-           AND (:action IS NULL OR a.action LIKE :action || '%')
-           AND (:user IS NULL OR a.actor_id = :user)
-           AND (:file IS NULL OR a.file_id = :file)
-         ORDER BY a.created_at DESC LIMIT :limit`,
-      )
-      .all({
-        org: user.orgId,
-        action: q.action || null,
-        user: q.user || null,
-        file: q.file || null,
-        limit,
-      }) as { detail: string | null; file_name: string | null }[];
+    const rows = await dbq<{ detail: string | null; file_name: string | null }>(
+      `SELECT a.id, a.action, a.detail, a.created_at,
+              u.display_name AS actor_name, u.email AS actor_email,
+              i.name AS file_name, a.file_id
+       FROM activity a
+       LEFT JOIN users u ON u.id = a.actor_id
+       LEFT JOIN items i ON i.id = a.file_id
+       WHERE a.org_id = $1
+         AND ($2::text IS NULL OR a.action LIKE $2 || '%')
+         AND ($3::text IS NULL OR a.actor_id = $3)
+         AND ($4::text IS NULL OR a.file_id = $4)
+       ORDER BY a.created_at DESC LIMIT $5`,
+      [user.orgId, q.action || null, q.user || null, q.file || null, limit],
+    );
     return {
       entries: rows.map((r) => ({
         ...r,
@@ -114,19 +109,19 @@ export function adminRoutes(app: FastifyInstance) {
 
   /** Observability: process + data + request stats (org admin only). */
   app.get("/api/admin/metrics", async () => {
-    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+    const count = async (sql: string) => ((await one<{ n: number }>(sql)) ?? { n: 0 }).n;
     return {
       uptimeSec: Math.floor((Date.now() - metrics.startedAt) / 1000),
       requests: { total: metrics.requests, errors5xx: metrics.errors, byStatus: metrics.byStatus },
       collab: { rooms: activeCollabRooms(), peers: collabPeers() },
       data: {
-        users: count("SELECT COUNT(*) n FROM users"),
-        items: count("SELECT COUNT(*) n FROM items"),
-        versions: count("SELECT COUNT(*) n FROM versions"),
-        comments: count("SELECT COUNT(*) n FROM comments"),
-        shareLinks: count("SELECT COUNT(*) n FROM share_links"),
-        aiActions: count("SELECT COUNT(*) n FROM ai_actions"),
-        indexRows: count("SELECT COUNT(*) n FROM search_index"),
+        users: await count("SELECT COUNT(*) n FROM users"),
+        items: await count("SELECT COUNT(*) n FROM items"),
+        versions: await count("SELECT COUNT(*) n FROM versions"),
+        comments: await count("SELECT COUNT(*) n FROM comments"),
+        shareLinks: await count("SELECT COUNT(*) n FROM share_links"),
+        aiActions: await count("SELECT COUNT(*) n FROM ai_actions"),
+        indexRows: await count("SELECT COUNT(*) n FROM search_index"),
       },
       security: { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled },
       memory: process.memoryUsage().heapUsed,

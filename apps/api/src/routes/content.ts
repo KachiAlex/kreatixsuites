@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { db, now } from "../db.js";
+import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
@@ -18,10 +18,8 @@ interface VersionRow {
   created_at: string;
 }
 
-function headVersion(fileId: string): VersionRow | undefined {
-  return db
-    .prepare("SELECT * FROM versions WHERE file_id = ? ORDER BY number DESC LIMIT 1")
-    .get(fileId) as VersionRow | undefined;
+function headVersion(fileId: string): Promise<VersionRow | undefined> {
+  return one<VersionRow>("SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [fileId]);
 }
 
 /** MIME types that must never execute in an origin-bearing context. */
@@ -52,11 +50,11 @@ export function contentRoutes(app: FastifyInstance) {
   /** GET current file content (head version blob) */
   app.get("/api/files/:id/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const v = headVersion(item.id);
+    const v = await headVersion(item.id);
     if (!v) return reply.code(404).send({ error: "not_found", message: "No content" });
     const blob = getBlob(v.blob_key);
     if (!blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
@@ -79,13 +77,14 @@ export function contentRoutes(app: FastifyInstance) {
    *  the document bytes even when later head versions hold annotation JSON. */
   app.get("/api/files/:id/raw", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const v = db
-      .prepare("SELECT * FROM versions WHERE file_id = ? ORDER BY number ASC LIMIT 1")
-      .get(item.id) as VersionRow | undefined;
+    const v = await one<VersionRow>(
+      "SELECT * FROM versions WHERE file_id = $1 ORDER BY number ASC LIMIT 1",
+      [item.id],
+    );
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
     return sendRawBlob(reply, item.mime, blob, itemName(item));
@@ -94,8 +93,8 @@ export function contentRoutes(app: FastifyInstance) {
   /** PUT new content — creates an immutable version (autosave calls this, debounced client-side) */
   app.put("/api/files/:id/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "editor")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
     const body = z
@@ -104,33 +103,33 @@ export function contentRoutes(app: FastifyInstance) {
     // Writes from outside a live collab session invalidate the persisted CRDT
     // state — the next session re-seeds from this canonical JSON.
     if ((req.query as { collab?: string }).collab !== "1") {
-      db.prepare("DELETE FROM collab_states WHERE file_id = ?").run(item.id);
+      await run("DELETE FROM collab_states WHERE file_id = $1", [item.id]);
     }
     const data = Buffer.from(JSON.stringify(body.content));
     const { key, size } = putBlob(data);
-    const next = (headVersion(item.id)?.number ?? 0) + 1;
+    const next = ((await headVersion(item.id))?.number ?? 0) + 1;
 
-    db.prepare(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now());
-    db.prepare("UPDATE items SET size = ? WHERE id = ?").run(size, item.id);
+    await run(
+      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now()],
+    );
+    await run("UPDATE items SET size = $1 WHERE id = $2", [size, item.id]);
     void indexFile(item.id, item.kind, body.content).catch(() => { /* best-effort */ });
-    touchItem(item.id);
+    void touchItem(item.id);
     return { version: next };
   });
 
   app.get("/api/files/:id/versions", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const item = getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const rows = db
-      .prepare(
-        `SELECT v.*, u.display_name, u.initials FROM versions v JOIN users u ON u.id = v.created_by
-         WHERE v.file_id = ? ORDER BY v.number DESC`,
-      )
-      .all(item.id) as (VersionRow & { display_name: string; initials: string })[];
+    const rows = await q<VersionRow & { display_name: string; initials: string }>(
+      `SELECT v.*, u.display_name, u.initials FROM versions v JOIN users u ON u.id = v.created_by
+       WHERE v.file_id = $1 ORDER BY v.number DESC`,
+      [item.id],
+    );
     return {
       versions: rows.map((v) => ({
         id: v.id, fileId: v.file_id, number: v.number, label: v.label,
@@ -142,13 +141,14 @@ export function contentRoutes(app: FastifyInstance) {
   app.get("/api/files/:id/versions/:n/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { id, n } = req.params as { id: string; n: string };
-    const item = getItem(id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "viewer")) {
+    const item = await getItem(id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const v = db
-      .prepare("SELECT * FROM versions WHERE file_id = ? AND number = ?")
-      .get(item.id, Number(n)) as VersionRow | undefined;
+    const v = await one<VersionRow>(
+      "SELECT * FROM versions WHERE file_id = $1 AND number = $2",
+      [item.id, Number(n)],
+    );
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
     try {
@@ -163,22 +163,24 @@ export function contentRoutes(app: FastifyInstance) {
   app.post("/api/files/:id/versions/:n/restore", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { id, n } = req.params as { id: string; n: string };
-    const item = getItem(id);
-    if (!item || !hasPermission(permissionFor(user.id, item), "editor")) {
+    const item = await getItem(id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden" });
     }
-    const v = db
-      .prepare("SELECT * FROM versions WHERE file_id = ? AND number = ?")
-      .get(item.id, Number(n)) as VersionRow | undefined;
+    const v = await one<VersionRow>(
+      "SELECT * FROM versions WHERE file_id = $1 AND number = $2",
+      [item.id, Number(n)],
+    );
     if (!v) return reply.code(404).send({ error: "not_found" });
     // restored content is canonical — clear live CRDT state so it re-seeds
-    db.prepare("DELETE FROM collab_states WHERE file_id = ?").run(item.id);
-    const next = (headVersion(item.id)?.number ?? 0) + 1;
-    db.prepare(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(randomUUID(), item.id, next, `Restored from v${v.number}`, v.blob_key, v.size, user.id, now());
-    touchItem(item.id);
-    logActivity(user.orgId, user.id, item.id, "restore-version", `v${v.number} → v${next}`);
+    await run("DELETE FROM collab_states WHERE file_id = $1", [item.id]);
+    const next = ((await headVersion(item.id))?.number ?? 0) + 1;
+    await run(
+      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [randomUUID(), item.id, next, `Restored from v${v.number}`, v.blob_key, v.size, user.id, now()],
+    );
+    void touchItem(item.id);
+    void logActivity(user.orgId, user.id, item.id, "restore-version", `v${v.number} → v${next}`);
     return { version: next };
   });
 }

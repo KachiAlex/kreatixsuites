@@ -18,7 +18,7 @@ interface WebSocket {
   close(code?: number, reason?: string): void;
   on(event: string, cb: (...args: never[]) => void): void;
 }
-import { db } from "./db.js";
+import { one, run } from "./db.js";
 import { permissionFor, hasPermission, type UserRow } from "./auth.js";
 
 const MSG_SYNC = 0;
@@ -52,17 +52,18 @@ const send = (ws: WebSocket, enc: encoding.Encoder) => {
 };
 
 function persistRoom(fileId: string, room: Room) {
-  db.prepare(
-    "INSERT INTO collab_states (file_id, state, updated_at) VALUES (?, ?, datetime('now')) " +
+  return run(
+    "INSERT INTO collab_states (file_id, state, updated_at) VALUES ($1, $2, now()) " +
     "ON CONFLICT(file_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
-  ).run(fileId, Buffer.from(Y.encodeStateAsUpdate(room.doc)));
+    [fileId, Buffer.from(Y.encodeStateAsUpdate(room.doc))],
+  );
 }
 
-function getRoom(fileId: string): Room {
+async function getRoom(fileId: string): Promise<Room> {
   let room = rooms.get(fileId);
   if (room) return room;
   const doc = new Y.Doc();
-  const row = db.prepare("SELECT state FROM collab_states WHERE file_id = ?").get(fileId) as { state: Buffer } | undefined;
+  const row = await one<{ state: Buffer }>("SELECT state FROM collab_states WHERE file_id = $1", [fileId]);
   if (row?.state) Y.applyUpdate(doc, new Uint8Array(row.state));
   room = { doc, awareness: new awarenessProtocol.Awareness(doc), conns: new Map(), saveTimer: null };
   rooms.set(fileId, room);
@@ -75,7 +76,10 @@ function getRoom(fileId: string): Room {
     const buf = encoding.toUint8Array(enc);
     for (const ws of room!.conns.keys()) if (ws.readyState === WS_OPEN) ws.send(buf);
     if (!room!.saveTimer) {
-      room!.saveTimer = setTimeout(() => { room!.saveTimer = null; persistRoom(fileId, room!); }, 2000);
+      room!.saveTimer = setTimeout(() => {
+        room!.saveTimer = null;
+        void persistRoom(fileId, room!).catch(() => {});
+      }, 2000);
     }
   });
 
@@ -100,7 +104,7 @@ function closeConn(fileId: string, room: Room, ws: WebSocket) {
   }
   if (!room.conns.size && rooms.get(fileId) === room) {
     if (room.saveTimer) clearTimeout(room.saveTimer);
-    persistRoom(fileId, room);
+    void persistRoom(fileId, room).catch(() => {});
     room.awareness.destroy();
     room.doc.destroy();
     rooms.delete(fileId);
@@ -113,14 +117,17 @@ export async function collabRoutes(app: FastifyInstance) {
     const token = (req.query as { token?: string }).token ?? "";
     try {
       const { payload } = await jwtVerify(token, secret);
-      const user = db.prepare("SELECT * FROM users WHERE id = ?").get(payload.sub) as UserRow | undefined;
-      const item = db.prepare("SELECT id, owner_id FROM items WHERE id = ? AND trashed = 0").get(fileId) as { id: string; owner_id: string } | undefined;
+      const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
+      const item = await one<{ id: string; owner_id: string }>(
+        "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
+        [fileId],
+      );
       if (!user || !item) throw new Error("unauthorized");
-      const perm = permissionFor(user.id, item);
+      const perm = await permissionFor(user.id, item);
       if (!hasPermission(perm, "viewer")) throw new Error("unauthorized");
       const canWrite = hasPermission(perm, "editor");
 
-      const room = getRoom(fileId);
+      const room = await getRoom(fileId);
       room.conns.set(socket, new Set());
 
       // kick off the sync handshake: our state vector + existing awareness states

@@ -1,7 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { db } from "./db.js";
+import { one } from "./db.js";
 import type { Permission, User, UserRole } from "@kreatix/shared";
 
 const secret = new TextEncoder().encode(
@@ -40,7 +40,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   }
   try {
     const { payload } = await jwtVerify(header.slice(7), secret);
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(payload.sub) as UserRow | undefined;
+    const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
     if (!user) throw new Error("unknown user");
     (req as AuthedRequest).user = toUser(user);
   } catch {
@@ -80,11 +80,12 @@ const PERM_RANK: Record<Permission, number> = {
 };
 
 /** Effective permission of a user on an item, or null if no access. */
-export function permissionFor(userId: string, item: { owner_id: string; id: string }): Permission | null {
+export async function permissionFor(userId: string, item: { owner_id: string; id: string }): Promise<Permission | null> {
   if (item.owner_id === userId) return "owner";
-  const share = db
-    .prepare("SELECT permission FROM shares WHERE file_id = ? AND user_id = ?")
-    .get(item.id, userId) as { permission: Permission } | undefined;
+  const share = await one<{ permission: Permission }>(
+    "SELECT permission FROM shares WHERE file_id = $1 AND user_id = $2",
+    [item.id, userId],
+  );
   return share?.permission ?? null;
 }
 
