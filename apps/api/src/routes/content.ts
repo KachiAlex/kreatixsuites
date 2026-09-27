@@ -80,6 +80,11 @@ export function contentRoutes(app: FastifyInstance) {
     const body = z
       .object({ content: z.unknown(), label: z.string().max(120).optional() })
       .parse(req.body);
+    // Writes from outside a live collab session invalidate the persisted CRDT
+    // state — the next session re-seeds from this canonical JSON.
+    if ((req.query as { collab?: string }).collab !== "1") {
+      db.prepare("DELETE FROM collab_states WHERE file_id = ?").run(item.id);
+    }
     const data = Buffer.from(JSON.stringify(body.content));
     const { key, size } = putBlob(data);
     const next = (headVersion(item.id)?.number ?? 0) + 1;
@@ -145,6 +150,8 @@ export function contentRoutes(app: FastifyInstance) {
       .prepare("SELECT * FROM versions WHERE file_id = ? AND number = ?")
       .get(item.id, Number(n)) as VersionRow | undefined;
     if (!v) return reply.code(404).send({ error: "not_found" });
+    // restored content is canonical — clear live CRDT state so it re-seeds
+    db.prepare("DELETE FROM collab_states WHERE file_id = ?").run(item.id);
     const next = (headVersion(item.id)?.number ?? 0) + 1;
     db.prepare(
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",

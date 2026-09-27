@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS activity (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_activity_org ON activity(org_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS collab_states (
+  file_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+  state BLOB NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mentions (
+  id TEXT PRIMARY KEY,
+  comment_id TEXT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  file_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  from_user_id TEXT NOT NULL REFERENCES users(id),
+  to_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mentions_to ON mentions(to_user_id, read_at, created_at DESC);
 `);
 
 export const now = () => new Date().toISOString();

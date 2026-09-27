@@ -9,8 +9,15 @@ import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table
 import { Image } from "@tiptap/extension-image";
 import { CharacterCount } from "@tiptap/extensions";
 import { TextSelection } from "@tiptap/pm/state";
+import { Collaboration } from "@tiptap/extension-collaboration";
+import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
+import * as Y from "yjs";
+import { prosemirrorJSONToYDoc } from "y-prosemirror";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { createCollabSession, type CollabSession } from "../collab/session";
+import { PresenceBar } from "../collab/PresenceBar";
 import { CommentMark } from "./extensions";
 import { exportDocx, importDocx } from "./docx";
 import { ShareDialog } from "../components/ShareDialog";
@@ -42,6 +49,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const pendingJson = useRef<unknown>(null);
 
+  // collab session — created synchronously so useEditor can bind the Y.Doc
+  const { user } = useAuth();
+  const sessionRef = useRef<CollabSession | null>(null);
+  if (user && !sessionRef.current) sessionRef.current = createCollabSession(item.id, user);
+  const session = sessionRef.current;
+  useEffect(() => () => { sessionRef.current?.destroy(); sessionRef.current = null; }, []);
+
   const editor = useEditor({
     editable: canEdit,
     extensions: [
@@ -53,8 +67,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
       Image,
       CharacterCount,
       CommentMark,
+      ...(session ? [
+        Collaboration.configure({ document: session.ydoc, field: "default" }),
+        CollaborationCaret.configure({ provider: session.provider, user: { ...session.user } }),
+      ] : []),
     ],
-    content: (initialDoc as { doc?: object })?.doc ?? (initialDoc as object),
+    // collab mode: content is driven by the shared Y.Doc (seeded after sync)
+    content: session ? undefined : ((initialDoc as { doc?: object })?.doc ?? (initialDoc as object)),
     onUpdate: ({ editor }) => {
       pendingJson.current = { kind: "writer", doc: editor.getJSON() };
       setSaveState("unsaved");
@@ -66,19 +85,46 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
   });
 
+  // seed the shared doc from canonical JSON — exactly once, lowest clientID wins
+  useEffect(() => {
+    if (!session || !editor) return;
+    const frag = session.ydoc.getXmlFragment("default");
+    const meta = session.ydoc.getMap<unknown>("meta");
+    const seed = () => {
+      if (frag.length || meta.get("seeded")) return;
+      const json = ((initialDoc as { doc?: object })?.doc ?? initialDoc) as { type?: string } | null;
+      session.ydoc.transact(() => {
+        if (json?.type === "doc") {
+          const tmp = prosemirrorJSONToYDoc(editor.schema, json, "default");
+          Y.applyUpdate(session.ydoc, Y.encodeStateAsUpdate(tmp));
+        }
+        meta.set("seeded", true);
+      });
+    };
+    let done = false;
+    const elect = () => {
+      if (done || frag.length || meta.get("seeded")) return;
+      const ids = [...session.awareness.getStates().keys()];
+      if (Math.min(...ids) === session.awareness.clientID) { done = true; seed(); }
+    };
+    void session.whenSynced.then(() => setTimeout(elect, 150));
+    const t = setTimeout(() => { done = true; seed(); }, 2500); // offline fallback
+    return () => clearTimeout(t);
+  }, [session, editor, initialDoc]);
+
   const flushSave = useCallback(async () => {
     if (!pendingJson.current) return;
     const payload = pendingJson.current;
     pendingJson.current = null;
     setSaveState("saving");
     try {
-      await api.put(`/api/files/${item.id}/content`, { content: payload });
+      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, { content: payload });
       setSaveState("saved");
     } catch {
       setSaveState("error");
       toast("Could not save — will retry on next edit");
     }
-  }, [item.id, toast]);
+  }, [item.id, session, toast]);
 
   // flush on unmount / pagehide (autosave durability, KBS-SHARED-003)
   useEffect(() => {
@@ -249,6 +295,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           {saveLabel[saveState]}
         </span>
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
+        <PresenceBar session={session} />
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => { setFindOpen((v) => !v); setQuery(""); }}>Find</button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>

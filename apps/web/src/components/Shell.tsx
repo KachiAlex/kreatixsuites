@@ -133,6 +133,63 @@ function Sidebar() {
   );
 }
 
+interface Mention {
+  id: string; fileId: string; fileName: string; fileKind: string;
+  from: { displayName: string; initials: string };
+  excerpt: string; read: boolean; createdAt: string;
+}
+
+function MentionsBell() {
+  const navigate = useNavigate();
+  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  const load = async () => {
+    try {
+      const r = await api.get<{ mentions: Mention[]; unread: number }>("/api/mentions");
+      setMentions(r.mentions); setUnread(r.unread);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, 30000);
+    const close = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => { clearInterval(t); document.removeEventListener("mousedown", close); };
+  }, []);
+
+  const toggle = () => {
+    setOpen((v) => !v);
+    if (!open && unread) { void api.post("/api/mentions/read", {}).then(load); }
+  };
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <button className="iconbtn" title="Notifications" onClick={toggle} style={{ position: "relative" }}>
+        ♢
+        {unread > 0 && <span className="mention-badge">{unread > 9 ? "9+" : unread}</span>}
+      </button>
+      {open && (
+        <div className="user-menu" style={{ width: 300, maxHeight: 380, overflow: "auto" }}>
+          <div className="um-head"><b>Mentions</b></div>
+          {!mentions.length && <div style={{ padding: "14px 16px", fontSize: 12, color: "var(--muted)" }}>No mentions yet.</div>}
+          {mentions.map((m) => (
+            <button key={m.id} style={{ textAlign: "left", opacity: m.read ? 0.65 : 1 }}
+              onClick={() => { setOpen(false); navigate(`/edit/${m.fileId}`); }}>
+              <b>{m.from.displayName}</b> <span style={{ color: "var(--muted)" }}>in {m.fileName}</span>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{m.excerpt}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Topbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -185,7 +242,7 @@ function Topbar() {
         )}
       </div>
       <button className="iconbtn" title="Toggle theme">☼</button>
-      <button className="iconbtn" title="Notifications">♢</button>
+      <MentionsBell />
       <div style={{ position: "relative" }}>
         <button className="user" onClick={() => setUserMenu((v) => !v)}>{user?.initials ?? "…"}</button>
         {userMenu && (

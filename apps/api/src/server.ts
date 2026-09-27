@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ZodError } from "zod";
@@ -10,11 +11,13 @@ import { contentRoutes } from "./routes/content.js";
 import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
+import { collabRoutes } from "./collab.js";
 
 async function main() {
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
   await app.register(cors, { origin: true, credentials: true });
+  await app.register(websocket);
 
   // Binary uploads arrive as raw buffers (JSON keeps the default parser)
   app.addContentTypeParser("*", (_req, payload, done) => {
@@ -41,6 +44,7 @@ async function main() {
   app.register(sharingRoutes);
   app.register(commentRoutes);
   app.register(searchRoutes);
+  app.register(collabRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");

@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { useCollabSession, useMapSync } from "../collab/useCollab";
+import { PresenceBar } from "../collab/PresenceBar";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -57,12 +59,50 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const selObjs = slide.objects.filter((o) => selection.has(o.id));
   const firstSel = selObjs[0];
 
+  // ---- collab: per-slide keys + deck meta in a shared Y.Map ----
+  const session = useCollabSession(item.id);
+  const applyRemoteRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
+  applyRemoteRef.current = (changed) => {
+    setDeck((prev) => {
+      const next = structuredClone(prev);
+      for (const [k, v] of changed) {
+        if (k === "$meta") {
+          if (v) {
+            const meta = JSON.parse(v) as { theme?: string; customTheme?: Deck["customTheme"]; order: string[] };
+            next.theme = meta.theme; next.customTheme = meta.customTheme;
+            next.slides.sort((a, b) => meta.order.indexOf(a.id) - meta.order.indexOf(b.id));
+          }
+        } else if (v == null) {
+          const i = next.slides.findIndex((s) => s.id === k);
+          if (i >= 0 && next.slides.length > 1) next.slides.splice(i, 1);
+        } else {
+          const s = JSON.parse(v) as Slide;
+          const i = next.slides.findIndex((x) => x.id === k);
+          if (i >= 0) next.slides[i] = s; else next.slides.push(s);
+        }
+      }
+      return next;
+    });
+  };
+  const mapSync = useMapSync(session, "present", applyRemoteRef);
+
+  // presence: which slide we're on
+  useEffect(() => {
+    session?.setLocal({ where: { label: `Slide ${slideIdx + 1}` } });
+  }, [session, slideIdx]);
+
   // ---- persistence ----
   const mounted = useRef(false);
   useEffect(() => {
     if (!mounted.current) { mounted.current = true; return; }
     pendingJson.current = { kind: "present", deck };
-  }, [deck]);
+    if (mapSync) {
+      const m = new Map<string, string>();
+      for (const s of deck.slides) m.set(s.id, JSON.stringify(s));
+      m.set("$meta", JSON.stringify({ theme: deck.theme, customTheme: deck.customTheme, order: deck.slides.map((s) => s.id) }));
+      mapSync.push(m);
+    }
+  }, [deck, mapSync]);
 
   const flushSave = useCallback(async () => {
     if (!pendingJson.current) return;
@@ -70,13 +110,13 @@ export function PresentEditor({ item, initialDoc, permission }: {
     pendingJson.current = null;
     setSaveState("saving");
     try {
-      await api.put(`/api/files/${item.id}/content`, { content: payload });
+      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, { content: payload });
       setSaveState("saved");
     } catch {
       setSaveState("error");
       toast("Could not save — will retry on next edit");
     }
-  }, [item.id, toast]);
+  }, [item.id, session, toast]);
 
   useEffect(() => {
     const flush = () => { if (saveTimer.current) { clearTimeout(saveTimer.current); flushSave(); } };
@@ -382,6 +422,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
         <span className={`save-state ${saveState === "saving" || saveState === "unsaved" ? "saving" : ""}`}>{saveLabel[saveState]}</span>
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
+        <PresenceBar session={session} />
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
           Comments{comments.length ? ` (${comments.length})` : ""}

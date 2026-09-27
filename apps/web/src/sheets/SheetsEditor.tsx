@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { useCollabSession, useMapSync } from "../collab/useCollab";
+import { PresenceBar } from "../collab/PresenceBar";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -54,6 +56,37 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const evals = useMemo(() => evaluateSheet(sheet.cells), [sheet.cells]);
   const selRefs = useMemo(() => [...rangeRefs(selection)], [selection]);
   const anchorRef = toA1(selection.c1, selection.r1);
+
+  // ---- collab: per-sheet keys in a shared Y.Map; remote applies merge in ----
+  const session = useCollabSession(item.id);
+  const applyRemoteRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
+  applyRemoteRef.current = (changed) => {
+    setWb((prev) => {
+      const next = structuredClone(prev);
+      for (const [k, v] of changed) {
+        if (k === "$order") {
+          if (v) {
+            const order = JSON.parse(v) as string[];
+            next.sheets.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+          }
+        } else if (v == null) {
+          const i = next.sheets.findIndex((s) => s.name === k);
+          if (i >= 0 && next.sheets.length > 1) next.sheets.splice(i, 1);
+        } else {
+          const sh = JSON.parse(v) as SheetData;
+          const i = next.sheets.findIndex((s) => s.name === k);
+          if (i >= 0) next.sheets[i] = sh; else next.sheets.push(sh);
+        }
+      }
+      return next;
+    });
+  };
+  const mapSync = useMapSync(session, "sheets", applyRemoteRef);
+
+  // presence: which cell we're on
+  useEffect(() => {
+    session?.setLocal({ where: { label: `${sheet.name}!${anchorRef}` } });
+  }, [session, sheet.name, anchorRef]);
   const anchorCell = sheet.cells[anchorRef];
   const anchorRes = evals.get(anchorRef);
   const anchorStyle = anchorCell?.s ?? {};
@@ -85,7 +118,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   useEffect(() => {
     if (!mounted.current) { mounted.current = true; return; }
     pendingJson.current = { kind: "sheets", workbook: wb };
-  }, [wb]);
+    if (mapSync) {
+      const m = new Map<string, string>();
+      for (const s of wb.sheets) m.set(s.name, JSON.stringify(s));
+      m.set("$order", JSON.stringify(wb.sheets.map((s) => s.name)));
+      mapSync.push(m);
+    }
+  }, [wb, mapSync]);
 
   const flushSave = useCallback(async () => {
     if (!pendingJson.current) return;
@@ -93,13 +132,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     pendingJson.current = null;
     setSaveState("saving");
     try {
-      await api.put(`/api/files/${item.id}/content`, { content: payload });
+      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, { content: payload });
       setSaveState("saved");
     } catch {
       setSaveState("error");
       toast("Could not save — will retry on next edit");
     }
-  }, [item.id, toast]);
+  }, [item.id, session, toast]);
 
   useEffect(() => {
     const flush = () => { if (saveTimer.current) { clearTimeout(saveTimer.current); flushSave(); } };
@@ -363,6 +402,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           {saveLabel[saveState]}
         </span>
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
+        <PresenceBar session={session} />
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
           Comments{comments.length ? ` (${comments.length})` : ""}

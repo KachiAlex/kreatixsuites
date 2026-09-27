@@ -6,6 +6,8 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import type { DriveItem, Comment } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { useCollabSession, useMapSync } from "../collab/useCollab";
+import { PresenceBar } from "../collab/PresenceBar";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -100,6 +102,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [pwValue, setPwValue] = useState("");
   const pwCbRef = useRef<((pw: string) => void) | null>(null);
   const loadTaskRef = useRef<{ destroy: () => void } | null>(null);
+  const session = useCollabSession(item.id);
 
   // ---------- load ----------
   useEffect(() => {
@@ -164,12 +167,12 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setSaveState("saving");
     try {
       const form = formValues();
-      await api.put(`/api/files/${item.id}/content`, {
+      await api.put(`/api/files/${item.id}/content${session ? "?collab=1" : ""}`, {
         content: { ...annDoc, form: Object.keys(form).length ? form : annDoc.form },
       });
       setSaveState("saved");
     } catch { setSaveState("error"); }
-  }, [annDoc, formValues, item.id]);
+  }, [annDoc, formValues, item.id, session]);
 
   const scheduleSave = useCallback(() => {
     setSaveState("unsaved");
@@ -228,6 +231,46 @@ export function PdfEditor({ item, initialDoc, permission }: {
       a.rects?.forEach((r) => { r[0] += dx; r[1] += dy; });
       a.points?.forEach((p) => { p[0] += dx; p[1] += dy; });
     }, `move:${id}`);
+
+  // ---------- collab: per-annotation keys + form values in a shared Y.Map ----------
+  const applyRemoteRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
+  applyRemoteRef.current = (changed) => {
+    setAnnDoc((prev) => {
+      const next = structuredClone(prev);
+      for (const [k, v] of changed) {
+        if (k === "$form") {
+          next.form = v ? JSON.parse(v) : undefined;
+          // restore into live pdf.js storage so form widgets repaint
+          if (doc && v) for (const [fk, fv] of Object.entries(JSON.parse(v))) {
+            try { doc.annotationStorage.setValue(fk, fv as Record<string, unknown>); } catch { /* skip */ }
+          }
+        } else if (v == null) {
+          next.annotations = next.annotations.filter((a) => a.id !== k);
+        } else {
+          const a = JSON.parse(v) as PdfAnn;
+          const i = next.annotations.findIndex((x) => x.id === k);
+          if (i >= 0) next.annotations[i] = a; else next.annotations.push(a);
+        }
+      }
+      return next;
+    });
+    scheduleSave();
+  };
+  const mapSync = useMapSync(session, "pdf", applyRemoteRef);
+
+  // push annotation changes to the shared map (echo is a no-op via dirty check)
+  useEffect(() => {
+    if (!mapSync || !doc) return;
+    const m = new Map<string, string>();
+    for (const a of annDoc.annotations) m.set(a.id, JSON.stringify(a));
+    if (annDoc.form && Object.keys(annDoc.form).length) m.set("$form", JSON.stringify(annDoc.form));
+    mapSync.push(m);
+  }, [annDoc, mapSync, doc]);
+
+  // presence: which page we're on
+  useEffect(() => {
+    session?.setLocal({ where: { label: `Page ${curPage}` } });
+  }, [session, curPage]);
 
   // ---------- search ----------
   const runSearch = async () => {
@@ -307,6 +350,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           Comments{comments.length ? ` (${comments.length})` : ""}
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
+        <PresenceBar session={session} />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
           onClick={() => {
