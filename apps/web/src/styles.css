@@ -685,7 +685,7 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 
 /* ---- writer: pagination (tiptap-pagination-plus) ---- */
 .doc-page:has(.rm-with-pagination){background:transparent;box-shadow:none;border:0;padding:0;width:auto;min-height:0}
-.rm-with-pagination{background:#fff;box-shadow:0 10px 40px rgba(46,35,29,.10);border-radius:4px}
+.rm-with-pagination{background:#fff;box-shadow:0 10px 40px rgba(46,35,29,.10);border-radius:4px;margin-left:auto;margin-right:auto}
 .rm-pagination-gap{display:block}
 .rm-page-break .page{background:transparent}
 .rm-first-page-header,.rm-pages-wrapper [class*="header"],.rm-pages-wrapper [class*="footer"]{font-size:11px;color:#8B837D}
