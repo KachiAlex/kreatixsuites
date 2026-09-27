@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { DriveItem } from "@kreatix/shared";
 import { KIND_META, timeAgo } from "../lib/format";
 import { api } from "../lib/api";
+import { prefetchEditor } from "../pages/editors";
 
 interface Props {
   items: DriveItem[];
@@ -64,7 +65,8 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
       {items.map((it) => {
         const meta = KIND_META[it.kind] ?? KIND_META.file;
         return (
-          <div className="file" key={it.id} style={{ position: "relative" }}>
+          <div className="file" key={it.id} style={{ position: "relative" }}
+            onMouseEnter={() => prefetchEditor(it.kind)} onFocus={() => prefetchEditor(it.kind)}>
             <div className={`thumb ${meta.cls}`} onClick={() => onOpen(it)} role="button" tabIndex={0}
               aria-label={`Open ${it.name}`}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(it); } }}>{meta.short}</div>

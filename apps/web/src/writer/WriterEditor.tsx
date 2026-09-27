@@ -187,6 +187,48 @@ export function WriterEditor({ item, initialDoc, permission }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
+  // migrate legacy data-URL images to Drive media — uploads under this doc's
+  // media_for and rewrites src to /api/files/:id/raw so bytes leave the JSON
+  const migratedImages = useRef(false);
+  useEffect(() => {
+    if (!editor || !canEdit || migratedImages.current) return;
+    migratedImages.current = true;
+    void (async () => {
+      for (;;) {
+        let src: string | null = null;
+        editor.state.doc.descendants((node) => {
+          if (src === null && node.type.name === "image" && String(node.attrs.src ?? "").startsWith("data:"))
+            src = node.attrs.src as string;
+          return src === null;
+        });
+        if (src === null) break;
+        try {
+          const [meta, b64] = (src as string).split(",", 2);
+          const mime = meta.match(/data:(.*?);/)?.[1] ?? "image/png";
+          const bytes = Uint8Array.from(atob(b64 ?? ""), (c) => c.charCodeAt(0));
+          const file = new File([bytes], `image.${mime.split("/")[1] ?? "png"}`, { type: mime });
+          const r = await api.upload<{ item: { id: string } }>(
+            `/api/drive/upload?name=${encodeURIComponent(file.name)}&kind=file&mediaFor=${item.id}`, file);
+          const oldSrc = src;
+          editor.chain().command(({ tr }) => {
+            let done = false;
+            editor.state.doc.descendants((node, pos) => {
+              if (done) return false;
+              if (node.type.name === "image" && node.attrs.src === oldSrc) {
+                tr.setNodeMarkup(pos, undefined, { ...node.attrs, src: `/api/files/${r.item.id}/raw` });
+                done = true;
+              }
+              return true;
+            });
+            return done;
+          }).run();
+        } catch {
+          break; // offline or upload gate — leave the data URL in place
+        }
+      }
+    })();
+  }, [editor, canEdit, item.id]);
+
   // page-setup changes only mutate extension storage — stage the save manually
   const savePageSetup = useCallback(() => {
     if (!editorRef.current) return;
@@ -513,11 +555,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
       if (fmt === "docx") return exportDocx(json, name);
       const mod = await import("./export/index");
       if (fmt === "md") return mod.downloadMd(json, name);
-      if (fmt === "html") return mod.downloadHtml(name, editor.getHTML());
+      if (fmt === "html") return mod.downloadHtml(name, editor.getHTML(), readPageSetup(editor));
       if (fmt === "txt") return mod.downloadTxt(editor, name);
       if (fmt === "rtf") return mod.downloadRtf(json, name);
       if (fmt === "odt") return mod.downloadOdt(json, name);
-      if (fmt === "pdf") return mod.exportPdf(editor.getHTML(), name);
+      if (fmt === "pdf") return mod.exportPdf(editor.getHTML(), name, readPageSetup(editor));
     } catch (e) {
       toast(`Export failed: ${(e as Error).message.slice(0, 60)}`);
     }

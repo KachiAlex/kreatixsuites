@@ -55,7 +55,14 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("docx: h5 survives", html.includes("Details"));
   check("docx: task items", html.includes("Done item") && html.includes("Todo item"));
   check("docx: after page break", html.includes("after break"));
-  check("docx: math as text", html.includes("x^2+y^2"));
+  // math exports as native OMML (mammoth drops m:oMath on import — assert the
+  // equation XML itself rather than a round-trip)
+  {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+    const xml = await zip.file("word/document.xml")?.async("text");
+    check("docx: math as OMML", !!xml && xml.includes("oMath") && xml.includes("x^2+y^2"));
+  }
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
 }
 

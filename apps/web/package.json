@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "typecheck": "tsc -b --noEmit",
     "test:roundtrip": "tsx test-roundtrip.mts",
+    "test:collab": "tsx test-collab-suggest.mts",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import {
-  AlignmentType, Document, FootnoteReferenceRun, HeadingLevel, ImageRun, Packer,
-  Paragraph, PageBreak as DocxPageBreak, Table, TableCell, TableRow, TextRun,
-  VerticalAlign, WidthType, type File as DocxFile,
+  AlignmentType, Document, FootnoteReferenceRun, HeadingLevel, ImageRun, Math as DocxMath,
+  MathRun, Packer, Paragraph, PageBreak as DocxPageBreak, Table, TableCell, TableRow,
+  TextRun, VerticalAlign, WidthType, type File as DocxFile,
 } from "docx";
 import mammoth from "mammoth";
 
@@ -41,7 +41,7 @@ function textStyle(n: Inline | Block, inherited: Mark[]): { font?: string; color
   };
 }
 
-type Run = TextRun | FootnoteReferenceRun | ImageRun;
+type Run = TextRun | FootnoteReferenceRun | ImageRun | DocxMath;
 
 function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Run[] {
   return (nodes ?? []).flatMap((n): Run[] => {
@@ -52,7 +52,9 @@ function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Run[] 
       return [new FootnoteReferenceRun(footnoteSeq)];
     }
     if (n.type === "inlineMath") {
-      return [new TextRun({ text: (n.attrs?.latex as string) ?? "", italics: true })];
+      // native OMML equation zone — Word renders it as a real equation object
+      // and can rebuild the LaTeX source from its equation editor
+      return [new DocxMath({ children: [new MathRun((n.attrs?.latex as string) ?? "")] })];
     }
     if (n.type === "image") {
       const src = (n.attrs?.src as string) ?? "";
@@ -187,7 +189,7 @@ function blockToParagraphs(node: Block): Paragraph[] {
     case "blockMath":
       return [new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [new TextRun({ text: (node.attrs?.latex as string) ?? "", italics: true, font: "Cambria Math" })],
+        children: [new DocxMath({ children: [new MathRun((node.attrs?.latex as string) ?? "")] })] as never,
       })];
     case "toc": {
       // TOC is live in-editor; export a static snapshot of headings

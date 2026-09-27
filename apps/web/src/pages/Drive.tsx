@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { useFiles, useItemActions } from "./Home";
 import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
+import { prefetchEditorsFor } from "./editors";
 
 const TITLES: Record<string, string> = {
   recent: "Recent",
@@ -21,6 +23,9 @@ export function Drive() {
 
   const open = (it: DriveItem) =>
     navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`);
+
+  // warm editor chunks for the kinds actually in this list (idle time)
+  useEffect(() => { prefetchEditorsFor(items.map((i) => i.kind)); }, [items]);
 
   return (
     <>

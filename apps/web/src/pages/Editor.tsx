@@ -5,15 +5,13 @@ import { api } from "../lib/api";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
 import { KIND_META, timeAgo } from "../lib/format";
 
-// Each editor is a separate chunk — only fetched when its file type opens.
-const WriterEditor = lazy(() =>
-  import("../writer/WriterEditor").then((m) => ({ default: m.WriterEditor })));
-const SheetsEditor = lazy(() =>
-  import("../sheets/SheetsEditor").then((m) => ({ default: m.SheetsEditor })));
-const PresentEditor = lazy(() =>
-  import("../present/PresentEditor").then((m) => ({ default: m.PresentEditor })));
-const PdfEditor = lazy(() =>
-  import("../pdf/PdfEditor").then((m) => ({ default: m.PdfEditor })));
+// Each editor is a separate chunk — only fetched when its file type opens
+// (or when prefetched via pages/editors.ts on Drive list idle / row hover).
+import { editorLoaders } from "./editors";
+const WriterEditor = lazy(editorLoaders.writer);
+const SheetsEditor = lazy(editorLoaders.sheets);
+const PresentEditor = lazy(editorLoaders.present);
+const PdfEditor = lazy(editorLoaders.pdf);
 
 const Fallback = () => (
   <div className="auth-wrap"><div className="empty">Opening…</div></div>
