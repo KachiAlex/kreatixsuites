@@ -26,7 +26,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:3001', changeOrigin: true, ws: true },
+      // VITE_API_TARGET lets local dev hit the VPS backend+db, e.g.
+      //   VITE_API_TARGET=https://suites.kreatixtech.com pnpm dev:web
+      '/api': { target: process.env.VITE_API_TARGET ?? 'http://localhost:3001', changeOrigin: true, ws: true },
     },
   },
 })

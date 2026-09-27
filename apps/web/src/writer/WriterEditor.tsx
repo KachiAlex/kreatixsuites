@@ -897,24 +897,21 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Insert table" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</button>
           <div className="rb-sep" />
           {(["left", "center", "right", "justify"] as const).map((a) => (
-            <button key={a} className={`rb ${state?.align === a ? "on" : ""}`} title={`Align ${a}`}
+            <button key={a} className={`rb ${a === "right" || a === "justify" ? "rb-opt2" : ""} ${state?.align === a ? "on" : ""}`} title={`Align ${a}`}
               onClick={() => editor?.chain().focus().setTextAlign(a).run()}>
               {a === "left" ? "⇤" : a === "center" ? "≡" : a === "right" ? "⇥" : "☰"}
             </button>
           ))}
           {editor && <LineSpacingDrop editor={editor} />}
-          <button className={`rb ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
-          <button className={`rb ${state?.bullet ? "on" : ""}`} title="Bullet list" onClick={() => editor?.chain().focus().toggleBulletList().run()}>•≡</button>
-          <button className={`rb ${state?.ordered ? "on" : ""}`} title="Numbered list" onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1≡</button>
-          <button className="rb" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
-          <button className="rb" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
+          <button className={`rb rb-opt2 ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
+          <button className={`rb rb-opt2 ${state?.bullet ? "on" : ""}`} title="Bullet list" onClick={() => editor?.chain().focus().toggleBulletList().run()}>•≡</button>
+          <button className={`rb rb-opt2 ${state?.ordered ? "on" : ""}`} title="Numbered list" onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1≡</button>
+          <button className="rb rb-opt" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
+          <button className="rb rb-opt" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
           <div className="rb-sep" />
-          <button className={`rb ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
-          <button className={`rb ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
-          <button className={`rb ${state?.code ? "on" : ""}`} title="Inline code" onClick={() => editor?.chain().focus().toggleCode().run()}>{"</>"}</button>
-          <button className="rb" title="Inline math" onClick={() => editor?.chain().focus().insertInlineMath({ latex: "" }).run()}>∑</button>
-          <button className="rb" title="Page break (Ctrl+Enter)" onClick={() => editor?.chain().focus().setPageBreak().run()}>⏎</button>
-          <button className="rb" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
+          <button className={`rb rb-opt ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
+          <button className={`rb rb-opt ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
+          <button className="rb rb-opt" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
           <div className="ribbon-end">
             {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
             {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode} />}

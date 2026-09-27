@@ -1,31 +1,53 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import {
   getTrackedChanges, getPendingChangeCount,
   type TrackChangesMode, type TrackedChangeInfo,
 } from "tiptap-track-changes";
 
-/** Editing / Suggesting / Viewing mode switcher — Google Docs style. */
+/** Editing / Suggesting / Viewing mode switcher — compact dropdown, Docs style. */
 export function ModeSwitcher({ editor, canEdit, forced }: {
   editor: Editor; canEdit: boolean; forced?: TrackChangesMode;
 }) {
   const mode: TrackChangesMode =
     ((editor.storage as unknown as Record<string, { mode?: TrackChangesMode }>).trackChanges?.mode) ?? "edit";
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, [open]);
   const set = (m: TrackChangesMode) => {
     (editor.commands as unknown as Record<string, (a?: unknown) => boolean>).setTrackChangesMode(m);
   };
   if (forced === "suggest" && mode !== "suggest") set("suggest");
+  const label = mode === "edit" ? "Editing" : mode === "suggest" ? "Suggesting" : "Viewing";
+  const icon = mode === "view" ? "👁" : "✎";
   return (
-    <div className="mode-switch" role="radiogroup" aria-label="Editing mode">
-      {(["edit", "suggest", "view"] as const).map((m) => (
-        <button key={m} role="radio" aria-checked={mode === m}
-          className={`mode-btn ${mode === m ? "on" : ""}`}
-          disabled={!canEdit && m !== "view"}
-          title={m === "edit" ? "Edit directly" : m === "suggest" ? "Edits become suggestions" : "Read only"}
-          onClick={() => set(m)}>
-          {m === "edit" ? "✎ Editing" : m === "suggest" ? "✎ Suggesting" : "👁 Viewing"}
-        </button>
-      ))}
+    <div className="rb-drop mode-drop" ref={ref}>
+      <button className={`rb rb-dropbtn mode-btn-cur ${open ? "on" : ""}`} title="Editing mode"
+        onClick={() => setOpen(!open)}>
+        {icon} {label} ▾
+      </button>
+      {open && (
+        <div className="rb-drop-menu mode-menu">
+          {(["edit", "suggest", "view"] as const).map((m) => (
+            <button key={m} role="menuitemradio" aria-checked={mode === m}
+              className={`drop-item ${mode === m ? "on" : ""}`}
+              disabled={!canEdit && m !== "view"}
+              title={m === "edit" ? "Edit directly" : m === "suggest" ? "Edits become suggestions" : "Read only"}
+              onClick={() => { set(m); setOpen(false); }}>
+              <span>{m === "edit" ? "✎" : m === "suggest" ? "✎" : "👁"}</span>
+              <span>{m === "edit" ? "Editing" : m === "suggest" ? "Suggesting" : "Viewing"}</span>
+              {mode === m && <span className="drop-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

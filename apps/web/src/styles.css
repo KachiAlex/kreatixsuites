@@ -167,7 +167,7 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .auth-switch{text-align:center;font-size:12px;color:var(--muted);margin-top:16px}
 
 /* ---------- editor chrome ---------- */
-.editor-shell{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100vh;background:var(--bg)}
+.editor-shell{display:flex;flex-direction:column;height:100vh;background:var(--bg)}
 .editor-top{display:flex;align-items:center;gap:10px;padding:10px 18px;background:#fff;border-bottom:1px solid var(--line)}
 .editor-top .back{border:0;background:transparent;font-size:16px;color:#6E6862;cursor:pointer;border-radius:9px;padding:6px 8px}
 .editor-top .back:hover{background:#F2EEE9}
@@ -183,11 +183,19 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .rb:disabled{opacity:.4;cursor:default}
 .rb-sep{width:1px;height:22px;background:var(--line);margin:0 6px}
 .rb-sel{height:32px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:12px;padding:0 8px;color:#3A3633}
-.doc-canvas{overflow:auto;padding:22px 20px 80px}
+.doc-canvas{overflow:auto;padding:22px 20px 80px;flex:1;min-height:0}
+.ribbon{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
+.ribbon::-webkit-scrollbar{display:none}
+/* a scroll container clips absolutely-positioned menus — drop clipping while any dropdown is open */
+.ribbon:has(.rb-drop-menu){overflow:visible}
 .doc-zoom{min-width:fit-content}
 .ruler-wrap{display:flex;justify-content:center;position:sticky;top:4px;z-index:4;margin-bottom:8px}
 .ruler{display:block;overflow:visible;border-radius:2px}
-.ribbon-end{margin-left:auto;display:flex;align-items:center;gap:8px;padding-right:2px}
+.ribbon-end{margin-left:auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;position:sticky;right:0;background:#fff}
+@media (max-width:1180px){.word-count{display:none}}
+@media (max-width:1330px){.rb-opt{display:none}}
+@media (max-width:1200px){.rb-opt2{display:none}}
+@media (max-width:1020px){.ribbon{flex-wrap:wrap;row-gap:2px}.ribbon-end{position:static}}
 .word-count{font-size:10px;color:#A19A95;cursor:pointer;white-space:nowrap;padding-right:2px}
 .doc-page{background:#fff;width:min(860px,100%);margin:0 auto;box-shadow:0 10px 40px rgba(46,35,29,.10);border:1px solid #EDE8E3;border-radius:4px;min-height:1100px;padding:76px 84px}
 .doc-page .ProseMirror{outline:none;font-size:14px;line-height:1.7;color:#26221F;min-height:900px}
@@ -589,7 +597,8 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 }
 
 /* ---- writer: menubar ---- */
-.menubar{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--line);background:#fff}
+.menubar{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--line);background:#fff;flex-shrink:0}
+.editor-top{flex-shrink:0}
 .menu-root{position:relative}
 .menu-btn{border:0;background:transparent;padding:6px 9px;font-size:12.5px;border-radius:7px;cursor:pointer;color:#4A4540}
 .menu-btn:hover,.menu-btn.open{background:#F2EEE9}
@@ -708,10 +717,14 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ps-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 
 /* ---- writer: suggesting mode ---- */
-.mode-switch{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
-.mode-btn{border:0;background:#fff;padding:5px 10px;font-size:11.5px;cursor:pointer;color:#4A4540}
-.mode-btn.on{background:var(--k-orange-soft);color:var(--k-orange-dark);font-weight:700}
-.mode-btn:disabled{opacity:.45;cursor:default}
+.mode-btn-cur{font-size:12px;font-weight:600;color:#4A4540;border:1px solid var(--line);border-radius:9px;height:32px;width:auto;white-space:nowrap;padding:0 10px;display:inline-flex;align-items:center;gap:4px}
+.mode-btn-cur.on{background:var(--k-orange-soft);color:var(--k-orange-dark);border-color:var(--k-orange-soft)}
+.mode-menu{min-width:150px}
+.drop-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;padding:7px 10px;border-radius:8px;font-size:12.5px;color:#3A3633;cursor:pointer}
+.drop-item:hover{background:#F6F2EE}
+.drop-item.on{color:var(--k-orange-dark);font-weight:700}
+.drop-item:disabled{opacity:.45;cursor:default}
+.drop-check{margin-left:auto;color:var(--k-orange)}
 .suggest-badge{border:1px solid var(--k-orange);background:var(--k-orange-soft);color:var(--k-orange-dark);border-radius:9px;padding:4px 10px;font-size:11.5px;font-weight:700;cursor:pointer}
 .ProseMirror .insertion{text-decoration:underline;text-decoration-color:var(--suggest-color,#3B82C4);text-decoration-thickness:1.5px;text-underline-offset:2px}
 .ProseMirror .deletion{text-decoration:line-through;text-decoration-color:var(--suggest-color,#3B82C4);opacity:.65}
