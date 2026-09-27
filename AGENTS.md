@@ -42,7 +42,8 @@ SITE_ADDRESS=suite.example.com docker compose --profile tls up -d   # + Caddy ma
 
 ### Live deployment (67.211.210.8)
 
-- **URL**: https://kreatixsuite.67-211-210-8.sslip.io (sslip.io → box IP, LetsEncrypt cert via certbot)
+- **Primary URL**: https://suites.kreatixtech.com (Cloudflare-proxied DNS, LE cert via certbot on host nginx → `127.0.0.1:3017`)
+- Fallback URL: https://kreatixsuite.67-211-210-8.sslip.io (sslip.io → box IP, cert via certbot)
 - App: `docker compose` in `/opt/kreatix` (git clone of this repo), bound to `127.0.0.1:3017`
 - nginx site: `/etc/nginx/sites-enabled/kreatixsuite` → `127.0.0.1:3017` (copy in `deploy/`)
 - Shared host: only 22/80/443 public (ufw); all apps route through host nginx — do NOT open extra ports
