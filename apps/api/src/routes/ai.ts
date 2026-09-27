@@ -10,9 +10,9 @@ import { getItem, logActivity } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { encryptField, decryptField } from "../crypto.js";
 
-const AI_BASE = process.env.KREATIX_AI_BASE_URL ?? "https://api.openai.com/v1";
+const AI_BASE = process.env.KREATIX_AI_BASE_URL || "https://api.openai.com/v1";
 const AI_KEY = process.env.KREATIX_AI_KEY ?? "";
-const AI_MODEL = process.env.KREATIX_AI_MODEL ?? "gpt-4o-mini";
+const AI_MODEL = process.env.KREATIX_AI_MODEL || "gpt-4o-mini";
 
 const MODE = z.enum(["ask", "edit", "plan", "explain"]);
 const chatSchema = z.object({

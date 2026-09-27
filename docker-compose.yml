@@ -9,6 +9,17 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET:?set in .env}
       - PORT=3001
+      # optional config — empty values are ignored by the app
+      - KREATIX_DATA_KEY=${KREATIX_DATA_KEY:-}
+      - KREATIX_SCAN_CMD=${KREATIX_SCAN_CMD:-}
+      - KREATIX_AI_KEY=${KREATIX_AI_KEY:-}
+      - KREATIX_AI_BASE_URL=${KREATIX_AI_BASE_URL:-}
+      - KREATIX_AI_MODEL=${KREATIX_AI_MODEL:-}
+      - KREATIX_OIDC_ISSUER=${KREATIX_OIDC_ISSUER:-}
+      - KREATIX_OIDC_CLIENT_ID=${KREATIX_OIDC_CLIENT_ID:-}
+      - KREATIX_OIDC_CLIENT_SECRET=${KREATIX_OIDC_CLIENT_SECRET:-}
+      - KREATIX_OIDC_REDIRECT=${KREATIX_OIDC_REDIRECT:-}
+      - KREATIX_OIDC_SCOPE=${KREATIX_OIDC_SCOPE:-}
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3001}:3001"
     volumes:
