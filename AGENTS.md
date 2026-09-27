@@ -8,7 +8,8 @@ AI-native office productivity suite per `Kreatix_Business_Suite_SRS_v1.0.docx`
 - `apps/web` — React 19 + Vite + TypeScript SPA. Design system in `src/styles.css` (tokens ported from Brand UI: `--k-orange:#F2782E`, Inter, rail+sidebar+topbar shell).
 - `apps/api` — Fastify 5 + TypeScript, bundled by esbuild to `dist/server.js`.
 - `packages/shared` — domain types (`@kreatix/shared`), imported as TS source.
-- DB: **SQLite via better-sqlite3** (dev + self-hosted prod). Swap behind repository layer for Postgres later.
+- DB: **Postgres** via `pg` Pool — thin helpers (`q`/`one`/`run`/`tx`) in `apps/api/src/db.ts`; schema is boot-time idempotent DDL, auto-creates the database. `KREATIX_DATABASE_URL` overrides (default `postgres://postgres:postgres@localhost:5432/kreatix`).
+- Migration from legacy SQLite installs: `apps/api/scripts/migrate-sqlite-to-pg.mjs` (idempotent, FK-safe order).
 - Files: content-addressed blob store under `KREATIX_DATA_DIR/blobs` (S3/MinIO-swappable interface in `apps/api/src/blobs.ts`).
 - Auth: scrypt password hash + HS256 JWT (`jose`), 7d tokens.
 
@@ -16,8 +17,8 @@ AI-native office productivity suite per `Kreatix_Business_Suite_SRS_v1.0.docx`
 
 ```bash
 pnpm install                       # first time
-pnpm rebuild better-sqlite3        # if native binding missing
-pnpm dev:api                       # API on :3001
+docker compose up -d db            # Postgres on 127.0.0.1:5432 (POSTGRES_PASSWORD in .env)
+pnpm dev:api                       # API on :3001 (KREATIX_DATABASE_URL to override)
 pnpm dev:web                       # Vite on :5173 (proxies /api → :3001)
 pnpm build                         # builds web dist + api bundle
 pnpm typecheck
@@ -28,7 +29,7 @@ API serves `apps/web/dist` automatically in production (single process on `:3001
 
 ## Data layout
 
-`KREATIX_DATA_DIR` (default `apps/api/.data`): `kreatix.db` + `blobs/<2-hex>/<sha256>`.
+Metadata in Postgres (tables mirror the old SQLite schema; names/comments/AI/audit/index bodies are `enc:v1:` ciphertext when `KREATIX_DATA_KEY` is set). `KREATIX_DATA_DIR` still holds blob storage: `blobs/<2-hex>/<sha256>`.
 Every content save writes an **immutable version** (SRS §19) — never mutate blobs.
 
 ## Deploy (VPS)
