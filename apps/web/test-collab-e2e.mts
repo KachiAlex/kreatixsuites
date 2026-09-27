@@ -73,8 +73,10 @@ const fileId = (item as Json).id as string;
 
 const docA = new Y.Doc();
 const docB = new Y.Doc();
-const provA = new WebsocketProvider(`${WS}/api/collab`, fileId, docA, { params: { token } });
-const provB = new WebsocketProvider(`${WS}/api/collab`, fileId, docB, { params: { token } });
+// disableBc: same-process providers would otherwise sync over BroadcastChannel,
+// bypassing the server-side permission gate we're testing
+const provA = new WebsocketProvider(`${WS}/api/collab`, fileId, docA, { params: { token }, disableBc: true });
+const provB = new WebsocketProvider(`${WS}/api/collab`, fileId, docB, { params: { token }, disableBc: true });
 provA.awareness.setLocalStateField("user", { name: "Ada", initials: "A", color: "#3B82C4" });
 provB.awareness.setLocalStateField("user", { name: "Ben", initials: "B", color: "#F2782E" });
 
@@ -149,7 +151,7 @@ try {
   const hasMarker = (m: string) => JSON.stringify(toJson(docA)).includes(`__${m}__`);
   const tryWrite = async (t: string, marker: string, ms = 4000) => {
     const d = new Y.Doc();
-    const p = new WebsocketProvider(`${WS}/api/collab`, fileId, d, { params: { token: t } });
+    const p = new WebsocketProvider(`${WS}/api/collab`, fileId, d, { params: { token: t }, disableBc: true });
     try {
       if (!(await waitFor(() => p.synced))) return "no-sync";
       updateYFragment(d, d.getXmlFragment("default"), schema.nodeFromJSON({
