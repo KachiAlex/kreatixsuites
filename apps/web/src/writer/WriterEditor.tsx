@@ -8,7 +8,7 @@ import { TextAlign } from "@tiptap/extension-text-align";
 import { Subscript } from "@tiptap/extension-subscript";
 import { Superscript } from "@tiptap/extension-superscript";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
-import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
+import { KxTable, KxTableRow, KxTableHeader, KxTableCell, KxTableCommands } from "./extensions/table";
 import { CodeBlockLowlight } from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Mathematics } from "@tiptap/extension-mathematics";
@@ -29,7 +29,8 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { CommentMark } from "./extensions";
 import { ParagraphSpacing, ListStyle } from "./extensions/spacing";
-import { PageBreak } from "./extensions/nodes";
+import { PageBreak, SectionBreak, ColumnBreak, Columns } from "./extensions/nodes";
+import { ForcedBreaks } from "./extensions/forcedBreaks";
 import { Footnote } from "./extensions/footnote";
 import { Toc } from "./extensions/toc";
 import { Embed } from "./extensions/embed";
@@ -39,6 +40,10 @@ import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, readPageSetup, applyPageSetup } from "./PageSetup";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
+import { ContextMenu, type ContextMenuState } from "./ContextMenu";
+import { TableGridPicker } from "./TableGridPicker";
+import { BordersPicker } from "./BordersPicker";
+import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -80,6 +85,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [specialChars, setSpecialChars] = useState(false);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [tableProps, setTableProps] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
   const [showRuler, setShowRuler] = useState(true);
   const [promptSpec, setPromptSpec] = useState<MiniPromptSpec | null>(null);
@@ -117,7 +125,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Subscript, Superscript,
       TaskList, TaskItem.configure({ nested: true }),
-      Table.configure({ resizable: true }), TableRow, TableHeader, TableCell,
+      KxTable.configure({ resizable: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands,
       RichImage,
       CodeBlockLowlight.configure({ lowlight: createLowlight(common) }),
       Mathematics,
@@ -125,7 +133,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
       CommentMark,
       ParagraphSpacing,
       ListStyle,
-      PageBreak,
+      PageBreak, SectionBreak, ColumnBreak, Columns,
+      ForcedBreaks,
       Footnote,
       Toc,
       Embed,
@@ -145,7 +154,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         },
         // reviewers land in suggesting mode; everyone else edits directly
         mode: permission === "reviewer" ? "suggest" : "edit",
-        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "toc", "embed", "blockMath"],
+        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "sectionBreak", "columnBreak", "columns", "toc", "embed", "blockMath"],
       }),
       ...(session ? [
         Collaboration.configure({ document: session.ydoc, field: "default" }),
@@ -178,6 +187,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
   });
   editorRef.current = editor;
+  useEffect(() => { (window as any).__editor = editor ?? undefined; }, [editor]);
 
   /** Upload an image as Drive media owned by this doc, then embed it.
    *  Falls back to a data URL if the upload gate rejects it. */
@@ -757,6 +767,65 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   // ---- menubar model ----
   const ed = editor;
+  /** Shared table-ops item list — used by Format ▸ Table and the right-click menu. */
+  const tableMenuItems = (pos?: { x: number; y: number }): MenuItem[] => !ed ? [] : [
+    { label: "Insert row above", onClick: () => ed.chain().focus().addRowBefore().run() },
+    { label: "Insert row below", onClick: () => ed.chain().focus().addRowAfter().run() },
+    { label: "Insert column left", onClick: () => ed.chain().focus().addColumnBefore().run() },
+    { label: "Insert column right", onClick: () => ed.chain().focus().addColumnAfter().run() },
+    { divider: true },
+    { label: "Delete row", onClick: () => ed.chain().focus().deleteRow().run() },
+    { label: "Delete column", onClick: () => ed.chain().focus().deleteColumn().run() },
+    { divider: true },
+    { label: "Merge cells", onClick: () => ed.chain().focus().mergeCells().run() },
+    { label: "Split cell", onClick: () => ed.chain().focus().splitCell().run() },
+    { label: "Repeat header row", checked: !!ed.getAttributes("table").repeatHeader, onClick: () => ed.chain().focus().toggleHeaderRepeat().run() },
+    { label: "Toggle header row cells", onClick: () => ed.chain().focus().toggleHeaderRow().run() },
+    { divider: true },
+    { label: "Borders…", onClick: () => setBordersPos(pos ?? { x: window.innerWidth / 2 - 140, y: 160 }) },
+    {
+      label: "Cell shading", submenu: ["#ffffff", "#F5F1ED", "#FBF3EC", "#FFE9DA", "#F2782E", "#3A3633"].map((c) => ({
+        label: c, icon: <span className="sw" style={{ background: c, border: "1px solid #DDD" }} />,
+        onClick: () => ed.chain().focus().setCellAttributes({ backgroundColor: c === "#ffffff" ? null : c }).run(),
+      })),
+    },
+    {
+      label: "Vertical align", submenu: (["top", "middle", "bottom"] as const).map((v) => ({
+        label: v, checked: (ed.getAttributes("tableCell").vAlign ?? ed.getAttributes("tableHeader").vAlign) === v,
+        onClick: () => ed.chain().focus().setCellAttributes({ vAlign: v }).run(),
+      })),
+    },
+    { divider: true },
+    {
+      label: "Sort rows", submenu: [
+        { label: "A → Z", onClick: () => ed.chain().focus().sortTableRows("asc").run() },
+        { label: "Z → A", onClick: () => ed.chain().focus().sortTableRows("desc").run() },
+      ],
+    },
+    { label: "Distribute columns evenly", onClick: () => ed.chain().focus().distributeColumnsEvenly().run() },
+    { label: "Distribute rows evenly", onClick: () => ed.chain().focus().distributeRowsEvenly().run() },
+    {
+      label: "Auto-fit", submenu: [
+        { label: "Fit to contents", onClick: () => ed.chain().focus().autofitTable("contents").run() },
+        { label: "Fit to window", onClick: () => ed.chain().focus().autofitTable("window").run() },
+        { label: "Fixed column widths", onClick: () => ed.chain().focus().autofitTable("fixed").run() },
+      ],
+    },
+    {
+      label: "Table style", submenu: [
+        { label: "Plain grid", onClick: () => ed.chain().focus().applyTablePreset("plain").run() },
+        { label: "Banded rows", onClick: () => ed.chain().focus().applyTablePreset("banded").run() },
+        { label: "Header accent", onClick: () => ed.chain().focus().applyTablePreset("headerAccent").run() },
+        { label: "Outline only", onClick: () => ed.chain().focus().applyTablePreset("outline").run() },
+      ],
+    },
+    { divider: true },
+    { label: "Split table", onClick: () => ed.chain().focus().splitTable().run() },
+    { label: "Convert to text", onClick: () => ed.chain().focus().convertTableToText("\t").run() },
+    { divider: true },
+    { label: "Table properties…", onClick: () => setTableProps(true) },
+    { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
+  ];
   const menus = useMemo<{ label: string; items: MenuItem[] }[]>(() => {
     if (!ed) return [];
     const headingItem = (n: number): MenuItem => ({
@@ -860,10 +929,26 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ],
           },
           {
-            label: "Table", submenu: [2, 3, 4, 5, 6, 8].map((n) => ({
-              label: `${n} × ${n}`,
-              onClick: () => ed.chain().focus().insertTable({ rows: n, cols: n, withHeaderRow: true }).run(),
-            })),
+            label: "Table", submenu: [
+              {
+                custom: (
+                  <TableGridPicker
+                    onPick={(rows, cols) => ed.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()}
+                    onCustom={() => {
+                      void askText({ title: "Insert table", placeholder: "rows × cols, e.g. 4×3" })
+                        .then((v) => {
+                          const m = v?.match(/^(\d+)\s*[×x,]\s*(\d+)$/);
+                          if (m) ed.chain().focus().insertTable({
+                            rows: Math.min(50, +m[1]), cols: Math.min(20, +m[2]), withHeaderRow: true,
+                          }).run();
+                        });
+                    }}
+                  />
+                ),
+              },
+              { divider: true },
+              { label: "Convert text to table", onClick: () => ed.chain().focus().convertTextToTable("\t").run() },
+            ],
           },
           { label: "Link", shortcut: "Ctrl+K", checked: state?.link, onClick: insertLink },
           { label: "Comment", onClick: startComment },
@@ -884,7 +969,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
             },
           },
           { divider: true },
-          { label: "Page break", shortcut: "Ctrl+Enter", onClick: () => ed.chain().focus().setPageBreak().run() },
+          {
+            label: "Break", submenu: [
+              { label: "Page break", shortcut: "Ctrl+Enter", onClick: () => ed.chain().focus().setPageBreak().run() },
+              { label: "Column break", onClick: () => ed.chain().focus().setColumnBreak().run() },
+              { divider: true },
+              { label: "Section break (next page)", onClick: () => ed.chain().focus().setSectionBreak("nextPage").run() },
+              { label: "Section break (continuous)", onClick: () => ed.chain().focus().setSectionBreak("continuous").run() },
+              { label: "Section break (even page)", onClick: () => ed.chain().focus().setSectionBreak("evenPage").run() },
+              { label: "Section break (odd page)", onClick: () => ed.chain().focus().setSectionBreak("oddPage").run() },
+            ],
+          },
           { label: "Horizontal rule", onClick: () => ed.chain().focus().setHorizontalRule().run() },
           { label: "Code block", checked: state?.codeBlock, onClick: () => ed.chain().focus().toggleCodeBlock().run() },
           { label: "Special characters…", onClick: () => setSpecialChars(true) },
@@ -940,6 +1035,47 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ],
           },
           {
+            label: "Columns", submenu: [
+              { label: "One column", onClick: () => ed.chain().focus().setColumns(1).run() },
+              { label: "Two columns", onClick: () => ed.chain().focus().setColumns(2).run() },
+              { label: "Three columns", onClick: () => ed.chain().focus().setColumns(3).run() },
+              { divider: true },
+              {
+                label: "Column divider line", checked: Boolean(ed.getAttributes("columns").rule),
+                onClick: () => {
+                  const a = ed.getAttributes("columns") as { count?: number; gap?: number; rule?: boolean };
+                  ed.chain().focus().setColumns(a.count ?? 2, a.gap ?? 32, !a.rule).run();
+                },
+              },
+            ],
+          },
+          {
+            label: "Page & line breaks", submenu: [
+              {
+                label: "Page break before", checked: Boolean(ed.getAttributes("paragraph").pageBreakBefore || ed.getAttributes("heading").pageBreakBefore),
+                onClick: () => {
+                  const cur = Boolean(ed.getAttributes("paragraph").pageBreakBefore || ed.getAttributes("heading").pageBreakBefore);
+                  for (const t of ["paragraph", "heading", "blockquote"]) ed.commands.updateAttributes(t, { pageBreakBefore: !cur });
+                },
+              },
+              {
+                label: "Keep with next", checked: Boolean(ed.getAttributes("paragraph").keepNext || ed.getAttributes("heading").keepNext),
+                onClick: () => {
+                  const cur = Boolean(ed.getAttributes("paragraph").keepNext || ed.getAttributes("heading").keepNext);
+                  for (const t of ["paragraph", "heading", "blockquote"]) ed.commands.updateAttributes(t, { keepNext: !cur });
+                },
+              },
+              {
+                label: "Keep lines together", checked: Boolean(ed.getAttributes("paragraph").keepLines),
+                onClick: () => ed.commands.updateAttributes("paragraph", { keepLines: !ed.getAttributes("paragraph").keepLines }),
+              },
+              {
+                label: "Prevent widows/orphans", checked: Boolean(ed.getAttributes("paragraph").widowOrphan),
+                onClick: () => ed.commands.updateAttributes("paragraph", { widowOrphan: !ed.getAttributes("paragraph").widowOrphan }),
+              },
+            ],
+          },
+          {
             label: "Lists", submenu: [
               { label: "Bulleted list", checked: state?.bullet, onClick: () => ed.chain().focus().toggleBulletList().run() },
               { label: "Numbered list", checked: state?.ordered, onClick: () => ed.chain().focus().toggleOrderedList().run() },
@@ -960,22 +1096,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ],
           },
           {
-            label: "Table", submenu: state?.inTable ? [
-              { label: "Insert row above", onClick: () => ed.chain().focus().addRowBefore().run() },
-              { label: "Insert row below", onClick: () => ed.chain().focus().addRowAfter().run() },
-              { label: "Insert column left", onClick: () => ed.chain().focus().addColumnBefore().run() },
-              { label: "Insert column right", onClick: () => ed.chain().focus().addColumnAfter().run() },
-              { divider: true },
-              { label: "Delete row", onClick: () => ed.chain().focus().deleteRow().run() },
-              { label: "Delete column", onClick: () => ed.chain().focus().deleteColumn().run() },
-              { divider: true },
-              { label: "Merge cells", onClick: () => ed.chain().focus().mergeCells().run() },
-              { label: "Split cell", onClick: () => ed.chain().focus().splitCell().run() },
-              { label: "Toggle header row", onClick: () => ed.chain().focus().toggleHeaderRow().run() },
-              { label: "Toggle header column", onClick: () => ed.chain().focus().toggleHeaderColumn().run() },
-              { divider: true },
-              { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
-            ] : [{ label: "Click inside a table first", disabled: true }],
+            label: "Table",
+            submenu: state?.inTable ? tableMenuItems() : [{ label: "Click inside a table first", disabled: true }],
           },
           {
             label: "Image", submenu: state?.image ? [
@@ -1146,7 +1268,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
         )}
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
           {editor && showRuler && <Ruler editor={editor} canMutate={canMutate} />}
-          <div className="doc-page">
+          <div className="doc-page" onContextMenu={(e) => {
+            if (!editor || !canMutate) return;
+            const target = e.target as HTMLElement;
+            if (target.closest(".ProseMirror table")) {
+              e.preventDefault();
+              setCtxMenu({ x: e.clientX, y: e.clientY, items: tableMenuItems({ x: e.clientX, y: e.clientY }) });
+            }
+          }}>
             <EditorContent editor={editor} />
           </div>
         </div>
@@ -1182,6 +1311,19 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {editor && <LinkPopover editor={editor} />}
       {specialChars && editor && <SpecialChars editor={editor} onClose={() => setSpecialChars(false)} />}
+      {tableProps && editor && <TablePropertiesDialog editor={editor} onClose={() => setTableProps(false)} />}
+      {ctxMenu && <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
+      {bordersPos && editor && (
+        <div className="ctx-overlay" onClick={() => setBordersPos(null)} onContextMenu={(e) => { e.preventDefault(); setBordersPos(null); }}>
+          <div className="ctx-menu" onClick={(e) => e.stopPropagation()}
+            style={{ position: "fixed", left: Math.min(bordersPos.x, window.innerWidth - 300), top: bordersPos.y }}>
+            <BordersPicker onApply={(b) => {
+              editor.chain().focus().setCellAttributes({ borders: b }).run();
+              setBordersPos(null);
+            }} />
+          </div>
+        </div>
+      )}
       {pageSetupOpen && editor && (
         <PageSetupDialog editor={editor} onClose={() => { setPageSetupOpen(false); savePageSetup(); }} />
       )}

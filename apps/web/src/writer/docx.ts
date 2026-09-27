@@ -1,7 +1,9 @@
 import {
-  AlignmentType, Document, FootnoteReferenceRun, HeadingLevel, ImageRun, Math as DocxMath,
-  MathRun, Packer, Paragraph, PageBreak as DocxPageBreak, Table, TableCell, TableRow,
-  TextRun, VerticalAlign, WidthType, type File as DocxFile,
+  AlignmentType, ColumnBreak as DocxColumnBreak, Document, Footer, FootnoteReferenceRun,
+  Header, HeadingLevel, ImageRun, Math as DocxMath, MathRun, Packer, Paragraph,
+  PageBreak as DocxPageBreak, SectionType, Table, TableCell, TableRow,
+  TextRun, VerticalAlign, WidthType,
+  type File as DocxFile, type ISectionOptions, type ISectionPropertiesOptions,
 } from "docx";
 import mammoth from "mammoth";
 
@@ -130,6 +132,17 @@ function spacing(node: Block) {
   };
 }
 
+/** Word ▸ Paragraph ▸ Line and Page Breaks attrs → OOXML pPr props. */
+function paginationProps(node: Block) {
+  const a = node.attrs ?? {};
+  return {
+    pageBreakBefore: a.pageBreakBefore ? true : undefined,
+    keepNext: a.keepNext ? true : undefined,
+    keepLines: a.keepLines ? true : undefined,
+    widowControl: a.widowOrphan ? true : undefined,
+  };
+}
+
 function blockToParagraphs(node: Block): Paragraph[] {
   switch (node.type) {
     case "heading": {
@@ -138,6 +151,7 @@ function blockToParagraphs(node: Block): Paragraph[] {
         heading: HEADINGS[level] ?? HeadingLevel.HEADING_6,
         alignment: ALIGN[(node.attrs?.textAlign as string) ?? ""] as never,
         spacing: spacing(node),
+        ...paginationProps(node),
         indent: node.attrs?.indent ? { left: (node.attrs.indent as number) * 480 } : undefined,
         children: inlineRuns(node.content as Inline[]) as never,
       })];
@@ -146,6 +160,7 @@ function blockToParagraphs(node: Block): Paragraph[] {
       return [new Paragraph({
         alignment: ALIGN[(node.attrs?.textAlign as string) ?? ""] as never,
         spacing: spacing(node),
+        ...paginationProps(node),
         indent: node.attrs?.indent ? { left: (node.attrs.indent as number) * 480 } : undefined,
         children: inlineRuns(node.content as Inline[]) as never,
       })];
@@ -186,6 +201,11 @@ function blockToParagraphs(node: Block): Paragraph[] {
       return [new Paragraph({ children: [new TextRun({ text: "─".repeat(40), color: "BBBBBB" })] })];
     case "pageBreak":
       return [new Paragraph({ children: [new DocxPageBreak()] })];
+    case "columnBreak":
+      return [new Paragraph({ children: [new DocxColumnBreak()] })];
+    case "sectionBreak":
+      // handled at section-splitting level in exportDocxBytes
+      return [];
     case "blockMath":
       return [new Paragraph({
         alignment: AlignmentType.CENTER,
@@ -230,21 +250,102 @@ function tableOf(node: Block): Table | null {
   });
 }
 
+const pxToDxa = (px: unknown): number | undefined =>
+  typeof px === "number" && Number.isFinite(px) ? Math.round(px * 15) : undefined;
+
+const SECTION_TYPES: Record<string, (typeof SectionType)[keyof typeof SectionType]> = {
+  nextPage: SectionType.NEXT_PAGE,
+  continuous: SectionType.CONTINUOUS,
+  evenPage: SectionType.EVEN_PAGE,
+  oddPage: SectionType.ODD_PAGE,
+};
+
+/** SectionBreak attrs (describing the section that follows the break) → OOXML
+ *  sectPr properties + optional header/footer parts. */
+function sectionProps(attrs: Record<string, unknown>): {
+  properties: ISectionPropertiesOptions;
+  headers?: ISectionOptions["headers"];
+  footers?: ISectionOptions["footers"];
+} {
+  const properties: ISectionPropertiesOptions = {
+    type: SECTION_TYPES[(attrs.type as string) ?? "nextPage"] ?? SectionType.NEXT_PAGE,
+  };
+  const w = pxToDxa(attrs.pageWidth), h = pxToDxa(attrs.pageHeight);
+  const margin: Record<string, number | undefined> = {
+    top: pxToDxa(attrs.marginTop), bottom: pxToDxa(attrs.marginBottom),
+    left: pxToDxa(attrs.marginLeft), right: pxToDxa(attrs.marginRight),
+  };
+  const page: NonNullable<ISectionPropertiesOptions["page"]> = {
+    ...(w || h ? { size: { width: w ?? 12240, height: h ?? 15840 } } : {}),
+    ...(Object.values(margin).some((v) => v != null) ? { margin: margin as never } : {}),
+  };
+  if (page.size || page.margin) (properties as { page?: unknown }).page = page;
+  const hf = (l: unknown, r: unknown) =>
+    new Paragraph({
+      children: [
+        new TextRun({ text: String(l ?? "") }),
+        new TextRun({ text: "\t" }),
+        new TextRun({ text: String(r ?? "") }),
+      ],
+    });
+  const headers = attrs.headerLeft != null || attrs.headerRight != null
+    ? { default: new Header({ children: [hf(attrs.headerLeft, attrs.headerRight)] }) }
+    : undefined;
+  const footers = attrs.footerLeft != null || attrs.footerRight != null
+    ? { default: new Footer({ children: [hf(attrs.footerLeft, attrs.footerRight)] }) }
+    : undefined;
+  return { properties, headers, footers };
+}
+
 /** TipTap JSON → .docx bytes (no download side effect — used by tests + export). */
 export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
   footnoteTexts.clear();
   footnoteSeq = 0;
   await prefetchImages(doc);
 
-  const children: (Paragraph | Table)[] = [];
+  // Split top-level blocks into OOXML sections: sectionBreak closes the
+  // current section (its attrs describe the section that follows, mirroring
+  // our in-editor model); a `columns` node becomes its own continuous section.
+  const sections: ISectionOptions[] = [];
+  let cur: (Paragraph | Table)[] = [];
+  let pending: {
+    properties: ISectionPropertiesOptions;
+    headers?: ISectionOptions["headers"];
+    footers?: ISectionOptions["footers"];
+  } | null = null;
+  const flush = () => {
+    const p = pending;
+    pending = null;
+    sections.push({
+      children: cur.length ? cur : [new Paragraph({})],
+      ...(p ?? {}),
+    });
+    cur = [];
+  };
   for (const node of (doc.content ?? []) as Block[]) {
-    if (node.type === "table") {
+    if (node.type === "sectionBreak") {
+      flush();
+      pending = sectionProps(node.attrs ?? {});
+    } else if (node.type === "columns") {
+      flush();
+      const a = node.attrs ?? {};
+      sections.push({
+        properties: {
+          type: SectionType.CONTINUOUS,
+          column: { count: (a.count as number) ?? 2, space: pxToDxa(a.gap) ?? 480, equalWidth: true },
+        },
+        children: ((node.content ?? []) as Block[]).flatMap(blockToParagraphs),
+      });
+      pending = { properties: { type: SectionType.CONTINUOUS } }; // resume single-column
+    } else if (node.type === "table") {
       const t = tableOf(node);
-      if (t) children.push(t);
+      if (t) cur.push(t);
     } else {
-      children.push(...blockToParagraphs(node));
+      cur.push(...blockToParagraphs(node));
     }
   }
+  flush();
+
   const footnotes: Record<number, { children: Paragraph[] }> = {};
   for (const [id, text] of footnoteTexts) {
     footnotes[Number(id)] = { children: [new Paragraph({ children: [new TextRun({ text })] })] };
@@ -253,7 +354,7 @@ export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
     creator: "Kreatix Business Suite",
     title: name,
     footnotes: footnotes as never,
-    sections: [{ children: children.length ? children : [new Paragraph({})] }],
+    sections,
   }) as DocxFile;
   return Packer.toBlob(file);
 }

@@ -11,6 +11,8 @@ export interface MenuItem {
   onClick?: () => void;
   submenu?: MenuItem[];
   divider?: boolean;
+  /** Render a custom widget instead of a label row (e.g. table grid picker) */
+  custom?: ReactNode;
 }
 
 interface MenuBarProps {
@@ -64,6 +66,7 @@ function MenuList({ items, close, depth }: { items: MenuItem[]; close: () => voi
     <>
       {items.map((item, i) => {
         if (item.divider) return <div key={i} className="menu-divider" />;
+        if (item.custom) return <div key={i} className="menu-custom">{item.custom}</div>;
         const hasSub = !!item.submenu?.length;
         return (
           <div

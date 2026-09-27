@@ -85,6 +85,27 @@ export const ParagraphSpacing = Extension.create({
             parseHTML: (el) => Math.round(parseInt((el as HTMLElement).style.marginLeft || "0") / INDENT_STEP),
             renderHTML: (attrs) => (attrs.indent ? { style: `margin-left:${attrs.indent * INDENT_STEP}px` } : {}),
           },
+          // Word ▸ Paragraph ▸ Line and Page Breaks — honored by the paginator patch
+          pageBreakBefore: {
+            default: null,
+            parseHTML: (el) => ((el as HTMLElement).getAttribute("data-pb-before") ? true : null),
+            renderHTML: (attrs) => (attrs.pageBreakBefore ? { "data-pb-before": "1" } : {}),
+          },
+          keepNext: {
+            default: null,
+            parseHTML: (el) => ((el as HTMLElement).getAttribute("data-keep-next") ? true : null),
+            renderHTML: (attrs) => (attrs.keepNext ? { "data-keep-next": "1" } : {}),
+          },
+          keepLines: {
+            default: null,
+            parseHTML: (el) => ((el as HTMLElement).getAttribute("data-keep-lines") ? true : null),
+            renderHTML: (attrs) => (attrs.keepLines ? { "data-keep-lines": "1" } : {}),
+          },
+          widowOrphan: {
+            default: null,
+            parseHTML: (el) => ((el as HTMLElement).getAttribute("data-widow-orphan") ? true : null),
+            renderHTML: (attrs) => (attrs.widowOrphan ? { "data-widow-orphan": "1" } : {}),
+          },
         },
       },
     ];

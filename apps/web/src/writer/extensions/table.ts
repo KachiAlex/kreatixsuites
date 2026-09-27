@@ -1,0 +1,470 @@
+// Table parity extensions — Word/Docs-class table attributes & commands.
+// Extends the stock TipTap table nodes with shading, borders, padding,
+// vertical alignment, sizes, text direction, table alignment/width modes,
+// header-row repeat and row-height controls; plus commands for sorting,
+// distributing, autofit, splitting and text↔table conversion.
+import { Extension } from "@tiptap/core";
+import {
+  Table as BaseTable, TableRow as BaseTableRow,
+  TableCell as BaseTableCell, TableHeader as BaseTableHeader,
+} from "@tiptap/extension-table";
+import type { Node as PMNode } from "@tiptap/pm/model";
+import type { CommandProps } from "@tiptap/core";
+import { TableMap } from "@tiptap/pm/tables";
+
+// ---- types ----------------------------------------------------------------
+
+export interface BorderSpec { style: string; width: number; color: string }
+export interface CellBorders { top?: BorderSpec; right?: BorderSpec; bottom?: BorderSpec; left?: BorderSpec }
+
+declare module "@tiptap/core" {
+  interface Commands<ReturnType> {
+    kxTable: {
+      setTableAttributes: (attrs: Record<string, unknown>) => ReturnType;
+      /** Apply attrs to every cell in the current cell selection (or the cell under cursor). */
+      setCellAttributes: (attrs: Record<string, unknown>) => ReturnType;
+      setRowHeight: (height: number | null, mode?: "atLeast" | "exact") => ReturnType;
+      /** Set the width (px) of the column under the cursor; null = auto. */
+      setColumnWidth: (width: number | null) => ReturnType;
+      toggleHeaderRepeat: () => ReturnType;
+      sortTableRows: (dir?: "asc" | "desc") => ReturnType;
+      distributeColumnsEvenly: () => ReturnType;
+      distributeRowsEvenly: () => ReturnType;
+      autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
+      /** Split the table at the row containing the cursor. */
+      splitTable: () => ReturnType;
+      /** Apply a named style preset across the whole table. */
+      applyTablePreset: (preset: "plain" | "banded" | "headerAccent" | "outline") => ReturnType;
+      convertTextToTable: (delim?: string) => ReturnType;
+      convertTableToText: (delim?: string) => ReturnType;
+    };
+  }
+}
+
+// ---- borders helpers (also used by the DOCX exporter) -----------------------
+
+const SIDE_CSS: Record<keyof CellBorders, string> = {
+  top: "border-top", right: "border-right", bottom: "border-bottom", left: "border-left",
+};
+
+export const bordersToStyle = (b: CellBorders | null | undefined): string =>
+  b ? (Object.keys(SIDE_CSS) as (keyof CellBorders)[])
+      .filter((s) => b[s])
+      .map((s) => `${SIDE_CSS[s]}:${b[s]!.width}px ${b[s]!.style} ${b[s]!.color}`)
+      .join("; ") : "";
+
+const bordersFromStyle = (st: CSSStyleDeclaration): CellBorders | null => {
+  const out: CellBorders = {};
+  for (const [side, css] of Object.entries(SIDE_CSS) as [keyof CellBorders, string][]) {
+    const w = st.getPropertyValue(`${css}-width`);
+    const s = st.getPropertyValue(`${css}-style`);
+    const c = st.getPropertyValue(`${css}-color`);
+    if (w && s && s !== "none") out[side] = { width: parseInt(w) || 1, style: s, color: c || "#000" };
+  }
+  return Object.keys(out).length ? out : null;
+};
+
+// ---- cell/header shared attributes ------------------------------------------
+// mergeAttributes joins `style` fragments, so each attr can emit its own.
+
+const cellAttrs = {
+  backgroundColor: {
+    default: null,
+    parseHTML: (el: HTMLElement) => el.getAttribute("data-bg") || el.style.backgroundColor || null,
+    renderHTML: (a: Record<string, unknown>) =>
+      a.backgroundColor ? { "data-bg": a.backgroundColor as string, style: `background-color:${a.backgroundColor}` } : {},
+  },
+  vAlign: {
+    default: null,
+    parseHTML: (el: HTMLElement) => el.style.verticalAlign || null,
+    renderHTML: (a: Record<string, unknown>) => a.vAlign ? { style: `vertical-align:${a.vAlign}` } : {},
+  },
+  padding: {
+    default: null,
+    parseHTML: (el: HTMLElement) => (el.style.padding ? parseInt(el.style.padding) : null),
+    renderHTML: (a: Record<string, unknown>) => a.padding != null ? { style: `padding:${a.padding}px` } : {},
+  },
+  borders: {
+    default: null,
+    parseHTML: (el: HTMLElement) => bordersFromStyle(el.style),
+    renderHTML: (a: Record<string, unknown>) => {
+      const st = bordersToStyle(a.borders as CellBorders);
+      return st ? { style: st } : {};
+    },
+  },
+  textDirection: {
+    default: null,
+    parseHTML: (el: HTMLElement) => el.style.writingMode || null,
+    renderHTML: (a: Record<string, unknown>) => a.textDirection ? { style: `writing-mode:${a.textDirection}` } : {},
+  },
+};
+
+export const KxTableCell = BaseTableCell.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...cellAttrs };
+  },
+});
+
+export const KxTableHeader = BaseTableHeader.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...cellAttrs };
+  },
+});
+
+// ---- table + row attrs ------------------------------------------------------
+// Dynamic widths/indent ride CSS custom props so they merge cleanly with the
+// base extension's own `style` output (width/min-width from the colgroup).
+
+export const KxTable = BaseTable.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      align: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-align") || null,
+        renderHTML: (a: Record<string, unknown>) => a.align ? { "data-align": a.align as string } : {},
+      },
+      widthMode: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-width-mode") || null,
+        renderHTML: (a: Record<string, unknown>) => a.widthMode ? { "data-width-mode": a.widthMode as string } : {},
+      },
+      widthPct: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const w = el.style.width;
+          return w?.endsWith("%") ? parseInt(w) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) => a.widthPct ? { style: `--twidth:${a.widthPct}%` } : {},
+      },
+      indent: {
+        default: 0,
+        parseHTML: (el: HTMLElement) => Math.round(parseInt(el.style.marginLeft || "0") / 24),
+        renderHTML: (a: Record<string, unknown>) => a.indent ? { style: `--tindent:${(a.indent as number) * 24}px` } : {},
+      },
+      repeatHeader: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-repeat-header") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.repeatHeader ? { "data-repeat-header": "true" } : {},
+      },
+    };
+  },
+});
+
+export const KxTableRow = BaseTableRow.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      height: {
+        default: null,
+        parseHTML: (el: HTMLElement) => (el.style.height ? parseInt(el.style.height) : null),
+        renderHTML: (a: Record<string, unknown>) =>
+          a.height ? { style: `height:${a.height}px` } : {},
+      },
+      heightMode: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: () => ({}),
+      },
+      cantSplit: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-cant-split") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.cantSplit ? { "data-cant-split": "true" } : {},
+      },
+    };
+  },
+});
+
+// ---- commands ---------------------------------------------------------------
+
+/** Depth of the `table` node enclosing the selection, or null. */
+const tableDepthAt = (state: CommandProps["state"]) => {
+  const { $from } = state.selection;
+  for (let d = $from.depth; d >= 0; d--) {
+    if ($from.node(d).type.name === "table") return d;
+  }
+  return null;
+};
+
+export const KxTableCommands = Extension.create({
+  name: "kxTable",
+
+  addCommands() {
+    return {
+      setTableAttributes:
+        (attrs) =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          if (dispatch) {
+            const $from = state.selection.$from;
+            tr.setNodeMarkup($from.before(d), undefined, { ...$from.node(d).attrs, ...attrs });
+          }
+          return true;
+        },
+
+      setCellAttributes:
+        (attrs) =>
+        ({ commands }) => {
+          let ok = false;
+          for (const [k, v] of Object.entries(attrs)) ok = commands.setCellAttribute(k, v) || ok;
+          return ok;
+        },
+
+      setRowHeight:
+        (height, mode) =>
+        ({ tr, state, dispatch }) => {
+          const { $from } = state.selection;
+          for (let d = $from.depth; d >= 0; d--) {
+            if ($from.node(d).type.name === "tableRow") {
+              if (dispatch) tr.setNodeMarkup($from.before(d), undefined, { ...$from.node(d).attrs, height, heightMode: mode ?? null });
+              return true;
+            }
+          }
+          return false;
+        },
+
+      setColumnWidth:
+        (width) =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          const map = TableMap.get(table);
+          // column index of the cell under the cursor
+          let colIdx: number | null = null;
+          for (let dd = $from.depth; dd > d; dd--) {
+            const n = $from.node(dd).type.name;
+            if (n === "tableCell" || n === "tableHeader") {
+              const cellStart = $from.before(dd) - tablePos - 1;
+              colIdx = map.findCell(cellStart).left;
+              break;
+            }
+          }
+          if (colIdx == null) return false;
+          if (!dispatch) return true;
+          table.forEach((row, off) => {
+            row.forEach((cell, coff) => {
+              const start = tablePos + 1 + off + 1 + coff;
+              const rc = map.findCell(start - tablePos - 1);
+              const span = (cell.attrs.colspan as number) || 1;
+              if (rc.left <= colIdx! && colIdx! < rc.left + span) {
+                const widths = [...((cell.attrs.colwidth as number[] | null) ?? Array(span).fill(null))];
+                widths[colIdx! - rc.left] = width;
+                tr.setNodeMarkup(start, undefined, { ...cell.attrs, colwidth: widths });
+              }
+            });
+          });
+          return true;
+        },
+
+      toggleHeaderRepeat:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          if (dispatch) {
+            const $from = state.selection.$from;
+            const node = $from.node(d);
+            tr.setNodeMarkup($from.before(d), undefined, { ...node.attrs, repeatHeader: !node.attrs.repeatHeader });
+          }
+          return true;
+        },
+
+      sortTableRows:
+        (dir = "asc") =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          // leading all-header rows stay pinned at the top
+          let headerCount = 0;
+          const dataRows: { node: PMNode; key: string }[] = [];
+          table.forEach((row) => {
+            const isHeader = row.childCount > 0 && row.firstChild!.type.name === "tableHeader";
+            if (isHeader && dataRows.length === 0) {
+              headerCount++;
+            } else {
+              dataRows.push({ node: row, key: row.firstChild?.textContent.trim() ?? "" });
+            }
+          });
+          dataRows.sort((a, b) => {
+            const na = Number(a.key), nb = Number(b.key);
+            const cmp = !isNaN(na) && !isNaN(nb) && a.key !== "" && b.key !== ""
+              ? na - nb
+              : a.key.localeCompare(b.key, undefined, { sensitivity: "base" });
+            return dir === "desc" ? -cmp : cmp;
+          });
+          if (!dispatch) return true;
+          const content: PMNode[] = [];
+          table.forEach((row, _off, i) => {
+            content.push(i < headerCount ? row : dataRows[i - headerCount].node);
+          });
+          tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, content));
+          return true;
+        },
+
+      distributeColumnsEvenly:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          let cols = 0;
+          table.forEach((row) => {
+            let c = 0;
+            row.forEach((cell) => { c += (cell.attrs.colspan as number) || 1; });
+            cols = Math.max(cols, c);
+          });
+          if (!cols) return false;
+          if (!dispatch) return true;
+          const tablePos = $from.before(d);
+          const per = 100 / cols;
+          table.forEach((row, off) => {
+            row.forEach((cell, coff) => {
+              const span = (cell.attrs.colspan as number) || 1;
+              tr.setNodeMarkup(tablePos + 1 + off + 1 + coff, undefined, {
+                ...cell.attrs, colwidth: Array.from({ length: span }, () => per),
+              });
+            });
+          });
+          return true;
+        },
+
+      distributeRowsEvenly:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          if (!dispatch) return true;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          table.forEach((row, off) => {
+            tr.setNodeMarkup(tablePos + 1 + off, undefined, { ...row.attrs, height: null, heightMode: null });
+          });
+          return true;
+        },
+
+      autofitTable:
+        (mode) =>
+        ({ commands }) => {
+          if (mode === "window") return commands.setTableAttributes({ widthMode: "pct", widthPct: 100 });
+          if (mode === "contents") return commands.setTableAttributes({ widthMode: "auto", widthPct: null });
+          return commands.setTableAttributes({ widthMode: "fixed" });
+        },
+
+      splitTable:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const rowIndex = $from.index(d); // row the cursor sits in
+          if ($from.depth <= d || rowIndex === 0) return false;
+          if (!dispatch) return true;
+          const tablePos = $from.before(d);
+          const before: PMNode[] = [], after: PMNode[] = [];
+          table.forEach((row, _off, i) => (i < rowIndex ? before : after).push(row));
+          const gap = state.schema.nodes.paragraph.create();
+          tr.replaceWith(
+            tablePos, tablePos + table.nodeSize,
+            [table.type.create(table.attrs, before), gap, table.type.create(table.attrs, after)],
+          );
+          return true;
+        },
+
+      applyTablePreset:
+        (preset) =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          if (!dispatch) return true;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          const line = (w: number, c: string): CellBorders => ({
+            top: { style: "solid", width: w, color: c },
+            right: { style: "solid", width: w, color: c },
+            bottom: { style: "solid", width: w, color: c },
+            left: { style: "solid", width: w, color: c },
+          });
+          table.forEach((row, off, ri) => {
+            row.forEach((cell, coff) => {
+              const pos = tablePos + 1 + off + 1 + coff;
+              const a = { ...cell.attrs };
+              if (preset === "plain") {
+                a.backgroundColor = null;
+                a.borders = line(1, "#DDD6D0");
+              } else if (preset === "banded") {
+                a.backgroundColor = ri === 0 ? "#F2782E" : ri % 2 === 0 ? "#FBF3EC" : null;
+                a.borders = line(1, "#E4D9CE");
+              } else if (preset === "headerAccent") {
+                a.backgroundColor = ri === 0 ? "#3A3633" : null;
+                a.borders = line(1, "#DDD6D0");
+              } else if (preset === "outline") {
+                a.backgroundColor = null;
+                a.borders = null; // keep default thin grid
+              }
+              tr.setNodeMarkup(pos, undefined, a);
+            });
+          });
+          return true;
+        },
+
+      convertTextToTable:
+        (delim = "\t") =>
+        ({ state, commands }) => {
+          const { $from, $to, empty } = state.selection;
+          if (empty) return false;
+          const text = state.doc.textBetween($from.pos, $to.pos, "\n", "\n");
+          const lines = text.split("\n").filter((l) => l.length);
+          if (!lines.length) return false;
+          const cells = lines.map((l) => l.split(delim));
+          const cols = Math.max(...cells.map((c) => c.length));
+          const mkCell = (t: string) => ({
+            type: "tableCell",
+            content: [{ type: "paragraph", content: t ? [{ type: "text", text: t }] : undefined }],
+          });
+          const rows = cells.map((c) => ({
+            type: "tableRow",
+            content: Array.from({ length: cols }, (_, i) => mkCell(c[i] ?? "")),
+          }));
+          return commands.insertContentAt(
+            { from: $from.pos, to: $to.pos },
+            { type: "table", content: rows },
+          );
+        },
+
+      convertTableToText:
+        (delim = "\t") =>
+        ({ state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const lines: string[] = [];
+          table.forEach((row) => {
+            const cells: string[] = [];
+            row.forEach((cell) => cells.push(cell.textContent.trim().replace(/\n/g, " ")));
+            lines.push(cells.join(delim));
+          });
+          if (!dispatch) return true;
+          const pos = $from.before(d);
+          const para = state.schema.nodes.paragraph;
+          const text = state.schema.text;
+          dispatch(state.tr.replaceWith(
+            pos, pos + table.nodeSize,
+            lines.map((l) => para.create(undefined, l ? text(l) : undefined)),
+          ));
+          return true;
+        },
+    };
+  },
+});
