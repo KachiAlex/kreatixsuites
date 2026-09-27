@@ -175,6 +175,30 @@ export function PresentEditor({ item, initialDoc, permission }: {
             z: maxZ + 1, html: String(o.html), fontSize: o.fontSize as number | undefined,
             color: o.color as string | undefined, align: o.align as SlideObject["align"],
           });
+        } else if (o.op === "add_shape" && d.slides[idx]) {
+          const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
+          d.slides[idx].objects.push({
+            id: newId(), type: "shape", shape: o.shape as SlideObject["shape"],
+            x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h), z: maxZ + 1,
+            fill: (o.fill as string) ?? themeOf(d).accent, stroke: (o.stroke as string) ?? "none",
+            html: o.html as string | undefined,
+          });
+        } else if (o.op === "add_table" && d.slides[idx]) {
+          const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
+          d.slides[idx].objects.push({
+            id: newId(), type: "table", table: o.rows as string[][],
+            x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h), z: maxZ + 1,
+            fontSize: 15, color: themeOf(d).ink,
+          });
+        } else if (o.op === "add_chart" && d.slides[idx]) {
+          const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
+          d.slides[idx].objects.push({
+            id: newId(), type: "chart",
+            chart: { type: o.type as "bar" | "line" | "pie", labels: o.labels as string[], series: o.series as { name: string; values: number[] }[], title: o.title as string | undefined },
+            x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h), z: maxZ + 1,
+          });
+        } else if (o.op === "delete_slide" && d.slides.length > 1 && d.slides[idx]) {
+          d.slides.splice(idx, 1);
         } else if (o.op === "edit_object_text" && d.slides[idx]) {
           const obj = d.slides[idx].objects[o.index as number];
           if (obj && obj.type === "text") obj.html = String(o.html);

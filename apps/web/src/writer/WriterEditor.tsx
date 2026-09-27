@@ -249,21 +249,49 @@ export function WriterEditor({ item, initialDoc, permission }: {
     for (const o of ops) {
       if (o.op === "find_replace") {
         const needle = String(o.find);
+        // concat text per textblock so matches span inline-node boundaries
+        // (e.g. "foo**bar**"); non-text leaf nodes act as match boundaries
         const matches: { from: number; to: number }[] = [];
         editor.state.doc.descendants((node, pos) => {
-          if (!node.isText || !node.text) return;
-          let i = node.text.indexOf(needle);
+          if (!node.isTextblock) return;
+          const chars: string[] = [];
+          const posMap: number[] = [];
+          node.forEach((child, off) => {
+            if (child.isText && child.text) {
+              chars.push(child.text);
+              for (let i = 0; i < child.text.length; i++) posMap.push(pos + 1 + off + i);
+            } else {
+              chars.push(" ");
+              posMap.push(pos + 1 + off);
+            }
+          });
+          const t = chars.join("");
+          let i = t.indexOf(needle);
           while (i !== -1) {
-            matches.push({ from: pos + i, to: pos + i + needle.length });
-            if (!o.all) return;
-            i = node.text.indexOf(needle, i + 1);
+            matches.push({ from: posMap[i], to: posMap[i + needle.length - 1] + 1 });
+            if (!o.all) return false;
+            i = t.indexOf(needle, i + needle.length);
           }
+          return false;
         });
         const use = o.all ? matches : matches.slice(0, 1);
         editor.chain().focus().command(({ tr }) => {
           [...use].reverse().forEach((m) => tr.insertText(String(o.replace ?? ""), m.from, m.to));
           return true;
         }).run();
+      } else if (o.op === "insert_table") {
+        const rows = Math.min(20, Math.max(1, Number(o.rows) || 2));
+        const cols = Math.min(8, Math.max(1, Number(o.cols) || 2));
+        const table = {
+          type: "table",
+          content: Array.from({ length: rows }, () => ({
+            type: "tableRow",
+            content: Array.from({ length: cols }, () => ({
+              type: "tableCell", content: [{ type: "paragraph" }],
+            })),
+          })),
+        };
+        editor.chain().focus().insertContentAt(editor.state.doc.nodeSize - 2, table).run();
       } else if (o.op === "append_paragraph" || o.op === "insert_heading") {
         editor.chain().focus().insertContentAt(editor.state.doc.nodeSize - 2,
           o.op === "insert_heading"

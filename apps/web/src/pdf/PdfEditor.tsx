@@ -334,21 +334,42 @@ export function PdfEditor({ item, initialDoc, permission }: {
       chunks.push(part);
       len += part.length;
     }
-    return chunks.join("").slice(0, 24000);
-  }, [doc]);
+    // expose annotations + form fields so ops can reference them
+    if (annDoc.annotations.length) {
+      chunks.push("--- annotations (0-based index for delete_annotation) ---");
+      annDoc.annotations.forEach((a, i) => {
+        chunks.push(`[${i}] ${a.type} page ${a.page}${a.text ? `: ${a.text.slice(0, 60)}` : ""}`);
+      });
+    }
+    const formKeys = Object.keys(annDoc.form ?? {});
+    if (formKeys.length) {
+      chunks.push("--- form fields (use the id as `name` in set_form_value) ---");
+      for (const k of formKeys) chunks.push(`form[${k}] = ${JSON.stringify((annDoc.form![k] as { value?: unknown })?.value ?? annDoc.form![k])}`);
+    }
+    return chunks.join("\n").slice(0, 30000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, annDoc]);
 
   const aiApplyOps = useCallback((ops: AiOp[]) => {
     for (const o of ops) {
-      if (o.op !== "add_annotation") continue;
-      const page = Number(o.page);
-      if (!doc || page < 1 || page > doc.numPages) continue;
-      addAnn(page, {
-        type: o.type as PdfAnn["type"],
-        rects: o.rects as PdfAnn["rects"],
-        points: o.points as PdfAnn["points"],
-        text: o.text as string | undefined,
-        color: (o.color as string) ?? "#FFD23F",
-      });
+      if (o.op === "add_annotation") {
+        const page = Number(o.page);
+        if (!doc || page < 1 || page > doc.numPages) continue;
+        addAnn(page, {
+          type: o.type as PdfAnn["type"],
+          rects: o.rects as PdfAnn["rects"],
+          points: o.points as PdfAnn["points"],
+          text: o.text as string | undefined,
+          color: (o.color as string) ?? "#FFD23F",
+        });
+      } else if (o.op === "delete_annotation") {
+        const i = Number(o.index);
+        mutate((d) => { if (i >= 0 && i < d.annotations.length) d.annotations.splice(i, 1); });
+      } else if (o.op === "set_form_value") {
+        const name = String(o.name);
+        mutate((d) => { d.form = { ...d.form, [name]: { value: o.value } }; });
+        try { doc?.annotationStorage.setValue(name, { value: o.value }); } catch { /* field may not exist */ }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);

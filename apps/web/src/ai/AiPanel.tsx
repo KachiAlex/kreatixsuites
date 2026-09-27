@@ -1,7 +1,8 @@
 // Kreatix AI — cross-suite assistant panel: Ask / Explain / Edit / Plan modes,
 // tool-constrained ops with plan + diff preview before apply, provenance log.
+// Streams replies over SSE; optional auto-apply (still undoable via Ctrl+Z).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import { timeAgo } from "../lib/format";
 
 export type AiMode = "ask" | "explain" | "edit" | "plan";
@@ -12,6 +13,8 @@ interface Pending {
   actionId: string; plan?: string[]; ops: AiOp[];
 }
 interface ActionRow { id: string; mode: string; prompt: string; applied: boolean; ops: number; by: string; createdAt: string }
+
+const AUTOAPPLY_KEY = "kreatix.ai.autoApply";
 
 export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps, onClose, toast }: {
   fileId: string;
@@ -28,50 +31,96 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streaming, setStreaming] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [history, setHistory] = useState<ActionRow[] | null>(null);
+  const [autoApply, setAutoApply] = useState(() => localStorage.getItem(AUTOAPPLY_KEY) === "1");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     api.get<{ enabled: boolean }>("/api/ai/status").then((r) => setEnabled(r.enabled)).catch(() => setEnabled(false));
   }, []);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, pending, busy]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, pending, busy, streaming]);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const loadHistory = useCallback(() => {
     api.get<{ actions: ActionRow[] }>(`/api/files/${fileId}/ai/actions`)
       .then((r) => setHistory(r.actions)).catch(() => setHistory([]));
   }, [fileId]);
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy) return;
-    setInput(""); setBusy(true); setPending(null);
-    const next = [...msgs, { role: "user" as const, content: text }];
-    setMsgs(next);
+  const apply = async (p: Pending) => {
     try {
-      const context = await serialize();
-      const r = await api.post<{ actionId: string; reply: string; plan?: string[]; ops: AiOp[] }>("/api/ai/chat", {
-        fileId, mode, messages: next.slice(-12), context, selection: selection(),
-      });
-      setMsgs([...next, { role: "assistant", content: r.reply }]);
-      if (r.ops.length || r.plan?.length) setPending({ actionId: r.actionId, plan: r.plan, ops: r.ops });
-    } catch (e) {
-      setMsgs([...next, { role: "assistant", content: `⚠ ${(e as Error).message}` }]);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const apply = async () => {
-    if (!pending) return;
-    try {
-      applyOps(pending.ops);
-      await api.post("/api/ai/applied", { actionId: pending.actionId });
-      toast(`Applied ${pending.ops.length} AI change${pending.ops.length === 1 ? "" : "s"} — Ctrl+Z to undo`);
+      applyOps(p.ops);
+      await api.post("/api/ai/applied", { actionId: p.actionId });
+      toast(`Applied ${p.ops.length} AI change${p.ops.length === 1 ? "" : "s"} — Ctrl+Z to undo`);
     } catch (e) {
       toast(`Apply failed: ${(e as Error).message.slice(0, 80)}`);
     }
-    setPending(null);
+  };
+
+  /** POST to the SSE endpoint and read the event stream manually
+   *  (EventSource can't POST). Emits raw token deltas, then the
+   *  server-validated final payload. */
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput(""); setBusy(true); setPending(null); setStreaming("");
+    const next = [...msgs, { role: "user" as const, content: text }];
+    setMsgs(next);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const context = await serialize();
+      const res = await fetch("/api/ai/chat/stream", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({ fileId, mode, messages: next.slice(-12), context, selection: selection() }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => null) as { message?: string } | null;
+        throw new Error(err?.message ?? `Request failed (${res.status})`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "", raw = "";
+      const result: { final: { actionId: string; reply: string; plan?: string[]; ops: AiOp[] } | null } = { final: null };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf("\n\n")) >= 0) {
+          const evt = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          const line = evt.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let j: { t?: string; done?: boolean; error?: string } & Record<string, unknown>;
+          try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (j.error) throw new Error(String(j.error));
+          if (j.t) { raw += j.t; setStreaming(raw); }
+          if (j.done) result.final = j as unknown as NonNullable<typeof result.final>;
+        }
+      }
+      if (result.final) {
+        const final = result.final;
+        setMsgs([...next, { role: "assistant", content: final.reply }]);
+        if (final.ops.length || final.plan?.length) {
+          const p = { actionId: final.actionId, plan: final.plan, ops: final.ops };
+          if (autoApply && canEdit && final.ops.length) await apply(p);
+          else setPending(p);
+        }
+      } else {
+        setMsgs([...next, { role: "assistant", content: "⚠ The AI stream ended without a response." }]);
+      }
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") {
+        setMsgs([...next, { role: "assistant", content: `⚠ ${(e as Error).message}` }]);
+      }
+    } finally {
+      setBusy(false); setStreaming("");
+    }
   };
 
   const MODES: { id: AiMode; label: string; hint: string }[] = [
@@ -121,7 +170,13 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
             {msgs.map((m, i) => (
               <div key={i} className={`ai-msg ${m.role}`}><div className="ai-bubble">{m.content}</div></div>
             ))}
-            {busy && <div className="ai-msg assistant"><div className="ai-bubble ai-thinking">Thinking…</div></div>}
+            {busy && (
+              <div className="ai-msg assistant">
+                <div className={`ai-bubble ${streaming ? "" : "ai-thinking"}`}>
+                  {streaming ? scrubRaw(streaming) : "Thinking…"}
+                </div>
+              </div>
+            )}
 
             {pending && (
               <div className="ai-pending">
@@ -134,7 +189,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
                   <div key={i} className="ai-op">{describeOp(o)}</div>
                 ))}
                 {pending.ops.length > 0 && (
-                  <button className="btn-primary btn-sm" onClick={apply} disabled={!canEdit}>
+                  <button className="btn-primary btn-sm" onClick={() => { const p = pending; setPending(null); void apply(p); }} disabled={!canEdit}>
                     Apply {pending.ops.length} change{pending.ops.length === 1 ? "" : "s"}
                   </button>
                 )}
@@ -145,6 +200,13 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
             )}
             <div ref={bottomRef} />
           </div>
+          {canEdit && (mode === "edit" || mode === "plan") && (
+            <label className="ai-autoapply" title="Apply AI ops as soon as they arrive — still undoable with Ctrl+Z">
+              <input type="checkbox" checked={autoApply}
+                onChange={(e) => { setAutoApply(e.target.checked); localStorage.setItem(AUTOAPPLY_KEY, e.target.checked ? "1" : "0"); }} />
+              Auto-apply (undoable)
+            </label>
+          )}
           <div className="ai-input">
             <input value={input} disabled={busy || enabled === false}
               placeholder={mode === "ask" ? "Ask about this document…" : mode === "explain" ? "What should I explain?" : "Describe the change…"}
@@ -160,6 +222,16 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
 
 const kindLabel = (k: string) => ({ writer: "document", sheets: "spreadsheet", present: "presentation", pdf: "PDF" } as Record<string, string>)[k] ?? "file";
 
+/** While JSON streams in, show a rough preview — strip braces/quotes/keys so
+ *  the user sees generated text rather than raw JSON syntax. */
+function scrubRaw(s: string): string {
+  const m = /"reply"\s*:\s*"((?:[^"\\]|\\.)*)"?/s.exec(s);
+  if (m) {
+    try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
+  }
+  return s.replace(/[{}\[\]"]/g, "").slice(-300);
+}
+
 /** Human-readable op description for the apply preview. */
 export function describeOp(o: AiOp): string {
   const q = (s: unknown) => (typeof s === "string" && s.length > 40 ? s.slice(0, 37) + "…" : String(s));
@@ -168,15 +240,22 @@ export function describeOp(o: AiOp): string {
     case "append_paragraph": return `Append paragraph: "${q(o.text)}"`;
     case "prepend_paragraph": return `Prepend paragraph: "${q(o.text)}"`;
     case "insert_heading": return `Insert H${o.level}: "${q(o.text)}"`;
+    case "insert_table": return `Insert table ${o.rows}×${o.cols}`;
     case "set_cells": return `Set ${Object.keys((o.cells as object) ?? {}).length} cell(s) on ${o.sheet}`;
     case "set_format": return `Format ${(o.refs as unknown[])?.length ?? 0} cell(s) on ${o.sheet}`;
     case "add_sheet": return `Add sheet "${o.name}"`;
     case "update_slide": return `Update slide ${(o.slide as number) + 1}${o.notes ? " (notes)" : ""}${o.bg ? " (bg)" : ""}`;
     case "add_slide": return `Add slide${o.layout ? ` (${o.layout})` : ""}`;
     case "add_text": return `Add text box on slide ${(o.slide as number) + 1}`;
+    case "add_shape": return `Add ${o.shape} on slide ${(o.slide as number) + 1}`;
+    case "add_table": return `Add ${(o.rows as unknown[])?.length ?? 0}-row table on slide ${(o.slide as number) + 1}`;
+    case "add_chart": return `Add ${o.type} chart on slide ${(o.slide as number) + 1}`;
     case "edit_object_text": return `Edit object ${(o.index as number) + 1} on slide ${(o.slide as number) + 1}`;
     case "delete_object": return `Delete object ${(o.index as number) + 1} on slide ${(o.slide as number) + 1}`;
+    case "delete_slide": return `Delete slide ${(o.slide as number) + 1}`;
     case "add_annotation": return `Add ${o.type} on page ${o.page}`;
+    case "delete_annotation": return `Delete annotation ${(o.index as number) + 1}`;
+    case "set_form_value": return `Set form field "${q(o.name)}"`;
     default: return String(o.op);
   }
 }
