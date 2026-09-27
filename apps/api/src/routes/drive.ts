@@ -6,6 +6,7 @@ import { getItem, toDriveItem, touchItem, logActivity, type ItemRow } from "../i
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
+import { deindexFile } from "../indexer.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(255),
@@ -161,6 +162,7 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Only the owner can delete" });
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
+      deindexFile(item.id);
       db.prepare("DELETE FROM items WHERE id = ?").run(item.id);
       logActivity(user.orgId, user.id, item.id, "delete-permanent", item.name);
       return { ok: true };

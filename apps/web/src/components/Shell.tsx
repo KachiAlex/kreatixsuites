@@ -4,16 +4,53 @@ import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
+import { CommandPalette, renderSnippet } from "./CommandPalette";
+import { TemplatesDialog } from "./TemplatesDialog";
+import { useToast } from "../pages/Home";
 
 export function Shell() {
+  const [palette, setPalette] = useState(false);
+  const [templates, setTemplates] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const { msg, toast } = useToast();
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const upload = async (f: File) => {
+    const kind = f.type === "application/pdf" || f.name.endsWith(".pdf") ? "pdf" : "file";
+    try {
+      await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
+      navigate("/drive/all");
+      window.dispatchEvent(new Event("kreatix:refresh"));
+    } catch { toast("Upload failed"); }
+  };
+
   return (
     <div className="shell">
       <Rail />
-      <Sidebar />
+      <Sidebar onTemplates={() => setTemplates(true)} />
       <main>
-        <Topbar />
+        <Topbar onPalette={() => setPalette(true)} />
         <Outlet />
       </main>
+      <CommandPalette open={palette} onClose={() => setPalette(false)}
+        onTemplates={() => { setPalette(false); setTemplates(true); }}
+        onUpload={() => { setPalette(false); fileInput.current?.click(); }}
+        toast={toast} />
+      {templates && <TemplatesDialog onClose={() => setTemplates(false)} toast={toast} />}
+      <input ref={fileInput} type="file" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
+      {msg && <div className="toast">{msg}</div>}
     </div>
   );
 }
@@ -37,7 +74,7 @@ function Rail() {
   );
 }
 
-function Sidebar() {
+function Sidebar({ onTemplates }: { onTemplates: () => void }) {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -120,7 +157,7 @@ function Sidebar() {
       <a className="nav" onClick={() => fileInput.current?.click()}><span style={{ color: "var(--pdf)", fontWeight: 900, fontSize: 9 }}>PDF</span>PDF</a>
 
       <div className="section-label">Workspace tools</div>
-      <a className="nav"><span className="dot" />Templates</a>
+      <a className="nav" onClick={onTemplates}><span className="dot" />Templates</a>
       <a className="nav"><span className="dot" />Team workspace</a>
       <a className="nav"><span className="dot" />Automations</a>
 
@@ -190,11 +227,13 @@ function MentionsBell() {
   );
 }
 
-function Topbar() {
+type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
+
+function Topbar({ onPalette }: { onPalette: () => void }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [q, setQ] = useState("");
-  const [results, setResults] = useState<DriveItem[]>([]);
+  const [results, setResults] = useState<SearchItem[]>([]);
   const [open, setOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -213,7 +252,7 @@ function Topbar() {
   useEffect(() => {
     if (!q.trim()) { setResults([]); return; }
     const t = setTimeout(async () => {
-      const r = await api.get<{ items: DriveItem[] }>(`/api/search?q=${encodeURIComponent(q)}`);
+      const r = await api.get<{ items: SearchItem[] }>(`/api/search?q=${encodeURIComponent(q)}`);
       setResults(r.items);
       setOpen(true);
     }, 220);
@@ -230,12 +269,13 @@ function Topbar() {
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => results.length && setOpen(true)}
         />
-        <kbd>⌘ K</kbd>
+        <kbd onClick={onPalette} style={{ cursor: "pointer" }} title="Open command palette">⌘ K</kbd>
         {open && results.length > 0 && (
           <div className="file-menu" style={{ top: 50, left: 0, right: 0, minWidth: 0 }}>
             {results.map((it) => (
               <button key={it.id} onClick={() => { setOpen(false); setQ(""); navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`); }}>
                 <b>{it.name}</b> <small style={{ color: "#A19A95" }}> · {KIND_META[it.kind]?.label}</small>
+                {it.snippet && <span className="srch-snip">{renderSnippet(it.snippet)}</span>}
               </button>
             ))}
           </div>

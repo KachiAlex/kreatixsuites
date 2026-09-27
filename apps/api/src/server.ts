@@ -13,6 +13,7 @@ import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
 import { aiRoutes } from "./routes/ai.js";
 import { collabRoutes } from "./collab.js";
+import { reindexAll } from "./indexer.js";
 
 async function main() {
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
@@ -60,6 +61,12 @@ async function main() {
 
   const port = Number(process.env.PORT ?? 3001);
   await app.listen({ port, host: process.env.HOST ?? "0.0.0.0" });
+
+  // backfill the search index in the background (fast: JSON head blobs only)
+  setImmediate(() => {
+    try { app.log.info({ indexed: reindexAll() }, "search index rebuilt"); }
+    catch (e) { app.log.warn(e, "search reindex failed"); }
+  });
 }
 
 main().catch((err) => {

@@ -129,6 +129,9 @@ CREATE TABLE IF NOT EXISTS ai_actions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_actions_file ON ai_actions(file_id, created_at DESC);
+
+-- full-text document index (populated on save + at boot by indexer.ts)
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(file_id UNINDEXED, body);
 `);
 
 export const now = () => new Date().toISOString();

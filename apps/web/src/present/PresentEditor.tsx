@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
+import { writeKx, readKx } from "../lib/clipboard";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -252,6 +253,31 @@ export function PresentEditor({ item, initialDoc, permission }: {
     });
   }, [deck, slideIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // unified clipboard — objects paste into the current slide (or another deck)
+  const pasteObjects = (objs: SlideObject[]) => {
+    mutate((d) => {
+      const s = d.slides[slideIdx];
+      let z = Math.max(0, ...s.objects.map((o) => o.z)) + 1;
+      const pasted: string[] = [];
+      // keep groups coherent: remap group ids
+      const groupMap = new Map<string, string>();
+      for (const src of objs) {
+        const o = structuredClone(src);
+        o.id = newId();
+        o.x += 16; o.y += 16;
+        o.z = z++;
+        if (o.groupId) {
+          if (!groupMap.has(o.groupId)) groupMap.set(o.groupId, newId());
+          o.groupId = groupMap.get(o.groupId);
+        }
+        s.objects.push(o);
+        pasted.push(o.id);
+      }
+      setSelection(new Set(pasted));
+    });
+    toast(`Pasted ${objs.length} object${objs.length === 1 ? "" : "s"}`);
+  };
+
   const addObject = (obj: Omit<SlideObject, "id" | "z">) => {
     const id = newId();
     mutateSlide((s) => s.objects.push({ ...obj, id, z: Math.max(-1, ...s.objects.map((o) => o.z)) + 1 }));
@@ -453,6 +479,24 @@ export function PresentEditor({ item, initialDoc, permission }: {
       else if (e.key === "Escape") setSelection(new Set());
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") { e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && selection.size) {
+        e.preventDefault();
+        const objs = slide.objects.filter((o) => selection.has(o.id));
+        writeKx("present-objects", objs, `${objs.length} object${objs.length === 1 ? "" : "s"}`);
+        toast(`Copied ${objs.length} object${objs.length === 1 ? "" : "s"}`);
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x" && canEdit && selection.size) {
+        e.preventDefault();
+        const objs = slide.objects.filter((o) => selection.has(o.id));
+        writeKx("present-objects", objs, `${objs.length} objects`);
+        delSelected();
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && canEdit) {
+        const objs = readKx<SlideObject[]>("present-objects");
+        if (!objs?.length) return;
+        e.preventDefault();
+        pasteObjects(objs);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

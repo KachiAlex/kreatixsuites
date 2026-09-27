@@ -5,6 +5,7 @@ import { db, now } from "../db.js";
 import { getItem, touchItem, logActivity } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
+import { indexFile } from "../indexer.js";
 
 interface VersionRow {
   id: string;
@@ -93,6 +94,7 @@ export function contentRoutes(app: FastifyInstance) {
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
     ).run(randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now());
     db.prepare("UPDATE items SET size = ? WHERE id = ?").run(size, item.id);
+    try { indexFile(item.id, item.kind, body.content); } catch { /* indexing is best-effort */ }
     touchItem(item.id);
     return { version: next };
   });
