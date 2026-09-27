@@ -94,7 +94,7 @@ export function contentRoutes(app: FastifyInstance) {
   app.put("/api/files/:id/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+    if (!item || !hasPermission(await permissionFor(user.id, item), "reviewer")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
     const body = z

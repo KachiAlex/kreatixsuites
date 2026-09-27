@@ -38,6 +38,7 @@ import { LinkPopover } from "./LinkPopover";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, readPageSetup, applyPageSetup } from "./PageSetup";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
+import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -59,6 +60,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
 }) {
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
+  // reviewers write directly to the doc, but every change lands as a tracked
+  // suggestion (mode forced below); commenters can only anchor comment marks
+  const canMutate = canEdit || permission === "reviewer";
+  const canComment = canMutate || permission === "commenter";
   const forcedMode = permission === "reviewer" ? "suggest" : undefined;
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
@@ -76,6 +81,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [specialChars, setSpecialChars] = useState(false);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [zoom, setZoom] = useState(100);
+  const [showRuler, setShowRuler] = useState(true);
+  const [promptSpec, setPromptSpec] = useState<MiniPromptSpec | null>(null);
+  const promptResolve = useRef<((v: string | null) => void) | null>(null);
+  const askText = useCallback((spec: MiniPromptSpec) => new Promise<string | null>((res) => {
+    promptResolve.current = res;
+    setPromptSpec(spec);
+  }), []);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const textImportRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
@@ -91,12 +104,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
   useEffect(() => () => { sessionRef.current?.destroy(); sessionRef.current = null; }, []);
 
   const editor = useEditor({
-    editable: canEdit,
+    editable: canMutate,
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3, 4, 5, 6] },
         codeBlock: false,
-        link: { openOnClick: false, autolink: true, linkOnPaste: true },
+        undoRedo: false, // Collaboration ships its own Yjs-backed history
+        link: { openOnClick: !canMutate, autolink: true, linkOnPaste: true },
       }),
       TextStyle, Color, FontFamily, FontSize, LineHeight, BackgroundColor,
       Highlight.configure({ multicolor: true }),
@@ -150,11 +164,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
       attributes: { "aria-label": "Document editor", spellcheck: "true" },
       // paste / drag-drop an image → upload to Drive as doc media
       handlePaste: (_view, event) => {
+        if (!canMutate) return false;
         const file = [...(event.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
         if (file) { void uploadImage(file); return true; }
         return false;
       },
       handleDrop: (_view, event) => {
+        if (!canMutate) return false;
         const file = [...(event.dataTransfer?.files ?? [])].find((f) => f.type.startsWith("image/"));
         if (file) { event.preventDefault(); void uploadImage(file); return true; }
         return false;
@@ -166,6 +182,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   /** Upload an image as Drive media owned by this doc, then embed it.
    *  Falls back to a data URL if the upload gate rejects it. */
   const uploadImage = useCallback(async (f: File) => {
+    if (!canMutate) return;
     try {
       const r = await api.upload<{ item: { id: string } }>(
         `/api/drive/upload?name=${encodeURIComponent(f.name || "image")}&kind=file&mediaFor=${item.id}`, f);
@@ -178,7 +195,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       });
       editorRef.current?.chain().focus().setImage({ src: url }).run();
     }
-  }, [item.id]);
+  }, [item.id, canMutate]);
 
   // load fonts referenced by the doc so it renders correctly for viewers
   useEffect(() => { ensureDocFonts(initialDoc); }, [initialDoc]);
@@ -312,11 +329,20 @@ export function WriterEditor({ item, initialDoc, permission }: {
       } else if (k === "/") {
         e.preventDefault();
         setShortcutsOpen(true);
+      } else if (k === "p") {
+        e.preventDefault();
+        print();
+      } else if (k === "k" && canMutate) {
+        e.preventDefault();
+        insertLink();
+      } else if (k === "\\" && canMutate) {
+        e.preventDefault();
+        editorRef.current?.chain().focus().unsetAllMarks().clearNodes().run();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flushSave]);
+  }, [flushSave, canMutate, title]);
 
   // flush on unmount / pagehide (autosave durability, KBS-SHARED-003)
   useEffect(() => {
@@ -341,8 +367,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
     selector: (ctx) => ({
       words: ctx.editor?.storage.characterCount?.words() ?? 0,
       chars: ctx.editor?.storage.characterCount?.characters() ?? 0,
-      canUndo: ctx.editor?.can().undo() ?? false,
-      canRedo: ctx.editor?.can().redo() ?? false,
+      // can() executes a dry-run chain that touches view.dom — guard for the
+      // pre-mount pass of concurrent rendering
+      canUndo: ctx.editor?.isInitialized ? ctx.editor.can().undo() : false,
+      canRedo: ctx.editor?.isInitialized ? ctx.editor.can().redo() : false,
       bold: ctx.editor?.isActive("bold") ?? false,
       italic: ctx.editor?.isActive("italic") ?? false,
       underline: ctx.editor?.isActive("underline") ?? false,
@@ -375,8 +403,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
       inTable: ctx.editor?.isActive("table") ?? false,
       image: ctx.editor?.isActive("image") ?? false,
       paged: (ctx.editor?.storage.PaginationPlus?.enabled as boolean) ?? false,
+      trackMode: (ctx.editor?.storage as unknown as Record<string, { mode?: string }> | undefined)?.trackChanges?.mode ?? "edit",
     }),
   });
+
+  // "Viewing" mode must be truly read-only — track-changes only gates
+  // trackSetNode, so we toggle editable ourselves on mode changes
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(canMutate && (state?.trackMode ?? "edit") !== "view");
+  }, [editor, canMutate, state?.trackMode]);
 
   // ---- find & replace (KBS-WRITER-017) ----
   const matches = useMemo(() => {
@@ -408,7 +444,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   }, [editor, matches]);
 
   const replaceCurrent = useCallback((all: boolean) => {
-    if (!editor || !canEdit) return;
+    if (!editor || !canMutate) return;
     if (all) {
       editor.chain().focus().command(({ tr }) => {
         [...matches].reverse().forEach((m) => tr.insertText(replace, m.from, m.to));
@@ -424,10 +460,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
       }
       jump(1);
     }
-  }, [editor, matches, query, replace, canEdit, jump, toast, matchCase]);
+  }, [editor, matches, query, replace, canMutate, jump, toast, matchCase]);
 
   // ---- comments ----
   const startComment = () => {
+    if (!canComment) { toast("You don't have comment access"); return; }
     if (editor && !editor.state.selection.empty) {
       setNewComment(true);
       setPanel("comments");
@@ -455,7 +492,47 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   // ---- AI ops (tool-constrained edits; applied via editor → undo/autosave/collab all work) ----
   const aiApplyOps = useCallback((ops: AiOp[]) => {
-    if (!editor) return;
+    if (!editor || !canMutate) return;
+    const suggest = state?.trackMode === "suggest";
+    const aiAttrs = () => ({
+      changeId: crypto.randomUUID(),
+      authorId: user?.id ?? "ai",
+      authorName: `${user?.displayName ?? "User"} (AI)`,
+      authorColor: user ? colorFor(user.id) : "#8E6BC8",
+      timestamp: new Date().toISOString(),
+    });
+    // in suggest mode: keep the replaced range as a deletion mark, insert marked text after it
+    const trackedReplace = (from: number, to: number, text: string) => {
+      editor.chain().focus().command(({ tr, state: s }) => {
+        const attrs = aiAttrs();
+        tr.addMark(from, to, s.schema.marks.deletion.create(attrs));
+        tr.insertText(text, to);
+        tr.removeMark(to, to + text.length, s.schema.marks.deletion);
+        tr.addMark(to, to + text.length, s.schema.marks.insertion.create(attrs));
+        return true;
+      }).run();
+    };
+    const insertAt = (pos: number, content: Parameters<Editor["commands"]["insertContentAt"]>[1]) => {
+      if (!suggest) { editor.chain().focus().insertContentAt(pos, content).run(); return; }
+      const before = editor.state.doc.nodeSize;
+      editor.chain().focus().insertContentAt(pos, content).run();
+      const inserted = editor.state.doc.nodeSize - before;
+      if (inserted <= 0) return;
+      editor.chain().command(({ tr, state: s }) => {
+        const ins = s.schema.marks.insertion.create(aiAttrs());
+        s.doc.nodesBetween(pos, Math.min(pos + inserted, s.doc.content.size), (n, p) => {
+          if (n.isText) tr.addMark(p, p + n.nodeSize, ins);
+          return true;
+        });
+        return true;
+      }).run();
+    };
+    const markRangeDeleted = (from: number, to: number) => {
+      editor.chain().command(({ tr, state: s }) => {
+        tr.addMark(from, to, s.schema.marks.deletion.create(aiAttrs()));
+        return true;
+      }).run();
+    };
     for (const o of ops) {
       if (o.op === "find_replace") {
         const needle = String(o.find);
@@ -483,10 +560,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
           return false;
         });
         const use = o.all ? matches : matches.slice(0, 1);
-        editor.chain().focus().command(({ tr }) => {
-          [...use].reverse().forEach((m) => tr.insertText(String(o.replace ?? ""), m.from, m.to));
-          return true;
-        }).run();
+        if (suggest) {
+          [...use].reverse().forEach((m) => trackedReplace(m.from, m.to, String(o.replace ?? "")));
+        } else {
+          editor.chain().focus().command(({ tr }) => {
+            [...use].reverse().forEach((m) => tr.insertText(String(o.replace ?? ""), m.from, m.to));
+            return true;
+          }).run();
+        }
       } else if (o.op === "insert_table") {
         const rows = Math.min(20, Math.max(1, Number(o.rows) || 2));
         const cols = Math.min(8, Math.max(1, Number(o.cols) || 2));
@@ -499,28 +580,38 @@ export function WriterEditor({ item, initialDoc, permission }: {
             })),
           })),
         };
-        editor.chain().focus().insertContentAt(editor.state.doc.nodeSize - 2, table).run();
+        insertAt(editor.state.doc.nodeSize - 2, table);
       } else if (o.op === "append_paragraph" || o.op === "insert_heading") {
-        editor.chain().focus().insertContentAt(editor.state.doc.nodeSize - 2,
+        insertAt(editor.state.doc.nodeSize - 2,
           o.op === "insert_heading"
             ? { type: "heading", attrs: { level: o.level }, content: [{ type: "text", text: String(o.text) }] }
-            : { type: "paragraph", content: [{ type: "text", text: String(o.text) }] }).run();
+            : { type: "paragraph", content: [{ type: "text", text: String(o.text) }] });
       } else if (o.op === "prepend_paragraph") {
-        editor.chain().focus().insertContentAt(0, { type: "paragraph", content: [{ type: "text", text: String(o.text) }] }).run();
+        insertAt(0, { type: "paragraph", content: [{ type: "text", text: String(o.text) }] });
       } else if (o.op === "replace_selection") {
         const { from, to } = editor.state.selection;
-        if (to > from) editor.chain().focus().insertContentAt({ from, to }, String(o.text)).run();
+        if (to > from) {
+          if (suggest) trackedReplace(from, to, String(o.text));
+          else editor.chain().focus().insertContentAt({ from, to }, String(o.text)).run();
+        }
       } else if (o.op === "insert_content") {
         try {
           const content = typeof o.content === "string" ? JSON.parse(o.content) : o.content;
-          editor.chain().focus().insertContent(content).run();
+          const { from, to } = editor.state.selection;
+          if (suggest) {
+            if (to > from) markRangeDeleted(from, to);
+            insertAt(to, content);
+          } else {
+            editor.chain().focus().insertContent(content).run();
+          }
         } catch { /* malformed AI content — skip */ }
       }
     }
-  }, [editor]);
+  }, [editor, canMutate, state?.trackMode, user]);
 
   // ---- imports/exports ----
   const onImport = async (f: File) => {
+    if (!canMutate) { toast("You don't have edit access"); return; }
     try {
       const html = await importDocx(f);
       editor?.commands.setContent(html);
@@ -531,6 +622,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   };
 
   const onTextImport = async (f: File) => {
+    if (!canMutate) { toast("You don't have edit access"); return; }
     try {
       const text = await f.text();
       const ext = f.name.split(".").pop()?.toLowerCase();
@@ -589,9 +681,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
     else c.toggleHeading({ level: Number(v[1]) as 1 | 2 | 3 | 4 | 5 | 6 }).run();
   };
 
-  const insertLink = () => {
+  const insertLink = async () => {
+    if (!canMutate) return;
     const prev = editor?.getAttributes("link").href as string | undefined;
-    const url = prompt("Link URL:", prev ?? "https://");
+    const url = await askText({ title: "Insert link", placeholder: "https://", initial: prev ?? "https://" });
     if (url === null) return;
     if (!url.trim()) editor?.chain().focus().unsetLink().run();
     else editor?.chain().focus().setLink({ href: url.trim() }).run();
@@ -617,6 +710,51 @@ export function WriterEditor({ item, initialDoc, permission }: {
     }).run();
   };
 
+  // ---- clipboard + file ops used by menus and shortcuts ----
+  const doCopy = useCallback(async (cut: boolean) => {
+    if (!editor) return;
+    const { from, to, empty } = editor.state.selection;
+    if (empty) return;
+    const text = editor.state.doc.textBetween(from, to, "\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      document.execCommand("copy"); // clipboard API may be denied — legacy fallback
+    }
+    if (cut && canMutate) editor.chain().focus().deleteSelection().run();
+  }, [editor, canMutate]);
+
+  const doPaste = useCallback(async () => {
+    if (!editor || !canMutate) return;
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        if (it.types.includes("text/html")) {
+          const html = await (await it.getType("text/html")).text();
+          editor.chain().focus().insertContent(html).run();
+          return;
+        }
+      }
+      const t = await navigator.clipboard.readText();
+      if (t) editor.chain().focus().insertContent(t).run();
+    } catch {
+      toast("Clipboard access denied — use Ctrl+V");
+    }
+  }, [editor, canMutate, toast]);
+
+  const makeCopy = useCallback(async () => {
+    if (!editor) return;
+    try {
+      const r = await api.post<{ item: { id: string } }>("/api/drive", { name: `Copy of ${title}`, kind: "writer" });
+      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor) };
+      await api.put(`/api/files/${r.item.id}/content`, { content: payload });
+      toast("Copy created");
+      navigate(`/edit/${r.item.id}`);
+    } catch {
+      toast("Could not make a copy");
+    }
+  }, [editor, title, navigate, toast]);
+
   // ---- menubar model ----
   const ed = editor;
   const menus = useMemo<{ label: string; items: MenuItem[] }[]>(() => {
@@ -625,51 +763,89 @@ export function WriterEditor({ item, initialDoc, permission }: {
       label: `Heading ${n}`, checked: state?.block === `h${n}`,
       onClick: () => ed.chain().focus().toggleHeading({ level: n as 1 }).run(),
     });
-    return [
+    const fileItems: MenuItem[] = [
+      ...(canMutate ? [
+        { label: "Import .docx…", onClick: () => importRef.current?.click() },
+        { label: "Import text (.md / .txt / .html)…", onClick: () => textImportRef.current?.click() },
+      ] : []),
       {
-        label: "File", items: [
-          { label: "Import .docx…", onClick: () => importRef.current?.click() },
-          { label: "Import text (.md / .txt / .html)…", onClick: () => textImportRef.current?.click() },
-          {
-            label: "Download", submenu: [
-              { label: "Microsoft Word (.docx)", onClick: () => void download("docx") },
-              { label: "PDF document (.pdf)", onClick: () => void download("pdf") },
-              { divider: true },
-              { label: "Markdown (.md)", onClick: () => void download("md") },
-              { label: "Web page (.html)", onClick: () => void download("html") },
-              { label: "Rich Text (.rtf)", onClick: () => void download("rtf") },
-              { label: "OpenDocument (.odt)", onClick: () => void download("odt") },
-              { label: "Plain text (.txt)", onClick: () => void download("txt") },
-            ],
-          },
-          { label: "Print", shortcut: "Ctrl+P", onClick: print },
+        label: "Download", submenu: [
+          { label: "Microsoft Word (.docx)", onClick: () => void download("docx") },
+          { label: "PDF document (.pdf)", onClick: () => void download("pdf") },
           { divider: true },
-          { label: "Page setup…", onClick: () => setPageSetupOpen(true) },
-          { divider: true },
-          { label: "Share…", onClick: () => setSharing(true) },
-          { label: "Version history", checked: panel === "versions", onClick: () => setPanel(panel === "versions" ? "none" : "versions") },
+          { label: "Markdown (.md)", onClick: () => void download("md") },
+          { label: "Web page (.html)", onClick: () => void download("html") },
+          { label: "Rich Text (.rtf)", onClick: () => void download("rtf") },
+          { label: "OpenDocument (.odt)", onClick: () => void download("odt") },
+          { label: "Plain text (.txt)", onClick: () => void download("txt") },
         ],
       },
+      { label: "Make a copy", onClick: () => void makeCopy() },
+      { label: "Print", shortcut: "Ctrl+P", onClick: print },
+      { divider: true },
+      ...(canMutate ? [
+        { label: "Page setup…", onClick: () => setPageSetupOpen(true) },
+        { divider: true } as MenuItem,
+      ] : []),
+      ...(canEdit ? [{ label: "Rename", onClick: () => { titleInputRef.current?.focus(); titleInputRef.current?.select(); } }] : []),
+      { label: "Share…", onClick: () => setSharing(true) },
+      { label: "Version history", checked: panel === "versions", onClick: () => setPanel(panel === "versions" ? "none" : "versions") },
+    ];
+    const editItems: MenuItem[] = [
+      ...(canMutate ? [
+        { label: "Undo", shortcut: "Ctrl+Z", disabled: !state?.canUndo, onClick: () => ed.chain().focus().undo().run() },
+        { label: "Redo", shortcut: "Ctrl+Y", disabled: !state?.canRedo, onClick: () => ed.chain().focus().redo().run() },
+        { divider: true } as MenuItem,
+        { label: "Cut", shortcut: "Ctrl+X", onClick: () => void doCopy(true) },
+      ] : []),
+      { label: "Copy", shortcut: "Ctrl+C", onClick: () => void doCopy(false) },
+      ...(canMutate ? [{ label: "Paste", shortcut: "Ctrl+V", onClick: () => void doPaste() }] : []),
+      { label: "Select all", shortcut: "Ctrl+A", onClick: () => ed.chain().focus().selectAll().run() },
+      { divider: true },
+      { label: "Find and replace", shortcut: "Ctrl+F", checked: findOpen, onClick: () => setFindOpen(true) },
+    ];
+    const viewItems: MenuItem[] = [
+      { label: "Print layout", checked: state?.paged, onClick: () => { ed.chain().focus().togglePagination().run(); } },
+      { label: "Show outline", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
+      { label: "Show ruler", checked: showRuler, onClick: () => setShowRuler(!showRuler) },
+      { divider: true },
       {
-        label: "Edit", items: [
-          { label: "Undo", shortcut: "Ctrl+Z", disabled: !state?.canUndo, onClick: () => ed.chain().focus().undo().run() },
-          { label: "Redo", shortcut: "Ctrl+Y", disabled: !state?.canRedo, onClick: () => ed.chain().focus().redo().run() },
-          { divider: true },
-          { label: "Cut", shortcut: "Ctrl+X", onClick: () => document.execCommand("cut") },
-          { label: "Copy", shortcut: "Ctrl+C", onClick: () => document.execCommand("copy") },
-          { label: "Select all", shortcut: "Ctrl+A", onClick: () => ed.chain().focus().selectAll().run() },
-          { divider: true },
-          { label: "Find and replace", shortcut: "Ctrl+F", checked: findOpen, onClick: () => setFindOpen(true) },
-        ],
+        label: "Zoom", submenu: [50, 75, 90, 100, 125, 150, 200].map((z) => ({
+          label: `${z}%`, checked: zoom === z, onClick: () => setZoom(z),
+        })),
       },
-      {
-        label: "View", items: [
-          { label: "Print layout", checked: state?.paged, onClick: () => { ed.chain().focus().togglePagination().run(); } },
-          { label: "Show outline", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
-          { divider: true },
-          { label: "Word count", onClick: () => setWordCountOpen(true) },
-        ],
-      },
+      { label: "Fullscreen", onClick: () => void document.querySelector(".editor-shell")?.requestFullscreen?.().catch?.(() => {}) },
+      { divider: true },
+      { label: "Word count", onClick: () => setWordCountOpen(true) },
+    ];
+    const toolItems: MenuItem[] = [
+      { label: "Word count", onClick: () => setWordCountOpen(true) },
+      { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
+      ...(canMutate ? [
+        { label: "Kreatix AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
+        { divider: true } as MenuItem,
+        { label: "Review suggestions", checked: panel === "suggest", onClick: () => setPanel(panel === "suggest" ? "none" : "suggest") },
+      ] : []),
+      ...(canEdit ? [
+        { label: "Accept all suggestions", onClick: () => (ed.commands as unknown as Record<string, () => boolean>).acceptAll() },
+        { label: "Reject all suggestions", onClick: () => (ed.commands as unknown as Record<string, () => boolean>).rejectAll() },
+      ] : []),
+      { divider: true },
+      { label: "Keyboard shortcuts", shortcut: "Ctrl+/", onClick: () => setShortcutsOpen(true) },
+    ];
+    const out = [
+      { label: "File", items: fileItems },
+      { label: "Edit", items: editItems },
+      { label: "View", items: viewItems },
+    ];
+    if (!canMutate) {
+      if (canComment) {
+        out.push({ label: "Insert", items: [{ label: "Comment", onClick: startComment }] });
+      }
+      out.push({ label: "Tools", items: toolItems });
+      return out;
+    }
+    out.push(
       {
         label: "Insert", items: [
           {
@@ -677,8 +853,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { label: "Upload from computer", onClick: () => imageRef.current?.click() },
               {
                 label: "By URL…", onClick: () => {
-                  const url = prompt("Image URL:", "https://");
-                  if (url?.trim()) ed.chain().focus().setImage({ src: url.trim() }).run();
+                  void askText({ title: "Insert image by URL", placeholder: "https://" })
+                    .then((url) => { if (url?.trim()) ed.chain().focus().setImage({ src: url.trim() }).run(); });
                 }
               },
             ],
@@ -690,20 +866,21 @@ export function WriterEditor({ item, initialDoc, permission }: {
             })),
           },
           { label: "Link", shortcut: "Ctrl+K", checked: state?.link, onClick: insertLink },
+          { label: "Comment", onClick: startComment },
           { divider: true },
           { label: "Inline math  $x^2$", onClick: () => ed.chain().focus().insertInlineMath({ latex: "" }).run() },
           { label: "Display math", onClick: () => ed.chain().focus().insertBlockMath({ latex: "" }).run() },
           {
             label: "Footnote", onClick: () => {
-              const note = prompt("Footnote text:");
-              if (note !== null) ed.chain().focus().insertFootnote(note).run();
+              void askText({ title: "Insert footnote", placeholder: "Footnote text" })
+                .then((note) => { if (note !== null) ed.chain().focus().insertFootnote(note).run(); });
             },
           },
           { label: "Table of contents", onClick: () => ed.chain().focus().insertToc().run() },
           {
             label: "Embed (YouTube / URL)…", onClick: () => {
-              const url = prompt("Embed URL:", "https://");
-              if (url?.trim()) ed.chain().focus().insertEmbed(url.trim()).run();
+              void askText({ title: "Embed", placeholder: "https://" })
+                .then((url) => { if (url?.trim()) ed.chain().focus().insertEmbed(url.trim()).run(); });
             },
           },
           { divider: true },
@@ -748,6 +925,18 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { divider: true },
               { label: "Increase indent", onClick: () => ed.chain().focus().increaseIndent().run() },
               { label: "Decrease indent", onClick: () => ed.chain().focus().decreaseIndent().run() },
+            ],
+          },
+          {
+            label: "Line & paragraph spacing", submenu: [
+              { label: "Single", onClick: () => ed.chain().focus().setLineHeight("1").run() },
+              { label: "1.15", onClick: () => ed.chain().focus().setLineHeight("1.15").run() },
+              { label: "1.5", onClick: () => ed.chain().focus().setLineHeight("1.5").run() },
+              { label: "Double", onClick: () => ed.chain().focus().setLineHeight("2").run() },
+              { divider: true },
+              { label: "Add space before paragraph", onClick: () => ed.chain().focus().setParagraphSpacing(6).run() },
+              { label: "Add space after paragraph", onClick: () => ed.chain().focus().setParagraphSpacing(undefined, 6).run() },
+              { label: "Remove paragraph spacing", onClick: () => ed.chain().focus().setParagraphSpacing(null, null).run() },
             ],
           },
           {
@@ -802,42 +991,38 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { divider: true },
               {
                 label: "Alt text…", onClick: () => {
-                  const alt = prompt("Alt text:", (ed.getAttributes("image").alt as string) ?? "");
-                  if (alt !== null) ed.chain().focus().updateAttributes("image", { alt }).run();
+                  void askText({ title: "Alt text", initial: (ed.getAttributes("image").alt as string) ?? "" })
+                    .then((alt) => { if (alt !== null) ed.chain().focus().updateAttributes("image", { alt }).run(); });
                 },
               },
               {
                 label: "Caption…", onClick: () => {
-                  const cap = prompt("Caption:", (ed.getAttributes("image").caption as string) ?? "");
-                  if (cap !== null) ed.chain().focus().updateAttributes("image", { caption: cap }).run();
+                  void askText({ title: "Caption", initial: (ed.getAttributes("image").caption as string) ?? "" })
+                    .then((cap) => { if (cap !== null) ed.chain().focus().updateAttributes("image", { caption: cap }).run(); });
                 },
               },
             ] : [{ label: "Select an image first", disabled: true }],
           },
         ],
       },
-      {
-        label: "Tools", items: [
-          { label: "Word count", onClick: () => setWordCountOpen(true) },
-          { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
-          { label: "Kreatix AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
-          { divider: true },
-          { label: "Review suggestions", checked: panel === "suggest", onClick: () => setPanel(panel === "suggest" ? "none" : "suggest") },
-          {
-            label: "Accept all suggestions", onClick: () =>
-              (ed.commands as unknown as Record<string, () => boolean>).acceptAll(),
-          },
-          {
-            label: "Reject all suggestions", onClick: () =>
-              (ed.commands as unknown as Record<string, () => boolean>).rejectAll(),
-          },
-          { divider: true },
-          { label: "Keyboard shortcuts", shortcut: "Ctrl+/", onClick: () => setShortcutsOpen(true) },
-        ],
-      },
-    ];
+      { label: "Tools", items: toolItems },
+    );
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ed, state, panel, findOpen]);
+  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment]);
+
+  const wcStats = useMemo(() => {
+    if (!wordCountOpen || !editor) return null;
+    let paras = 0;
+    editor.state.doc.descendants((n) => { if (n.type.name === "paragraph" || n.type.name === "heading") paras++; });
+    const words = state?.words ?? 0;
+    return {
+      noSpaces: editor.getText().replace(/\s/g, "").length,
+      paras,
+      mins: Math.max(1, Math.ceil(words / 238)),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordCountOpen, editor, state?.words]);
 
   const saveLabel: Record<SaveState, string> = {
     saved: "All changes saved",
@@ -851,7 +1036,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       <div className="editor-top">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
         <div className="app-ico writer" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>W</div>
-        <input className="doc-title" value={title} disabled={!canEdit}
+        <input ref={titleInputRef} className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)}
           onBlur={() => title.trim() && title !== item.name && rename(title.trim())}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
@@ -867,7 +1052,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
       <MenuBar items={menus} />
 
-      {canEdit && (
+      {canMutate && (
         <div className="ribbon">
           <button className="rb" title="Undo (Ctrl+Z)" disabled={!state?.canUndo} onClick={() => editor?.chain().focus().undo().run()}>↶</button>
           <button className="rb" title="Redo (Ctrl+Y)" disabled={!state?.canRedo} onClick={() => editor?.chain().focus().redo().run()}>↷</button>
@@ -934,7 +1119,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <span style={{ fontSize: 11, color: "#A19A95" }}>{matches.length} match{matches.length === 1 ? "" : "es"}</span>
           <button className="rb" onClick={() => jump(-1)}>↑</button>
           <button className="rb" onClick={() => jump(1)}>↓</button>
-          {canEdit && (
+          {canMutate && (
             <>
               <div className="rb-sep" />
               <input placeholder="Replace with…" value={replace} onChange={(e) => setReplace(e.target.value)}
@@ -960,7 +1145,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           </div>
         )}
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
-          {editor && <Ruler editor={editor} />}
+          {editor && showRuler && <Ruler editor={editor} canMutate={canMutate} />}
           <div className="doc-page">
             <EditorContent editor={editor} />
           </div>
@@ -969,7 +1154,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
       {panel === "comments" && (
         <CommentsPanel fileId={item.id} comments={comments}
-          canComment={canEdit || permission === "commenter" || permission === "reviewer"}
+          canComment={canComment}
           onReload={loadComments} onAnchorClick={focusAnchor}
           onNewComment={submitComment} newCommentOpen={newComment}
           onCancelNew={() => { setNewComment(false); setPanel("none"); }}
@@ -983,7 +1168,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           }} toast={toast} />
       )}
       {panel === "ai" && (
-        <AiPanel fileId={item.id} kind="writer" canEdit={canEdit}
+        <AiPanel fileId={item.id} kind="writer" canEdit={canMutate}
           serialize={() => (editor?.getText() ?? "").slice(0, 24000)}
           selection={() => {
             const { from, to } = editor?.state.selection ?? { from: 0, to: 0 };
@@ -992,7 +1177,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
       )}
       {panel === "suggest" && editor && (
-        <SuggestionsPanel editor={editor} onClose={() => setPanel("none")} />
+        <SuggestionsPanel editor={editor} canResolve={canEdit} onClose={() => setPanel("none")} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {editor && <LinkPopover editor={editor} />}
@@ -1007,6 +1192,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
             <table className="kv-table"><tbody>
               <tr><td>Words</td><td>{state?.words ?? 0}</td></tr>
               <tr><td>Characters</td><td>{state?.chars ?? 0}</td></tr>
+              <tr><td>Characters (no spaces)</td><td>{wcStats?.noSpaces ?? 0}</td></tr>
+              <tr><td>Paragraphs</td><td>{wcStats?.paras ?? 0}</td></tr>
+              <tr><td>Reading time</td><td>~{wcStats?.mins ?? 1} min</td></tr>
             </tbody></table>
             <button className="btn-primary btn-sm" onClick={() => setWordCountOpen(false)}>Close</button>
           </div>
@@ -1027,6 +1215,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
             <button className="btn-primary btn-sm" onClick={() => setShortcutsOpen(false)}>Close</button>
           </div>
         </div>
+      )}
+      {promptSpec && (
+        <MiniPrompt spec={promptSpec} onDone={(v) => { promptResolve.current?.(v); promptResolve.current = null; setPromptSpec(null); }} />
       )}
       <input ref={importRef} type="file" accept=".docx" hidden onChange={(e) => e.target.files?.[0] && onImport(e.target.files[0])} />
       <input ref={textImportRef} type="file" accept=".md,.txt,.html,.htm" hidden onChange={(e) => e.target.files?.[0] && onTextImport(e.target.files[0])} />

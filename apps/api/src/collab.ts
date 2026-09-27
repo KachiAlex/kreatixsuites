@@ -125,7 +125,9 @@ export async function collabRoutes(app: FastifyInstance) {
       if (!user || !item) throw new Error("unauthorized");
       const perm = await permissionFor(user.id, item);
       if (!hasPermission(perm, "viewer")) throw new Error("unauthorized");
-      const canWrite = hasPermission(perm, "editor");
+      // commenters write comment-anchor marks; reviewers write tracked
+      // suggestions — both require live updates through the socket
+      const canWrite = hasPermission(perm, "commenter");
 
       const room = await getRoom(fileId);
       room.conns.set(socket, new Set());

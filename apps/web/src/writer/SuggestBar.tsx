@@ -24,7 +24,12 @@ export function ModeSwitcher({ editor, canEdit, forced }: {
   const set = (m: TrackChangesMode) => {
     (editor.commands as unknown as Record<string, (a?: unknown) => boolean>).setTrackChangesMode(m);
   };
-  if (forced === "suggest" && mode !== "suggest") set("suggest");
+  // reviewers are locked into suggest mode — a PM command, so it must run
+  // in an effect, never during render
+  useEffect(() => {
+    if (forced === "suggest" && mode !== "suggest") set("suggest");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forced, mode]);
   const label = mode === "edit" ? "Editing" : mode === "suggest" ? "Suggesting" : "Viewing";
   const icon = mode === "view" ? "👁" : "✎";
   return (
@@ -38,7 +43,7 @@ export function ModeSwitcher({ editor, canEdit, forced }: {
           {(["edit", "suggest", "view"] as const).map((m) => (
             <button key={m} role="menuitemradio" aria-checked={mode === m}
               className={`drop-item ${mode === m ? "on" : ""}`}
-              disabled={!canEdit && m !== "view"}
+              disabled={forced === "suggest" ? m === "edit" : !canEdit && m !== "view"}
               title={m === "edit" ? "Edit directly" : m === "suggest" ? "Edits become suggestions" : "Read only"}
               onClick={() => { set(m); setOpen(false); }}>
               <span>{m === "edit" ? "✎" : m === "suggest" ? "✎" : "👁"}</span>
@@ -70,7 +75,7 @@ export function SuggestionsBadge({ editor, onOpenPanel }: { editor: Editor; onOp
 }
 
 /** Side panel listing all tracked changes with accept/reject. */
-export function SuggestionsPanel({ editor, onClose }: { editor: Editor; onClose: () => void }) {
+export function SuggestionsPanel({ editor, onClose, canResolve }: { editor: Editor; onClose: () => void; canResolve?: boolean }) {
   const [changes, setChanges] = useState<TrackedChangeInfo[]>([]);
   useEffect(() => {
     const update = () => setChanges(getTrackedChanges(editor));
@@ -86,8 +91,8 @@ export function SuggestionsPanel({ editor, onClose }: { editor: Editor; onClose:
       <div className="sp-head">
         <h3>Suggestions ({changes.length})</h3>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          <button className="btn-ghost btn-sm" disabled={!changes.length} onClick={() => cmd.acceptAll()}>Accept all</button>
-          <button className="btn-ghost btn-sm" disabled={!changes.length} onClick={() => cmd.rejectAll()}>Reject all</button>
+          <button className="btn-ghost btn-sm" disabled={!changes.length || !canResolve} onClick={() => cmd.acceptAll()}>Accept all</button>
+          <button className="btn-ghost btn-sm" disabled={!changes.length || !canResolve} onClick={() => cmd.rejectAll()}>Reject all</button>
           <button className="sp-close" onClick={onClose}>✕</button>
         </div>
       </div>
@@ -106,8 +111,8 @@ export function SuggestionsPanel({ editor, onClose }: { editor: Editor; onClose:
             <button className="rb" title="Jump to change" onClick={() => {
               editor.chain().focus().setTextSelection({ from: c.from, to: Math.min(c.to, editor.state.doc.content.size) }).scrollIntoView().run();
             }}>→</button>
-            <button className="btn-ghost btn-sm" onClick={() => cmd.acceptChange(c.changeId)}>Accept</button>
-            <button className="btn-ghost btn-sm" onClick={() => cmd.rejectChange(c.changeId)}>Reject</button>
+            <button className="btn-ghost btn-sm" disabled={!canResolve} onClick={() => cmd.acceptChange(c.changeId)}>Accept</button>
+            <button className="btn-ghost btn-sm" disabled={!canResolve} onClick={() => cmd.rejectChange(c.changeId)}>Reject</button>
           </div>
         </div>
       ))}

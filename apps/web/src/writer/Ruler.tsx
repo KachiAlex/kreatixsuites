@@ -8,7 +8,7 @@ const H = 26; // svg height
 
 /** Horizontal ruler above the page — inch ticks, margin shading, and a
  *  draggable left-indent marker (Docs/Word convention). */
-export function Ruler({ editor }: { editor: Editor }) {
+export function Ruler({ editor, canMutate = true }: { editor: Editor; canMutate?: boolean }) {
   const s = readPageSetup(editor);
   const { width, marginLeft: ml, marginRight: mr } = s;
 
@@ -25,6 +25,7 @@ export function Ruler({ editor }: { editor: Editor }) {
   const markerX = ml + indent * INDENT_STEP;
 
   const startDrag = (e: React.PointerEvent) => {
+    if (!canMutate) return;
     e.preventDefault();
     (e.target as Element).setPointerCapture(e.pointerId);
     setDrag({ x0: e.clientX, base: indent });
