@@ -35,23 +35,43 @@ pre code{white-space:pre-wrap}
 @media print{body{max-width:none;margin:0}}
 `;
 
-/** @page rule matching the doc's page setup so print/PDF honors size + margins. */
-function pageRule(setup?: PageSetup): string {
+/** Extra rules when cloning the paginated editor DOM — pages carry their own
+ *  margins/headers/footers, so @page margins must be zero and each rendered
+ *  .page maps 1:1 onto a printed sheet. */
+const PAGED_CSS = `
+.rm-page-break{page-break-after:always;page-break-inside:avoid}
+.rm-pagination-gap{display:none !important}
+.rm-with-pagination{box-shadow:none !important;border-radius:0 !important}
+.page{margin:0 auto !important}
+body{max-width:none !important;margin:0 !important;padding:0 !important}
+`;
+
+/** @page rule matching the doc's page setup. `rendered` = margins already live
+ *  in the cloned DOM (paged export), so the sheet margin must be zero. */
+function pageRule(setup: PageSetup | undefined, rendered: boolean): string {
   if (!setup) return "";
   const mm = (px: number) => `${(px * 25.4 / 96).toFixed(1)}mm`;
-  const size = setup.width >= setup.height ? `${mm(setup.width)} ${mm(setup.height)}` : `${mm(setup.width)} ${mm(setup.height)}`;
-  return `@page{size:${size};margin:${mm(setup.marginTop)} ${mm(setup.marginRight)} ${mm(setup.marginBottom)} ${mm(setup.marginLeft)}}`;
+  const size = `${mm(setup.width)} ${mm(setup.height)}`;
+  const margin = rendered ? "0"
+    : `${mm(setup.marginTop)} ${mm(setup.marginRight)} ${mm(setup.marginBottom)} ${mm(setup.marginLeft)}`;
+  return `@page{size:${size};margin:${margin}}`;
 }
 
-function pageShell(name: string, html: string, setup?: PageSetup): string {
+/** Same-origin media (Drive raw URLs) must be absolutized for about:blank and
+ *  standalone-file contexts. */
+function absolutize(html: string): string {
+  return html.replace(/(src|href)="(\/[^"]*)"/g, `$1="${location.origin}$2"`);
+}
+
+function pageShell(name: string, html: string, setup?: PageSetup, rendered = false): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(name)}</title>` +
     `<link rel="stylesheet" href="${katexHref}">` +
-    `<style>${pageRule(setup)}${PRINT_CSS}</style></head><body>${html}</body></html>`;
+    `<style>${pageRule(setup, rendered)}${PRINT_CSS}${rendered ? PAGED_CSS : ""}</style></head><body>${html}</body></html>`;
 }
 
 /** Standalone .html file — embeds the editor-rendered HTML with print styles. */
 export function downloadHtml(name: string, html: string, setup?: PageSetup) {
-  downloadBlob(new Blob([pageShell(name, html, setup)], { type: "text/html" }), `${baseName(name)}.html`);
+  downloadBlob(new Blob([pageShell(name, absolutize(html), setup)], { type: "text/html" }), `${baseName(name)}.html`);
 }
 
 export function downloadMd(doc: Json, name: string) {
@@ -70,11 +90,13 @@ export async function downloadOdt(doc: Json, name: string) {
   downloadBlob(await odtBlob(doc, name), `${baseName(name)}.odt`);
 }
 
-/** PDF export via a print-ready window — honors the doc's page setup and renders KaTeX. */
-export function exportPdf(html: string, name: string, setup?: PageSetup) {
+/** PDF export via a print-ready window — uses the paginated editor DOM so
+ *  rendered pages map 1:1 onto sheets with headers/footers/page numbers. */
+export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
   const win = window.open("", "_blank", "width=900,height=1200");
   if (!win) return;
-  win.document.write(pageShell(name, html, setup).replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`));
+  win.document.write(pageShell(name, absolutize(pagedHtml), setup, true)
+    .replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`));
   win.document.close();
 }
 

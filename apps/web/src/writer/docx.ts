@@ -269,13 +269,66 @@ export async function exportDocx(doc: Block, name: string) {
   URL.revokeObjectURL(url);
 }
 
+// ---- DOCX math re-import ---------------------------------------------------
+// Mammoth drops <m:oMath> zones. Pre-tag them as text markers before
+// conversion, then emit the math nodes' HTML so setContent restores them.
+
+const b64enc = (s: string) =>
+  typeof Buffer !== "undefined"
+    ? Buffer.from(s, "utf8").toString("base64")
+    : btoa(unescape(encodeURIComponent(s)));
+
+const xmlUnescape = (s: string) =>
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
+
+/** Concatenated linear text of a math zone (LaTeX source for our own exports,
+ *  linear-format text for foreign OMML). */
+const mathText = (xml: string) =>
+  xmlUnescape([...xml.matchAll(/<m:t[^>]*>([\s\S]*?)<\/m:t>/g)].map((m) => m[1]).join(""));
+
+const MATH_I = /⟦KXMI:([A-Za-z0-9+/=]*)⟧/g;
+
+/** Rewrite math zones in document.xml as sentinel text runs. */
+async function tagMathZones(arrayBuffer: ArrayBuffer): Promise<ArrayBuffer> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const docXml = await zip.file("word/document.xml")?.async("text");
+  if (!docXml || !docXml.includes("<m:oMath")) return arrayBuffer;
+  const run = (body: string, tag: string) =>
+    `<w:r><w:t xml:space="preserve">⟦${tag}:${b64enc(mathText(body))}⟧</w:t></w:r>`;
+  const tagged = docXml
+    .replace(/<m:oMathPara\b[\s\S]*?<\/m:oMathPara>/g, (m) => run(m, "KXMB"))
+    .replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (m) => run(m, "KXMI"));
+  zip.file("word/document.xml", tagged);
+  return zip.generateAsync({ type: "arraybuffer" });
+}
+
+const b64dec = (s: string) =>
+  typeof Buffer !== "undefined"
+    ? Buffer.from(s, "base64").toString("utf8")
+    : decodeURIComponent(escape(atob(s)));
+
+const attrEsc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+
+/** Markers → the math extensions' parse HTML (div/span[data-type=*-math]). */
+function mathMarkersToHtml(html: string): string {
+  return html
+    .replace(/<p>⟦KXMB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_, b) =>
+      `<div data-type="block-math" data-latex="${attrEsc(b64dec(b))}"></div>`)
+    .replace(MATH_I, (_, b) =>
+      `<span data-type="inline-math" data-latex="${attrEsc(b64dec(b))}"></span>`);
+}
+
 /** .docx file → HTML string for editor.setContent (mammoth preserves structure) */
 export async function importDocx(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
+  const source = await tagMathZones(arrayBuffer).catch(() => arrayBuffer);
   // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
-  const result = await mammoth.convertToHtml({ arrayBuffer }).catch(() =>
-    mammoth.convertToHtml({ buffer: Buffer.from(arrayBuffer) } as never));
-  return result.value;
+  const result = await mammoth.convertToHtml({ arrayBuffer: source }).catch(() =>
+    mammoth.convertToHtml({ buffer: Buffer.from(source) } as never));
+  return mathMarkersToHtml(result.value);
 }
 
 export type { Json };

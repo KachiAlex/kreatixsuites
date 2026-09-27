@@ -559,7 +559,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
       if (fmt === "txt") return mod.downloadTxt(editor, name);
       if (fmt === "rtf") return mod.downloadRtf(json, name);
       if (fmt === "odt") return mod.downloadOdt(json, name);
-      if (fmt === "pdf") return mod.exportPdf(editor.getHTML(), name, readPageSetup(editor));
+      if (fmt === "pdf") {
+        // clone the rendered (paginated) DOM — headers/footers/page numbers
+        // and KaTeX all carry over; strip editing-only attrs
+        const clone = editor.view.dom.cloneNode(true) as HTMLElement;
+        clone.removeAttribute("contenteditable");
+        clone.removeAttribute("spellcheck");
+        clone.querySelectorAll(".img-resize-handle").forEach((el) => el.remove());
+        clone.querySelectorAll("[contenteditable],[data-drag-handle]")
+          .forEach((el) => { el.removeAttribute("contenteditable"); el.removeAttribute("data-drag-handle"); });
+        return mod.exportPdf(clone.outerHTML, name, readPageSetup(editor));
+      }
     } catch (e) {
       toast(`Export failed: ${(e as Error).message.slice(0, 60)}`);
     }
