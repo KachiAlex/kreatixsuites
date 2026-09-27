@@ -4,6 +4,7 @@ import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
+import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -30,7 +31,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "ai">("none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -113,6 +114,44 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const mutateSheet = useCallback((fn: (s: SheetData) => void) => {
     mutate((w) => fn(w.sheets[active]), true);
   }, [mutate, active]);
+
+  // ---- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----
+  const aiSerialize = useCallback(() => wb.sheets.map((s) => {
+    const lines = [`# ${s.name}`];
+    let max = -1;
+    for (const r of Object.keys(s.cells)) { const p = parseA1(r); if (p && p.row > max) max = p.row; }
+    for (let row = 0; row <= Math.min(max, 80); row++) {
+      const cols: string[] = [];
+      for (let c = 0; c <= 13; c++) {
+        const cell = s.cells[toA1(c, row)];
+        cols.push(cell ? (cell.f ? `=${cell.f}` : String(cell.v ?? "")) : "");
+      }
+      if (cols.some((x) => x !== "")) lines.push(cols.join(","));
+    }
+    return lines.join("\n");
+  }).join("\n\n").slice(0, 30000), [wb]);
+
+  const aiApplyOps = useCallback((ops: AiOp[]) => {
+    mutate((w) => {
+      for (const o of ops) {
+        if (o.op === "set_cells" || o.op === "set_format") {
+          const s = w.sheets.find((x) => x.name === o.sheet);
+          if (!s) continue;
+          if (o.op === "set_cells") {
+            for (const [ref, val] of Object.entries((o.cells as Record<string, string>) ?? {})) {
+              s.cells[ref] = { s: s.cells[ref]?.s, ...parseInput(val) };
+            }
+          } else {
+            for (const ref of (o.refs as string[]) ?? []) {
+              s.cells[ref] = { ...s.cells[ref], s: { ...s.cells[ref]?.s, ...(o.style as CellStyle) } };
+            }
+          }
+        } else if (o.op === "add_sheet" && !w.sheets.some((x) => x.name === o.name)) {
+          w.sheets.push({ name: String(o.name), cells: {} });
+        }
+      }
+    });
+  }, [mutate]);
 
   const mounted = useRef(false);
   useEffect(() => {
@@ -408,6 +447,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           Comments{comments.length ? ` (${comments.length})` : ""}
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
+        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-primary btn-sm" onClick={() => void workbookToXLSX(wb, title)}>Export .xlsx</button>
       </div>
@@ -551,6 +591,12 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             const r = await api.get<{ content: { workbook: Workbook } }>(`/api/files/${item.id}/content`);
             if (r.content?.workbook) setWb(r.content.workbook);
           }} toast={toast} />
+      )}
+      {panel === "ai" && (
+        <AiPanel fileId={item.id} kind="sheets" canEdit={canEdit}
+          serialize={aiSerialize}
+          selection={() => `${sheet.name}!${rangeToA1(selection)}`}
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}

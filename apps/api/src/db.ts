@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS mentions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mentions_to ON mentions(to_user_id, read_at, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_actions (
+  id TEXT PRIMARY KEY,
+  file_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  mode TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  ops TEXT,
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_actions_file ON ai_actions(file_id, created_at DESC);
 `);
 
 export const now = () => new Date().toISOString();

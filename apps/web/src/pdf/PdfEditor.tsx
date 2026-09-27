@@ -7,6 +7,7 @@ import "pdfjs-dist/web/pdf_viewer.css";
 import type { DriveItem, Comment } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
+import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { PresenceBar } from "../collab/PresenceBar";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
@@ -26,7 +27,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Tool = "select" | AnnType | "pan";
-type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions";
+type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions" | "ai";
 type Rect4 = [number, number, number, number];
 
 const TOOLS: { id: Tool; ico: string; label: string }[] = [
@@ -314,6 +315,44 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setCurPage(p);
   };
 
+  // ---------- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----------
+  const pageTextCache = useRef<Map<number, string>>(new Map());
+  const aiSerialize = useCallback(async () => {
+    if (!doc) return "";
+    const chunks: string[] = [];
+    let len = 0;
+    for (let p = 1; p <= doc.numPages && len < 24000; p++) {
+      let t = pageTextCache.current.get(p);
+      if (t === undefined) {
+        try {
+          const tc = await doc.getPage(p).then((pg) => pg.getTextContent());
+          t = tc.items.map((i) => ("str" in i ? i.str : "")).join("");
+        } catch { t = ""; }
+        pageTextCache.current.set(p, t);
+      }
+      const part = `--- page ${p} ---\n${t}\n`;
+      chunks.push(part);
+      len += part.length;
+    }
+    return chunks.join("").slice(0, 24000);
+  }, [doc]);
+
+  const aiApplyOps = useCallback((ops: AiOp[]) => {
+    for (const o of ops) {
+      if (o.op !== "add_annotation") continue;
+      const page = Number(o.page);
+      if (!doc || page < 1 || page > doc.numPages) continue;
+      addAnn(page, {
+        type: o.type as PdfAnn["type"],
+        rects: o.rects as PdfAnn["rects"],
+        points: o.points as PdfAnn["points"],
+        text: o.text as string | undefined,
+        color: (o.color as string) ?? "#FFD23F",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc]);
+
   const resolveDest = async (dest: unknown): Promise<number | null> => {
     if (!doc || !dest) return null;
     try {
@@ -350,6 +389,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           Comments{comments.length ? ` (${comments.length})` : ""}
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
+        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <PresenceBar session={session} />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
@@ -478,6 +518,12 @@ export function PdfEditor({ item, initialDoc, permission }: {
             const r = await api.get<{ content: PdfDoc }>(`/api/files/${item.id}/content`);
             if (r?.content?.kind === "pdf") setAnnDoc(r.content);
           }} toast={toast} />
+      )}
+      {panel === "ai" && (
+        <AiPanel fileId={item.id} kind="pdf" canEdit={canEdit}
+          serialize={aiSerialize}
+          selection={() => `Page ${curPage}`}
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
       )}
       {pwPrompt && (
         <div className="dlg-back" onClick={() => {

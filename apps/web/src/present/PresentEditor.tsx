@@ -5,6 +5,7 @@ import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
+import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -28,7 +29,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects" | "ai">("none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -149,6 +150,41 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const mutateSlide = useCallback((fn: (s: Slide) => void, actionKey?: string) => {
     mutate((d) => fn(d.slides[slideIdx]), actionKey);
   }, [mutate, slideIdx]);
+
+  // ---- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----
+  const aiSerialize = useCallback(() => deck.slides.map((s, i) =>
+    `Slide ${i + 1}${s.layout ? ` [${s.layout}]` : ""}:\n` +
+    s.objects.map((o, oi) => `  [${oi}] ${o.type}${o.html ? `: ${o.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 80)}` : ""}`).join("\n") +
+    (s.notes ? `\n  notes: ${s.notes.slice(0, 120)}` : ""),
+  ).join("\n").slice(0, 24000), [deck]);
+
+  const aiApplyOps = useCallback((ops: AiOp[]) => {
+    mutate((d) => {
+      for (const o of ops) {
+        const idx = typeof o.slide === "number" ? o.slide : -1;
+        if (o.op === "update_slide" && d.slides[idx]) {
+          if (o.notes !== undefined) d.slides[idx].notes = String(o.notes);
+          if (o.bg !== undefined) d.slides[idx].bg = String(o.bg);
+        } else if (o.op === "add_slide") {
+          const s = blankSlide(themeOf(d));
+          d.slides.push(o.layout ? applyLayout(s, String(o.layout), themeOf(d)) : s);
+        } else if (o.op === "add_text" && d.slides[idx]) {
+          const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
+          d.slides[idx].objects.push({
+            id: newId(), type: "text", x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h),
+            z: maxZ + 1, html: String(o.html), fontSize: o.fontSize as number | undefined,
+            color: o.color as string | undefined, align: o.align as SlideObject["align"],
+          });
+        } else if (o.op === "edit_object_text" && d.slides[idx]) {
+          const obj = d.slides[idx].objects[o.index as number];
+          if (obj && obj.type === "text") obj.html = String(o.html);
+        } else if (o.op === "delete_object" && d.slides[idx]) {
+          const i = o.index as number;
+          if (i >= 0 && i < d.slides[idx].objects.length) d.slides[idx].objects.splice(i, 1);
+        }
+      }
+    });
+  }, [mutate]);
 
   const undo = useCallback(() => {
     const prev = undoStack.current.pop();
@@ -428,6 +464,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
           Comments{comments.length ? ` (${comments.length})` : ""}
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
+        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" onClick={() => pptxRef.current?.click()}>Import</button>
         <input ref={pptxRef} type="file" accept=".pptx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
@@ -679,6 +716,12 @@ export function PresentEditor({ item, initialDoc, permission }: {
             const r = await api.get<{ content: { deck: Deck } }>(`/api/files/${item.id}/content`);
             if (r.content?.deck) setDeck(r.content.deck);
           }} toast={toast} />
+      )}
+      {panel === "ai" && (
+        <AiPanel fileId={item.id} kind="present" canEdit={canEdit}
+          serialize={aiSerialize}
+          selection={() => `Slide ${slideIdx + 1}`}
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}

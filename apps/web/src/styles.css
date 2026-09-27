@@ -474,3 +474,31 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 
 /* mention notification badge */
 .mention-badge{position:absolute;top:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:#D84B57;color:#fff;font-size:8px;font-weight:800;display:grid;place-items:center;padding:0 3px}
+
+/* ---- Kreatix AI panel ---- */
+.ai-side .ai-modes{display:flex;gap:4px;padding:10px 16px 0}
+.ai-mode{border:1px solid var(--line);background:#fff;border-radius:9px;padding:5px 10px;font-size:11px;font-weight:650;cursor:pointer;color:#6B6259}
+.ai-mode.on{background:var(--k-orange);border-color:var(--k-orange);color:#fff}
+.ai-mode:disabled{opacity:.4;cursor:default}
+.ai-setup{margin:10px 16px;padding:10px 12px;border:1px dashed #E2C4AC;border-radius:11px;background:#FFF5EE;font-size:11px;color:#8A6B52;line-height:1.5}
+.ai-setup code{background:#fff;border:1px solid #EDD9C8;border-radius:5px;padding:0 4px;font-size:10px}
+.ai-chat{display:flex;flex-direction:column;gap:8px}
+.ai-msg{display:flex}
+.ai-msg.user{justify-content:flex-end}
+.ai-bubble{max-width:88%;padding:8px 11px;border-radius:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ai-msg.user .ai-bubble{background:var(--k-orange);color:#fff;border-bottom-right-radius:4px}
+.ai-msg.assistant .ai-bubble{background:#F6F2EF;color:#2E2A26;border-bottom-left-radius:4px}
+.ai-thinking{color:#A39990;font-style:italic}
+.ai-pending{border:1px solid #EBD3C0;border-radius:12px;padding:10px 12px;background:#FFFBF8}
+.ai-plan{margin:0 0 8px;padding-left:18px;font-size:11px;color:#6B5C4F;line-height:1.6}
+.ai-op{font-size:11px;font-family:ui-monospace,monospace;background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 8px;margin-bottom:4px;color:#4C443D}
+.ai-pending .btn-primary{margin-top:6px}
+.ai-input{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.ai-input input{flex:1;height:36px;border:1px solid var(--line);border-radius:10px;padding:0 11px;font-size:12px;outline:none}
+.ai-input input:focus{border-color:var(--k-orange)}
+.ai-input .btn-primary{height:36px;padding:0 14px}
+.ai-action{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:6px}
+.ai-action .c-head{display:flex;align-items:center;gap:6px;font-size:11px;color:#8B837D}
+.ai-badge{background:var(--k-orange-soft);color:var(--k-orange);border-radius:6px;padding:1px 6px;font-size:9px;font-weight:800;text-transform:uppercase}
+.ai-prompt{font-size:11px;color:#4C443D;margin-top:3px}
+.ai-ops-count{font-size:10px;color:#9A8F85;margin-top:2px}

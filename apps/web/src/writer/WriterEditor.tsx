@@ -18,6 +18,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { createCollabSession, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
+import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { CommentMark } from "./extensions";
 import { exportDocx, importDocx } from "./docx";
 import { ShareDialog } from "../components/ShareDialog";
@@ -37,7 +38,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "ai">("none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -242,6 +243,38 @@ export function WriterEditor({ item, initialDoc, permission }: {
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
+  // ---- AI ops (tool-constrained edits; applied via editor → undo/autosave/collab all work) ----
+  const aiApplyOps = useCallback((ops: AiOp[]) => {
+    if (!editor) return;
+    for (const o of ops) {
+      if (o.op === "find_replace") {
+        const needle = String(o.find);
+        const matches: { from: number; to: number }[] = [];
+        editor.state.doc.descendants((node, pos) => {
+          if (!node.isText || !node.text) return;
+          let i = node.text.indexOf(needle);
+          while (i !== -1) {
+            matches.push({ from: pos + i, to: pos + i + needle.length });
+            if (!o.all) return;
+            i = node.text.indexOf(needle, i + 1);
+          }
+        });
+        const use = o.all ? matches : matches.slice(0, 1);
+        editor.chain().focus().command(({ tr }) => {
+          [...use].reverse().forEach((m) => tr.insertText(String(o.replace ?? ""), m.from, m.to));
+          return true;
+        }).run();
+      } else if (o.op === "append_paragraph" || o.op === "insert_heading") {
+        editor.chain().focus().insertContentAt(editor.state.doc.nodeSize - 2,
+          o.op === "insert_heading"
+            ? { type: "heading", attrs: { level: o.level }, content: [{ type: "text", text: String(o.text) }] }
+            : { type: "paragraph", content: [{ type: "text", text: String(o.text) }] }).run();
+      } else if (o.op === "prepend_paragraph") {
+        editor.chain().focus().insertContentAt(0, { type: "paragraph", content: [{ type: "text", text: String(o.text) }] }).run();
+      }
+    }
+  }, [editor]);
+
   // ---- docx import/export (KBS-WRITER-001) ----
   const onImport = async (f: File) => {
     try {
@@ -302,6 +335,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           Comments{comments.length ? ` (${comments.length})` : ""}
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
+        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-primary btn-sm" onClick={() => exportDocx(editor?.getJSON() as never, title)}>Export .docx</button>
       </div>
@@ -399,6 +433,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
             const r = await api.get<{ content: { doc: object } }>(`/api/files/${item.id}/content`);
             editor?.commands.setContent(r.content.doc);
           }} toast={toast} />
+      )}
+      {panel === "ai" && (
+        <AiPanel fileId={item.id} kind="writer" canEdit={canEdit}
+          serialize={() => (editor?.getText() ?? "").slice(0, 24000)}
+          selection={() => {
+            const { from, to } = editor?.state.selection ?? { from: 0, to: 0 };
+            return to > from && editor ? editor.state.doc.textBetween(from, to, " ") : "";
+          }}
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}

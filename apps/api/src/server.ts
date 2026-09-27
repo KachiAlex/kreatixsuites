@@ -11,6 +11,7 @@ import { contentRoutes } from "./routes/content.js";
 import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
+import { aiRoutes } from "./routes/ai.js";
 import { collabRoutes } from "./collab.js";
 
 async function main() {
@@ -44,6 +45,7 @@ async function main() {
   app.register(sharingRoutes);
   app.register(commentRoutes);
   app.register(searchRoutes);
+  app.register(aiRoutes);
   app.register(collabRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
