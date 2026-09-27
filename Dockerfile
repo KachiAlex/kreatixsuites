@@ -19,7 +19,8 @@ ENV NODE_ENV=production
 ENV PORT=3001
 COPY --from=build /app /app
 WORKDIR /app/apps/api
-# KREATIX_DATA_DIR holds the SQLite DB + blob store — mount a volume at /data
+# KREATIX_DATA_DIR holds the blob store — mount a volume at /data.
+# Metadata lives in Postgres (compose `db` service / KREATIX_DATABASE_URL).
 ENV KREATIX_DATA_DIR=/data
 ENV KREATIX_WEB_DIST=/app/apps/web/dist
 VOLUME /data
