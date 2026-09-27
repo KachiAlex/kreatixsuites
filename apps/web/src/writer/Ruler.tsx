@@ -68,11 +68,12 @@ export function Ruler({ editor }: { editor: Editor }) {
     <div className="ruler-wrap" aria-hidden="true">
       <svg ref={svgRef} className="ruler" width={width} height={H} viewBox={`0 0 ${width} ${H}`}
         onPointerMove={onMove} onPointerUp={() => setDrag(null)} onPointerLeave={() => setDrag(null)}>
-        {/* writable zone card */}
-        <rect x={ml} y={4} width={width - ml - mr} height={H - 6} rx={2} fill="#fff" stroke="#E4DDD5" />
-        {/* margin zones */}
-        <rect x={0} y={4} width={ml} height={H - 6} fill="#E9E2DA" />
-        <rect x={width - mr} y={4} width={mr} height={H - 6} fill="#E9E2DA" />
+        {/* margin zones — same tone as the canvas so the writable strip reads
+            as continuous with the page below */}
+        <rect x={0} y={4} width={ml} height={H - 6} fill="#EFEAE4" />
+        <rect x={width - mr} y={4} width={mr} height={H - 6} fill="#EFEAE4" />
+        {/* writable zone */}
+        <rect x={ml} y={4} width={width - ml - mr} height={H - 6} fill="#fff" />
         {ticks}
         {numbers}
         {/* margin edges */}
