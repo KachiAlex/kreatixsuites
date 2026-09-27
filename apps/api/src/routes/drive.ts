@@ -95,6 +95,7 @@ export function driveRoutes(app: FastifyInstance) {
     const q = req.query as { view?: string; parent?: string };
 
     let rows: ItemRow[];
+    // media_for items are embedded doc assets — never surfaced as Drive files
     const base = `
       SELECT DISTINCT i.* FROM items i
       LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = $1`;
@@ -102,32 +103,32 @@ export function driveRoutes(app: FastifyInstance) {
     if (q.parent !== undefined) {
       // IS NOT DISTINCT FROM — null-safe equality (parent_id IS NULL at root)
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
          AND i.parent_id IS NOT DISTINCT FROM $2`,
         [user.id, q.parent === "" ? null : q.parent],
       );
     } else if (q.view === "starred") {
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.starred AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.starred AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
          ORDER BY i.updated_at DESC`,
         [user.id],
       );
     } else if (q.view === "shared") {
       rows = await dbq<ItemRow>(
         `SELECT i.* FROM items i JOIN shares s ON s.file_id = i.id
-         WHERE s.user_id = $1 AND i.trashed = false ORDER BY i.updated_at DESC`,
+         WHERE s.user_id = $1 AND i.trashed = false AND i.media_for IS NULL ORDER BY i.updated_at DESC`,
         [user.id],
       );
     } else if (q.view === "trash") {
       rows = await dbq<ItemRow>(
-        "SELECT * FROM items WHERE owner_id = $1 AND trashed ORDER BY updated_at DESC",
+        "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC",
         [user.id],
       );
     } else {
       // home + recent: items I own or that are shared with me
       const limit = q.view === "home" ? 8 : 50;
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.kind != 'folder' AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.kind != 'folder' AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
          ORDER BY i.updated_at DESC LIMIT ${limit}`,
         [user.id],
       );
@@ -195,7 +196,7 @@ export function driveRoutes(app: FastifyInstance) {
   /** Binary upload (PDFs, office files, media): raw body + ?name=&parent= */
   app.post("/api/drive/upload", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const { name, parent, kind } = req.query as { name?: string; parent?: string; kind?: string };
+    const { name, parent, kind, mediaFor } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string };
     // text/* content-types hit Fastify's built-in parser (string body) before
     // the wildcard buffer parser — handle all three shapes.
     const buf = Buffer.isBuffer(req.body)
@@ -232,11 +233,18 @@ export function driveRoutes(app: FastifyInstance) {
     const id = randomUUID();
     const { key, size } = putBlob(buf);
 
+    // mediaFor: embedded media (doc images) inherit viewer access from the host doc
+    let mediaForId: string | null = null;
+    if (mediaFor) {
+      const host = await getItem(mediaFor);
+      if (host && hasPermission(await permissionFor(user.id, host), "editor")) mediaForId = mediaFor;
+    }
+
     await run(
-      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, media_for, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
-       (req.headers["content-type"] as string) ?? "application/octet-stream", size, now(), now()],
+       (req.headers["content-type"] as string) ?? "application/octet-stream", size, mediaForId, now(), now()],
     );
     await run(
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",

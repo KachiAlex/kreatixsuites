@@ -15,6 +15,7 @@ export interface ItemRow {
   starred: boolean;
   trashed: boolean;
   label: string;
+  media_for: string | null;
   created_at: string;
   updated_at: string;
 }

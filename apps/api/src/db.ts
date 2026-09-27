@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS items (
   starred BOOLEAN NOT NULL DEFAULT false,
   trashed BOOLEAN NOT NULL DEFAULT false,
   label TEXT NOT NULL DEFAULT 'internal',
+  media_for TEXT REFERENCES items(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -216,6 +217,8 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 `);
+  // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
 }
 
 export const now = () => new Date().toISOString();

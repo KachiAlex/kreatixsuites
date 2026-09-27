@@ -32,14 +32,18 @@ export interface AuthedRequest extends FastifyRequest {
   user: User;
 }
 
-/** Fastify preHandler — requires a valid Bearer token, attaches req.user */
+/** Fastify preHandler — requires a valid Bearer token (or the `kx_t` cookie,
+ *  which lets <img>/<iframe> media URLs authenticate without headers), attaches req.user */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
+  const cookieToken = (req.headers.cookie ?? "")
+    .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
+  if (!token) {
     return reply.code(401).send({ error: "unauthorized", message: "Missing token" });
   }
   try {
-    const { payload } = await jwtVerify(header.slice(7), secret);
+    const { payload } = await jwtVerify(token, secret);
     const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
     if (!user) throw new Error("unknown user");
     (req as AuthedRequest).user = toUser(user);
@@ -79,14 +83,29 @@ const PERM_RANK: Record<Permission, number> = {
   owner: 5,
 };
 
-/** Effective permission of a user on an item, or null if no access. */
-export async function permissionFor(userId: string, item: { owner_id: string; id: string }): Promise<Permission | null> {
+/** Effective permission of a user on an item, or null if no access.
+ *  Items with `media_for` inherit viewer access from the document that embeds
+ *  them (images inside shared docs must load for viewers of that doc). */
+export async function permissionFor(
+  userId: string,
+  item: { owner_id: string; id: string; media_for?: string | null },
+): Promise<Permission | null> {
   if (item.owner_id === userId) return "owner";
   const share = await one<{ permission: Permission }>(
     "SELECT permission FROM shares WHERE file_id = $1 AND user_id = $2",
     [item.id, userId],
   );
-  return share?.permission ?? null;
+  if (share) return share.permission;
+  if (item.media_for) {
+    const host = await one<{ owner_id: string; id: string }>(
+      "SELECT id, owner_id FROM items WHERE id = $1", [item.media_for]);
+    if (host) {
+      const hostPerm = await permissionFor(userId, host);
+      // media access is capped at viewer regardless of host permission
+      if (hostPerm) return "viewer";
+    }
+  }
+  return null;
 }
 
 export function hasPermission(actual: Permission | null, required: Permission): boolean {

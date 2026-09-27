@@ -32,6 +32,19 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
           { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] },
         ] },
       ] },
+      // new node types must export without crashing and degrade gracefully
+      { type: "heading", attrs: { level: 5 }, content: [{ type: "text", text: "Details" }] },
+      { type: "paragraph", attrs: { textAlign: "center", spaceBefore: 12, indent: 2 }, content: [
+        { type: "text", text: "Centered para with footnote" },
+        { type: "footnote", attrs: { note: "note body" } },
+      ] },
+      { type: "taskList", content: [
+        { type: "taskItem", attrs: { checked: true }, content: [{ type: "paragraph", content: [{ type: "text", text: "Done item" }] }] },
+        { type: "taskItem", attrs: { checked: false }, content: [{ type: "paragraph", content: [{ type: "text", text: "Todo item" }] }] },
+      ] },
+      { type: "pageBreak" },
+      { type: "paragraph", content: [{ type: "text", text: "after break" }] },
+      { type: "blockMath", attrs: { latex: "x^2+y^2" } },
     ],
   };
   const blob = await exportDocxBytes(doc as never, "report");
@@ -39,7 +52,38 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("docx: heading text", html.includes("Quarterly Report"));
   check("docx: inline text", html.includes("Revenue grew") && html.includes("42 percent"));
   check("docx: table cells", html.includes("Metric") && html.includes("Value"));
+  check("docx: h5 survives", html.includes("Details"));
+  check("docx: task items", html.includes("Done item") && html.includes("Todo item"));
+  check("docx: after page break", html.includes("after break"));
+  check("docx: math as text", html.includes("x^2+y^2"));
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
+}
+
+// ---------- MD / RTF / ODT exporters ----------
+{
+  const { jsonToMarkdown } = await import("./src/writer/export/markdown");
+  const { rtfBlob } = await import("./src/writer/export/rtf");
+  const { odtBlob } = await import("./src/writer/export/odt");
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Spec" }] },
+      { type: "paragraph", content: [{ type: "text", marks: [{ type: "bold" }], text: "bold claim" }] },
+      { type: "bulletList", content: [
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "point a" }] }] },
+      ] },
+    ],
+  };
+  const md = jsonToMarkdown(doc as never);
+  check("md: heading + bold + bullet", md.includes("## Spec") && md.includes("**bold claim**") && md.includes("- point a"));
+  const rtf = await rtfBlob(doc as never, "spec").text();
+  check("rtf: header + content", rtf.startsWith("{\\rtf1") && rtf.includes("bold claim") && rtf.includes("\\b"));
+  const JSZip = (await import("jszip")).default;
+  const odt = await odtBlob(doc as never, "spec");
+  const zip = await JSZip.loadAsync(await odt.arrayBuffer());
+  const content = await zip.file("content.xml")?.async("text");
+  check("odt: zip + content.xml", !!content && content.includes("Spec") && content.includes("office:text"));
+  check("odt: mimetype first", zip.file("mimetype") !== null);
 }
 
 // ---------- XLSX ----------

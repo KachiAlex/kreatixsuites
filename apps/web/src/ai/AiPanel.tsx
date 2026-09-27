@@ -62,8 +62,8 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   /** POST to the SSE endpoint and read the event stream manually
    *  (EventSource can't POST). Emits raw token deltas, then the
    *  server-validated final payload. */
-  const send = async () => {
-    const text = input.trim();
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || busy) return;
     setInput(""); setBusy(true); setPending(null); setStreaming("");
     const next = [...msgs, { role: "user" as const, content: text }];
@@ -207,12 +207,24 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
               Auto-apply (undoable)
             </label>
           )}
+          {kind === "writer" && canEdit && selection() && (
+            <div className="ai-quick" role="toolbar" aria-label="Selection actions">
+              {(["Rewrite it", "Make it formal", "Make it casual", "Shorten it", "Expand it", "Fix grammar"] as const).map((q) => (
+                <button key={q} className="ai-chip" disabled={busy} onClick={() => {
+                  setMode("edit"); void send(`${q}: the current selection`);
+                }}>{q}</button>
+              ))}
+              <button className="ai-chip" disabled={busy} onClick={() => {
+                setMode("edit"); setInput("Translate the current selection to ");
+              }}>Translate…</button>
+            </div>
+          )}
           <div className="ai-input">
             <input value={input} disabled={busy || enabled === false}
               placeholder={mode === "ask" ? "Ask about this document…" : mode === "explain" ? "What should I explain?" : "Describe the change…"}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()} />
-            <button className="btn-primary" onClick={send} disabled={busy || !input.trim()}>↗</button>
+            <button className="btn-primary" onClick={() => void send()} disabled={busy || !input.trim()}>↗</button>
           </div>
         </>
       )}
@@ -229,7 +241,7 @@ function scrubRaw(s: string): string {
   if (m) {
     try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
   }
-  return s.replace(/[{}\[\]"]/g, "").slice(-300);
+  return s.replace(/[{}[\]"]/g, "").slice(-300);
 }
 
 /** Human-readable op description for the apply preview. */
@@ -241,6 +253,8 @@ export function describeOp(o: AiOp): string {
     case "prepend_paragraph": return `Prepend paragraph: "${q(o.text)}"`;
     case "insert_heading": return `Insert H${o.level}: "${q(o.text)}"`;
     case "insert_table": return `Insert table ${o.rows}×${o.cols}`;
+    case "replace_selection": return `Replace selection: "${q(o.text)}"`;
+    case "insert_content": return "Insert content at cursor";
     case "set_cells": return `Set ${Object.keys((o.cells as object) ?? {}).length} cell(s) on ${o.sheet}`;
     case "set_format": return `Format ${(o.refs as unknown[])?.length ?? 0} cell(s) on ${o.sheet}`;
     case "add_sheet": return `Add sheet "${o.name}"`;

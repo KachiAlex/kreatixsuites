@@ -32,8 +32,15 @@ const opSchemas: Record<string, z.ZodTypeAny[]> = {
     z.object({ op: z.literal("find_replace"), find: z.string().min(1).max(500), replace: z.string().max(4000), all: z.boolean().optional() }),
     z.object({ op: z.literal("append_paragraph"), text: z.string().min(1).max(4000) }),
     z.object({ op: z.literal("prepend_paragraph"), text: z.string().min(1).max(4000) }),
-    z.object({ op: z.literal("insert_heading"), level: z.union([z.literal(1), z.literal(2), z.literal(3)]), text: z.string().min(1).max(300) }),
+    z.object({ op: z.literal("insert_heading"), level: z.number().int().min(1).max(6), text: z.string().min(1).max(300) }),
     z.object({ op: z.literal("insert_table"), rows: z.number().int().min(1).max(20), cols: z.number().int().min(1).max(8) }),
+    // replaces the user's current selection (rewrite / translate / tone ops)
+    z.object({ op: z.literal("replace_selection"), text: z.string().min(1).max(8000) }),
+    // arbitrary TipTap JSON inserted at the cursor (lists, formatted runs, etc.)
+    z.object({
+      op: z.literal("insert_content"),
+      content: z.unknown().refine((c) => c !== undefined && JSON.stringify(c).length <= 8000, { message: "content too large" }),
+    }),
   ],
   sheets: [
     z.object({ op: z.literal("set_cells"), sheet: z.string().max(60), cells: z.record(z.string().max(10), z.string().max(2000)).refine((c) => Object.keys(c).length <= 200 && Object.keys(c).every((k) => a1.safeParse(k).success), { message: "max 200 A1 cells" }) }),
@@ -73,7 +80,8 @@ const opSchemas: Record<string, z.ZodTypeAny[]> = {
 };
 
 const OP_GUIDE: Record<string, string> = {
-  writer: `ops: find_replace{find,replace,all?} · append_paragraph{text} · prepend_paragraph{text} · insert_heading{level,text} · insert_table{rows,cols}`,
+  writer: `ops: find_replace{find,replace,all?} · append_paragraph{text} · prepend_paragraph{text} · insert_heading{level(1-6),text} · insert_table{rows,cols} · replace_selection{text — replaces the user's current selection; use for rewrite/tone/translate/fix-grammar requests} · insert_content{content: TipTap JSON nodes — insert rich content at the cursor}`,
+
   sheets: `ops: set_cells{sheet,cells:{"A1":"value or =formula"}} · set_format{sheet,refs,style:{b,i,u,color,bg,align,fmt}} · add_sheet{name}`,
   present: `ops: update_slide{slide(0-based),notes?,bg?} · add_slide{layout?} · add_text{slide,x,y,w,h,html,fontSize?,color?,align?} · add_shape{slide,x,y,w,h,shape,fill?,stroke?,html?} · add_table{slide,x,y,w,h,rows:[[..]]} · add_chart{slide,x,y,w,h,type:bar|line|pie,labels,series:[{name,values}],title?} · edit_object_text{slide,index,html} · delete_object{slide,index} · delete_slide{slide}`,
   pdf: `ops: add_annotation{page(1-based),type:highlight|note|textbox|stamp,rects?|points?,text?,color?} · delete_annotation{index(0-based into the annotation list)} · set_form_value{name(annotation-storage id shown in the document),value}`,

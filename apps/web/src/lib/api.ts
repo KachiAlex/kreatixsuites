@@ -1,8 +1,24 @@
 const TOKEN_KEY = "kreatix.token";
 
+/** The JWT is mirrored into the `kx_t` cookie so media URLs (<img>, <iframe>)
+ *  can authenticate without JS headers. Non-HttpOnly — the token already lives
+ *  in localStorage, and JS needs to manage the cookie's lifecycle on logout. */
+const mirrorCookie = (t: string | null) => {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = t
+    ? `kx_t=${t}; Path=/; SameSite=Lax; Max-Age=604800${secure}`
+    : `kx_t=; Path=/; SameSite=Lax; Max-Age=0`;
+};
+
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t: string | null) =>
-  t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY);
+export const setToken = (t: string | null) => {
+  if (t) localStorage.setItem(TOKEN_KEY, t);
+  else localStorage.removeItem(TOKEN_KEY);
+  mirrorCookie(t);
+};
+
+// restore the cookie mirror for tokens stored before this feature existed
+if (getToken()) mirrorCookie(getToken());
 
 export class ApiError extends Error {
   status: number;

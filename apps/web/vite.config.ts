@@ -7,7 +7,22 @@ export default defineConfig({
   // perf budget: warn only on real regressions — lazy chunks (pdf.js/pdf-lib
   // ~430KB) ride under this; main entry should stay well below after editor
   // code-splitting.
-  build: { chunkSizeWarningLimit: 700 },
+  build: {
+    // lazily-loaded vendor chunks top out at ~770KB (mammoth/docx) — only fetched
+    // when a Writer doc is opened; the main entry is the real budget concern.
+    chunkSizeWarningLimit: 800,
+    // split the heavy writer-only libs into a vendor chunk cached separately
+    rolldownOptions: {
+      output: {
+        advancedChunks: {
+          groups: [
+            { name: "writer-vendor", test: /katex|lowlight|tiptap-pagination-plus|tiptap-track-changes/ },
+            { name: "ooxml", test: /docx|mammoth|jszip/ },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
