@@ -10,6 +10,7 @@ import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { TrackChangesExtension } from "tiptap-track-changes";
 import { prosemirrorToYXmlFragment, updateYFragment, yXmlFragmentToProsemirrorJSON } from "y-prosemirror";
+import { CommentMark } from "./src/writer/extensions";
 
 const BASE = process.env.KX_BASE ?? "http://127.0.0.1:3017";
 const WS = BASE.replace(/^http/, "ws");
@@ -20,7 +21,7 @@ const check = (name: string, cond: boolean) => {
   else { failed++; console.log("FAIL:", name); }
 };
 
-const schema = getSchema([StarterKit, TrackChangesExtension]);
+const schema = getSchema([StarterKit, TrackChangesExtension, CommentMark]);
 type Json = Record<string, unknown>;
 const marksIn = (json: Json, type: string): Json[] => {
   const out: Json[] = [];
@@ -162,8 +163,27 @@ try {
     } finally { p.destroy(); d.destroy(); }
   };
   check("reviewer WS write propagates", (await tryWrite(tokReviewer, "REV")) === "propagated");
-  check("commenter WS write propagates", (await tryWrite(tokCommenter, "CMT")) === "propagated");
+  check("commenter content write dropped", (await tryWrite(tokCommenter, "CMT", 2500)) === "dropped");
   check("viewer WS write dropped", (await tryWrite(tokViewer, "VIEW", 2500)) === "dropped");
+
+  // commenter commentMark anchor: marks-only update must pass the server gate
+  {
+    const dc = new Y.Doc();
+    const pc = new WebsocketProvider(`${WS}/api/collab`, fileId, dc, { params: { token: tokCommenter }, disableBc: true });
+    try {
+      check("commenter synced", await waitFor(() => pc.synced));
+      const current = toJson(dc);
+      const text = JSON.stringify(current).match(/__REV__/) ? "__REV__" : "net new";
+      updateYFragment(dc, dc.getXmlFragment("default"), schema.nodeFromJSON({
+        type: "doc",
+        content: [{ type: "paragraph", content: [
+          { type: "text", text, marks: [{ type: "commentMark", attrs: { commentId: "anchor-1" } }] },
+        ] }],
+      }), { mapping: new Map(), isOMark: new Map() });
+      check("commenter commentMark propagates",
+        await waitFor(() => marksIn(toJson(docA), "commentMark").length === 1));
+    } finally { pc.destroy(); dc.destroy(); }
+  }
 } finally {
   provA.destroy(); provB.destroy();
   // clean up the fixture doc (trash → permanent delete)

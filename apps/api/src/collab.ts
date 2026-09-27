@@ -27,6 +27,77 @@ const SYNC_STEP1 = 0; // state vector exchange — read-only safe
 const SYNC_STEP2 = 1; // carries update payload — write op
 const SYNC_UPDATE = 2; // write op
 
+const COMMENT_MARK = "commentMark";
+
+// ---- commenter gate: only commentMark anchor changes may pass ----
+// Canonical serialization of the doc's XmlFragment with commentMark attributes
+// stripped and adjacent same-mark text runs merged — two docs that differ only
+// in comment anchors serialize identically.
+
+// stable stringify — JSON.stringify's array replacer filters keys at *every*
+// nesting level, so nested attr objects need explicit key sorting
+const stable = (v: unknown): string => {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
+};
+
+const canonMarks = (attrs: Record<string, unknown> | undefined): string => {
+  if (!attrs) return "";
+  return Object.keys(attrs)
+    .filter((k) => k !== COMMENT_MARK)
+    .sort()
+    .map((k) => `${k}=${stable(attrs[k])}`)
+    .join(",");
+};
+
+const canonXml = (node: Y.XmlFragment | Y.XmlElement, out: string[]): void => {
+  for (let i = 0; i < node.length; i++) {
+    const item = node.get(i);
+    if (item instanceof Y.XmlText) {
+      let run = "", runMarks: string | null = null;
+      for (const op of item.toDelta() as { insert: unknown; attributes?: Record<string, unknown> }[]) {
+        const marks = canonMarks(op.attributes);
+        const text = typeof op.insert === "string" ? op.insert : stable(op.insert);
+        if (runMarks === marks) { run += text; continue; }
+        if (runMarks !== null) out.push(`(${runMarks})${run}`);
+        runMarks = marks; run = text;
+      }
+      if (runMarks !== null) out.push(`(${runMarks})${run}`);
+    } else if (item instanceof Y.XmlElement) {
+      out.push(`<${item.nodeName} ${stable(item.getAttributes())}>`);
+      canonXml(item, out);
+      out.push("</>");
+    }
+  }
+};
+
+const canonical = (doc: Y.Doc): string => {
+  const out: string[] = [];
+  canonXml(doc.getXmlFragment("default"), out);
+  return out.join("");
+};
+
+/** Apply `update` to a shadow clone of `doc` — returns true when the only
+ *  change is added/removed commentMark anchors. Commenter writes are rare,
+ *  so an O(doc) shadow diff is acceptable. */
+const updateIsCommentMarkOnly = (doc: Y.Doc, update: Uint8Array): boolean => {
+  try {
+    const before = canonical(doc);
+    const shadow = new Y.Doc();
+    try {
+      Y.applyUpdate(shadow, Y.encodeStateAsUpdate(doc));
+      Y.applyUpdate(shadow, update);
+      return canonical(shadow) === before;
+    } finally {
+      shadow.destroy();
+    }
+  } catch {
+    return false;
+  }
+};
+
 const secret = new TextEncoder().encode(
   process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production",
 );
@@ -112,64 +183,98 @@ function closeConn(fileId: string, room: Room, ws: WebSocket) {
 }
 
 export async function collabRoutes(app: FastifyInstance) {
-  app.get("/api/collab/:id", { websocket: true }, async (socket, req) => {
+  app.get("/api/collab/:id", { websocket: true }, (socket, req) => {
     const fileId = (req.params as { id: string }).id;
     const token = (req.query as { token?: string }).token ?? "";
-    try {
-      const { payload } = await jwtVerify(token, secret);
-      const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
-      const item = await one<{ id: string; owner_id: string }>(
-        "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
-        [fileId],
-      );
-      if (!user || !item) throw new Error("unauthorized");
-      const perm = await permissionFor(user.id, item);
-      if (!hasPermission(perm, "viewer")) throw new Error("unauthorized");
-      // commenters write comment-anchor marks; reviewers write tracked
-      // suggestions — both require live updates through the socket
-      const canWrite = hasPermission(perm, "commenter");
+    // ws is a plain EventEmitter — 'message' events emitted before a listener
+    // attaches are lost, and auth/room init below is async, so the client's
+    // sync step1 (sent immediately on open) can race the handler. Buffer
+    // everything from the start and drain once the real handler is wired.
+    const pending: Buffer[] = [];
+    let handler: ((raw: Buffer) => void) | null = null;
+    socket.on("message", (raw: Buffer) => {
+      if (handler) handler(raw);
+      else pending.push(raw);
+    });
+    void (async () => {
+      try {
+        const { payload } = await jwtVerify(token, secret);
+        const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
+        const item = await one<{ id: string; owner_id: string }>(
+          "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
+          [fileId],
+        );
+        if (!user || !item) throw new Error("unauthorized");
+        const perm = await permissionFor(user.id, item);
+        if (!hasPermission(perm, "viewer")) throw new Error("unauthorized");
+        // reviewers+ write freely (suggestions are tracked client-side);
+        // commenters may only push updates that change comment anchors;
+        // viewers are read-only (sync step1 handshake only)
+        const canWrite = hasPermission(perm, "reviewer");
+        const canAnchor = hasPermission(perm, "commenter");
 
-      const room = await getRoom(fileId);
-      room.conns.set(socket, new Set());
+        const room = await getRoom(fileId);
+        room.conns.set(socket, new Set());
 
-      // kick off the sync handshake: our state vector + existing awareness states
-      const enc = encoding.createEncoder();
-      encoding.writeVarUint(enc, MSG_SYNC);
-      syncProtocol.writeSyncStep1(enc, room.doc);
-      send(socket, enc);
-      const states = room.awareness.getStates();
-      if (states.size) {
-        const encAw = encoding.createEncoder();
-        encoding.writeVarUint(encAw, MSG_AWARENESS);
-        encoding.writeVarUint8Array(encAw, awarenessProtocol.encodeAwarenessUpdate(room.awareness, [...states.keys()]));
-        send(socket, encAw);
-      }
-
-      socket.on("message", (raw: Buffer) => {
-        const data = new Uint8Array(raw);
-        const dec = decoding.createDecoder(data);
-        const msgType = decoding.readVarUint(dec);
-        if (msgType === MSG_SYNC) {
-          // peek the sync sub-type with a second decoder — viewers may sync, never write
-          const peek = decoding.createDecoder(data);
-          decoding.readVarUint(peek);
-          if (!canWrite && decoding.readVarUint(peek) !== SYNC_STEP1) return;
-          const enc = encoding.createEncoder();
-          encoding.writeVarUint(enc, MSG_SYNC);
-          syncProtocol.readSyncMessage(dec, enc, room.doc, socket);
-          if (encoding.length(enc) > 1) send(socket, enc);
-        } else if (msgType === MSG_AWARENESS) {
-          const update = decoding.readVarUint8Array(dec);
-          const owned = room.conns.get(socket);
-          if (owned) for (const c of clientIdsInUpdate(update)) owned.add(c);
-          awarenessProtocol.applyAwarenessUpdate(room.awareness, update, socket);
+        // kick off the sync handshake: our state vector + existing awareness states
+        const enc = encoding.createEncoder();
+        encoding.writeVarUint(enc, MSG_SYNC);
+        syncProtocol.writeSyncStep1(enc, room.doc);
+        send(socket, enc);
+        const states = room.awareness.getStates();
+        if (states.size) {
+          const encAw = encoding.createEncoder();
+          encoding.writeVarUint(encAw, MSG_AWARENESS);
+          encoding.writeVarUint8Array(encAw, awarenessProtocol.encodeAwarenessUpdate(room.awareness, [...states.keys()]));
+          send(socket, encAw);
         }
-      });
-      socket.on("close", () => closeConn(fileId, room, socket));
-      socket.on("error", () => closeConn(fileId, room, socket));
-    } catch {
-      socket.close(4401, "unauthorized");
-    }
+
+        handler = (raw: Buffer) => {
+          const data = new Uint8Array(raw);
+          const dec = decoding.createDecoder(data);
+          const msgType = decoding.readVarUint(dec);
+          if (msgType === MSG_SYNC) {
+            // peek the sync sub-type with a second decoder — step1 is a
+            // read-only handshake; step2/update carry a write payload
+            const peek = decoding.createDecoder(data);
+            decoding.readVarUint(peek);
+            const subtype = decoding.readVarUint(peek);
+            if (subtype !== SYNC_STEP1 && !canWrite) {
+              if (!canAnchor) return;
+              // commenters: apply the update to a shadow doc and accept only
+              // when it changes nothing but commentMark anchors
+              try {
+                decoding.readVarUint(dec); // consume the sync subtype byte
+                const update = decoding.readVarUint8Array(dec);
+                if (updateIsCommentMarkOnly(room.doc, update)) {
+                  Y.applyUpdate(room.doc, update, socket);
+                }
+              } catch { /* malformed update — drop */ }
+              return;
+            }
+            const enc = encoding.createEncoder();
+            encoding.writeVarUint(enc, MSG_SYNC);
+            syncProtocol.readSyncMessage(dec, enc, room.doc, socket);
+            if (encoding.length(enc) > 1) send(socket, enc);
+          } else if (msgType === MSG_AWARENESS) {
+            const update = decoding.readVarUint8Array(dec);
+            const owned = room.conns.get(socket);
+            if (owned) for (const c of clientIdsInUpdate(update)) owned.add(c);
+            awarenessProtocol.applyAwarenessUpdate(room.awareness, update, socket);
+          }
+        };
+        for (const raw of pending) handler(raw);
+        pending.length = 0;
+        if (socket.readyState !== WS_OPEN) {
+          closeConn(fileId, room, socket); // closed while init was in flight
+        } else {
+          socket.on("close", () => closeConn(fileId, room, socket));
+          socket.on("error", () => closeConn(fileId, room, socket));
+        }
+      } catch {
+        socket.close(4401, "unauthorized");
+      }
+    })();
   });
 }
 

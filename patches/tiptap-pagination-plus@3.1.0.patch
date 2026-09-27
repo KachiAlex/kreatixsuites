@@ -1,0 +1,23 @@
+diff --git a/dist/PaginationPlus.js b/dist/PaginationPlus.js
+index 186b6759ba503bbc707e3d8efa98e8b6e396b026..dac710dddb3f879c6c715c4b0009120490e0c97a 100644
+--- a/dist/PaginationPlus.js
++++ b/dist/PaginationPlus.js
+@@ -288,8 +288,16 @@ export const PaginationPlus = Extension.create({
+                         if (storage.enabled === storage.appliedConfig.enabled && storage.enabled === false && storage.appliedConfig.enabled === false) {
+                             return oldDeco;
+                         }
+-                        const pageCount = getNewPageCount(editor.view, Object.assign(Object.assign({}, _currentOptions), pageConfig));
+-                        const currentPageCount = getExistingPageCount(editor.view);
++                        // The first collab transaction can dispatch while the
++                        // EditorView is still under construction — editor.view
++                        // is a throwing Proxy until mount completes.
++                        let pageCount, currentPageCount;
++                        try {
++                            pageCount = getNewPageCount(editor.view, Object.assign(Object.assign({}, _currentOptions), pageConfig));
++                            currentPageCount = getExistingPageCount(editor.view);
++                        } catch (e) {
++                            return oldDeco;
++                        }
+                         const getNewDecoration = () => {
+                             const { options: _currentOptions, config: pageConfig } = getPageConfig(storage, this.options);
+                             updateCssVariables(editor.view.dom, _currentOptions);

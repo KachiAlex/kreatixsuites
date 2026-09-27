@@ -59,7 +59,8 @@ async function ensureDatabase() {
     if ((e as { code?: string }).code !== "3D000") return; // let real errors surface later
   }
   const admin = new pg.Client({
-    connectionString: `${url.origin}/postgres${url.search}`,
+    // url.origin is "null" for the postgres: scheme — build host part manually
+    connectionString: `${url.protocol}//${url.host}/postgres${url.search}`,
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
   });
