@@ -6,7 +6,7 @@ import { getItem, toDriveItem, touchItem, logActivity, type ItemRow } from "../i
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
-import { deindexFile } from "../indexer.js";
+import { purgeItem } from "../policies.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(255),
@@ -18,7 +18,38 @@ const patchSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   starred: z.boolean().optional(),
   parentId: z.string().nullable().optional(),
+  label: z.enum(["internal", "public", "confidential", "restricted"]).optional(),
 });
+
+const BLOCKED_EXTS = new Set([
+  "exe", "msi", "bat", "cmd", "com", "scr", "pif", "vbs", "vbe", "jse", "wsf", "wsh",
+  "ps1", "dll", "hta", "cpl", "jar", "lnk", "reg", "apk",
+]);
+
+const SCAN_CMD = process.env.KREATIX_SCAN_CMD;
+
+/** Write buffer to a temp file, run KREATIX_SCAN_CMD, return stderr verdict or null. */
+async function scanBuffer(buf: Buffer, name: string): Promise<string | null> {
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const { execFile } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const tmp = join(tmpdir(), `kreatix-scan-${randomUUID()}-${name.replace(/[^\w.-]/g, "_").slice(-80)}`);
+  try {
+    writeFileSync(tmp, buf);
+    const [cmd, ...args] = SCAN_CMD!.split(" ");
+    await new Promise<void>((resolve, reject) => {
+      execFile(cmd, [...args, tmp], { timeout: 30_000 }, (err, _stdout, stderr) =>
+        err ? reject(new Error(stderr?.trim() || err.message)) : resolve(),
+      );
+    });
+    return null; // exit 0 = clean
+  } catch (e) {
+    return e instanceof Error ? e.message.slice(0, 300) : "scan failed";
+  } finally {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
+}
 
 const DEFAULT_DOCS: Record<string, unknown> = {
   writer: { kind: "writer", doc: { type: "doc", content: [{ type: "paragraph" }] } },
@@ -118,8 +149,28 @@ export function driveRoutes(app: FastifyInstance) {
   app.post("/api/drive/upload", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { name, parent, kind } = req.query as { name?: string; parent?: string; kind?: string };
-    const buf = Buffer.isBuffer(req.body) ? req.body : await buffer(req);
+    // text/* content-types hit Fastify's built-in parser (string body) before
+    // the wildcard buffer parser — handle all three shapes.
+    const buf = Buffer.isBuffer(req.body)
+      ? req.body
+      : typeof req.body === "string" && req.body.length
+        ? Buffer.from(req.body)
+        : await buffer(req);
     if (!buf.length) return reply.code(400).send({ error: "bad_request", message: "Empty upload" });
+
+    // malware/type gate: never-executable extensions, plus optional external
+    // scanner (KREATIX_SCAN_CMD receives the temp path; non-zero exit = reject)
+    const ext = (name ?? "").split(".").pop()?.toLowerCase() ?? "";
+    if (BLOCKED_EXTS.has(ext)) {
+      return reply.code(415).send({ error: "blocked_file_type", message: `'.${ext}' files are not allowed` });
+    }
+    if (SCAN_CMD) {
+      const verdict = await scanBuffer(buf, name ?? "upload");
+      if (verdict !== null) {
+        logActivity(user.orgId, user.id, null, "upload-blocked", `${name ?? "upload"}: ${verdict}`);
+        return reply.code(415).send({ error: "upload_rejected", message: `Upload rejected by scanner: ${verdict}` });
+      }
+    }
 
     const fileKind = FILE_KINDS.includes(kind as never) ? (kind as ItemRow["kind"]) : "file";
     const id = randomUUID();
@@ -147,11 +198,14 @@ export function driveRoutes(app: FastifyInstance) {
     const body = patchSchema.parse(req.body);
     db.prepare(
       `UPDATE items SET name = COALESCE(?, name), starred = COALESCE(?, starred),
+       label = COALESCE(?, label),
        parent_id = CASE WHEN ? THEN ? ELSE parent_id END, updated_at = ? WHERE id = ?`,
     ).run(
       body.name ?? null, body.starred === undefined ? null : body.starred ? 1 : 0,
+      body.label ?? null,
       body.parentId !== undefined ? 1 : 0, body.parentId ?? null, now(), item.id,
     );
+    if (body.label) logActivity(user.orgId, user.id, item.id, "label", body.label);
     return { item: toDriveItem(getItem(item.id)!, permissionFor(user.id, item) ?? undefined) };
   });
 
@@ -162,8 +216,7 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Only the owner can delete" });
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
-      deindexFile(item.id);
-      db.prepare("DELETE FROM items WHERE id = ?").run(item.id);
+      purgeItem(item.id);
       logActivity(user.orgId, user.id, item.id, "delete-permanent", item.name);
       return { ok: true };
     }

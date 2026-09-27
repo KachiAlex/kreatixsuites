@@ -132,6 +132,19 @@ CREATE INDEX IF NOT EXISTS idx_ai_actions_file ON ai_actions(file_id, created_at
 
 -- full-text document index (populated on save + at boot by indexer.ts)
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(file_id UNINDEXED, body);
+
+-- per-org admin policies (DLP/retention/etc.) — JSON document, one row per org
+CREATE TABLE IF NOT EXISTS org_policies (
+  org_id TEXT PRIMARY KEY REFERENCES orgs(id),
+  json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
+
+// additive column migrations for existing databases
+const itemCols = (db.pragma("table_info(items)") as { name: string }[]).map((c) => c.name);
+if (!itemCols.includes("label")) {
+  db.exec("ALTER TABLE items ADD COLUMN label TEXT NOT NULL DEFAULT 'internal'");
+}
 
 export const now = () => new Date().toISOString();

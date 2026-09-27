@@ -76,6 +76,7 @@ function Rail() {
 
 function Sidebar({ onTemplates }: { onTemplates: () => void }) {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -158,8 +159,9 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
 
       <div className="section-label">Workspace tools</div>
       <a className="nav" onClick={onTemplates}><span className="dot" />Templates</a>
-      <a className="nav"><span className="dot" />Team workspace</a>
-      <a className="nav"><span className="dot" />Automations</a>
+      {(user?.role === "owner" || user?.role === "admin") && (
+        <NavLink to="/admin" className={navCls}><span className="dot" />Administration</NavLink>
+      )}
 
       <div className="ai-card">
         <div className="tag">Kreatix AI</div>

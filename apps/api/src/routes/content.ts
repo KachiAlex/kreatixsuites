@@ -24,6 +24,28 @@ function headVersion(fileId: string): VersionRow | undefined {
     .get(fileId) as VersionRow | undefined;
 }
 
+/** MIME types that must never execute in an origin-bearing context. */
+const SCRIPTABLE = /^(text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)/i;
+
+/**
+ * Stream raw binary content. Scriptable types are served inside a CSP sandbox
+ * and as attachments so stored HTML/SVG can't run scripts on the app origin.
+ */
+export function sendRawBlob(
+  reply: import("fastify").FastifyReply,
+  mime: string,
+  blob: Buffer,
+  filename = "file",
+) {
+  reply.header("content-type", mime).header("content-length", blob.length);
+  if (SCRIPTABLE.test(mime)) {
+    reply
+      .header("content-security-policy", "sandbox")
+      .header("content-disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+  }
+  return reply.send(blob);
+}
+
 export function contentRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
 
@@ -50,8 +72,7 @@ export function contentRoutes(app: FastifyInstance) {
         if (parsed?.kind === "pdf") return { version: v.number, content: parsed };
       } catch { /* fall through to raw */ }
     }
-    reply.header("content-type", item.mime).header("content-length", blob.length);
-    return reply.send(blob);
+    return sendRawBlob(reply, item.mime, blob, item.name);
   });
 
   /** GET the original uploaded binary (version 1) — used by the PDF viewer to fetch
@@ -67,8 +88,7 @@ export function contentRoutes(app: FastifyInstance) {
       .get(item.id) as VersionRow | undefined;
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
-    reply.header("content-type", item.mime).header("content-length", blob.length);
-    return reply.send(blob);
+    return sendRawBlob(reply, item.mime, blob, item.name);
   });
 
   /** PUT new content — creates an immutable version (autosave calls this, debounced client-side) */
@@ -135,8 +155,7 @@ export function contentRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
     } catch {
       // binary version (e.g. the original PDF upload) — stream it raw
-      reply.header("content-type", item.mime).header("content-length", blob.length);
-      return reply.send(blob);
+      return sendRawBlob(reply, item.mime, blob, item.name);
     }
   });
 

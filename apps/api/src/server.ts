@@ -12,8 +12,12 @@ import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
 import { aiRoutes } from "./routes/ai.js";
+import { adminRoutes } from "./routes/admin.js";
+import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
 import { reindexAll } from "./indexer.js";
+import { sweepRetention } from "./policies.js";
+import { encryptionEnabled } from "./crypto.js";
 
 async function main() {
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
@@ -47,6 +51,8 @@ async function main() {
   app.register(commentRoutes);
   app.register(searchRoutes);
   app.register(aiRoutes);
+  app.register(adminRoutes);
+  app.register(ssoRoutes);
   app.register(collabRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
@@ -67,6 +73,21 @@ async function main() {
     try { app.log.info({ indexed: reindexAll() }, "search index rebuilt"); }
     catch (e) { app.log.warn(e, "search reindex failed"); }
   });
+
+  app.log.info(
+    { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled },
+    "security posture",
+  );
+
+  // trash-retention sweep: at boot, then daily
+  const sweep = () => {
+    try {
+      const purged = sweepRetention();
+      if (purged) app.log.info({ purged }, "retention sweep purged trashed items");
+    } catch (e) { app.log.warn(e, "retention sweep failed"); }
+  };
+  setImmediate(sweep);
+  setInterval(sweep, 24 * 60 * 60 * 1000).unref();
 }
 
 main().catch((err) => {

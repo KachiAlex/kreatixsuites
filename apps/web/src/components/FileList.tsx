@@ -12,8 +12,16 @@ interface Props {
   toast: (msg: string) => void;
 }
 
+const LABELS = [
+  { id: "internal", name: "Internal" },
+  { id: "public", name: "Public" },
+  { id: "confidential", name: "Confidential" },
+  { id: "restricted", name: "Restricted" },
+];
+
 export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast }: Props) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [labelFor, setLabelFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
 
@@ -29,6 +37,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
     try {
       if (action === "star") await patch(item, { starred: !item.starred });
       if (action === "rename") { setRenaming(item.id); setNewName(item.name); }
+      if (action === "label") { setMenuFor(item.id); setLabelFor(item.id); return; }
       if (action === "share") onShare(item);
       if (action === "versions") onVersions(item);
       if (action === "trash") { await api.del(`/api/drive/${item.id}`); toast("Moved to recycle bin"); onRefresh(); }
@@ -68,7 +77,12 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
                 />
               ) : (
                 <>
-                  <h4>{it.name} {it.starred && <span style={{ color: "var(--k-orange)" }}>★</span>}</h4>
+                  <h4>
+                    {it.name} {it.starred && <span style={{ color: "var(--k-orange)" }}>★</span>}
+                    {it.label && it.label !== "internal" && (
+                      <span className={`label-badge ${it.label}`}>{it.label}</span>
+                    )}
+                  </h4>
                   <p>{meta.label}{it.permission && it.permission !== "owner" ? ` · ${it.permission}` : " · Owned by you"}</p>
                 </>
               )}
@@ -79,11 +93,26 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
             </div>
             <button className="kebab" onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === it.id ? null : it.id); }}>•••</button>
             {menuFor === it.id && (
-              <div className="file-menu" style={{ right: 8, top: 40 }}>
+              <div className="file-menu" style={{ right: 8, top: 40 }} onMouseLeave={() => setLabelFor(null)}>
+                {labelFor === it.id ? (
+                  <>
+                    <div className="menu-title">Sensitivity label</div>
+                    {LABELS.map((l) => (
+                      <button key={l.id} onClick={async () => {
+                        setLabelFor(null);
+                        await patch(it, { label: l.id }).catch((e) => toast(e instanceof Error ? e.message : "Label failed"));
+                      }}>
+                        {(it.label ?? "internal") === l.id ? "● " : "○ "}{l.name}
+                      </button>
+                    ))}
+                  </>
+                ) : (
+                <>
                 {!it.trashed && (
                   <>
                     <button onClick={() => act(it, "rename")}>Rename</button>
                     <button onClick={() => act(it, "star")}>{it.starred ? "Unstar" : "Star"}</button>
+                    <button onClick={() => act(it, "label")}>Set label…</button>
                     <button onClick={() => act(it, "share")}>Share…</button>
                     {it.kind !== "folder" && <button onClick={() => act(it, "versions")}>Version history</button>}
                     <button className="danger" onClick={() => act(it, "trash")}>Move to recycle bin</button>
@@ -94,6 +123,8 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
                     <button onClick={() => act(it, "restore")}>Restore</button>
                     <button className="danger" onClick={() => act(it, "delete")}>Delete permanently</button>
                   </>
+                )}
+                </>
                 )}
               </div>
             )}

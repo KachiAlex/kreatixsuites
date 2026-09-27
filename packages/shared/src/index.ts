@@ -33,6 +33,8 @@ export interface DriveItem {
   trashed: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Sensitivity label: internal | public | confidential | restricted */
+  label?: string;
   /** Effective permission of the requesting user on this item */
   permission?: Permission;
   /** Number of collaborators with direct access (for UI avatars) */

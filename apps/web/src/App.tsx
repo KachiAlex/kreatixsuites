@@ -6,6 +6,7 @@ import { Home } from "./pages/Home";
 import { Drive } from "./pages/Drive";
 import { Editor } from "./pages/Editor";
 import { SharedLink } from "./pages/SharedLink";
+import { Admin } from "./pages/Admin";
 import type { ReactNode } from "react";
 
 function Protected({ children }: { children: ReactNode }) {
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/drive" element={<Drive />} />
             <Route path="/drive/:view" element={<Drive />} />
             <Route path="/drive/folder/:folderId" element={<Drive />} />
+            <Route path="/admin" element={<Admin />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

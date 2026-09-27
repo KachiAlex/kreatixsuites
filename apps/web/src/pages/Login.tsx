@@ -1,16 +1,38 @@
-import { useState, type FormEvent } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useEffect, useState, type FormEvent } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { api } from "../lib/api";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
-  const { login, register } = useAuth();
+  const { login, register, loginWithToken } = useAuth();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [org, setOrg] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sso, setSso] = useState(false);
+
+  // SSO callback lands here: ?sso_token=<jwt> or ?sso_error=<msg>
+  useEffect(() => {
+    const token = params.get("sso_token");
+    const ssoError = params.get("sso_error");
+    if (token) {
+      setParams({}, { replace: true }); // strip token from URL/history
+      loginWithToken(token)
+        .then(() => navigate("/", { replace: true }))
+        .catch(() => setError("SSO sign-in failed"));
+    } else if (ssoError) {
+      setError(`Single sign-on failed: ${ssoError}`);
+      setParams({}, { replace: true });
+    }
+    api.get<{ enabled: boolean }>("/api/auth/sso/status")
+      .then((r) => setSso(r.enabled))
+      .catch(() => setSso(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,6 +71,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         <button className="btn-primary" disabled={busy}>
           {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
         </button>
+        {sso && mode === "login" && (
+          <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
+        )}
         <div className="auth-switch">
           {mode === "login"
             ? <>New to Kreatix? <Link to="/register">Create an account</Link></>

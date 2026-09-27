@@ -8,6 +8,8 @@ import {
   type AuthedRequest, type UserRow,
 } from "../auth.js";
 import { getBlob } from "../blobs.js";
+import { getPolicies } from "../policies.js";
+import { sendRawBlob } from "./content.js";
 
 const shareSchema = z.object({
   email: z.string().email(),
@@ -94,6 +96,18 @@ export function sharingRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "forbidden" });
       }
       const body = linkSchema.parse(req.body);
+      // DLP: org policy may forbid public links on labeled files
+      const policies = getPolicies(user.orgId);
+      const label = item.label ?? "internal";
+      if (
+        (policies.blockRestrictedShareLinks && label === "restricted") ||
+        (policies.blockPublicLinksForConfidential && (label === "confidential" || label === "restricted"))
+      ) {
+        return reply.code(403).send({
+          error: "policy_blocked",
+          message: `Org policy blocks public share links for '${label}' files`,
+        });
+      }
       const token = randomBytes(24).toString("base64url");
       const id = randomUUID();
       db.prepare(
@@ -139,8 +153,7 @@ export function sharingRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")), blockDownload: !!row.link.block_download };
     }
     if (row.link.block_download) return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
-    reply.header("content-type", item.mime);
-    return reply.send(blob);
+    return sendRawBlob(reply, item.mime, blob, item.name);
   });
 }
 

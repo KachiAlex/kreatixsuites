@@ -13,6 +13,7 @@ export interface ItemRow {
   size: number;
   starred: number;
   trashed: number;
+  label: string;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +42,7 @@ export function toDriveItem(row: ItemRow, permission?: DriveItem["permission"]):
     trashed: !!row.trashed,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    label: row.label ?? "internal",
     permission,
     collaborators: collaborators.map((c) => ({ initials: c.initials, displayName: c.display_name })),
   };
