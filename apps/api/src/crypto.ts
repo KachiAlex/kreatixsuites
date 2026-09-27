@@ -35,3 +35,27 @@ export function decryptBlob(data: Buffer): Buffer {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data.subarray(32)), decipher.final()]);
 }
+
+// ---- field-level encryption for sensitive DB free-text columns ----
+// (comments, AI prompts/ops, activity details). Queryable/structural columns
+// stay plaintext — search and listing would break otherwise. Ciphertext is
+// marked "enc:v1:<base64 nonce|ciphertext|tag>"; plaintext reads back as-is,
+// so enabling the key is backward compatible.
+const FIELD_PREFIX = "enc:v1:";
+
+export function encryptField(plain: string | null): string | null {
+  if (!key || plain === null) return plain;
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const enc = Buffer.concat([nonce, cipher.update(plain, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return FIELD_PREFIX + enc.toString("base64");
+}
+
+export function decryptField(value: string | null): string | null {
+  if (value === null || !value.startsWith(FIELD_PREFIX)) return value;
+  if (!key) return "[encrypted — key not configured]";
+  const raw = Buffer.from(value.slice(FIELD_PREFIX.length), "base64");
+  const decipher = createDecipheriv("aes-256-gcm", key, raw.subarray(0, 12));
+  decipher.setAuthTag(raw.subarray(raw.length - 16));
+  return Buffer.concat([decipher.update(raw.subarray(12, raw.length - 16)), decipher.final()]).toString("utf8");
+}

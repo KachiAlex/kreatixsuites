@@ -5,12 +5,13 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies } from "../policies.js";
-import { encryptionEnabled } from "../crypto.js";
+import { encryptionEnabled, decryptField } from "../crypto.js";
 
 const policiesSchema = z.object({
   blockPublicLinksForConfidential: z.boolean().optional(),
   blockRestrictedShareLinks: z.boolean().optional(),
   trashRetentionDays: z.number().int().min(0).max(3650).optional(),
+  dlpPatterns: z.array(z.string().min(1).max(300)).max(10).optional(),
 });
 
 const roleSchema = z.object({ role: z.enum(["admin", "member", "guest"]) });
@@ -98,7 +99,9 @@ export function adminRoutes(app: FastifyInstance) {
         user: q.user || null,
         file: q.file || null,
         limit,
-      });
-    return { entries: rows };
+      }) as { detail: string | null }[];
+    return {
+      entries: rows.map((r) => ({ ...r, detail: decryptField(r.detail) })),
+    };
   });
 }

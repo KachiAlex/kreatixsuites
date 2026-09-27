@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db, now } from "../db.js";
 import { getItem, logActivity } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { decryptField, encryptField } from "../crypto.js";
 
 const createSchema = z.object({
   body: z.string().min(1).max(4000),
@@ -39,7 +40,7 @@ export function commentRoutes(app: FastifyInstance) {
     const id = randomUUID();
     db.prepare(
       "INSERT INTO comments (id, file_id, author_id, anchor, body, parent_id, created_at) VALUES (?,?,?,?,?,?,?)",
-    ).run(id, item.id, user.id, body.anchor ?? null, body.body, body.parentId ?? null, now());
+    ).run(id, item.id, user.id, body.anchor ?? null, encryptField(body.body), body.parentId ?? null, now());
     // @mentions: "@email" or "@name" → notify the file's owner + shared users
     const tokens = new Set([...body.body.matchAll(/@([\w.+-]+)/g)].map((m) => m[1]));
     for (const t of tokens) {
@@ -77,7 +78,8 @@ export function commentRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden" });
     }
     db.prepare("UPDATE comments SET resolved = COALESCE(?, resolved), body = COALESCE(?, body) WHERE id = ?")
-      .run(body.resolved === undefined ? null : body.resolved ? 1 : 0, body.body ?? null, c.id);
+      .run(body.resolved === undefined ? null : body.resolved ? 1 : 0,
+        body.body === undefined ? null : encryptField(body.body), c.id);
     return { ok: true };
   });
 
@@ -111,7 +113,7 @@ export function commentRoutes(app: FastifyInstance) {
       mentions: rows.map((r) => ({
         id: r.id, fileId: r.file_id, fileName: r.file_name, fileKind: r.file_kind,
         from: { displayName: r.from_name, initials: r.from_initials },
-        excerpt: r.body.slice(0, 120), read: !!r.read_at, createdAt: r.created_at,
+        excerpt: (decryptField(r.body) ?? "").slice(0, 120), read: !!r.read_at, createdAt: r.created_at,
       })),
       unread: rows.filter((r) => !r.read_at).length,
     };
@@ -154,7 +156,7 @@ function commentOut(r: CommentRow) {
   return {
     id: r.id, fileId: r.file_id, authorId: r.author_id,
     author: { displayName: r.display_name, initials: r.initials },
-    anchor: r.anchor, body: r.body, resolved: !!r.resolved,
+    anchor: r.anchor, body: decryptField(r.body) ?? "", resolved: !!r.resolved,
     parentId: r.parent_id, createdAt: r.created_at,
   };
 }

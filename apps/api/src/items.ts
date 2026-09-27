@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, now } from "./db.js";
+import { encryptField } from "./crypto.js";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 
 export interface ItemRow {
@@ -55,5 +56,5 @@ export function touchItem(id: string) {
 export function logActivity(orgId: string, actorId: string, fileId: string | null, action: string, detail?: string) {
   db.prepare(
     "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, created_at) VALUES (?,?,?,?,?,?,?)",
-  ).run(randomUUID(), orgId, actorId, fileId, action, detail ?? null, now());
+  ).run(randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), now());
 }

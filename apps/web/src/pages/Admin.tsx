@@ -13,6 +13,7 @@ interface Policies {
   blockPublicLinksForConfidential: boolean;
   blockRestrictedShareLinks: boolean;
   trashRetentionDays: number;
+  dlpPatterns: string[];
 }
 interface AuditEntry {
   id: string; action: string; detail: string | null; created_at: string;
@@ -122,6 +123,25 @@ export function Admin() {
                 <b>Recycle-bin retention (days)</b>
                 <em>Trashed items older than this are permanently purged daily. 0 = keep forever.</em>
               </span>
+            </label>
+            <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
+              <span>
+                <b>DLP content patterns</b>
+                <em>One regex per line — share links are blocked on files whose name or indexed text matches.
+                  e.g. <code>\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b</code> for card numbers. Max 10.</em>
+              </span>
+              <textarea
+                rows={3}
+                defaultValue={policies.dlpPatterns.join("\n")}
+                placeholder={"\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b\nCONFIDENTIAL-\\d+"}
+                onBlur={(e) => {
+                  const patterns = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 10);
+                  if (patterns.join("\n") !== policies.dlpPatterns.join("\n")) {
+                    void patchPolicy({ dlpPatterns: patterns });
+                  }
+                }}
+                style={{ fontFamily: "monospace", fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
+              />
             </label>
           </div>
         )}

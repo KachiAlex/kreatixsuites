@@ -15,13 +15,14 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState(false);
 
-  // SSO callback lands here: ?sso_token=<jwt> or ?sso_error=<msg>
+  // SSO callback lands here: ?sso=1 (token in HttpOnly cookie) or ?sso_error=<msg>
   useEffect(() => {
-    const token = params.get("sso_token");
+    const ssoDone = params.get("sso");
     const ssoError = params.get("sso_error");
-    if (token) {
-      setParams({}, { replace: true }); // strip token from URL/history
-      loginWithToken(token)
+    if (ssoDone) {
+      setParams({}, { replace: true });
+      api.post<{ token: string }>("/api/auth/sso/exchange", {})
+        .then((r) => loginWithToken(r.token))
         .then(() => navigate("/", { replace: true }))
         .catch(() => setError("SSO sign-in failed"));
     } else if (ssoError) {

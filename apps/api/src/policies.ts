@@ -14,13 +14,39 @@ export interface OrgPolicies {
   blockRestrictedShareLinks: boolean;
   /** Days after which trashed items are permanently purged (0 = never). */
   trashRetentionDays: number;
+  /** Regex patterns (one per entry) — share links are blocked when a file's
+   *  name or indexed text matches any of them. */
+  dlpPatterns: string[];
 }
 
 const DEFAULTS: OrgPolicies = {
   blockPublicLinksForConfidential: false,
   blockRestrictedShareLinks: false,
   trashRetentionDays: 0,
+  dlpPatterns: [],
 };
+
+/** Compile policy DLP regexes safely — bad patterns are skipped, not fatal. */
+export function compileDlp(patterns: string[]): RegExp[] {
+  const out: RegExp[] = [];
+  for (const p of patterns.slice(0, 10)) {
+    try {
+      out.push(new RegExp(p.slice(0, 300), "i"));
+    } catch { /* invalid regex — ignore */ }
+  }
+  return out;
+}
+
+/** True if the file's name or indexed text matches any DLP pattern. */
+export function dlpHit(fileId: string, fileName: string, orgId: string): boolean {
+  const patterns = compileDlp(getPolicies(orgId).dlpPatterns);
+  if (!patterns.length) return false;
+  const row = db.prepare("SELECT body FROM search_index WHERE file_id = ?").get(fileId) as
+    | { body: string }
+    | undefined;
+  const haystack = `${fileName}\n${row?.body ?? ""}`;
+  return patterns.some((re) => re.test(haystack));
+}
 
 export function getPolicies(orgId: string): OrgPolicies {
   const row = db.prepare("SELECT json FROM org_policies WHERE org_id = ?").get(orgId) as

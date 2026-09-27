@@ -8,7 +8,7 @@ import {
   type AuthedRequest, type UserRow,
 } from "../auth.js";
 import { getBlob } from "../blobs.js";
-import { getPolicies } from "../policies.js";
+import { getPolicies, dlpHit } from "../policies.js";
 import { sendRawBlob } from "./content.js";
 
 const shareSchema = z.object({
@@ -106,6 +106,14 @@ export function sharingRoutes(app: FastifyInstance) {
         return reply.code(403).send({
           error: "policy_blocked",
           message: `Org policy blocks public share links for '${label}' files`,
+        });
+      }
+      // DLP: content patterns block share links regardless of label
+      if (dlpHit(item.id, item.name, user.orgId)) {
+        logActivity(user.orgId, user.id, item.id, "dlp-blocked-link", item.name);
+        return reply.code(403).send({
+          error: "policy_blocked",
+          message: "Org DLP policy blocks share links for content matching a restricted pattern",
         });
       }
       const token = randomBytes(24).toString("base64url");

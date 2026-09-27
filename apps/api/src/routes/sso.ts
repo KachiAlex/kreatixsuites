@@ -125,9 +125,28 @@ export function ssoRoutes(app: FastifyInstance) {
         row = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow;
       }
       const token = await signToken(row.id);
-      return reply.redirect(`/login?sso_token=${encodeURIComponent(token)}`, 302);
+      // Hand the token to the SPA via a short-lived, single-purpose HttpOnly
+      // cookie instead of a URL param — keeps it out of history/referrer logs.
+      const secure = callbackUrl(req).startsWith("https:") ? "; Secure" : "";
+      reply.header(
+        "set-cookie",
+        `kx_sso=${token}; HttpOnly; Path=/api/auth/sso/exchange; Max-Age=60; SameSite=Lax${secure}`,
+      );
+      return reply.redirect("/login?sso=1", 302);
     } catch (e) {
       return reply.redirect(`/login?sso_error=${encodeURIComponent(String(e).slice(0, 120))}`, 302);
     }
+  });
+
+  /** Exchange the short-lived SSO cookie for the session token, then clear it. */
+  app.post("/api/auth/sso/exchange", async (req, reply) => {
+    const cookie = (req.headers.cookie ?? "")
+      .split(";")
+      .map((c) => c.trim())
+      .find((c) => c.startsWith("kx_sso="));
+    const token = cookie?.slice("kx_sso=".length);
+    if (!token) return reply.code(401).send({ error: "no_sso_cookie" });
+    reply.header("set-cookie", "kx_sso=; HttpOnly; Path=/api/auth/sso/exchange; Max-Age=0");
+    return { token };
   });
 }

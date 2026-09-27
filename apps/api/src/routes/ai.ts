@@ -8,6 +8,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { getItem, logActivity } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { encryptField, decryptField } from "../crypto.js";
 
 const AI_BASE = process.env.KREATIX_AI_BASE_URL ?? "https://api.openai.com/v1";
 const AI_KEY = process.env.KREATIX_AI_KEY ?? "";
@@ -185,8 +186,8 @@ export function aiRoutes(app: FastifyInstance) {
     const actionId = randomUUID();
     db.prepare(
       "INSERT INTO ai_actions (id, file_id, user_id, mode, prompt, ops, applied, created_at) VALUES (?,?,?,?,?,?,0,?)",
-    ).run(actionId, p.item.id, p.user.id, p.body.mode, p.lastUser.content.slice(0, 2000),
-      ops.length ? JSON.stringify(ops) : null, new Date().toISOString());
+    ).run(actionId, p.item.id, p.user.id, p.body.mode, encryptField(p.lastUser.content.slice(0, 2000)),
+      ops.length ? encryptField(JSON.stringify(ops)) : null, new Date().toISOString());
     logActivity(p.user.orgId, p.user.id, p.item.id, "ai-chat", `${p.body.mode}: ${p.lastUser.content.slice(0, 80)}`);
     return { actionId, reply: replyText, plan, ops };
   }
@@ -312,11 +313,15 @@ export function aiRoutes(app: FastifyInstance) {
        WHERE a.file_id = ? ORDER BY a.created_at DESC LIMIT 30`,
     ).all(item.id) as { id: string; mode: string; prompt: string; ops: string | null; applied: number; created_at: string; display_name: string }[];
     return {
-      actions: rows.map((r) => ({
-        id: r.id, mode: r.mode, prompt: r.prompt, applied: !!r.applied,
-        ops: r.ops ? (JSON.parse(r.ops) as unknown[]).length : 0,
-        by: r.display_name, createdAt: r.created_at,
-      })),
+      actions: rows.map((r) => {
+        const prompt = decryptField(r.prompt) ?? "";
+        const opsJson = decryptField(r.ops);
+        return {
+          id: r.id, mode: r.mode, prompt, applied: !!r.applied,
+          ops: opsJson ? (JSON.parse(opsJson) as unknown[]).length : 0,
+          by: r.display_name, createdAt: r.created_at,
+        };
+      }),
     };
   });
 }
