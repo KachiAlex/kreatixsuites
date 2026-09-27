@@ -12,6 +12,7 @@ import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { PdfAnn, PdfDoc, AnnType } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
+const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
 let pdfjs!: typeof pdfjsTypes;
@@ -95,6 +96,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const redoStack = useRef<PdfDoc[]>([]);
   const lastAction = useRef<string | null>(null);
   const pdfDataRef = useRef<ArrayBuffer | null>(null);
+  const [pwPrompt, setPwPrompt] = useState<{ wrong: boolean } | null>(null);
+  const [pwValue, setPwValue] = useState("");
+  const pwCbRef = useRef<((pw: string) => void) | null>(null);
+  const loadTaskRef = useRef<{ destroy: () => void } | null>(null);
 
   // ---------- load ----------
   useEffect(() => {
@@ -113,7 +118,13 @@ export function PdfEditor({ item, initialDoc, permission }: {
         }
         if (dead || !bytes) return;
         pdfDataRef.current = bytes;
-        const d = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
+        const task = pdfjs.getDocument({ data: bytes.slice(0) });
+        loadTaskRef.current = task;
+        task.onPassword = (cb: (pw: string) => void, reason: number) => {
+          pwCbRef.current = cb;
+          setPwPrompt({ wrong: reason === 2 });
+        };
+        const d = await task.promise;
         if (dead) { d.loadingTask.destroy(); return; }
         // restore saved form values into pdf.js storage before pages render
         if (anns.form) for (const [k, v] of Object.entries(anns.form)) {
@@ -124,7 +135,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
         setAnnDoc(anns);
         d.getOutline().then((o) => !dead && setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
       } catch {
-        if (!dead) setLoadErr("Could not open this PDF (it may be encrypted or corrupted)");
+        if (!dead) setLoadErr((e) => e || "Could not open this PDF (it may be encrypted or corrupted)");
       }
     })();
     return () => { dead = true; };
@@ -143,17 +154,22 @@ export function PdfEditor({ item, initialDoc, permission }: {
   };
 
   // ---------- save ----------
+  const formValues = useCallback((): Record<string, unknown> => {
+    const form: Record<string, unknown> = {};
+    if (doc) for (const [k, v] of doc.annotationStorage) form[k] = v;
+    return form;
+  }, [doc]);
+
   const flushSave = useCallback(async () => {
     setSaveState("saving");
     try {
-      const form: Record<string, unknown> = {};
-      if (doc) for (const [k, v] of doc.annotationStorage) form[k] = v;
+      const form = formValues();
       await api.put(`/api/files/${item.id}/content`, {
         content: { ...annDoc, form: Object.keys(form).length ? form : annDoc.form },
       });
       setSaveState("saved");
     } catch { setSaveState("error"); }
-  }, [annDoc, doc, item.id]);
+  }, [annDoc, formValues, item.id]);
 
   const scheduleSave = useCallback(() => {
     setSaveState("unsaved");
@@ -292,7 +308,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
         </button>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print / PDF</button>
+        <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
+          onClick={() => {
+            if (!pdfDataRef.current) return;
+            flattenMod()
+              .then(({ exportFlattenedPdf }) => exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title))
+              .catch(() => toast("PDF export failed"));
+          }}>Export PDF</button>
+        <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print</button>
       </div>
 
       <div className="ribbon">
@@ -411,6 +434,34 @@ export function PdfEditor({ item, initialDoc, permission }: {
             const r = await api.get<{ content: PdfDoc }>(`/api/files/${item.id}/content`);
             if (r?.content?.kind === "pdf") setAnnDoc(r.content);
           }} toast={toast} />
+      )}
+      {pwPrompt && (
+        <div className="dlg-back" onClick={() => {
+          pwCbRef.current = null; setPwPrompt(null);
+          loadTaskRef.current?.destroy();
+          setLoadErr("This PDF requires a password — open it again to retry");
+        }}>
+          <div className="dlg" onClick={(e) => e.stopPropagation()}>
+            <h3>Password required</h3>
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "8px 0 14px" }}>
+              {pwPrompt.wrong ? "Incorrect password — try again." : "This PDF is password-protected. Enter the password to open it."}
+            </p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const cb = pwCbRef.current;
+              pwCbRef.current = null;
+              setPwPrompt(null);
+              cb?.(pwValue);
+            }}>
+              <input type="password" autoFocus value={pwValue} placeholder="PDF password"
+                onChange={(e) => setPwValue(e.target.value)}
+                style={{ width: "100%", height: 40, border: "1px solid var(--line)", borderRadius: 11, padding: "0 11px", fontSize: 12, background: "#FBFAF9", boxSizing: "border-box" }} />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+                <button type="submit" className="btn-primary" style={{ height: 34, padding: "0 18px" }}>Open</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {printing && <PrintDeck doc={doc} anns={annDoc.annotations} onDone={() => setPrinting(false)} />}
