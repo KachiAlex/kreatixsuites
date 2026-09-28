@@ -47,6 +47,7 @@ import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { SortDialog } from "./SortDialog";
+import { CellsDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -91,6 +92,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [pageNumbersOpen, setPageNumbersOpen] = useState(false);
   const [tableProps, setTableProps] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
+  const [cellsDlg, setCellsDlg] = useState<"insert" | "delete" | null>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -786,9 +788,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { label: "Insert row below", onClick: () => ed.chain().focus().addRowAfter().run() },
     { label: "Insert column left", onClick: () => ed.chain().focus().addColumnBefore().run() },
     { label: "Insert column right", onClick: () => ed.chain().focus().addColumnAfter().run() },
+    { label: "Insert cells…", onClick: () => setCellsDlg("insert") },
     { divider: true },
     { label: "Delete row", onClick: () => ed.chain().focus().deleteRow().run() },
     { label: "Delete column", onClick: () => ed.chain().focus().deleteColumn().run() },
+    { label: "Delete cells…", onClick: () => setCellsDlg("delete") },
     { divider: true },
     { label: "Merge cells", onClick: () => ed.chain().focus().mergeCells().run() },
     { label: "Split cell", onClick: () => ed.chain().focus().splitCell().run() },
@@ -1459,6 +1463,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {specialChars && editor && <SpecialChars editor={editor} onClose={() => setSpecialChars(false)} />}
       {tableProps && editor && <TablePropertiesDialog editor={editor} onClose={() => setTableProps(false)} />}
       {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
+      {cellsDlg && editor && <CellsDialog editor={editor} mode={cellsDlg} onClose={() => setCellsDlg(null)} />}
       {ctxMenu && <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
       {bordersPos && editor && (
         <div className="ctx-overlay" onClick={() => setBordersPos(null)} onContextMenu={(e) => { e.preventDefault(); setBordersPos(null); }}>

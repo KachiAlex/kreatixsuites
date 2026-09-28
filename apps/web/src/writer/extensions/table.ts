@@ -30,6 +30,10 @@ declare module "@tiptap/core" {
       setColumnWidth: (width: number | null) => ReturnType;
       toggleHeaderRepeat: () => ReturnType;
       sortTableRows: (dir?: "asc" | "desc", opts?: { keys?: SortKey[]; header?: boolean }) => ReturnType;
+      /** Insert a cell, shifting the column's cells down (Word "Shift cells down"). */
+      insertCellsDown: () => ReturnType;
+      /** Delete the cell under the cursor, shifting cells below up (Word "Shift cells up"). */
+      deleteCellsUp: () => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -220,6 +224,153 @@ const tableDepthAt = (state: CommandProps["state"]) => {
   return null;
 };
 
+/**
+ * Word's vertical cell-shift: cascade the column's covering cells down one
+ * row (insert) or up one row (delete) starting at the selection's cell.
+ * Cells are treated as span entries (rowspan collapses to one entry), so
+ * vertical merges move/extend correctly; the trailing displaced cell lands
+ * in a new bottom row on insert.
+ */
+const shiftColumnCells = (
+  { tr, state, dispatch }: { tr: CommandProps["tr"]; state: CommandProps["state"]; dispatch?: CommandProps["dispatch"] },
+  op: "insert" | "delete",
+): boolean => {
+  const d = tableDepthAt(state);
+  if (d == null) return false;
+  const { $from } = state.selection;
+  const table = $from.node(d);
+  const tablePos = $from.before(d);
+  let cellPos = -1;
+  for (let dd = $from.depth; dd >= 0; dd--) {
+    const n = $from.node(dd).type.name;
+    if (n === "tableCell" || n === "tableHeader") { cellPos = $from.before(dd); break; }
+  }
+  if (cellPos < 0) return false;
+  const map = TableMap.get(table);
+  const W = map.width, H = map.height;
+  const anchor = map.findCell(cellPos - tablePos - 1);
+  const col = anchor.left;
+  const row0 = anchor.top;
+  if (!dispatch) return true;
+
+  const rows: { node: PMNode; off: number }[] = [];
+  table.forEach((r, off) => rows.push({ node: r, off }));
+
+  interface Entry { cell: PMNode; top: number; origTop: number; rs: number; off: number }
+  const entries: Entry[] = [];
+  const seen = new Set<number>();
+  for (let i = row0; i < H; i++) {
+    const off = map.map[i * W + col];
+    if (seen.has(off)) continue;
+    seen.add(off);
+    const cell = table.nodeAt(off)!;
+    const rc = map.findCell(off);
+    entries.push({ cell, top: rc.top, origTop: rc.top, rs: (cell.attrs.rowspan as number) || 1, off });
+  }
+  const origEntries = entries.slice();
+  const e0 = entries.findIndex((e) => e.top <= row0 && row0 < e.top + e.rs);
+  if (e0 < 0) return false;
+
+  // patched cells for spans that cross the op point (they extend/shrink
+  // rather than move); keyed by entry index in origEntries
+  const patches = new Map<number, PMNode>();
+  if (op === "insert") {
+    if (entries[e0].top < row0) {
+      const e = entries[e0];
+      e.rs++;
+      patches.set(e0, e.cell.type.create({ ...e.cell.attrs, rowspan: e.rs }, e.cell.content));
+    } else {
+      const empty = state.schema.nodes.tableCell.createAndFill()!;
+      entries.splice(e0, 0, { cell: empty, top: row0, origTop: row0, rs: 1, off: -1 });
+    }
+    for (let i = e0 + 1; i < entries.length; i++) entries[i].top += 1;
+  } else {
+    const e = entries[e0];
+    if (e.top < row0) {
+      e.rs--;
+      patches.set(e0, e.cell.type.create({ ...e.cell.attrs, rowspan: e.rs }, e.cell.content));
+    } else {
+      entries.splice(e0, 1);
+      for (let i = e0; i < entries.length; i++) entries[i].top -= 1;
+    }
+  }
+
+  // rebuild each row's child list: drop the cell that topped the column
+  // there, then re-insert every entry whose new top lands in this row
+  const kids: PMNode[][] = rows.map(({ node }) => {
+    const a: PMNode[] = [];
+    node.forEach((c) => a.push(c));
+    return a;
+  });
+  const coverChildIdx = (i: number): number => {
+    const coverOff = map.map[i * W + col];
+    let k = -1;
+    rows[i].node.forEach((_c, coff, ci) => { if (rows[i].off + 1 + coff === coverOff) k = ci; });
+    return k;
+  };
+  // child index where column `col` belongs (first child not strictly left)
+  const insIdx = (i: number): number => {
+    let k = rows[i].node.childCount;
+    rows[i].node.forEach((cell, coff, ci) => {
+      const rc = map.findCell(rows[i].off + 1 + coff);
+      if (rc.left + ((cell.attrs.colspan as number) || 1) > col && k === rows[i].node.childCount) k = ci;
+    });
+    return k;
+  };
+
+  for (const e of origEntries) {
+    if (e.origTop < row0) continue;              // span origin above the cut
+    const k = coverChildIdx(e.origTop);
+    if (k >= 0) kids[e.origTop].splice(k, 1);
+  }
+  for (const [i, cell] of patches) {
+    const e = origEntries[i];
+    const k = coverChildIdx(e.origTop);
+    if (k >= 0) kids[e.origTop][k] = cell;
+  }
+
+  let trailing: PMNode | null = null;
+  for (const e of entries) {
+    if (e.top < row0) continue;
+    if (e.top >= H) { trailing = e.cell; continue; }
+    kids[e.top].splice(insIdx(e.top), 0, e.cell);
+  }
+
+  // rows that lost a cell and gained none have a mid-row hole — pad it at
+  // the hole position (fixTables would pad at the end, misaligning cells)
+  const cellType = state.schema.nodes.tableCell;
+  for (let i = 0; i < H; i++) {
+    let covered = 0;
+    kids[i].forEach((c) => { covered += (c.attrs.colspan as number) || 1; });
+    // spans reaching into this row: other columns unchanged (original map),
+    // the shifted column counts entries at their new tops
+    for (let cj = 0; cj < W; cj++) {
+      if (cj === col) continue;
+      if (map.findCell(map.map[i * W + cj]).top < i) covered++;
+    }
+    for (const e of entries) {
+      if (e.top < i && i < e.top + e.rs) { covered += (e.cell.attrs.colspan as number) || 1; break; }
+    }
+    while (covered < W) {
+      kids[i].splice(insIdx(i), 0, cellType.createAndFill()!);
+      covered++;
+    }
+  }
+
+  const newRows = kids.map((k, i) => rows[i].node.type.create(rows[i].node.attrs, k));
+  if (trailing) {
+    const cellType = state.schema.nodes.tableCell;
+    const pad: PMNode[] = [];
+    for (let i = 0; i < col; i++) pad.push(cellType.createAndFill()!);
+    pad.push(trailing);
+    const span = (trailing.attrs.colspan as number) || 1;
+    for (let i = 0; i < W - col - span; i++) pad.push(cellType.createAndFill()!);
+    newRows.push(state.schema.nodes.tableRow.create(null, pad.filter(Boolean) as PMNode[]));
+  }
+  tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
+  return true;
+};
+
 export const KxTableCommands = Extension.create({
   name: "kxTable",
 
@@ -322,6 +473,14 @@ export const KxTableCommands = Extension.create({
           }
           return true;
         },
+
+      insertCellsDown:
+        () =>
+        ({ tr, state, dispatch }) => shiftColumnCells({ tr, state, dispatch }, "insert"),
+
+      deleteCellsUp:
+        () =>
+        ({ tr, state, dispatch }) => shiftColumnCells({ tr, state, dispatch }, "delete"),
 
       sortTableRows:
         (dir = "asc", opts) =>
