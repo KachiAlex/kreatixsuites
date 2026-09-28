@@ -16,6 +16,45 @@ const DELETE_OPTS: { k: string; label: string }[] = [
   { k: "column", label: "Delete entire column" },
 ];
 
+/** Word's "Separate text at" picker — tabs / commas / paragraphs / custom. */
+export function SeparatorDialog({ title, onApply, onClose }:
+  { title: string; onApply: (delim: string) => void; onClose: () => void }) {
+  const [kind, setKind] = useState<"tab" | "comma" | "para" | "other">("tab");
+  const [other, setOther] = useState(";");
+  const delim = kind === "tab" ? "\t" : kind === "comma" ? "," : kind === "para" ? "\n" : (other || ";").slice(0, 1);
+  const radio = (k: typeof kind, label: string, extra?: React.ReactNode) => (
+    <div className="ps-row">
+      <label className="ps-check">
+        <input type="radio" name="kx-sep" checked={kind === k} onChange={() => setKind(k)} />
+        {label}
+      </label>
+      {extra}
+    </div>
+  );
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card tp-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
+        <h3>{title}</h3>
+        <div className="tp-body">
+          {radio("para", "Paragraphs")}
+          {radio("tab", "Tabs")}
+          {radio("comma", "Commas")}
+          {radio("other", "Other:", (
+            <input type="text" maxLength={1} value={other} disabled={kind !== "other"}
+              style={{ width: 32, marginLeft: 6, textAlign: "center" }}
+              onChange={(e) => setOther(e.target.value)}
+              onFocus={() => setKind("other")} />
+          ))}
+        </div>
+        <div className="ps-actions">
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => { onApply(delim); onClose(); }}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Word-style Split Cells dialog — columns × rows counts. */
 export function SplitCellsDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
   const [cols, setCols] = useState(2);

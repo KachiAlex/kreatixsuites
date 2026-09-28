@@ -47,7 +47,7 @@ import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { SortDialog } from "./SortDialog";
-import { CellsDialog, SplitCellsDialog } from "./CellsDialog";
+import { CellsDialog, SplitCellsDialog, SeparatorDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -94,6 +94,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [sortOpen, setSortOpen] = useState(false);
   const [cellsDlg, setCellsDlg] = useState<"insert" | "delete" | null>(null);
   const [splitDlg, setSplitDlg] = useState(false);
+  const [sepDlg, setSepDlg] = useState<"toText" | "toTable" | null>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -912,7 +913,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
     { divider: true },
     { label: "Split table", onClick: () => ed.chain().focus().splitTable().run() },
-    { label: "Convert to text", onClick: () => ed.chain().focus().convertTableToText("\t").run() },
+    { label: "Convert to text…", onClick: () => setSepDlg("toText") },
     { divider: true },
     { label: "Table properties…", onClick: () => setTableProps(true) },
     { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
@@ -1038,7 +1039,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 ),
               },
               { divider: true },
-              { label: "Convert text to table", onClick: () => ed.chain().focus().convertTextToTable("\t").run() },
+              { label: "Convert text to table…", onClick: () => setSepDlg("toTable") },
             ],
           },
           { label: "Link", shortcut: "Ctrl+K", checked: state?.link, onClick: insertLink },
@@ -1470,6 +1471,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
       {cellsDlg && editor && <CellsDialog editor={editor} mode={cellsDlg} onClose={() => setCellsDlg(null)} />}
       {splitDlg && editor && <SplitCellsDialog editor={editor} onClose={() => setSplitDlg(false)} />}
+      {sepDlg && editor && (
+        <SeparatorDialog
+          title={sepDlg === "toText" ? "Convert table to text — separate with" : "Convert text to table — separate at"}
+          onApply={(d) => sepDlg === "toText"
+            ? editor.chain().focus().convertTableToText(d).run()
+            : editor.chain().focus().convertTextToTable(d).run()}
+          onClose={() => setSepDlg(null)}
+        />
+      )}
       {ctxMenu && <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
       {bordersPos && editor && (
         <div className="ctx-overlay" onClick={() => setBordersPos(null)} onContextMenu={(e) => { e.preventDefault(); setBordersPos(null); }}>

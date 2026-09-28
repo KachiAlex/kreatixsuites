@@ -854,15 +854,15 @@ export const KxTableCommands = Extension.create({
           table.forEach((row) => {
             const cells: string[] = [];
             row.forEach((cell) => cells.push(cell.textContent.trim().replace(/\n/g, " ")));
-            lines.push(cells.join(delim));
+            if (delim === "\n") lines.push(...cells);   // "paragraphs" — one line per cell
+            else lines.push(cells.join(delim));
           });
           if (!dispatch) return true;
           const pos = $from.before(d);
           const para = state.schema.nodes.paragraph;
-          const text = state.schema.text;
           dispatch(state.tr.replaceWith(
             pos, pos + table.nodeSize,
-            lines.map((l) => para.create(undefined, l ? text(l) : undefined)),
+            lines.map((l) => para.create(undefined, l ? state.schema.text(l) : undefined)),
           ));
           return true;
         },
