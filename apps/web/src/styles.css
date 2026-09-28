@@ -864,9 +864,21 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .img-resize-handle{position:absolute;right:-6px;bottom:6px;width:14px;height:14px;border-radius:50%;background:var(--k-orange);cursor:nwse-resize;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.25)}
 
 /* ---- writer: footnotes, toc, embed ---- */
-.ProseMirror{counter-reset:footnote}
-.footnote-ref{counter-increment:footnote;color:var(--k-orange);cursor:pointer}
-.footnote-ref::after{content:"[" counter(footnote) "]"}
+.ProseMirror{counter-reset:footnote endnote}
+.footnote-ref{color:var(--k-orange);cursor:pointer}
+.footnote-ref[data-kind="footnote"]{counter-increment:footnote}
+.footnote-ref[data-kind="footnote"]::after{content:"[" counter(footnote) "]"}
+.footnote-ref[data-kind="endnote"]{counter-increment:endnote}
+.footnote-ref[data-kind="endnote"]::after{content:"[" counter(endnote,lower-roman) "]"}
+.kx-fn-area{font-size:11px;color:#4E4945;padding-top:4px;max-height:120px;overflow:auto}
+.kx-fn-rule{width:64px;border-top:1px solid #9B948E;margin:8px 0 4px}
+.kx-fn-line{padding:1px 0}
+.kx-fn-line sup{color:var(--k-orange);margin-right:4px}
+.kx-en-rule{width:100%}
+.kx-field{background:rgba(120,120,120,.14);padding:0 1px;border-radius:2px;cursor:default}
+.kx-field:hover{background:rgba(120,120,120,.22)}
+.kx-bookmark{box-shadow:inset 0 -1px 0 #B9B2AC}
+.kx-caption-para{color:#4E4945;font-size:12.5px}
 .doc-toc{border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:16px 0;background:#FBF9F7}
 .toc-item{font-size:13px;padding:2px 0;color:#3A3633}
 .toc-empty{color:#A19A95;font-style:italic}

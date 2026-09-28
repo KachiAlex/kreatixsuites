@@ -29,6 +29,7 @@ declare module "@tiptap/core" {
 
 const BLOCKS = ["paragraph", "heading", "blockquote", "listItem", "taskItem"];
 const SIDES = ["top", "right", "bottom", "left"] as const;
+const TAB_KEY = new PluginKey<Map<number, number>>("kxTabStops");
 
 function borderCss(side: string, b: BorderSide): string {
   return `border-${side}:${b.width}px ${b.style} ${b.color}`;
@@ -215,10 +216,10 @@ export const KxParaFormat = Extension.create({
       // resets the span. Instead: measure via coordsAtPos in rAF, stash widths,
       // dispatch a meta tr to re-run decorations when they change.) ---
       new Plugin({
-        key: new PluginKey("kxTabStops"),
+        key: TAB_KEY,
         state: {
           init: () => new Map<number, number>(),
-          apply: (tr, map) => (tr.getMeta("kxTabStops") as Map<number, number> | undefined) ?? map,
+          apply: (tr, map) => (tr.getMeta(TAB_KEY) as Map<number, number> | undefined) ?? map,
         },
         props: {
           decorations(state) {
@@ -242,7 +243,7 @@ export const KxParaFormat = Extension.create({
         },
         view(view) {
           const measure = () => {
-            const widths = view.state.plugins && (new PluginKey("kxTabStops").getState(view.state) as Map<number, number>);
+            const widths = TAB_KEY.getState(view.state) ?? new Map<number, number>();
             const next = new Map<number, number>();
             view.state.doc.descendants((node, pos) => {
               if (node.isText && node.text?.includes("\t")) {
@@ -268,8 +269,8 @@ export const KxParaFormat = Extension.create({
               }
               return true;
             });
-            const changed = next.size !== (widths?.size ?? 0) || [...next].some(([k, v]) => widths?.get(k) !== v);
-            if (changed) view.dispatch(view.state.tr.setMeta("kxTabStops", next).setMeta("addToHistory", false));
+            const changed = next.size !== widths.size || [...next].some(([k, v]) => widths.get(k) !== v);
+            if (changed) view.dispatch(view.state.tr.setMeta(TAB_KEY, next).setMeta("addToHistory", false));
           };
           let raf = 0;
           const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(measure); };

@@ -37,6 +37,10 @@ import { PageBreak, SectionBreak, ColumnBreak, Columns } from "./extensions/node
 import { ForcedBreaks } from "./extensions/forcedBreaks";
 import { Footnote } from "./extensions/footnote";
 import { Toc } from "./extensions/toc";
+import { Field } from "./extensions/field";
+import { Bookmark } from "./extensions/bookmark";
+import { Tof } from "./extensions/tof";
+import { CaptionDialog, BookmarkDialog, CrossRefDialog } from "./ReferenceDialogs";
 import { Embed } from "./extensions/embed";
 import { RichImage } from "./extensions/image";
 import { LinkPopover } from "./LinkPopover";
@@ -105,6 +109,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [insertTbl, setInsertTbl] = useState(false);
   const [styleDlg, setStyleDlg] = useState<string | null>(null);
   const [paraDlg, setParaDlg] = useState(false);
+  const [captionDlg, setCaptionDlg] = useState(false);
+  const [bookmarkDlg, setBookmarkDlg] = useState(false);
+  const [xrefDlg, setXrefDlg] = useState(false);
   // Format Painter: armed state + captured format (single-use; sticky on dbl-click)
   const [painterOn, setPainterOn] = useState(false);
   const painter = useRef<{
@@ -185,6 +192,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       ForcedBreaks,
       Footnote,
       Toc,
+      Field,
+      Bookmark,
+      Tof,
       Embed,
       PaginationPlus.configure({
         ...PAGE_SIZES.LETTER,
@@ -486,6 +496,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
         e.preventDefault();
         if (saveTimer.current) clearTimeout(saveTimer.current);
         void flushSave();
+      } else if (k === "g") {
+        e.preventDefault();
+        setBookmarkDlg(true);
       } else if (k === "/") {
         e.preventDefault();
         setShortcutsOpen(true);
@@ -1249,7 +1262,20 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 .then((note) => { if (note !== null) ed.chain().focus().insertFootnote(note).run(); });
             },
           },
+          {
+            label: "Endnote", onClick: () => {
+              void askText({ title: "Insert endnote", placeholder: "Endnote text" })
+                .then((note) => { if (note !== null) ed.chain().focus().insertEndnote(note).run(); });
+            },
+          },
+          { divider: true },
+          { label: "Caption…", onClick: () => setCaptionDlg(true) },
+          { label: "Bookmark…", onClick: () => setBookmarkDlg(true) },
+          { label: "Cross-reference…", onClick: () => setXrefDlg(true) },
+          { label: "Update fields", shortcut: "F9", onClick: () => ed.chain().focus().updateFields().run() },
+          { divider: true },
           { label: "Table of contents", onClick: () => ed.chain().focus().insertToc().run() },
+          { label: "Table of figures", onClick: () => ed.chain().focus().insertTof().run() },
           {
             label: "Embed (YouTube / URL)…", onClick: () => {
               void askText({ title: "Embed", placeholder: "https://" })
@@ -1695,6 +1721,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {paraDlg && editor && (
         <ParagraphDialog editor={editor} onClose={() => setParaDlg(false)} />
       )}
+      {captionDlg && editor && <CaptionDialog editor={editor} onClose={() => setCaptionDlg(false)} />}
+      {bookmarkDlg && editor && <BookmarkDialog editor={editor} onClose={() => setBookmarkDlg(false)} />}
+      {xrefDlg && editor && <CrossRefDialog editor={editor} onClose={() => setXrefDlg(false)} />}
       {sepDlg && editor && (
         <SeparatorDialog
           title={sepDlg === "toText" ? "Convert table to text — separate with" : "Convert text to table — separate at"}

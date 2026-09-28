@@ -1,29 +1,46 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PMNode } from "@tiptap/pm/model";
+import type { Editor } from "@tiptap/core";
+import { pageOfPos } from "./field";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     toc: {
-      /** Insert a live table of contents (auto-rebuilds from headings). */
-      insertToc: () => ReturnType;
+      /** Insert a live table of contents (auto-rebuilds from headings).
+       *  `levels` like "1-3" controls depth (Word's \o switch). */
+      insertToc: (levels?: string) => ReturnType;
     };
   }
 }
 
-function renderTocItems(doc: PMNode, container: HTMLElement) {
-  const items: { level: number; text: string }[] = [];
-  doc.descendants((node) => {
-    if (node.type.name === "heading") {
-      items.push({ level: node.attrs.level as number, text: node.textContent || "(empty)" });
-    }
-  });
-  container.innerHTML = items.length
-    ? items.map((h) => `<div class="toc-item" style="padding-left:${(h.level - 1) * 14}px">${escapeHtml(h.text)}</div>`).join("")
-    : `<div class="toc-item toc-empty">No headings yet</div>`;
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function parseLevels(spec: string | null): [number, number] {
+  const m = /^(\d)(?:-(\d))?$/.exec(spec ?? "");
+  return m ? [Number(m[1]), Number(m[2] ?? m[1])] : [1, 3];
 }
 
-const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export interface TocItem { level: number; text: string; pos: number; page: number | null }
+
+export function collectHeadings(doc: PMNode, editor: Editor | null, lo = 1, hi = 3): TocItem[] {
+  const items: TocItem[] = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name === "heading") {
+      const level = node.attrs.level as number;
+      if (level >= lo && level <= hi) {
+        items.push({
+          level,
+          text: node.textContent || "(empty)",
+          pos,
+          page: editor ? pageOfPos(editor.view, pos) : null,
+        });
+      }
+    }
+    return true;
+  });
+  return items;
+}
 
 /** Block-level live TOC — rebuilds its DOM whenever headings change. */
 export const Toc = Node.create({
@@ -31,6 +48,16 @@ export const Toc = Node.create({
   group: "block",
   atom: true,
   selectable: true,
+
+  addAttributes() {
+    return {
+      levels: {
+        default: "1-3",
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-levels") ?? "1-3",
+        renderHTML: (attrs) => ({ "data-levels": attrs.levels }),
+      },
+    };
+  },
 
   parseHTML() {
     return [{ tag: 'div[data-type="toc"]' }];
@@ -41,18 +68,32 @@ export const Toc = Node.create({
   },
 
   addNodeView() {
-    return ({ editor }) => {
+    return ({ node, editor }) => {
       const dom = document.createElement("div");
       dom.className = "doc-toc";
       dom.setAttribute("data-type", "toc");
       dom.contentEditable = "false";
-      renderTocItems(editor.state.doc, dom);
-      const update = () => renderTocItems(editor.state.doc, dom);
-      editor.on("update", update);
-      return {
-        dom,
-        destroy() { editor.off("update", update); },
+      const render = () => {
+        const [lo, hi] = parseLevels(node.attrs.levels as string);
+        const items = collectHeadings(editor.state.doc, editor, lo, hi);
+        dom.innerHTML = items.length
+          ? items.map((h, i) =>
+              `<div class="toc-item toc-l${h.level}" data-i="${i}" style="padding-left:${(h.level - lo) * 14}px">` +
+              `<span class="toc-text">${escapeHtml(h.text)}</span><span class="toc-page">${h.page ?? ""}</span></div>`).join("")
+          : `<div class="toc-item toc-empty">No headings yet</div>`;
+        // click → jump to heading
+        dom.querySelectorAll<HTMLElement>(".toc-item[data-i]").forEach((el) => {
+          el.onclick = () => {
+            const it = items[Number(el.dataset.i)];
+            if (it) editor.chain().focus().setTextSelection(it.pos + 1).scrollIntoView().run();
+          };
+        });
       };
+      render();
+      editor.on("update", render);
+      // page numbers track layout — refresh on a slow poll too
+      const t = setInterval(render, 2000);
+      return { dom, destroy() { editor.off("update", render); clearInterval(t); } };
     };
   },
 
@@ -69,9 +110,9 @@ export const Toc = Node.create({
   addCommands() {
     return {
       insertToc:
-        () =>
+        (levels) =>
         ({ commands }) =>
-          commands.insertContent({ type: this.name }),
+          commands.insertContent({ type: this.name, attrs: { levels: levels ?? "1-3" } }),
     };
   },
 });
