@@ -16,6 +16,8 @@ import { TableMap } from "@tiptap/pm/tables";
 
 export interface BorderSpec { style: string; width: number; color: string }
 export interface CellBorders { top?: BorderSpec; right?: BorderSpec; bottom?: BorderSpec; left?: BorderSpec }
+/** One sort criterion: a grid column, a comparison type, and a direction. */
+export interface SortKey { col: number; type: "auto" | "text" | "number" | "date"; dir: "asc" | "desc" }
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -27,7 +29,7 @@ declare module "@tiptap/core" {
       /** Set the width (px) of the column under the cursor; null = auto. */
       setColumnWidth: (width: number | null) => ReturnType;
       toggleHeaderRepeat: () => ReturnType;
-      sortTableRows: (dir?: "asc" | "desc") => ReturnType;
+      sortTableRows: (dir?: "asc" | "desc", opts?: { keys?: SortKey[]; header?: boolean }) => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -274,30 +276,62 @@ export const KxTableCommands = Extension.create({
         },
 
       sortTableRows:
-        (dir = "asc") =>
+        (dir = "asc", opts) =>
         ({ tr, state, dispatch }) => {
           const d = tableDepthAt(state);
           if (d == null) return false;
           const { $from } = state.selection;
           const table = $from.node(d);
           const tablePos = $from.before(d);
-          // leading all-header rows stay pinned at the top
+          const map = TableMap.get(table);
+          const keys: SortKey[] = opts?.keys?.length
+            ? opts.keys
+            : [{ col: 0, type: "auto", dir }];
+          const pinHeaders = opts?.header ?? true;
+          // leading all-header rows stay pinned at the top when header mode is on
           let headerCount = 0;
-          const dataRows: { node: PMNode; key: string }[] = [];
-          table.forEach((row) => {
+          const dataRows: { node: PMNode; vals: string[] }[] = [];
+          table.forEach((row, roff) => {
             const isHeader = row.childCount > 0 && row.firstChild!.type.name === "tableHeader";
-            if (isHeader && dataRows.length === 0) {
+            if (pinHeaders && isHeader && dataRows.length === 0) {
               headerCount++;
-            } else {
-              dataRows.push({ node: row, key: row.firstChild?.textContent.trim() ?? "" });
+              return;
             }
+            // key value per sort column — the cell occupying that grid column
+            const vals = keys.map((k) => {
+              let txt = "";
+              row.forEach((cell, coff) => {
+                const rc = map.findCell(roff + 1 + coff);
+                const span = (cell.attrs.colspan as number) || 1;
+                if (rc.left <= k.col && k.col < rc.left + span) {
+                  const t = cell.textContent.trim();
+                  if (t) txt = t;
+                }
+              });
+              return txt;
+            });
+            dataRows.push({ node: row, vals });
           });
-          dataRows.sort((a, b) => {
-            const na = Number(a.key), nb = Number(b.key);
-            const cmp = !isNaN(na) && !isNaN(nb) && a.key !== "" && b.key !== ""
-              ? na - nb
-              : a.key.localeCompare(b.key, undefined, { sensitivity: "base" });
-            return dir === "desc" ? -cmp : cmp;
+          const cmpVal = (a: string, b: string, type: SortKey["type"]): number => {
+            if (type === "number" || type === "auto") {
+              const na = Number(a.replace(/[$€£,\s]/g, ""));
+              const nb = Number(b.replace(/[$€£,\s]/g, ""));
+              if (a !== "" && b !== "" && !isNaN(na) && !isNaN(nb)) return na - nb;
+            }
+            if (type === "date" || type === "auto") {
+              const da = Date.parse(a), db = Date.parse(b);
+              if (!isNaN(da) && !isNaN(db)) return da - db;
+            }
+            return a.localeCompare(b, undefined, {
+              sensitivity: "base", numeric: type !== "text",
+            });
+          };
+          dataRows.sort((x, y) => {
+            for (let i = 0; i < keys.length; i++) {
+              const c = cmpVal(x.vals[i] ?? "", y.vals[i] ?? "", keys[i].type);
+              if (c !== 0) return keys[i].dir === "desc" ? -c : c;
+            }
+            return 0;
           });
           if (!dispatch) return true;
           const content: PMNode[] = [];

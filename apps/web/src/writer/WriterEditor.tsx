@@ -45,6 +45,7 @@ import { ContextMenu, type ContextMenuState } from "./ContextMenu";
 import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
+import { SortDialog } from "./SortDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -88,6 +89,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [pageNumbersOpen, setPageNumbersOpen] = useState(false);
   const [tableProps, setTableProps] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -808,8 +810,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { divider: true },
     {
       label: "Sort rows", submenu: [
-        { label: "A → Z", onClick: () => ed.chain().focus().sortTableRows("asc").run() },
-        { label: "Z → A", onClick: () => ed.chain().focus().sortTableRows("desc").run() },
+        { label: "A → Z (first column)", onClick: () => ed.chain().focus().sortTableRows("asc").run() },
+        { label: "Z → A (first column)", onClick: () => ed.chain().focus().sortTableRows("desc").run() },
+        { divider: true },
+        { label: "Sort…", onClick: () => setSortOpen(true) },
       ],
     },
     { label: "Distribute columns evenly", onClick: () => ed.chain().focus().distributeColumnsEvenly().run() },
@@ -1386,6 +1390,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {editor && <LinkPopover editor={editor} />}
       {specialChars && editor && <SpecialChars editor={editor} onClose={() => setSpecialChars(false)} />}
       {tableProps && editor && <TablePropertiesDialog editor={editor} onClose={() => setTableProps(false)} />}
+      {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
       {ctxMenu && <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
       {bordersPos && editor && (
         <div className="ctx-overlay" onClick={() => setBordersPos(null)} onContextMenu={(e) => { e.preventDefault(); setBordersPos(null); }}>
