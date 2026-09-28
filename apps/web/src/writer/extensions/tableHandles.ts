@@ -746,13 +746,19 @@ export const KxTableHandles = Extension.create({
                 if (v) tbl.setAttribute(dn, v);
                 else tbl.removeAttribute(dn);
               }
-              tbl.style.setProperty("--twidth", node.attrs.widthPct ? `${node.attrs.widthPct}%` : "");
+              const absW = node.attrs.widthAbs as number | null;
+              const absPx = absW != null && node.attrs.widthAbsUnit === "pt" ? absW * (96 / 72) : absW;
+              tbl.style.setProperty("--twidth",
+                absPx != null ? `${absPx}px` : node.attrs.widthPct ? `${node.attrs.widthPct}%` : "");
               tbl.style.setProperty("--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : "");
               const cm = node.attrs.cellMargins as { top?: number; right?: number; bottom?: number; left?: number } | null;
               tbl.style.setProperty("--kx-cmt", cm?.top != null ? `${cm.top}px` : "");
               tbl.style.setProperty("--kx-cmr", cm?.right != null ? `${cm.right}px` : "");
               tbl.style.setProperty("--kx-cmb", cm?.bottom != null ? `${cm.bottom}px` : "");
               tbl.style.setProperty("--kx-cml", cm?.left != null ? `${cm.left}px` : "");
+              const alt = node.attrs.altText as string | null;
+              if (alt) tbl.setAttribute("aria-label", alt);
+              else tbl.removeAttribute("aria-label");
               const cs = node.attrs.cellSpacing as number | null;
               if (cs != null) {
                 tbl.setAttribute("data-cell-spacing", String(cs));

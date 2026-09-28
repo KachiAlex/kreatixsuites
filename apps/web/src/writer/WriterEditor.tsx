@@ -47,7 +47,7 @@ import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { SortDialog } from "./SortDialog";
-import { CellsDialog, SplitCellsDialog, SeparatorDialog } from "./CellsDialog";
+import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -95,6 +95,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [cellsDlg, setCellsDlg] = useState<"insert" | "delete" | null>(null);
   const [splitDlg, setSplitDlg] = useState(false);
   const [sepDlg, setSepDlg] = useState<"toText" | "toTable" | null>(null);
+  const [insertTbl, setInsertTbl] = useState(false);
+  const [gridlines, setGridlines] = useState(() => localStorage.getItem("kx.gridlines") !== "off");
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -204,6 +206,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
     // dev-only debug hook for headless harnesses
     if (import.meta.env.DEV) (window as any).__editor = editor ?? undefined;
   }, [editor]);
+
+  // Word "View Gridlines": hide default cell borders; explicit borders stay
+  useEffect(() => {
+    if (!editor) return;
+    editor.view.dom.classList.toggle("kx-no-gridlines", !gridlines);
+    localStorage.setItem("kx.gridlines", gridlines ? "on" : "off");
+  }, [editor, gridlines]);
 
   /** Upload an image as Drive media owned by this doc, then embed it.
    *  Falls back to a data URL if the upload gate rejects it. */
@@ -913,8 +922,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
     { divider: true },
     { label: "Split table", onClick: () => ed.chain().focus().splitTable().run() },
+    { label: "Merge with table above", onClick: () => ed.chain().focus().mergeAdjacentTable("prev").run() },
+    { label: "Merge with table below", onClick: () => ed.chain().focus().mergeAdjacentTable("next").run() },
     { label: "Convert to text…", onClick: () => setSepDlg("toText") },
     { divider: true },
+    { label: "View gridlines", checked: gridlines, onClick: () => setGridlines((g) => !g) },
     { label: "Table properties…", onClick: () => setTableProps(true) },
     { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
   ];
@@ -1026,15 +1038,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 custom: (
                   <TableGridPicker
                     onPick={(rows, cols) => ed.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()}
-                    onCustom={() => {
-                      void askText({ title: "Insert table", placeholder: "rows × cols, e.g. 4×3" })
-                        .then((v) => {
-                          const m = v?.match(/^(\d+)\s*[×x,]\s*(\d+)$/);
-                          if (m) ed.chain().focus().insertTable({
-                            rows: Math.min(50, +m[1]), cols: Math.min(20, +m[2]), withHeaderRow: true,
-                          }).run();
-                        });
-                    }}
+                    onCustom={() => setInsertTbl(true)}
                   />
                 ),
               },
@@ -1471,6 +1475,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
       {cellsDlg && editor && <CellsDialog editor={editor} mode={cellsDlg} onClose={() => setCellsDlg(null)} />}
       {splitDlg && editor && <SplitCellsDialog editor={editor} onClose={() => setSplitDlg(false)} />}
+      {insertTbl && editor && <InsertTableDialog editor={editor} onClose={() => setInsertTbl(false)} />}
       {sepDlg && editor && (
         <SeparatorDialog
           title={sepDlg === "toText" ? "Convert table to text — separate with" : "Convert text to table — separate at"}

@@ -40,6 +40,9 @@ declare module "@tiptap/core" {
       moveTableRow: (dir: "up" | "down") => ReturnType;
       /** Split selected cells into cols×rows sub-cells (Word Split Cells). */
       splitCellsGrid: (cols: number, rows: number) => ReturnType;
+      /** Merge this table with the adjacent sibling table (Word merges on
+       *  deleting the separator). Grids may differ — fixTables pads. */
+      mergeAdjacentTable: (dir: "next" | "prev") => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -149,6 +152,25 @@ export const KxTable = BaseTable.extend({
         },
         renderHTML: (a: Record<string, unknown>) => a.widthPct ? { style: `--twidth:${a.widthPct}%` } : {},
       },
+      // Preferred width in absolute units (px stored, pt converted on input)
+      widthAbs: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const w = el.getAttribute("data-width-abs");
+          return w ? parseInt(w) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) => a.widthAbs
+          ? {
+              "data-width-abs": String(a.widthAbs),
+              style: `--twidth:${a.widthAbsUnit === "pt" ? (a.widthAbs as number) * (96 / 72) : a.widthAbs}px`,
+            }
+          : {},
+      },
+      widthAbsUnit: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-width-abs-unit") || null,
+        renderHTML: (a: Record<string, unknown>) => a.widthAbsUnit ? { "data-width-abs-unit": a.widthAbsUnit as string } : {},
+      },
       indent: {
         default: 0,
         parseHTML: (el: HTMLElement) => Math.round(parseInt(el.style.marginLeft || "0") / 24),
@@ -211,6 +233,14 @@ export const KxTable = BaseTable.extend({
         },
         renderHTML: (a: Record<string, unknown>) =>
           a.cellSpacing ? { "data-cell-spacing": String(a.cellSpacing) } : {},
+      },
+      // Word "Alt text" — accessibility description (aria-label on <table>)
+      altText: {
+        default: null,
+        parseHTML: (el: HTMLElement) =>
+          el.getAttribute("aria-label") || el.getAttribute("data-alt-text") || null,
+        renderHTML: (a: Record<string, unknown>) =>
+          a.altText ? { "data-alt-text": a.altText as string, "aria-label": a.altText as string } : {},
       },
     };
   },
@@ -660,6 +690,31 @@ export const KxTableCommands = Extension.create({
             }
           }
           tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
+          return true;
+        },
+
+      mergeAdjacentTable:
+        (dir: "next" | "prev") =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          const parent = $from.node(d - 1);
+          const idx = $from.index(d - 1);
+          const sibIdx = dir === "next" ? idx + 1 : idx - 1;
+          const other = sibIdx >= 0 && sibIdx < parent.childCount ? parent.child(sibIdx) : null;
+          if (!other || other.type.name !== "table") return false;
+          if (!dispatch) return true;
+          if (dir === "next") {
+            tr.replaceWith(tablePos, tablePos + table.nodeSize + other.nodeSize,
+              table.type.create(table.attrs, [...table.children, ...other.children]));
+          } else {
+            const otherPos = tablePos - other.nodeSize;
+            tr.replaceWith(otherPos, tablePos + table.nodeSize,
+              table.type.create(other.attrs, [...other.children, ...table.children]));
+          }
           return true;
         },
 

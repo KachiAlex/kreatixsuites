@@ -16,6 +16,56 @@ const DELETE_OPTS: { k: string; label: string }[] = [
   { k: "column", label: "Delete entire column" },
 ];
 
+/** Word's Insert Table dialog — size + AutoFit behaviour. */
+export function InsertTableDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
+  const [cols, setCols] = useState(5);
+  const [rows, setRows] = useState(2);
+  const [fit, setFit] = useState<"fixed" | "contents" | "window">("window");
+  const apply = () => {
+    editor.chain().focus()
+      .insertTable({ rows, cols, withHeaderRow: false })
+      .autofitTable(fit)
+      .run();
+    onClose();
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card tp-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Insert table">
+        <h3>Insert table</h3>
+        <div className="tp-body">
+          <div className="ps-row">
+            <label className="ps-field"><span>Number of columns</span>
+              <input type="number" min={1} max={63} value={cols}
+                onChange={(e) => setCols(Math.max(1, Math.min(63, Number(e.target.value) || 1)))} />
+            </label>
+            <label className="ps-field"><span>Number of rows</span>
+              <input type="number" min={1} max={200} value={rows}
+                onChange={(e) => setRows(Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
+            </label>
+          </div>
+          <div className="ps-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#6B645E" }}>AutoFit behavior</span>
+            {([
+              ["fixed", "Fixed column width"],
+              ["contents", "AutoFit to contents"],
+              ["window", "AutoFit to window"],
+            ] as const).map(([k, lbl]) => (
+              <label className="ps-check" key={k}>
+                <input type="radio" name="kx-fit" checked={fit === k} onChange={() => setFit(k)} />
+                {lbl}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="ps-actions">
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={apply}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Word's "Separate text at" picker — tabs / commas / paragraphs / custom. */
 export function SeparatorDialog({ title, onApply, onClose }:
   { title: string; onApply: (delim: string) => void; onClose: () => void }) {

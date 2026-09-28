@@ -35,7 +35,10 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
   const [tab, setTab] = useState<Tab>("table");
   const [align, setAlign] = useState((ta.align as string) ?? "left");
   const [widthMode, setWidthMode] = useState((ta.widthMode as string) ?? "pct");
-  const [widthPct, setWidthPct] = useState<number>((ta.widthPct as number) ?? 100);
+  const [widthVal, setWidthVal] = useState<number>(
+    ta.widthAbs != null ? (ta.widthAbs as number) : (ta.widthPct as number) ?? 100);
+  const [widthUnit, setWidthUnit] = useState<"pct" | "px" | "pt">(
+    ta.widthAbs != null ? ((ta.widthAbsUnit as "px" | "pt") ?? "px") : "pct");
   const [indent, setIndent] = useState((ta.indent as number) ?? 0);
   const [repeatHeader, setRepeatHeader] = useState(!!ta.repeatHeader);
   const cm = (ta.cellMargins as Record<string, number> | null) ?? null;
@@ -45,6 +48,7 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
   const [mLeft, setMLeft] = useState<number | "">(cm?.left ?? "");
   const [spacingOn, setSpacingOn] = useState(ta.cellSpacing != null);
   const [spacing, setSpacing] = useState<number>((ta.cellSpacing as number) ?? 4);
+  const [altText, setAltText] = useState((ta.altText as string) ?? "");
   const [rowH, setRowH] = useState<number | "">((ra.height as number) ?? "");
   const [rowMode, setRowMode] = useState((ra.heightMode as string) ?? "atLeast");
   const [cantSplit, setCantSplit] = useState(!!ra.cantSplit);
@@ -64,10 +68,14 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
       bottom: mBottom === "" ? undefined : mBottom, left: mLeft === "" ? undefined : mLeft };
     chain.setTableAttributes({
       align: align === "left" ? null : align,
-      widthMode, widthPct: widthMode === "pct" ? widthPct : null,
+      widthMode,
+      widthPct: widthUnit === "pct" ? widthVal : null,
+      widthAbs: widthUnit !== "pct" ? widthVal : null,
+      widthAbsUnit: widthUnit !== "pct" ? widthUnit : null,
       indent, repeatHeader,
       cellMargins: Object.values(margins).some((v) => v !== undefined) ? margins : null,
       cellSpacing: spacingOn ? spacing : null,
+      altText: altText.trim() || null,
     });
     if (rowH !== "") chain.setRowHeight(Number(rowH), rowMode as "atLeast" | "exact");
     if (cantSplit) chain.command(({ tr, state: s }) => {
@@ -120,9 +128,16 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
                   {WIDTH_MODES.map((m) => <option key={m.k} value={m.k}>{m.label}</option>)}
                 </select>
               ))}
-              {widthMode === "pct" && field("Width %", (
-                <input type="number" min={10} max={100} value={widthPct}
-                  onChange={(e) => setWidthPct(Math.min(100, Math.max(10, Number(e.target.value) || 100)))} />
+              {field("Preferred width", (
+                <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                  <input type="number" min={1} style={{ width: 64 }} value={widthVal}
+                    onChange={(e) => setWidthVal(Math.max(1, Number(e.target.value) || 1))} />
+                  <select value={widthUnit} onChange={(e) => setWidthUnit(e.target.value as "pct" | "px" | "pt")}>
+                    <option value="pct">%</option>
+                    <option value="px">px</option>
+                    <option value="pt">pt</option>
+                  </select>
+                </span>
               ))}
               {field("Indent (steps)", (
                 <input type="number" min={0} max={8} value={indent}
@@ -153,6 +168,12 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
               {spacingOn && field("Spacing (px)", (
                 <input type="number" min={0} max={40} value={spacing}
                   onChange={(e) => setSpacing(Math.max(0, Math.min(40, Number(e.target.value) || 0)))} />
+              ))}
+            </div>
+            <div className="ps-row">
+              {field("Alt text (accessibility)", (
+                <input value={altText} placeholder="Describe this table for screen readers"
+                  onChange={(e) => setAltText(e.target.value)} />
               ))}
             </div>
           </div>
