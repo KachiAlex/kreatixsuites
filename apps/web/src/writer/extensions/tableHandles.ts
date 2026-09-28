@@ -632,6 +632,78 @@ export const KxTableHandles = Extension.create({
             window.addEventListener("mouseup", up, { once: true, capture: true });
           };
 
+          // Word: double-click a column border → autofit that column;
+          // double-click a row border → clear fixed row height
+          const onDblClick = (e: MouseEvent) => {
+            if (!view.editable || e.button !== 0) return;
+            const cell = (e.target as HTMLElement | null)?.closest?.("td,th") as HTMLElement | null;
+            if (!cell || !view.dom.contains(cell)) return;
+            const rect = cell.getBoundingClientRect();
+            const ctx = cellCtx(view, e, rect);
+            if (!ctx) return;
+
+            const rightEdge = Math.abs(e.clientX - rect.right) <= GRAB_PX;
+            const leftEdge = Math.abs(e.clientX - rect.left) <= GRAB_PX;
+            const vertEdge = Math.abs(e.clientY - rect.top) <= GRAB_PX
+              || Math.abs(e.clientY - rect.bottom) <= GRAB_PX;
+
+            if (rightEdge || (leftEdge && ctx.colIdx === 0)) {
+              e.preventDefault();
+              e.stopPropagation();
+              const cellNode = view.state.doc.nodeAt(ctx.cellStart);
+              const span = (cellNode?.attrs.colspan as number) || 1;
+              const col = rightEdge ? ctx.colIdx + span - 1 : 0;
+              // natural width: clone each cell occupying this grid column into
+              // an offscreen measurer (in-table max-content can't expand past
+              // the <col> constraint under table-layout:fixed)
+              const zoom = zoomOf(view);
+              const tbody = cell.closest("tbody") as HTMLElement | null;
+              if (!tbody) return;
+              const meas = document.createElement("div");
+              meas.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;white-space:nowrap";
+              document.body.appendChild(meas);
+              let max = 24;
+              try {
+                for (const td of tbody.querySelectorAll("td,th")) {
+                  let pos: number;
+                  try { pos = view.posAtDOM(td, 0); } catch { continue; }
+                  const cp = cellPosAt(view, pos);
+                  if (cp == null) continue;
+                  const rc = ctx.map.findCell(cp - ctx.tablePos - 1);
+                  const s = (view.state.doc.nodeAt(cp)?.attrs.colspan as number) || 1;
+                  if (rc.left > col || col >= rc.left + s) continue;
+                  const cs = getComputedStyle(td);
+                  meas.style.font = cs.font;
+                  meas.style.letterSpacing = cs.letterSpacing;
+                  meas.style.padding = cs.padding;
+                  meas.style.border = `${cs.borderLeftWidth} solid transparent`;
+                  meas.innerHTML = td.innerHTML;
+                  max = Math.max(max, meas.getBoundingClientRect().width / s);
+                }
+              } finally { meas.remove(); }
+              const { state } = view;
+              const table = state.doc.nodeAt(ctx.tablePos);
+              if (table?.type.name === "table") {
+                const tr = state.tr;
+                setColWidth(tr, ctx.tablePos, table, ctx.map, col, max / zoom);
+                view.dispatch(tr.scrollIntoView());
+              }
+              return;
+            }
+
+            if (vertEdge && ctx.rowPos >= 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              const { state } = view;
+              const node = state.doc.nodeAt(ctx.rowPos);
+              if (node?.type.name === "tableRow") {
+                view.dispatch(state.tr.setNodeMarkup(ctx.rowPos, undefined, {
+                  ...node.attrs, height: null, heightMode: null,
+                }));
+              }
+            }
+          };
+
           const onScroll = () => {
             hideIns();
             if (gripPos != null && gripTbl?.isConnected) {
@@ -644,6 +716,7 @@ export const KxTableHandles = Extension.create({
           };
 
           document.addEventListener("mousemove", onMove, true);
+          document.addEventListener("dblclick", onDblClick, true);
           window.addEventListener("scroll", onScroll, true);
           grip.addEventListener("mousedown", onGripDown);
           corner.addEventListener("mousedown", onCornerDown);
@@ -665,6 +738,7 @@ export const KxTableHandles = Extension.create({
             },
             destroy: () => {
               document.removeEventListener("mousemove", onMove, true);
+              document.removeEventListener("dblclick", onDblClick, true);
               window.removeEventListener("scroll", onScroll, true);
               grip.remove();
               corner.remove();
