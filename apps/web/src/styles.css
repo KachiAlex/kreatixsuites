@@ -782,11 +782,17 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 
 /* ---- writer: page setup dialog ---- */
 .ps-card{min-width:460px}
+.ps-card-wide{min-width:560px;max-height:80vh;overflow-y:auto}
+.ps-section{font-size:12px;font-weight:650;color:#4A4540;margin:12px 0 6px;border-top:1px solid var(--line);padding-top:12px}
+.ps-section small{font-weight:400;color:#8B837D}
 .ps-row{display:flex;gap:10px;margin-bottom:10px}
 .ps-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#8B837D}
 .ps-field input,.ps-field select{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;color:#3A3633;min-width:0}
 .ps-field.grow{flex:1}
 .ps-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+
+/* centered header/footer content (PaginationPlus only has float-left/right slots) */
+.rm-with-pagination .kx-hf-center{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap}
 
 /* ---- writer: suggesting mode ---- */
 .mode-btn-cur{font-size:12px;font-weight:600;color:#4A4540;border:1px solid var(--line);border-radius:9px;height:32px;width:auto;white-space:nowrap;padding:0 10px;display:inline-flex;align-items:center;gap:4px}

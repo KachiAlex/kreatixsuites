@@ -37,7 +37,7 @@ import { Embed } from "./extensions/embed";
 import { RichImage } from "./extensions/image";
 import { LinkPopover } from "./LinkPopover";
 import { SpecialChars } from "./SpecialChars";
-import { PageSetupDialog, readPageSetup, applyPageSetup } from "./PageSetup";
+import { PageSetupDialog, PageNumbersDialog, PageSetupSync, readPageSetup, applyPageSetup } from "./PageSetup";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
 import { ContextMenu, type ContextMenuState } from "./ContextMenu";
@@ -85,6 +85,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [specialChars, setSpecialChars] = useState(false);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [pageNumbersOpen, setPageNumbersOpen] = useState(false);
   const [tableProps, setTableProps] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
@@ -145,7 +146,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
         pageGapBorderColor: "#E5DED6",
         pageBreakBackground: "#F4F0EC",
         footerRight: "Page {page} of {total}",
+        onHeaderClick: () => setPageSetupOpen(true),
+        onFooterClick: () => setPageSetupOpen(true),
       }),
+      PageSetupSync,
       TrackChangesExtension.configure({
         author: {
           id: user?.id ?? "anon",
@@ -980,6 +984,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { label: "Section break (odd page)", onClick: () => ed.chain().focus().setSectionBreak("oddPage").run() },
             ],
           },
+          { label: "Page numbers…", onClick: () => setPageNumbersOpen(true) },
           { label: "Horizontal rule", onClick: () => ed.chain().focus().setHorizontalRule().run() },
           { label: "Code block", checked: state?.codeBlock, onClick: () => ed.chain().focus().toggleCodeBlock().run() },
           { label: "Special characters…", onClick: () => setSpecialChars(true) },
@@ -1326,6 +1331,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       )}
       {pageSetupOpen && editor && (
         <PageSetupDialog editor={editor} onClose={() => { setPageSetupOpen(false); savePageSetup(); }} />
+      )}
+      {pageNumbersOpen && editor && (
+        <PageNumbersDialog editor={editor} onClose={() => { setPageNumbersOpen(false); savePageSetup(); }} />
       )}
       {wordCountOpen && (
         <div className="modal-overlay" onClick={() => setWordCountOpen(false)}>
