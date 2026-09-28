@@ -13,7 +13,9 @@ import {
   addRowBefore, addRowAfter, addColumnBefore, addColumnAfter,
   mergeCells,
 } from "@tiptap/pm/tables";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import type { EditorView } from "@tiptap/pm/view";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { splitCellsInTable } from "./table";
 
 const GRAB_PX = 5; // invisible grab zone around borders
@@ -184,7 +186,9 @@ const selZoneHit = (view: EditorView, ev: MouseEvent): SelZone | null => {
     const rect = cell.getBoundingClientRect();
     const dl = ev.clientX - rect.left;
     // strip starts past the boundary-insert band (GRAB..11px = ⊕ insert zone)
-    if (dl > 11 && dl <= 18 && ev.clientY > rect.top + 2 && ev.clientY < rect.bottom - 2) {
+    // and never exceeds ~30% of the cell width — narrow cells stay clickable
+    const stripEnd = Math.min(18, Math.max(12, rect.width * 0.3));
+    if (dl > 11 && dl <= stripEnd && ev.clientY > rect.top + 2 && ev.clientY < rect.bottom - 2) {
       const at = view.posAtCoords({ left: rect.left + rect.width / 2, top: rect.top + rect.height / 2 });
       const pos = at && cellPosAt(view, at.pos);
       if (pos != null) return { kind: "cell", cellPos: pos };
@@ -414,11 +418,124 @@ export const KxTableHandles = Extension.create({
   },
 
   addProseMirrorPlugins() {
+    // ---- Word "text wrapping: Around" --------------------------------------
+    // The paginator's wall floats own the whole document float space (they
+    // ARE the page bands), so real CSS floats can't coexist with them.
+    // Wrap is emulated instead: the tableWrapper is abs-positioned at its
+    // anchor edge (applyWrap), and block siblings overlapping its band get
+    // padding via node decorations (PM-owned style — survives the
+    // paginator's re-renders, which wipe unmanaged inline styles).
+    let viewRef: EditorView | null = null;
+
+    const isContentEl = (s: Element): s is HTMLElement => {
+      const el = s as HTMLElement;
+      return !el.classList?.contains("ProseMirror-widget") &&
+        !/(^|\s)rm-/.test(el.className?.toString() ?? "") &&
+        !el.dataset?.kxWrapped;
+    };
+    const wrapWrapper = (v: EditorView, pos: number) => {
+      const dom = v.nodeDOM(pos) as HTMLElement | null;
+      return (dom?.classList?.contains("tableWrapper")
+        ? dom : (dom?.closest?.(".tableWrapper") as HTMLElement | null)) ?? null;
+    };
+    const hostContentBox = (v: EditorView) => {
+      const r = v.dom.getBoundingClientRect();
+      const cs = getComputedStyle(v.dom);
+      return {
+        left: r.left + (parseFloat(cs.paddingLeft) || 0),
+        right: r.right - (parseFloat(cs.paddingRight) || 0),
+      };
+    };
+    const tableContentWidth = (el: HTMLElement) => {
+      // once abs-positioned the wrapper shrink-wraps the table — its rect
+      // is the truth; before that, prefer explicit col widths over the
+      // in-flow full width (converges on the next pass)
+      if (el.dataset.kxWrapped) return el.getBoundingClientRect().width;
+      let w = 0;
+      el.querySelectorAll("col").forEach((c) => {
+        w += parseFloat((c as HTMLElement).style.width || "") || 0;
+      });
+      return w || el.getBoundingClientRect().width;
+    };
+    // Anchor: while in-flow the wrapper's own top is the slot; once abs'd
+    // the slot collapses so the next content sibling's top marks it. Both
+    // are immune to the abs'd rect and to pad-induced reflow below it.
+    const anchorTop = (v: EditorView, el: HTMLElement) => {
+      if (!el.dataset.kxWrapped) return el.getBoundingClientRect().top;
+      for (let sib = el.nextElementSibling; sib; sib = sib.nextElementSibling)
+        if (isContentEl(sib)) return (sib as HTMLElement).getBoundingClientRect().top;
+      for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling)
+        if (isContentEl(sib)) return (sib as HTMLElement).getBoundingClientRect().bottom;
+      return v.dom.getBoundingClientRect().top;
+    };
+    const wrapBand = (v: EditorView, el: HTMLElement, node: PMNode) => {
+      const offX = (node.attrs.offX as number | null) ?? 0;
+      const offY = (node.attrs.offY as number | null) ?? 0;
+      const w = tableContentWidth(el);
+      const h = el.getBoundingClientRect().height;
+      const hb = hostContentBox(v);
+      const top = anchorTop(v, el) + offY;
+      const left = node.attrs.wrap === "right" ? hb.right - offX - w : hb.left + offX;
+      return {
+        top, bottom: top + h, left, right: left + w,
+        side: node.attrs.wrap as string,
+        gap: (node.attrs.wrapGap as number | null) ?? 12,
+      };
+    };
+
     return [
       new Plugin({
         key: new PluginKey("kxTableHandles"),
 
         props: {
+          decorations: (state) => {
+            const v = viewRef;
+            if (!v) return null;
+            const bands: ReturnType<typeof wrapBand>[] = [];
+            state.doc.descendants((node, pos) => {
+              if (node.type.name !== "table" || !node.attrs.wrap) return true;
+              const el = wrapWrapper(v, pos);
+              if (el) bands.push(wrapBand(v, el, node));
+              return true;
+            });
+            if (!bands.length) return null;
+            // element children of the editor root align 1:1 with top-level
+            // doc nodes — keep tableWrappers in the list for alignment, but
+            // never pad them (they're floated objects, not flowing text)
+            const kids = [...v.dom.children].filter((c) => {
+              const el = c as HTMLElement;
+              return !el.classList?.contains("ProseMirror-widget") &&
+                !/(^|\s)rm-/.test(el.className?.toString() ?? "");
+            });
+            const decos: Decoration[] = [];
+            let ki = 0;
+            state.doc.forEach((node, off) => {
+              const el2 = kids[ki++];
+              if (!el2 || el2.classList.contains("tableWrapper")) return;
+              const cr = el2.getBoundingClientRect();
+              let l = 0;
+              let r = 0;
+              for (const b of bands) {
+                if (cr.bottom < b.top + 4 || cr.top > b.bottom - 4) continue;
+                if (b.side === "left") {
+                  const need = b.right + b.gap - cr.left;
+                  if (need > 4) l = Math.max(l, need);
+                } else {
+                  const need = cr.right - (b.left - b.gap);
+                  if (need > 4) r = Math.max(r, need);
+                }
+              }
+              if (l || r) {
+                const style = [
+                  l ? `padding-left:${Math.round(l)}px` : "",
+                  r ? `padding-right:${Math.round(r)}px` : "",
+                ].filter(Boolean).join(";");
+                decos.push(Decoration.node(off, off + node.nodeSize, { style }));
+              }
+            });
+            return DecorationSet.create(state.doc, decos);
+          },
+
           handleDOMEvents: {
             mousemove: (view, event) => {
               if (tableTool) {
@@ -536,6 +653,7 @@ export const KxTableHandles = Extension.create({
         },
 
         view(view) {
+          viewRef = view;
           const grip = document.createElement("div");
           grip.className = "kx-tbl-grip";
           grip.title = "Click to select table · drag to move";
@@ -958,6 +1076,7 @@ export const KxTableHandles = Extension.create({
           const STR_ATTRS: [string, string][] = [
             ["align", "data-align"],
             ["widthMode", "data-width-mode"],
+            ["wrap", "data-wrap"],
           ];
           const syncTableAttrs = () => {
             view.state.doc.descendants((node, pos) => {
@@ -976,14 +1095,24 @@ export const KxTableHandles = Extension.create({
               }
               const absW = node.attrs.widthAbs as number | null;
               const absPx = absW != null && node.attrs.widthAbsUnit === "pt" ? absW * (96 / 72) : absW;
-              tbl.style.setProperty("--twidth",
-                absPx != null ? `${absPx}px` : node.attrs.widthPct ? `${node.attrs.widthPct}%` : "");
-              tbl.style.setProperty("--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : "");
+              // empty custom properties invalidate var() fallbacks — remove
+              // instead of setting ""
+              const setVar = (el: HTMLElement, name: string, v: string | null) =>
+                v ? el.style.setProperty(name, v) : el.style.removeProperty(name);
+              setVar(tbl, "--twidth",
+                absPx != null ? `${absPx}px` : node.attrs.widthPct ? `${node.attrs.widthPct}%` : null);
+              setVar(tbl, "--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : null);
+              // wrap vars live on the float box — the tableWrapper parent
+              const wrapHost = tbl.parentElement?.classList.contains("tableWrapper")
+                ? tbl.parentElement as HTMLElement : tbl;
+              setVar(wrapHost, "--wgap", node.attrs.wrapGap != null ? `${node.attrs.wrapGap}px` : null);
+              setVar(wrapHost, "--wx", node.attrs.offX != null ? `${node.attrs.offX}px` : null);
+              setVar(wrapHost, "--wy", node.attrs.offY != null ? `${node.attrs.offY}px` : null);
               const cm = node.attrs.cellMargins as { top?: number; right?: number; bottom?: number; left?: number } | null;
-              tbl.style.setProperty("--kx-cmt", cm?.top != null ? `${cm.top}px` : "");
-              tbl.style.setProperty("--kx-cmr", cm?.right != null ? `${cm.right}px` : "");
-              tbl.style.setProperty("--kx-cmb", cm?.bottom != null ? `${cm.bottom}px` : "");
-              tbl.style.setProperty("--kx-cml", cm?.left != null ? `${cm.left}px` : "");
+              setVar(tbl, "--kx-cmt", cm?.top != null ? `${cm.top}px` : null);
+              setVar(tbl, "--kx-cmr", cm?.right != null ? `${cm.right}px` : null);
+              setVar(tbl, "--kx-cmb", cm?.bottom != null ? `${cm.bottom}px` : null);
+              setVar(tbl, "--kx-cml", cm?.left != null ? `${cm.left}px` : null);
               const alt = node.attrs.altText as string | null;
               if (alt) tbl.setAttribute("aria-label", alt);
               else tbl.removeAttribute("aria-label");
@@ -1002,6 +1131,56 @@ export const KxTableHandles = Extension.create({
           };
           setTimeout(syncTableAttrs, 0);
 
+          // abs-position the wrapped tables' NodeView wrappers at their
+          // anchor edge (NodeView-owned dom — PM won't wipe these styles)
+          const setSty = (el: HTMLElement, k: "position" | "top" | "left" | "right" | "width", v: string) => {
+            if (el.style[k] !== v) el.style[k] = v;
+          };
+          // decorations read geometry measured pre-abs on the first pass —
+          // when a band changes, kick a no-op transaction so they recompute
+          const lastBandSig = new WeakMap<HTMLElement, string>();
+          let wrapKickQueued = false;
+          const kickWrapDecos = () => {
+            if (wrapKickQueued || view.isDestroyed) return;
+            wrapKickQueued = true;
+            requestAnimationFrame(() => {
+              wrapKickQueued = false;
+              try { view.dispatch(view.state.tr.setMeta("kxWrapKick", true)); }
+              catch { /* view destroyed */ }
+            });
+          };
+          const applyWrap = () => {
+            const wrapped: { node: PMNode; el: HTMLElement }[] = [];
+            view.state.doc.descendants((node, pos) => {
+              if (node.type.name !== "table" || !node.attrs.wrap) return true;
+              const el = wrapWrapper(view, pos);
+              if (el) wrapped.push({ node, el });
+              return true;
+            });
+            view.dom.querySelectorAll(".tableWrapper").forEach((w) => {
+              const el = w as HTMLElement;
+              if (el.dataset.kxWrapped && !wrapped.some((x) => x.el === el)) {
+                setSty(el, "position", ""); setSty(el, "top", ""); setSty(el, "left", "");
+                setSty(el, "right", ""); setSty(el, "width", ""); delete el.dataset.kxWrapped;
+                lastBandSig.delete(el);
+              }
+            });
+            let changed = false;
+            for (const { node, el } of wrapped) {
+              const band = wrapBand(view, el, node);
+              const cbRect = ((el.offsetParent || view.dom) as HTMLElement).getBoundingClientRect();
+              el.dataset.kxWrapped = "1";
+              setSty(el, "position", "absolute");
+              setSty(el, "top", `${band.top - cbRect.top}px`);
+              setSty(el, "left", `${band.left - cbRect.left}px`);
+              setSty(el, "right", "auto");
+              const w = el.getBoundingClientRect().width;
+              const sig = `${Math.round(band.top)},${Math.round(band.left)},${Math.round(w)}`;
+              if (lastBandSig.get(el) !== sig) { lastBandSig.set(el, sig); changed = true; }
+            }
+            if (changed) kickWrapDecos();
+          };
+
           document.addEventListener("mousemove", onMove, true);
           document.addEventListener("dblclick", onDblClick, true);
           document.addEventListener("keydown", onKey, true);
@@ -1011,9 +1190,21 @@ export const KxTableHandles = Extension.create({
           (insRow.querySelector(".kx-ins-btn") as HTMLElement).addEventListener("mousedown", onInsDown);
           (insCol.querySelector(".kx-ins-btn") as HTMLElement).addEventListener("mousedown", onInsDown);
 
+          let wrapRaf = 0;
+          const scheduleWrap = () => {
+            if (wrapRaf) return;
+            wrapRaf = requestAnimationFrame(() => {
+              wrapRaf = 0;
+              try { applyWrap(); }
+              catch (err) { console.warn("[kxwrap]", err); }
+            });
+          };
+          setTimeout(applyWrap, 0);
+
           return {
             update: () => {
               syncTableAttrs();
+              scheduleWrap();
               // keep the ⊕ control alive across unrelated transactions
               // (selection, paginator settle); hide only if its table vanished
               if (insCand) {
@@ -1026,6 +1217,8 @@ export const KxTableHandles = Extension.create({
               else onScroll();
             },
             destroy: () => {
+              if (wrapRaf) cancelAnimationFrame(wrapRaf);
+              viewRef = null;
               document.removeEventListener("mousemove", onMove, true);
               document.removeEventListener("dblclick", onDblClick, true);
               document.removeEventListener("keydown", onKey, true);

@@ -181,6 +181,41 @@ export const KxTable = BaseTable.extend({
         parseHTML: (el: HTMLElement) => el.getAttribute("data-repeat-header") === "true",
         renderHTML: (a: Record<string, unknown>) => a.repeatHeader ? { "data-repeat-header": "true" } : {},
       },
+      // Word "Text wrapping: Around" — emulated via abs-positioned wrapper
+      // (see tableHandles applyWrap); wrapGap is the
+      // distance to surrounding text (px), offX/offY nudge the position.
+      wrap: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-wrap"),
+        renderHTML: (a: Record<string, unknown>) => a.wrap ? { "data-wrap": a.wrap as string } : {},
+      },
+      wrapGap: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-wrap-gap");
+          return v != null ? parseInt(v) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) =>
+          a.wrapGap != null ? { "data-wrap-gap": String(a.wrapGap), style: `--wgap:${a.wrapGap}px` } : {},
+      },
+      offX: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-off-x");
+          return v != null ? parseInt(v) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) =>
+          a.offX != null ? { "data-off-x": String(a.offX), style: `--wx:${a.offX}px` } : {},
+      },
+      offY: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-off-y");
+          return v != null ? parseInt(v) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) =>
+          a.offY != null ? { "data-off-y": String(a.offY), style: `--wy:${a.offY}px` } : {},
+      },
       // Word "Table Style Options" — composable emphasis/banding flags that
       // layer on top of a preset via CSS (explicit cell shading still wins)
       optHeaderRow: {

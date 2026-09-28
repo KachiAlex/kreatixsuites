@@ -49,6 +49,10 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
   const [spacingOn, setSpacingOn] = useState(ta.cellSpacing != null);
   const [spacing, setSpacing] = useState<number>((ta.cellSpacing as number) ?? 4);
   const [altText, setAltText] = useState((ta.altText as string) ?? "");
+  const [wrap, setWrap] = useState((ta.wrap as string) ?? "none");
+  const [wrapGap, setWrapGap] = useState<number>((ta.wrapGap as number) ?? 12);
+  const [offX, setOffX] = useState<number>((ta.offX as number) ?? 0);
+  const [offY, setOffY] = useState<number>((ta.offY as number) ?? 0);
   const [rowH, setRowH] = useState<number | "">((ra.height as number) ?? "");
   const [rowMode, setRowMode] = useState((ra.heightMode as string) ?? "atLeast");
   const [cantSplit, setCantSplit] = useState(!!ra.cantSplit);
@@ -76,6 +80,10 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
       cellMargins: Object.values(margins).some((v) => v !== undefined) ? margins : null,
       cellSpacing: spacingOn ? spacing : null,
       altText: altText.trim() || null,
+      wrap: wrap === "none" ? null : wrap,
+      wrapGap: wrap === "none" ? null : wrapGap,
+      offX: offX || null,
+      offY: offY || null,
     });
     if (rowH !== "") chain.setRowHeight(Number(rowH), rowMode as "atLeast" | "exact");
     if (cantSplit) chain.command(({ tr, state: s }) => {
@@ -169,6 +177,32 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
                 <input type="number" min={0} max={40} value={spacing}
                   onChange={(e) => setSpacing(Math.max(0, Math.min(40, Number(e.target.value) || 0)))} />
               ))}
+            </div>
+            <div className="ps-row" style={{ flexWrap: "wrap" }}>
+              <span style={{ width: "100%", fontSize: 11, fontWeight: 700, color: "#6B645E" }}>Text wrapping</span>
+              {field("Wrapping", (
+                <select value={wrap} onChange={(e) => setWrap(e.target.value)}>
+                  <option value="none">None</option>
+                  <option value="left">Around — table left</option>
+                  <option value="right">Around — table right</option>
+                </select>
+              ))}
+              {wrap !== "none" && (
+                <>
+                  {field("Distance to text (px)", (
+                    <input type="number" min={0} max={96} value={wrapGap}
+                      onChange={(e) => setWrapGap(Math.max(0, Math.min(96, Number(e.target.value) || 0)))} />
+                  ))}
+                  {field("H offset (px)", (
+                    <input type="number" min={-200} max={200} value={offX}
+                      onChange={(e) => setOffX(Math.max(-200, Math.min(200, Number(e.target.value) || 0)))} />
+                  ))}
+                  {field("V offset (px)", (
+                    <input type="number" min={-200} max={200} value={offY}
+                      onChange={(e) => setOffY(Math.max(-200, Math.min(200, Number(e.target.value) || 0)))} />
+                  ))}
+                </>
+              )}
             </div>
             <div className="ps-row">
               {field("Alt text (accessibility)", (
