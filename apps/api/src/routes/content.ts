@@ -138,6 +138,23 @@ export function contentRoutes(app: FastifyInstance) {
     };
   });
 
+  /** Rename a version's label (named versions). */
+  app.patch("/api/files/:id/versions/:n", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id, n } = req.params as { id: string; n: string };
+    const item = await getItem(id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const { label } = z.object({ label: z.string().max(120).nullable() }).parse(req.body);
+    const res = await run(
+      "UPDATE versions SET label = $1 WHERE file_id = $2 AND number = $3",
+      [label || null, item.id, Number(n)],
+    );
+    if (!(res as { rowCount?: number }).rowCount) return reply.code(404).send({ error: "not_found" });
+    return { ok: true };
+  });
+
   app.get("/api/files/:id/versions/:n/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { id, n } = req.params as { id: string; n: string };

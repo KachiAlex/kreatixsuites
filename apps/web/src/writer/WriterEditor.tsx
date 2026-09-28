@@ -33,7 +33,10 @@ import { CommentMark } from "./extensions";
 import { ParagraphSpacing, ListStyle } from "./extensions/spacing";
 import { KxParaFormat } from "./extensions/paraFormat";
 import { ParagraphDialog } from "./ParagraphDialog";
-import { PageBreak, SectionBreak, ColumnBreak, Columns } from "./extensions/nodes";
+import { PageBreak, SectionBreak, ColumnBreak, Columns, ClearBreak, SignatureLine } from "./extensions/nodes";
+import { Typography } from "./extensions/typography";
+import { LineNumbers } from "./extensions/lineNumbers";
+import { DocPropsDialog, SignatureDialog, type DocProps } from "./DocProps";
 import { ForcedBreaks } from "./extensions/forcedBreaks";
 import { Footnote } from "./extensions/footnote";
 import { Toc } from "./extensions/toc";
@@ -64,7 +67,7 @@ import { SortDialog } from "./SortDialog";
 import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog, FormulaDialog } from "./CellsDialog";
 import { TableFormula } from "./extensions/tableFormula";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
-import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, StylePicker } from "./controls";
+import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, StylePicker, StatusBar } from "./controls";
 import { KxStyles, serializeStyles, loadStyleDefs, allStyleDefs, type StyleDef } from "./extensions/styles";
 import { StyleDialog } from "./StyleDialog";
 import { Ruler } from "./Ruler";
@@ -145,6 +148,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
   const [showRuler, setShowRuler] = useState(true);
+  // view modes + document properties (Phase 7 polish)
+  const [focusMode, setFocusMode] = useState(false);
+  const [readMode, setReadMode] = useState(false);
+  const [propsDlg, setPropsDlg] = useState(false);
+  const [sigDlg, setSigDlg] = useState(false);
+  const [docProps, setDocPropsState] = useState<DocProps>(
+    () => (initialDoc as { docProps?: DocProps })?.docProps ?? {});
+  const docPropsRef = useRef(docProps);
+  const [editAnyway, setEditAnyway] = useState(false);
+  const docFinal = !!docProps.final && !editAnyway;
   const [promptSpec, setPromptSpec] = useState<MiniPromptSpec | null>(null);
   const promptResolve = useRef<((v: string | null) => void) | null>(null);
   const askText = useCallback((spec: MiniPromptSpec) => new Promise<string | null>((res) => {
@@ -209,7 +222,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       ParagraphSpacing,
       KxParaFormat,
       ListStyle,
-      PageBreak, SectionBreak, ColumnBreak, Columns,
+      PageBreak, SectionBreak, ColumnBreak, Columns, ClearBreak, SignatureLine,
       ForcedBreaks,
       Footnote,
       Toc,
@@ -218,6 +231,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
       Tof,
       Spellcheck,
       Embed,
+      Typography,
+      LineNumbers,
       PaginationPlus.configure({
         ...PAGE_SIZES.LETTER,
         pageGap: 24,
@@ -238,7 +253,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         },
         // reviewers land in suggesting mode; everyone else edits directly
         mode: permission === "reviewer" ? "suggest" : "edit",
-        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "sectionBreak", "columnBreak", "columns", "toc", "embed", "blockMath"],
+        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "sectionBreak", "columnBreak", "columns", "clearBreak", "signatureLine", "toc", "tof", "embed", "blockMath"],
       }),
       ...(session ? [
         Collaboration.configure({ document: session.ydoc, field: "default" }),
@@ -250,7 +265,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     onUpdate: ({ editor }) => {
       // never serialize the pre-sync empty collab doc over the canonical head
       if (sessionRef.current && !collabReady.current) return;
-      pendingJson.current = { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor) };
+      pendingJson.current = { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current };
       setSaveState("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(flushSave, 1200);
@@ -364,11 +379,46 @@ export function WriterEditor({ item, initialDoc, permission }: {
       doc: editorRef.current.getJSON(),
       pageSetup: readPageSetup(editorRef.current),
       styles: serializeStyles(editorRef.current),
+      docProps: docPropsRef.current,
     };
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 800);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // document properties ride the same payload — ref first, then stage
+  const setDocProps = useCallback((p: DocProps) => {
+    docPropsRef.current = p;
+    setDocPropsState(p);
+    savePageSetup();
+  }, [savePageSetup]);
+
+  /** Word File ▸ Save As named version — flush a labeled immutable version. */
+  const saveNamedVersion = useCallback(async () => {
+    if (!editorRef.current) return;
+    const label = await askText({ title: "Name this version", placeholder: "e.g. Draft for review" });
+    if (label === null || !label.trim()) return;
+    const payload = {
+      kind: "writer", doc: editorRef.current.getJSON(),
+      pageSetup: readPageSetup(editorRef.current), styles: serializeStyles(editorRef.current),
+      docProps: docPropsRef.current,
+    };
+    const ok = await saveContent(item.id, payload, !!session, label.trim());
+    toast(ok ? `Saved version "${label.trim()}"` : "Could not save named version");
+  }, [item.id, session, toast, askText]);
+
+  /** Word zoom presets — fit the paper to the canvas. */
+  const zoomFit = useCallback((kind: "width" | "page") => {
+    const canvas = document.querySelector(".doc-canvas") as HTMLElement | null;
+    const s = editorRef.current?.storage.PaginationPlus as unknown as { pageWidth?: number; pageHeight?: number } | undefined;
+    if (!canvas || !s) return;
+    const pw = s.pageWidth ?? 816;
+    const ph = s.pageHeight ?? 1056;
+    const z = kind === "width"
+      ? (canvas.clientWidth - 96) / pw
+      : Math.min((canvas.clientWidth - 96) / pw, (canvas.clientHeight - 60) / ph);
+    setZoom(Math.round(Math.min(3, Math.max(0.4, z)) * 100));
   }, []);
 
   // seed the shared doc from canonical JSON — exactly once, lowest clientID wins
@@ -502,6 +552,30 @@ export function WriterEditor({ item, initialDoc, permission }: {
   // global editor shortcuts the browser would otherwise steal
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (focusMode) setFocusMode(false);
+        if (readMode) setReadMode(false);
+        return;
+      }
+      const edNow = editorRef.current;
+      // Shift+F3 — Word's cycle case (upper → lower → title)
+      if (e.key === "F3" && e.shiftKey && canMutate && edNow?.view.hasFocus()) {
+        e.preventDefault();
+        const { from, to } = edNow.state.selection;
+        if (to > from) {
+          const t = edNow.state.doc.textBetween(from, to, "\n");
+          const next = t === t.toUpperCase() ? t.toLowerCase()
+            : t === t.toLowerCase() ? t.replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+            : t.toUpperCase();
+          edNow.chain().focus().insertContentAt({ from, to }, next).run();
+        }
+        return;
+      }
+      if (e.key === "F9" && canMutate && edNow?.view.hasFocus()) {
+        e.preventDefault();
+        edNow.chain().focus().updateFields().run();
+        return;
+      }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
@@ -533,11 +607,35 @@ export function WriterEditor({ item, initialDoc, permission }: {
       } else if (k === "\\" && canMutate) {
         e.preventDefault();
         editorRef.current?.chain().focus().unsetAllMarks().clearNodes().run();
+        return;
+      }
+      // Word-style editing chords — only when the editor holds focus
+      if (!canMutate || !edNow?.view.hasFocus()) return;
+      const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96];
+      if (k === "e") { e.preventDefault(); edNow.chain().setTextAlign("center").run(); }
+      else if (k === "r") { e.preventDefault(); edNow.chain().setTextAlign("right").run(); }
+      else if (k === "l") { e.preventDefault(); edNow.chain().setTextAlign("left").run(); }
+      else if (k === "j") { e.preventDefault(); edNow.chain().setTextAlign("justify").run(); }
+      else if (k === "m") {
+        e.preventDefault();
+        if (e.shiftKey) edNow.chain().decreaseIndent().run();
+        else edNow.chain().increaseIndent().run();
+      } else if (k === "1" || k === "2" || k === "5") {
+        e.preventDefault();
+        edNow.chain().setLineHeight(k === "5" ? "1.5" : k).run();
+      } else if (k === "]" || k === "[") {
+        e.preventDefault();
+        const cur = parseInt(edNow.getAttributes("textStyle").fontSize ?? "14");
+        const sizes = SIZES.filter((s) => s >= 6 && s <= 96);
+        const next = k === "]"
+          ? (sizes.find((s) => s > cur) ?? sizes[sizes.length - 1])
+          : ([...sizes].reverse().find((s) => s < cur) ?? sizes[0]);
+        edNow.chain().setFontSize(`${next}px`).run();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flushSave, canMutate, title, copyFormat, paintFormat]);
+  }, [flushSave, canMutate, title, copyFormat, paintFormat, focusMode, readMode]);
 
   // flush on unmount / pagehide (autosave durability, KBS-SHARED-003)
   useEffect(() => {
@@ -609,15 +707,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
       trackMode: (ctx.editor?.storage as unknown as Record<string, { mode?: string }> | undefined)?.trackChanges?.mode ?? "edit",
       showMarks: (ctx.editor?.storage.KxParaFormat?.showMarks as boolean) ?? false,
       spellOn: (ctx.editor?.storage.spellcheck?.enabled as boolean) ?? true,
+      typoOn: (ctx.editor?.storage.typography?.enabled as boolean) ?? true,
     }),
   });
 
-  // "Viewing" mode must be truly read-only — track-changes only gates
-  // trackSetNode, so we toggle editable ourselves on mode changes
+  // "Viewing"/read/final modes must be truly read-only — track-changes only
+  // gates trackSetNode, so we toggle editable ourselves on mode changes
   useEffect(() => {
     if (!editor) return;
-    editor.setEditable(canMutate && (state?.trackMode ?? "edit") !== "view");
-  }, [editor, canMutate, state?.trackMode]);
+    editor.setEditable(canMutate && !readMode && !docFinal && (state?.trackMode ?? "edit") !== "view");
+  }, [editor, canMutate, readMode, docFinal, state?.trackMode]);
 
   // markup display modes + type/author filtering — classes on the page wrapper
   useEffect(() => {
@@ -1069,7 +1168,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     if (!editor) return;
     try {
       const r = await api.post<{ item: { id: string } }>("/api/drive", { name: `Copy of ${title}`, kind: "writer" });
-      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor) };
+      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current };
       await api.put(`/api/files/${r.item.id}/content`, { content: payload });
       toast("Copy created");
       navigate(`/edit/${r.item.id}`);
@@ -1359,6 +1458,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
       ...(canEdit ? [{ label: "Rename", onClick: () => { titleInputRef.current?.focus(); titleInputRef.current?.select(); } }] : []),
       { label: "Share…", onClick: () => setSharing(true) },
       { label: "Version history", checked: panel === "versions", onClick: () => setPanel(panel === "versions" ? "none" : "versions") },
+      ...(canMutate ? [{ label: "Save named version…", onClick: () => void saveNamedVersion() }] : []),
+      { divider: true },
+      { label: "Properties…", onClick: () => setPropsDlg(true) },
+      ...(canEdit ? [{
+        label: "Mark as final", checked: !!docProps.final,
+        onClick: () => {
+          setDocProps({ ...docPropsRef.current, final: !docProps.final });
+          if (docProps.final) setEditAnyway(false);
+          toast(docProps.final ? "Document unmarked — editing enabled" : "Marked as final — opens read-only");
+        },
+      }] : []),
     ];
     const editItems: MenuItem[] = [
       ...(canMutate ? [
@@ -1379,10 +1489,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
       { label: "Show ruler", checked: showRuler, onClick: () => setShowRuler(!showRuler) },
       { label: "Formatting marks (¶)", checked: state?.showMarks, onClick: () => ed.chain().focus().toggleShowMarks().run() },
       { divider: true },
+      { label: "Read mode", checked: readMode, onClick: () => setReadMode(!readMode) },
+      { label: "Focus mode", checked: focusMode, onClick: () => setFocusMode(!focusMode) },
       {
-        label: "Zoom", submenu: [50, 75, 90, 100, 125, 150, 200].map((z) => ({
-          label: `${z}%`, checked: zoom === z, onClick: () => setZoom(z),
-        })),
+        label: "Zoom", submenu: [
+          ...[50, 75, 90, 100, 125, 150, 200].map((z) => ({
+            label: `${z}%`, checked: zoom === z, onClick: () => setZoom(z),
+          })),
+          { divider: true },
+          { label: "Fit width", onClick: () => zoomFit("width") },
+          { label: "Whole page", onClick: () => zoomFit("page") },
+        ],
       },
       { label: "Fullscreen", onClick: () => void document.querySelector(".editor-shell")?.requestFullscreen?.().catch?.(() => {}) },
       { divider: true },
@@ -1393,6 +1510,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       { label: "Readability statistics", onClick: () => setReadDlg(true) },
       { label: "Check accessibility", onClick: () => setA11yDlg(true) },
       { label: "Spellcheck squiggles", checked: state?.spellOn, onClick: () => ed.chain().focus().toggleSpellcheck().run() },
+      { label: "AutoCorrect as you type", checked: state?.typoOn, onClick: () => ed.chain().toggleTypography().run() },
       { divider: true },
       { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
       ...(canMutate ? [
@@ -1492,6 +1610,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
             label: "Break", submenu: [
               { label: "Page break", shortcut: "Ctrl+Enter", onClick: () => ed.chain().focus().setPageBreak().run() },
               { label: "Column break", onClick: () => ed.chain().focus().setColumnBreak().run() },
+              { label: "Text wrapping break", onClick: () => ed.chain().focus().setClearBreak().run() },
               { divider: true },
               { label: "Section break (next page)", onClick: () => ed.chain().focus().setSectionBreak("nextPage").run() },
               { label: "Section break (continuous)", onClick: () => ed.chain().focus().setSectionBreak("continuous").run() },
@@ -1501,6 +1620,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
           },
           { label: "Page numbers…", onClick: () => setPageNumbersOpen(true) },
           { label: "Horizontal rule", onClick: () => ed.chain().focus().setHorizontalRule().run() },
+          {
+            label: "Date & time", submenu: [
+              { label: new Date().toLocaleDateString(undefined, { dateStyle: "long" }), onClick: () => ed.chain().focus().insertContent(new Date().toLocaleDateString(undefined, { dateStyle: "long" })).run() },
+              { label: new Date().toLocaleDateString(undefined, { dateStyle: "short" }), onClick: () => ed.chain().focus().insertContent(new Date().toLocaleDateString(undefined, { dateStyle: "short" })).run() },
+              { label: `${new Date().toLocaleDateString(undefined, { dateStyle: "long" })} ${new Date().toLocaleTimeString(undefined, { timeStyle: "short" })}`, onClick: () => ed.chain().focus().insertContent(`${new Date().toLocaleDateString(undefined, { dateStyle: "long" })} ${new Date().toLocaleTimeString(undefined, { timeStyle: "short" })}`).run() },
+              { label: `Time — ${new Date().toLocaleTimeString(undefined, { timeStyle: "short" })}`, onClick: () => ed.chain().focus().insertContent(new Date().toLocaleTimeString(undefined, { timeStyle: "short" })).run() },
+              { label: `ISO — ${new Date().toISOString().slice(0, 10)}`, onClick: () => ed.chain().focus().insertContent(new Date().toISOString().slice(0, 10)).run() },
+            ],
+          },
+          { label: "Signature line…", onClick: () => setSigDlg(true) },
           { label: "Code block", checked: state?.codeBlock, onClick: () => ed.chain().focus().toggleCodeBlock().run() },
           { label: "Special characters…", onClick: () => setSpecialChars(true) },
         ],
@@ -1546,6 +1675,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { divider: true },
               { label: "Increase indent", onClick: () => ed.chain().focus().increaseIndent().run() },
               { label: "Decrease indent", onClick: () => ed.chain().focus().decreaseIndent().run() },
+              { divider: true },
+              {
+                label: "Right-to-left text", checked: ed.getAttributes("paragraph").dir === "rtl" || ed.getAttributes("heading").dir === "rtl",
+                onClick: () => ed.chain().focus().setParaFormat({ dir: "rtl" }).run(),
+              },
+              {
+                label: "Left-to-right text", checked: !ed.getAttributes("paragraph").dir && !ed.getAttributes("heading").dir,
+                onClick: () => ed.chain().focus().setParaFormat({ dir: null }).run(),
+              },
               { divider: true },
               { label: "Paragraph…", onClick: () => setParaDlg(true) },
             ],
@@ -1683,7 +1821,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     );
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment, markupMode, hideTypes, hideAuthors, trackLocked]);
+  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment, markupMode, hideTypes, hideAuthors, trackLocked, readMode, focusMode, docProps, editAnyway]);
 
   const wcStats = useMemo(() => {
     if (!wordCountOpen || !editor) return null;
@@ -1706,7 +1844,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
   };
 
   return (
-    <div className="editor-shell">
+    <div className={`editor-shell${focusMode ? " kx-focus" : ""}${readMode ? " kx-read" : ""}`}>
+      {(focusMode || readMode) && (
+        <button className="mode-exit" onClick={() => { setFocusMode(false); setReadMode(false); }}
+          title="Exit (Esc)">✕ {readMode ? "Close read mode" : "Exit focus"}</button>
+      )}
       <div className="editor-top">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
         <div className="app-ico writer" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>W</div>
@@ -1819,6 +1961,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
         </div>
       )}
 
+      {docFinal && (
+        <div className="final-banner">
+          <span><b>MARKED AS FINAL</b> — an author marked this document as final to discourage editing.</span>
+          {canMutate && <button className="btn-ghost btn-sm" onClick={() => setEditAnyway(true)}>Edit Anyway</button>}
+        </div>
+      )}
       <div className="doc-canvas" style={{ marginRight: panel !== "none" ? 330 : 0, marginLeft: panel === "outline" ? 240 : 0 }}>
         {panel === "outline" && (
           <div className="outline-pane">
@@ -1831,18 +1979,28 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 <div className="outline-head">Headings <span className="outline-hint">drag to reorder</span></div>
                 {outline.length === 0 && <div className="outline-empty">Headings you add will appear here</div>}
                 {outline.map((h, i) => (
-                  <button key={`${h.pos}-${i}`} className={`outline-item ${dragOver === i ? "drop" : ""}`}
-                    style={{ paddingLeft: 8 + h.level * 12 }}
-                    draggable={canMutate}
-                    onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); e.dataTransfer.effectAllowed = "move"; }}
+                  <div key={`${h.pos}-${i}`} className={`outline-row ${dragOver === i ? "drop" : ""}`}
                     onDragOver={(e) => { e.preventDefault(); setDragOver(i); }}
                     onDragLeave={() => setDragOver((d) => (d === i ? null : d))}
                     onDrop={(e) => {
                       e.preventDefault(); setDragOver(null);
                       const src = Number(e.dataTransfer.getData("text/plain"));
                       if (Number.isFinite(src)) moveHeading(src, i);
-                    }}
-                    onClick={() => jumpTo(h.pos)}>{h.text}</button>
+                    }}>
+                    <button className="outline-item"
+                      style={{ paddingLeft: 8 + h.level * 12 }}
+                      draggable={canMutate}
+                      onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); e.dataTransfer.effectAllowed = "move"; }}
+                      onClick={() => jumpTo(h.pos)}>{h.text}</button>
+                    {canMutate && (
+                      <span className="outline-acts">
+                        <button title="Promote" disabled={h.level <= 1}
+                          onClick={() => editor?.chain().focus().command(({ tr }) => { tr.setNodeMarkup(h.pos, undefined, { level: h.level - 1 }); return true; }).run()}>◂</button>
+                        <button title="Demote" disabled={h.level >= 6}
+                          onClick={() => editor?.chain().focus().command(({ tr }) => { tr.setNodeMarkup(h.pos, undefined, { level: h.level + 1 }); return true; }).run()}>▸</button>
+                      </span>
+                    )}
+                  </div>
                 ))}
               </>
             ) : (
@@ -1975,6 +2133,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
         </div>
       </div>
 
+      {editor && (
+        <StatusBar editor={editor} words={state?.words ?? 0} zoom={zoom} onZoom={setZoom}
+          paged={!!state?.paged} onTogglePaged={() => editor.chain().focus().togglePagination().run()}
+          readMode={readMode} onReadMode={() => setReadMode(!readMode)}
+          focusMode={focusMode} onFocusMode={() => setFocusMode(!focusMode)} />
+      )}
+
       {panel === "comments" && (
         <CommentsPanel fileId={item.id} comments={comments}
           canComment={canComment}
@@ -2051,6 +2216,19 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {pageNumbersOpen && editor && (
         <PageNumbersDialog editor={editor} onClose={() => { setPageNumbersOpen(false); savePageSetup(); }} />
       )}
+      {propsDlg && (
+        <DocPropsDialog initial={docProps}
+          stats={{
+            words: state?.words ?? 0, chars: state?.chars ?? 0,
+            paras: (() => { let n = 0; editor?.state.doc.descendants((nd) => { if (nd.isTextblock) n++; }); return n; })(),
+          }}
+          onApply={setDocProps} onClose={() => setPropsDlg(false)} />
+      )}
+      {sigDlg && editor && (
+        <SignatureDialog
+          onInsert={(a) => editor.chain().focus().setSignatureLine(a).run()}
+          onClose={() => setSigDlg(false)} />
+      )}
       {wordCountOpen && (
         <div className="modal-overlay" onClick={() => setWordCountOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Word count">
@@ -2076,6 +2254,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 ["Insert link", "Ctrl+K"], ["Find", "Ctrl+F"], ["Find & replace", "Ctrl+H"],
                 ["Page break", "Ctrl+Enter"], ["Undo", "Ctrl+Z"], ["Redo", "Ctrl+Y"],
                 ["Clear formatting", "Ctrl+\\"], ["Save", "Ctrl+S"], ["Print / PDF", "Ctrl+P"],
+                ["Align left / center / right / justify", "Ctrl+L / E / R / J"],
+                ["Line spacing 1 / 2 / 1.5", "Ctrl+1 / 2 / 5"],
+                ["Increase / decrease indent", "Ctrl+M / Ctrl+Shift+M"],
+                ["Grow / shrink font", "Ctrl+] / Ctrl+["],
+                ["Cycle case", "Shift+F3"], ["Update fields", "F9"],
+                ["Copy / paint format", "Ctrl+Shift+C / V"],
+                ["Go to (bookmarks)", "Ctrl+G"], ["Exit focus / read mode", "Esc"],
               ].map(([label, k]) => <tr key={label}><td>{label}</td><td><kbd>{k}</kbd></td></tr>)}
             </tbody></table>
             <button className="btn-primary btn-sm" onClick={() => setShortcutsOpen(false)}>Close</button>

@@ -38,6 +38,20 @@ export interface PageSetup {
   pnStart: number;
   /** Doc-level flag: when set, all editors are locked into suggest mode. */
   trackingLocked?: boolean;
+  /** Page orientation — applied by normalizing width/height. */
+  orientation?: "portrait" | "landscape";
+  /** Extra inner (binding) margin in px, added to the left margin. */
+  gutter?: number;
+  /** Line numbers in the left margin, restarting per page. */
+  lineNumbers?: boolean;
+  /** CSS hyphenation of body text. */
+  hyphenate?: boolean;
+  /** Diagonal watermark text; "" disables. */
+  watermark?: string;
+  /** Page background color; "" = default white. */
+  pageColor?: string;
+  /** Border frame around each page. */
+  pageBorder?: "" | "single" | "double" | "dashed" | "shadow";
 }
 
 export const DEFAULT_SETUP: PageSetup = {
@@ -300,7 +314,12 @@ export const SectionGeometry = Extension.create({
                   const g = sectGeoOf(b.attrs);
                   if (g) geo[b.startPage] = g;
                 }
-                const sig = JSON.stringify([bounds.map((b) => b.startPage), geo]);
+                // themed pages (color/border/watermark/line numbers) need a real
+                // per-page paper element — seed the map with the doc geometry at
+                // page 1 so the paginator enters per-page-paper mode
+                const setup = (editor.storage.KxPageSetup as { setup?: PageSetup } | undefined)?.setup;
+                if (setup && isPageThemed(setup)) geo[1] = { ...globalGeo(editor), ...geo[1] };
+                const sig = JSON.stringify([bounds.map((b) => b.startPage), geo, isPageThemed(setup)]);
                 if (sig === lastSig) return;
                 lastSig = sig;
                 const store = editor.storage.PaginationPlus as { pageGeometry?: Record<number, SectGeo> };
@@ -373,10 +392,18 @@ function syncVariants(editor: Editor, setup: PageSetup) {
   s.customFooter = customFooter;
 }
 
+/** True when any page-look option needs the per-page paper DOM (geo mode). */
+export function isPageThemed(s: PageSetup | undefined): boolean {
+  if (!s) return false;
+  return !!(s.watermark || s.pageBorder || s.lineNumbers ||
+    (s.pageColor && s.pageColor !== "#fff" && s.pageColor !== "#ffffff"));
+}
+
 /** Read current pagination config — prefers our stored setup (storage holds expanded text). */
 export function readPageSetup(editor: Editor): PageSetup {
   const saved = (editor.storage.KxPageSetup as { setup?: PageSetup } | undefined)?.setup;
   const s = editor.storage.PaginationPlus;
+  const gutter = saved?.gutter ?? 0;
   const sizeName = (Object.keys(PAGE_SIZES) as (keyof typeof PAGE_SIZES)[]).find(
     (k) => PAGE_SIZES[k].pageWidth === s.pageWidth && PAGE_SIZES[k].pageHeight === s.pageHeight,
   ) ?? "CUSTOM";
@@ -386,7 +413,7 @@ export function readPageSetup(editor: Editor): PageSetup {
     sizeName,
     width: s.pageWidth, height: s.pageHeight,
     marginTop: s.marginTop, marginBottom: s.marginBottom,
-    marginLeft: s.marginLeft, marginRight: s.marginRight,
+    marginLeft: s.marginLeft - gutter, marginRight: s.marginRight,
     // only fall back to live storage when no setup was ever applied
     ...(saved ? {} : {
       headerLeft: s.headerLeft ?? "", headerRight: s.headerRight ?? "",
@@ -397,18 +424,38 @@ export function readPageSetup(editor: Editor): PageSetup {
 
 /** Apply a PageSetup to the live editor. */
 export function applyPageSetup(editor: Editor, setup: PageSetup) {
+  // orientation normalizes the paper — landscape means width > height
+  let { width, height } = setup;
+  if (setup.orientation === "landscape" && width < height) [width, height] = [height, width];
+  if (setup.orientation === "portrait" && width > height) [width, height] = [height, width];
+  const marginLeft = setup.marginLeft + (setup.gutter ?? 0);
   const size: PageSize = {
-    pageWidth: setup.width, pageHeight: setup.height,
+    pageWidth: width, pageHeight: height,
     marginTop: setup.marginTop, marginBottom: setup.marginBottom,
-    marginLeft: setup.marginLeft, marginRight: setup.marginRight,
+    marginLeft, marginRight: setup.marginRight,
   };
+  const normalized: PageSetup = { ...setup, width, height };
   editor.chain()
     .updatePageSize(size)
-    .updateMargins({ top: setup.marginTop, bottom: setup.marginBottom, left: setup.marginLeft, right: setup.marginRight })
+    .updateMargins({ top: setup.marginTop, bottom: setup.marginBottom, left: marginLeft, right: setup.marginRight })
     .run();
-  editor.storage.KxPageSetup = { setup };
-  applyNumberStyle(setup);
-  syncVariants(editor, setup);
+  editor.storage.KxPageSetup = { setup: normalized };
+  // page-look vars must live on .doc-page (parent of the paginator DOM) so
+  // .rm-with-pagination and .kx-page-paper can inherit them; data attrs and
+  // behavior classes stay on the ProseMirror root for descendant selectors.
+  const dom = editor.view.dom;
+  const host = (dom.closest(".doc-page") as HTMLElement | null) ?? dom;
+  for (const el of [host, dom]) {
+    el.style.setProperty("--kx-pg-bg", normalized.pageColor || "#fff");
+    el.style.setProperty("--kx-wm", JSON.stringify(normalized.watermark ?? ""));
+  }
+  if (normalized.pageBorder) dom.setAttribute("data-pg-border", normalized.pageBorder);
+  else dom.removeAttribute("data-pg-border");
+  dom.classList.toggle("kx-linenums", !!normalized.lineNumbers);
+  dom.classList.toggle("kx-hyphens", !!normalized.hyphenate);
+  dom.setAttribute("lang", "en");
+  applyNumberStyle(normalized);
+  syncVariants(editor, normalized);
   // nudge a rebuild so the paginator picks up customHeader/customFooter
   editor.view.dispatch(editor.state.tr.setMeta("kx-page-setup", true));
 }
@@ -598,12 +645,18 @@ export function PageSetupDialog({ editor, onClose }: { editor: Editor; onClose: 
     }));
   };
 
-  const rotate = () => setS((p) => ({ ...p, sizeName: "CUSTOM", width: p.height, height: p.width }));
+  const setOrientation = (o: "portrait" | "landscape") =>
+    setS((p) => {
+      let { width, height } = p;
+      if (o === "landscape" && width < height) [width, height] = [height, width];
+      if (o === "portrait" && width > height) [width, height] = [height, width];
+      return { ...p, orientation: o, sizeName: "CUSTOM", width, height };
+    });
 
   const num = (k: keyof PageSetup, label: string) => (
     <label className="ps-field">
       <span>{label}</span>
-      <input type="number" min={0} value={s[k] as number}
+      <input type="number" min={0} value={(s[k] as number) ?? 0}
         onChange={(e) => set(k, Math.max(0, parseInt(e.target.value) || 0))} />
     </label>
   );
@@ -619,16 +672,55 @@ export function PageSetupDialog({ editor, onClose }: { editor: Editor; onClose: 
               <option value="CUSTOM">Custom</option>
             </select>
           </label>
-          <button className="btn-ghost btn-sm" onClick={rotate} title="Swap width/height">Orientation: portrait ⇄ landscape</button>
+          <div className="ps-field">
+            <span>Orientation</span>
+            <div className="ps-toggle">
+              <button type="button" className={`btn-ghost btn-sm ${(s.orientation ?? "portrait") === "portrait" ? "on" : ""}`}
+                onClick={() => setOrientation("portrait")}>Portrait</button>
+              <button type="button" className={`btn-ghost btn-sm ${s.orientation === "landscape" ? "on" : ""}`}
+                onClick={() => setOrientation("landscape")}>Landscape</button>
+            </div>
+          </div>
         </div>
         <div className="ps-row">
-          {num("width", "Width px")}{num("height", "Height px")}
+          {num("width", "Width px")}{num("height", "Height px")}{num("gutter", "Gutter")}
         </div>
         <div className="ps-row">
           {num("marginTop", "Margin top")}{num("marginBottom", "Margin bottom")}
         </div>
         <div className="ps-row">
           {num("marginLeft", "Margin left")}{num("marginRight", "Margin right")}
+        </div>
+        <h4 className="ps-section">Page look</h4>
+        <div className="ps-row">
+          <label className="ps-field grow"><span>Watermark text</span>
+            <input value={s.watermark ?? ""} placeholder="e.g. DRAFT, CONFIDENTIAL"
+              onChange={(e) => set("watermark", e.target.value)} /></label>
+          <label className="ps-field"><span>Page color</span>
+            <input type="color" value={s.pageColor || "#ffffff"}
+              onChange={(e) => set("pageColor", e.target.value)} /></label>
+          <label className="ps-field"><span>Page border</span>
+            <select value={s.pageBorder ?? ""} onChange={(e) => set("pageBorder", e.target.value as PageSetup["pageBorder"])}>
+              <option value="">None</option>
+              <option value="single">Single</option>
+              <option value="double">Double</option>
+              <option value="dashed">Dashed</option>
+              <option value="shadow">Shadow</option>
+            </select></label>
+        </div>
+        <div className="ps-row">
+          <label className="ps-check">
+            <input type="checkbox" checked={!!s.lineNumbers} onChange={(e) => set("lineNumbers", e.target.checked)} />
+            <span>Line numbers</span>
+          </label>
+          <label className="ps-check">
+            <input type="checkbox" checked={!!s.hyphenate} onChange={(e) => set("hyphenate", e.target.checked)} />
+            <span>Automatic hyphenation</span>
+          </label>
+          {(s.watermark || s.pageBorder || s.pageColor) && (
+            <button type="button" className="btn-ghost btn-sm"
+              onClick={() => setS((p) => ({ ...p, watermark: "", pageBorder: "", pageColor: "" }))}>Clear look</button>
+          )}
         </div>
         <h4 className="ps-section">Header &amp; footer <small>({"{page}"} / {"{total}"} tokens)</small></h4>
         <div className="ps-row">

@@ -14,6 +14,12 @@ declare module "@tiptap/core" {
     columns: {
       setColumns: (count?: number, gap?: number, rule?: boolean) => ReturnType;
     };
+    clearBreak: {
+      setClearBreak: () => ReturnType;
+    };
+    signatureLine: {
+      setSignatureLine: (attrs?: { signer?: string; title?: string; date?: boolean }) => ReturnType;
+    };
   }
 }
 
@@ -163,6 +169,94 @@ export const ColumnBreak = Node.create({
         () =>
         ({ commands }) =>
           commands.insertContent({ type: this.name }),
+    };
+  },
+});
+
+/** Text-wrapping break — clears floated/wrapped objects so following text
+ *  starts below them (Word's "Text Wrapping" break). */
+export const ClearBreak = Node.create({
+  name: "clearBreak",
+  group: "block",
+  selectable: true,
+  atom: true,
+
+  parseHTML() {
+    return [{ tag: 'div[data-type="clear-break"]' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return [
+      "div",
+      mergeAttributes(HTMLAttributes, { "data-type": "clear-break", class: "page-break clear-break" }),
+      ["span", { class: "page-break-label" }, "Text wrapping break"],
+    ];
+  },
+
+  addCommands() {
+    return {
+      setClearBreak:
+        () =>
+        ({ commands }) =>
+          commands.insertContent({ type: this.name }),
+    };
+  },
+});
+
+/** Signature line — Word's Insert ▸ Signature Line object. */
+export const SignatureLine = Node.create({
+  name: "signatureLine",
+  group: "block",
+  selectable: true,
+  atom: true,
+
+  addAttributes() {
+    return {
+      signer: { default: "" },
+      title: { default: "" },
+      showDate: { default: true },
+    };
+  },
+
+  parseHTML() {
+    return [{
+      tag: 'div[data-type="signature-line"]',
+      getAttrs: (el) => ({
+        signer: (el as HTMLElement).getAttribute("data-signer") ?? "",
+        title: (el as HTMLElement).getAttribute("data-signer-title") ?? "",
+        showDate: (el as HTMLElement).getAttribute("data-show-date") !== "0",
+      }),
+    }];
+  },
+
+  renderHTML({ node, HTMLAttributes }) {
+    const a = node.attrs as { signer: string; title: string; showDate: boolean };
+    const kids: [string, Record<string, string>, ...unknown[]][] = [
+      ["div", { class: "sig-x" }, "✕"],
+      ["div", { class: "sig-rule" }],
+      ["div", { class: "sig-name" }, a.signer || "Signer name"],
+    ];
+    if (a.title) kids.push(["div", { class: "sig-title" }, a.title]);
+    if (a.showDate) kids.push(["div", { class: "sig-date" }, "Date:"]);
+    return [
+      "div",
+      mergeAttributes(HTMLAttributes, {
+        "data-type": "signature-line",
+        "data-signer": a.signer,
+        "data-signer-title": a.title,
+        "data-show-date": a.showDate ? "1" : "0",
+        class: "signature-line",
+      }),
+      ...kids,
+    ];
+  },
+
+  addCommands() {
+    return {
+      setSignatureLine:
+        (attrs = {}) =>
+        ({ commands }) =>
+          commands.insertContent({ type: this.name, attrs }),
     };
   },
 });

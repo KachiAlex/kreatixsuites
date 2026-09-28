@@ -97,6 +97,12 @@ export const KxParaFormat = Extension.create({
             parseHTML: (el: HTMLElement) => el.getAttribute("data-tabs") ? JSON.parse(el.getAttribute("data-tabs")!) : null,
             renderHTML: (a) => (a.tabs ? { "data-tabs": JSON.stringify(a.tabs) } : {}),
           },
+          /** Base text direction — Word's right-to-left paragraph setting. */
+          dir: {
+            default: null,
+            parseHTML: (el: HTMLElement) => el.getAttribute("dir") || null,
+            renderHTML: (a) => (a.dir ? { dir: a.dir } : {}),
+          },
         },
       },
     ];

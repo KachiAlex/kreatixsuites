@@ -898,8 +898,15 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .nav-tab{border:0;background:none;font-size:11px;font-weight:700;color:#A19A95;padding:6px 10px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
 .nav-tab.on{color:var(--k-orange);border-bottom-color:var(--k-orange)}
 .outline-hint{font-weight:400;text-transform:none;letter-spacing:0;color:#C4BCB5;font-size:9px}
-.outline-item.drop{box-shadow:inset 0 2px 0 var(--k-orange)}
+.outline-item.drop,.outline-row.drop{box-shadow:inset 0 2px 0 var(--k-orange)}
 .outline-item.result{font-size:11px;color:#5A5450;white-space:normal;line-height:1.35}
+.outline-row{display:flex;align-items:center;border-radius:7px}
+.outline-row .outline-item{flex:1;min-width:0}
+.outline-acts{display:none;gap:0;flex-shrink:0;padding-right:4px}
+.outline-row:hover .outline-acts{display:flex}
+.outline-acts button{border:0;background:none;color:#A79D95;font-size:11px;padding:2px 5px;cursor:pointer;border-radius:5px}
+.outline-acts button:hover:not(:disabled){background:#E9E2DA;color:#4A4540}
+.outline-acts button:disabled{opacity:.35;cursor:default}
 .read-hero{display:flex;align-items:center;gap:14px;margin-bottom:12px}
 .read-score{font-size:30px;font-weight:800;color:var(--k-orange);min-width:64px;text-align:center}
 .read-name{font-size:13px;font-weight:700;color:#3A3633}
@@ -923,6 +930,68 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .rm-pagination-gap{display:block}
 .rm-page-break .page{background:transparent}
 .rm-first-page-header,.rm-pages-wrapper [class*="header"],.rm-pages-wrapper [class*="footer"]{font-size:11px;color:#8B837D}
+
+/* ---- page theming: color / border / watermark / hyphenation ---- */
+.doc-page,.rm-with-pagination{background:var(--kx-pg-bg,#fff)}
+.doc-page:has(.rm-with-pagination){background:transparent}
+.rm-with-pagination[data-kx-sections] .kx-page-paper,
+.rm-with-pagination[data-kx-sections] .rm-page-break .breaker,
+.rm-with-pagination[data-kx-sections] .rm-first-page-header{
+  background-image:linear-gradient(var(--kx-pg-bg,#fff),var(--kx-pg-bg,#fff))!important;
+}
+.kx-page-paper{overflow:hidden}
+.kx-page-paper::before{
+  content:var(--kx-wm,"");position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:84px;font-weight:700;letter-spacing:.06em;
+  color:rgba(90,84,80,.16);transform:rotate(-42deg);
+  white-space:nowrap;pointer-events:none;
+}
+.doc-page{position:relative}
+.doc-page:not(:has(.rm-with-pagination))::before{
+  content:var(--kx-wm,"");position:absolute;inset:0;z-index:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:84px;font-weight:700;letter-spacing:.06em;
+  color:rgba(90,84,80,.16);transform:rotate(-42deg);
+  white-space:nowrap;pointer-events:none;overflow:hidden;
+}
+.ProseMirror[data-pg-border] .kx-page-paper::after{
+  content:"";position:absolute;inset:16px;pointer-events:none;
+}
+.ProseMirror[data-pg-border="single"] .kx-page-paper::after{border:2px solid #4A453F}
+.ProseMirror[data-pg-border="double"] .kx-page-paper::after{border:4px double #4A453F}
+.ProseMirror[data-pg-border="dashed"] .kx-page-paper::after{border:2px dashed #4A453F}
+.ProseMirror[data-pg-border="shadow"] .kx-page-paper::after{border:2px solid #4A453F;box-shadow:5px 5px 0 rgba(74,69,63,.4)}
+.kx-hyphens p,.kx-hyphens li,.kx-hyphens h1,.kx-hyphens h2,.kx-hyphens h3,.kx-hyphens h4,.kx-hyphens h5,.kx-hyphens h6,.kx-hyphens blockquote{hyphens:auto}
+/* line numbers overlay */
+.kx-linenums-overlay{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
+.kx-linenum{position:absolute;font-size:10px;line-height:1;color:#A39A94;text-align:right;width:30px;font-family:var(--mono,ui-monospace,monospace)}
+
+/* ---- writer: status bar / view modes / final banner ---- */
+.status-bar{display:flex;align-items:center;gap:12px;padding:4px 14px;background:#FBF8F5;border-top:1px solid var(--line);font-size:11.5px;color:#6B625C;flex-shrink:0;user-select:none}
+.sb-item{white-space:nowrap}
+.sb-spacer{flex:1}
+.sb-btn{border:0;background:none;font-size:13px;padding:3px 7px;border-radius:6px;cursor:pointer;color:#6B625C}
+.sb-btn:hover{background:#EFE9E3}
+.sb-btn.on{background:var(--k-orange-soft);color:var(--k-orange-dark)}
+.sb-zoom{width:110px;accent-color:var(--k-orange)}
+.sb-zoom-val{min-width:36px;text-align:right}
+.final-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#FFF7E0;border-bottom:1px solid #F0DFAF;color:#7A5B12;padding:8px 18px;font-size:12px}
+.editor-shell.kx-focus .menubar,.editor-shell.kx-focus .ribbon,.editor-shell.kx-focus .editor-top,
+.editor-shell.kx-read .menubar,.editor-shell.kx-read .ribbon,.editor-shell.kx-read .editor-top,
+.editor-shell.kx-read .status-bar{display:none}
+.mode-exit{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:60;border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 14px;font-size:12px;color:#4A4540;cursor:pointer;box-shadow:0 6px 20px rgba(46,35,29,.12)}
+.mode-exit:hover{background:#F6F2EE}
+
+/* ---- signature line & text-wrapping break ---- */
+.signature-line{width:280px;margin:24px 0;padding:6px 0;cursor:default}
+.signature-line .sig-x{font-size:15px;color:#4A4540;margin-bottom:2px}
+.signature-line .sig-rule{border-top:1px solid #3A3633;margin:2px 0 4px}
+.signature-line .sig-name{font-size:12px;color:#3A3633;font-weight:600}
+.signature-line .sig-title{font-size:11px;color:#6B625C}
+.signature-line .sig-date{font-size:11px;color:#6B625C;margin-top:8px}
+.clear-break{clear:both}
+.page-break.clear-break{opacity:.55}
 @media print{
   .menubar,.ribbon,.editor-top,.outline-pane,.link-pop{display:none !important}
   .doc-canvas{padding:0;overflow:visible}
@@ -937,6 +1006,11 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ps-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#8B837D}
 .ps-field input,.ps-field select{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;color:#3A3633;min-width:0}
 .ps-field.grow{flex:1}
+.ps-toggle{display:flex}
+.ps-toggle .btn-ghost{border-radius:0}
+.ps-toggle .btn-ghost:first-child{border-radius:8px 0 0 8px}
+.ps-toggle .btn-ghost:last-child{border-radius:0 8px 8px 0;margin-left:-1px}
+.ps-toggle .btn-ghost.on{background:var(--k-orange-soft);color:var(--k-orange-dark);border-color:var(--k-orange);position:relative}
 .ps-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 
 /* centered header/footer content (PaginationPlus only has float-left/right slots) */

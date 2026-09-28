@@ -184,6 +184,48 @@ export function ZoomDrop({ zoom, onZoom }: { zoom: number; onZoom: (z: number) =
   );
 }
 
+/** Word-style status bar: page/word counts left, view modes + zoom right. */
+export function StatusBar({ editor, words, zoom, onZoom, paged, onTogglePaged, readMode, onReadMode, focusMode, onFocusMode }: {
+  editor: Editor; words: number; zoom: number; onZoom: (z: number) => void;
+  paged: boolean; onTogglePaged: () => void;
+  readMode: boolean; onReadMode: () => void;
+  focusMode: boolean; onFocusMode: () => void;
+}) {
+  const [page, setPage] = useState({ cur: 1, total: 1 });
+
+  useEffect(() => {
+    const measure = () => {
+      if (editor.isDestroyed) return;
+      const walls = editor.view.dom.querySelectorAll(".rm-page-break");
+      if (!walls.length || !paged) { setPage((p) => (p.total === 1 && p.cur === 1 ? p : { cur: 1, total: 1 })); return; }
+      const mid = window.innerHeight / 2;
+      let cur = 1;
+      walls.forEach((w) => { if (w.getBoundingClientRect().top < mid) cur++; });
+      const total = walls.length;
+      setPage({ cur: Math.min(cur, total), total });
+    };
+    measure();
+    const canvas = document.querySelector(".doc-canvas");
+    canvas?.addEventListener("scroll", measure, { passive: true });
+    const t = setInterval(measure, 800);
+    return () => { canvas?.removeEventListener("scroll", measure); clearInterval(t); };
+  }, [editor, paged]);
+
+  return (
+    <div className="status-bar">
+      <span className="sb-item">Page {page.cur} of {page.total}</span>
+      <span className="sb-item">{words} word{words === 1 ? "" : "s"}</span>
+      <span className="sb-spacer" />
+      <button className={`sb-btn ${readMode ? "on" : ""}`} title="Read mode" onClick={onReadMode}>📖</button>
+      <button className={`sb-btn ${paged ? "on" : ""}`} title="Print layout" onClick={onTogglePaged}>🖺</button>
+      <button className={`sb-btn ${focusMode ? "on" : ""}`} title="Focus mode" onClick={onFocusMode}>◎</button>
+      <input className="sb-zoom" type="range" min={40} max={250} step={5} value={zoom}
+        onChange={(e) => onZoom(parseInt(e.target.value))} title="Zoom" />
+      <span className="sb-item sb-zoom-val">{zoom}%</span>
+    </div>
+  );
+}
+
 export function LineSpacingDrop({ editor }: { editor: Editor }) {
   return (
     <Drop title="Line & paragraph spacing" label="↕≡">

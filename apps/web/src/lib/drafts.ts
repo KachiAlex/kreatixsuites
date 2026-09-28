@@ -77,10 +77,10 @@ const inflight = new Set<string>();
  * On failure the draft stays and retried via retryPendingDrafts on reconnect.
  * Returns true when the server accepted the save.
  */
-export async function saveContent(fileId: string, content: unknown, collab: boolean): Promise<boolean> {
+export async function saveContent(fileId: string, content: unknown, collab: boolean, label?: string): Promise<boolean> {
   await saveDraft(fileId, content);
   try {
-    await api.put(`/api/files/${fileId}/content${collab ? "?collab=1" : ""}`, { content });
+    await api.put(`/api/files/${fileId}/content${collab ? "?collab=1" : ""}`, { content, ...(label ? { label } : {}) });
     await clearDraft(fileId);
     return true;
   } catch {
