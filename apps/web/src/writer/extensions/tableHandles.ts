@@ -11,10 +11,17 @@ import { Plugin, PluginKey, NodeSelection, TextSelection } from "@tiptap/pm/stat
 import {
   TableMap, CellSelection,
   addRowBefore, addRowAfter, addColumnBefore, addColumnAfter,
+  mergeCells,
 } from "@tiptap/pm/tables";
 import type { EditorView } from "@tiptap/pm/view";
+import { splitCellsInTable } from "./table";
 
 const GRAB_PX = 5; // invisible grab zone around borders
+
+/** Active pen/eraser tool — toggled via the `setTableTool` command. */
+export type TableTool = "draw" | "erase" | null;
+let tableTool: TableTool = null;
+export const getTableTool = (): TableTool => tableTool;
 
 const zoomOf = (view: EditorView): number => {
   const el = view.dom.closest(".doc-zoom") as HTMLElement | null;
@@ -204,8 +211,207 @@ const selZoneHit = (view: EditorView, ev: MouseEvent): SelZone | null => {
   return null;
 };
 
+declare module "@tiptap/core" {
+  interface Commands<ReturnType> {
+    kxTableTools: {
+      /** Toggle the Draw-table pen or Eraser tool (pass null, or the active
+       *  mode, to switch back to normal editing). */
+      setTableTool: (mode: TableTool) => ReturnType;
+    };
+  }
+}
+
+// ---- draw-table pen & eraser ------------------------------------------------
+
+/** Entry point while a tool is armed. Returns true when the event was
+ *  consumed inside the editor. */
+const toolMouseDown = (view: EditorView, ev: MouseEvent): boolean => {
+  if (!view.dom.contains(ev.target as Node)) return false;
+  if (tableTool === "erase") { eraseDown(view, ev); return true; }
+  if (tableTool === "draw") { drawDown(view, ev); return true; }
+  return false;
+};
+
+/** Eraser: click a border to remove it — interior borders merge the cells
+ *  across them, perimeter borders are set to `none`. Dragging across a cell
+ *  range merges the whole rectangle (Word behaviour). */
+const eraseDown = (view: EditorView, ev: MouseEvent): void => {
+  const el = (ev.target as HTMLElement | null)?.closest?.("td,th") as HTMLElement | null;
+  if (!el || !view.dom.contains(el)) return;
+  const rect = el.getBoundingClientRect();
+  const at = view.posAtCoords({ left: rect.left + rect.width / 2, top: rect.top + rect.height / 2 });
+  const startPos = at && cellPosAt(view, at.pos);
+  if (startPos == null) return;
+  const sx = ev.clientX, sy = ev.clientY;
+  const up = (u: MouseEvent) => {
+    if (Math.hypot(u.clientX - sx, u.clientY - sy) > 8) {
+      const ue = view.posAtCoords({ left: u.clientX, top: u.clientY });
+      const endPos = ue && cellPosAt(view, ue.pos);
+      if (endPos != null && endPos !== startPos) {
+        try {
+          view.dispatch(view.state.tr.setSelection(
+            CellSelection.create(view.state.doc, startPos, endPos)));
+          mergeCells(view.state, (t) => view.dispatch(t));
+          return;
+        } catch { /* cells can't form a merge rect — fall through */ }
+      }
+    }
+    eraseBorderAt(view, ev, rect, startPos);
+  };
+  window.addEventListener("mouseup", up, { once: true, capture: true });
+};
+
+const eraseBorderAt = (
+  view: EditorView, ev: MouseEvent,
+  rect: DOMRect, cellStart: number,
+): void => {
+  const d: Record<string, number> = {
+    left: ev.clientX - rect.left, right: rect.right - ev.clientX,
+    top: ev.clientY - rect.top, bottom: rect.bottom - ev.clientY,
+  };
+  const [side, dist] = Object.entries(d).sort((a, b) => a[1] - b[1])[0];
+  if (dist > GRAB_PX + 6) return;
+  const ctx = cellCtx(view, ev, rect);
+  if (!ctx) return;
+  const { map, tablePos } = ctx;
+  const cellNode = view.state.doc.nodeAt(cellStart);
+  if (!cellNode) return;
+  const rc = map.findCell(cellStart - tablePos - 1);
+  const cs = (cellNode.attrs.colspan as number) || 1;
+  const rs = (cellNode.attrs.rowspan as number) || 1;
+  let nr = -1, nc = -1;
+  if (side === "left") { nr = rc.top; nc = rc.left - 1; }
+  else if (side === "right") { nr = rc.top + rs - 1; nc = rc.left + cs; }
+  else if (side === "top") { nr = rc.top - 1; nc = rc.left; }
+  else { nr = rc.top + rs; nc = rc.left; }
+  const inGrid = nr >= 0 && nr < map.height && nc >= 0 && nc < map.width;
+  if (inGrid) {
+    const nPos = tablePos + 1 + map.map[nr * map.width + nc];
+    if (nPos === cellStart) return; // edge of a merged cell — nothing across
+    try {
+      view.dispatch(view.state.tr.setSelection(
+        CellSelection.create(view.state.doc, cellStart, nPos)));
+      mergeCells(view.state, (t) => view.dispatch(t));
+    } catch { /* not mergeable */ }
+    return;
+  }
+  const borders = {
+    ...(cellNode.attrs.borders as Record<string, unknown> | null),
+    [side]: { style: "none", width: 0, color: "transparent" },
+  };
+  view.dispatch(view.state.tr.setNodeMarkup(cellStart, undefined,
+    { ...cellNode.attrs, borders }));
+};
+
+/** Draw-table pen: drag inside a cell → split it on the dominant axis;
+ *  drag on blank page → insert a table sized to the drawn rectangle. */
+const drawDown = (view: EditorView, ev: MouseEvent): void => {
+  const zoom = zoomOf(view);
+  const cell = (ev.target as HTMLElement | null)?.closest?.("td,th") as HTMLElement | null;
+  const inCell = !!(cell && view.dom.contains(cell));
+  const sx = ev.clientX, sy = ev.clientY;
+  const guide = mkGuide("kx-draw-guide");
+  guide.style.left = `${sx}px`;
+  guide.style.top = `${sy}px`;
+  let moved = false;
+  const move = (e: MouseEvent) => {
+    moved = true;
+    guide.style.left = `${Math.min(sx, e.clientX)}px`;
+    guide.style.top = `${Math.min(sy, e.clientY)}px`;
+    guide.style.width = `${Math.abs(e.clientX - sx)}px`;
+    guide.style.height = `${Math.abs(e.clientY - sy)}px`;
+  };
+  const up = (u: MouseEvent) => {
+    window.removeEventListener("mousemove", move, true);
+    guide.remove();
+    const w = Math.abs(u.clientX - sx) / zoom;
+    const h = Math.abs(u.clientY - sy) / zoom;
+    if (!moved || (w < 10 && h < 10)) return;
+    if (inCell) {
+      // dominant axis → line direction → split orientation
+      splitCellDrawn(view, ev, cell!, h > w ? 2 : 1, h > w ? 1 : 2);
+    } else {
+      insertDrawnTable(view, ev, w, h);
+    }
+  };
+  window.addEventListener("mousemove", move, true);
+  window.addEventListener("mouseup", up, { once: true, capture: true });
+};
+
+const splitCellDrawn = (
+  view: EditorView, ev: MouseEvent, cell: HTMLElement, cols: number, rows: number,
+): void => {
+  const ctx = cellCtx(view, ev, cell.getBoundingClientRect());
+  if (!ctx) return;
+  const { state } = view;
+  const table = state.doc.nodeAt(ctx.tablePos);
+  const cellNode = state.doc.nodeAt(ctx.cellStart);
+  if (table?.type.name !== "table" || !cellNode) return;
+  const rc = ctx.map.findCell(ctx.cellStart - ctx.tablePos - 1);
+  const off = ctx.cellStart - ctx.tablePos - 1;
+  const targets = new Map([[off, {
+    cell: cellNode, off, left: rc.left, top: rc.top,
+    cs: (cellNode.attrs.colspan as number) || 1,
+    rs: (cellNode.attrs.rowspan as number) || 1,
+  }]]);
+  const tr = state.tr;
+  splitCellsInTable(tr, state.schema, ctx.tablePos, table, targets, cols, rows);
+  view.dispatch(tr);
+};
+
+const insertDrawnTable = (
+  view: EditorView, ev: MouseEvent, w: number, h: number,
+): void => {
+  const { state } = view;
+  const schema = state.schema;
+  const cols = Math.max(1, Math.min(20, Math.round(w / 72)));
+  const rows = Math.max(1, Math.min(50, Math.round(h / 28)));
+  const rowH = Math.max(18, Math.round(h / rows));
+  const rowType = schema.nodes.tableRow;
+  const cellType = schema.nodes.tableCell;
+  const rowNodes = Array.from({ length: rows }, () =>
+    rowType.create({ height: rowH, heightMode: "atLeast" },
+      Array.from({ length: cols }, () =>
+        cellType.create({}, schema.nodes.paragraph.create()))));
+  const table = schema.nodes.table.create(
+    { widthMode: "fixed", widthAbs: Math.round(w), widthAbsUnit: "px" }, rowNodes);
+  const at = view.posAtCoords({ left: ev.clientX, top: ev.clientY });
+  let pos: number;
+  if (at) {
+    const $p = state.doc.resolve(at.pos);
+    pos = $p.depth ? $p.before(1) : at.pos;
+  } else {
+    pos = state.doc.content.size;
+  }
+  const tr = state.tr.insert(pos, table);
+  try {
+    tr.setSelection(TextSelection.near(tr.doc.resolve(pos + 1))).scrollIntoView();
+  } catch { /* selection placement is best-effort */ }
+  view.dispatch(tr);
+};
+
 export const KxTableHandles = Extension.create({
   name: "kxTableHandles",
+
+  addCommands() {
+    return {
+      setTableTool:
+        (mode) =>
+        ({ view }) => {
+          tableTool = tableTool === mode ? null : mode;
+          view.dom.classList.toggle("kx-tool-draw", tableTool === "draw");
+          view.dom.classList.toggle("kx-tool-erase", tableTool === "erase");
+          return true;
+        },
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      Escape: ({ editor }) =>
+        tableTool ? editor.commands.setTableTool(null) : false,
+    };
+  },
 
   addProseMirrorPlugins() {
     return [
@@ -215,6 +421,11 @@ export const KxTableHandles = Extension.create({
         props: {
           handleDOMEvents: {
             mousemove: (view, event) => {
+              if (tableTool) {
+                view.dom.classList.remove("kx-rowgrab", "kx-colgrab",
+                  "kx-selcell", "kx-selrow", "kx-selcol");
+                return;
+              }
               if (!view.editable || event.buttons) return;
               const rowHit = rowBorderHit(view, event);
               const colHit = !rowHit && col0BorderHit(view, event);
@@ -228,6 +439,14 @@ export const KxTableHandles = Extension.create({
 
             mousedown: (view, event) => {
               if (!view.editable || event.button !== 0) return;
+              if (tableTool) {
+                if (toolMouseDown(view, event)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return true;
+                }
+                return false;
+              }
               const zoom = zoomOf(view);
 
               const zone = selZoneHit(view, event);
@@ -517,6 +736,7 @@ export const KxTableHandles = Extension.create({
           };
 
           const onMove = (e: MouseEvent) => {
+            if (tableTool) { hide(); hideIns(); return; }
             const hit = view.editable && !e.buttons ? tableAt(view, e) : null;
             if (hit) place(hit.el, hit.pos);
             else if (e.target !== grip && e.target !== corner) hide();
@@ -704,6 +924,14 @@ export const KxTableHandles = Extension.create({
             }
           };
 
+          // Escape exits the tool even when the editor isn't focused
+          const onKey = (e: KeyboardEvent) => {
+            if (!tableTool || e.key !== "Escape") return;
+            e.preventDefault();
+            tableTool = null;
+            view.dom.classList.remove("kx-tool-draw", "kx-tool-erase");
+          };
+
           const onScroll = () => {
             hideIns();
             if (gripPos != null && gripTbl?.isConnected) {
@@ -776,6 +1004,7 @@ export const KxTableHandles = Extension.create({
 
           document.addEventListener("mousemove", onMove, true);
           document.addEventListener("dblclick", onDblClick, true);
+          document.addEventListener("keydown", onKey, true);
           window.addEventListener("scroll", onScroll, true);
           grip.addEventListener("mousedown", onGripDown);
           corner.addEventListener("mousedown", onCornerDown);
@@ -799,6 +1028,7 @@ export const KxTableHandles = Extension.create({
             destroy: () => {
               document.removeEventListener("mousemove", onMove, true);
               document.removeEventListener("dblclick", onDblClick, true);
+              document.removeEventListener("keydown", onKey, true);
               window.removeEventListener("scroll", onScroll, true);
               grip.remove();
               corner.remove();

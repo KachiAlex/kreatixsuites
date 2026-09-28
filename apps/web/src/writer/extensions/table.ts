@@ -40,9 +40,9 @@ declare module "@tiptap/core" {
       moveTableRow: (dir: "up" | "down") => ReturnType;
       /** Split selected cells into cols×rows sub-cells (Word Split Cells). */
       splitCellsGrid: (cols: number, rows: number) => ReturnType;
-      /** Merge this table with the adjacent sibling table (Word merges on
-       *  deleting the separator). Grids may differ — fixTables pads. */
       mergeAdjacentTable: (dir: "next" | "prev") => ReturnType;
+      /** Insert a prebuilt content template (Word Quick Tables). */
+      insertQuickTable: (key: QuickTableKey) => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -510,6 +510,139 @@ export const TABLE_PRESET_SWATCHES: { key: string; label: string; hdr: string | 
   { key: "minimalDark", label: "Minimal — dark head", hdr: "#3A3633", band: null, edge: "#DDD6D0" },
 ];
 
+// ---- quick tables (Word's prebuilt content templates) ----------------------
+
+export type QuickTableKey = "calendar" | "matrix" | "tabularList" | "withSubheads";
+
+const mkCellJ = (text = "", header = false) => ({
+  type: header ? "tableHeader" : "tableCell",
+  content: [{ type: "paragraph", content: text ? [{ type: "text", text }] : [] }],
+});
+const mkRowJ = (cells: ReturnType<typeof mkCellJ>[]) => ({ type: "tableRow", content: cells });
+
+/** JSON builders — inserted via insertContent so schema validation applies. */
+export const QUICK_TABLES: { key: QuickTableKey; label: string; build: () => Record<string, unknown> }[] = [
+  {
+    key: "calendar", label: "Calendar",
+    build: () => {
+      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const rows = [mkRowJ(days.map((d) => mkCellJ(d, true)))];
+      for (let w = 0; w < 5; w++) rows.push(mkRowJ(days.map(() => mkCellJ())));
+      return { type: "table", attrs: { widthMode: "pct", widthPct: 100 }, content: rows };
+    },
+  },
+  {
+    key: "matrix", label: "Matrix",
+    build: () => {
+      const cols = ["", "A", "B", "C"];
+      const rows = [mkRowJ(cols.map((c) => mkCellJ(c, true)))];
+      for (const r of ["1", "2", "3"]) {
+        rows.push(mkRowJ([mkCellJ(r, true), mkCellJ(), mkCellJ(), mkCellJ()]));
+      }
+      return { type: "table", content: rows };
+    },
+  },
+  {
+    key: "tabularList", label: "Tabular list",
+    build: () => {
+      const hdr = ["Item", "Description", "Amount"];
+      const rows = [mkRowJ(hdr.map((h) => mkCellJ(h, true)))];
+      for (let i = 0; i < 4; i++) rows.push(mkRowJ(hdr.map(() => mkCellJ())));
+      return { type: "table", attrs: { optHeaderRow: true, optBandedRows: true }, content: rows };
+    },
+  },
+  {
+    key: "withSubheads", label: "List with subheads",
+    build: () => {
+      const rows = [
+        mkRowJ([mkCellJ("Section", true), mkCellJ("Detail", true), mkCellJ("Value", true)]),
+        mkRowJ([mkCellJ("Heading", false), mkCellJ(), mkCellJ()]),
+      ];
+      for (let i = 0; i < 3; i++) rows.push(mkRowJ([mkCellJ(), mkCellJ(), mkCellJ()]));
+      return { type: "table", content: rows };
+    },
+  },
+];
+
+interface SplitTarget { cell: PMNode; off: number; left: number; top: number; cs: number; rs: number }
+
+/** Core of splitCellsGrid — rebuilds `table` with each target cell replaced
+ *  by a cols×rows sub-grid, widening neighbours' spans to keep the grid
+ *  uniform. Shared by the command and the draw-table pen. */
+export const splitCellsInTable = (
+  tr: CommandProps["tr"],
+  schema: CommandProps["state"]["schema"],
+  tablePos: number,
+  table: PMNode,
+  targets: Map<number, SplitTarget>,
+  cols: number,
+  rows: number,
+): void => {
+  cols = Math.max(1, Math.min(64, Math.floor(cols) || 1));
+  rows = Math.max(1, Math.min(64, Math.floor(rows) || 1));
+  const map = TableMap.get(table);
+  const colMult = new Map<number, number>();
+  const rowMult = new Map<number, number>();
+  for (const t of targets.values()) {
+    for (let cj = t.left; cj < t.left + t.cs; cj++) colMult.set(cj, cols);
+    for (let ri = t.top; ri < t.top + t.rs; ri++) rowMult.set(ri, rows);
+  }
+  const targetCols = [...colMult.keys()];
+  const targetRows = [...rowMult.keys()];
+  const overlaps = (s: number, len: number, set: number[]) =>
+    set.filter((v) => v >= s && v < s + len).length;
+
+  const cellType = schema.nodes.tableCell;
+  const rowsArr: { node: PMNode; off: number }[] = [];
+  table.forEach((r, off) => rowsArr.push({ node: r, off }));
+  const insIdx = (i: number, c: number) => {
+    const { node, off } = rowsArr[i];
+    let k = node.childCount;
+    node.forEach((cell, coff, ci) => {
+      const rc = map.findCell(off + 1 + coff);
+      if (rc.left + ((cell.attrs.colspan as number) || 1) > c && k === node.childCount) k = ci;
+    });
+    return k;
+  };
+
+  const newRows: PMNode[] = [];
+  for (let i = 0; i < rowsArr.length; i++) {
+    const { node: row, off } = rowsArr[i];
+    const mult = rowMult.get(i) ?? 1;
+    const covering = [...targets.values()].filter((t) => t.top <= i && i < t.top + t.rs);
+    for (let k = 0; k < mult; k++) {
+      const items: { key: number; node: PMNode }[] = [];
+      if (k === 0) {
+        row.forEach((cell, coff, ci) => {
+          const cellOff = off + 1 + coff;
+          const rc = map.findCell(cellOff);
+          const cs = (cell.attrs.colspan as number) || 1;
+          const rs = (cell.attrs.rowspan as number) || 1;
+          if (targets.has(cellOff)) return;
+          const attrs = { ...cell.attrs };
+          const csOv = overlaps(rc.left, cs, targetCols);
+          const rsOv = overlaps(rc.top, rs, targetRows);
+          if (csOv) { attrs.colspan = cs + csOv * (cols - 1); attrs.colwidth = null; }
+          if (rsOv) attrs.rowspan = rs + rsOv * (rows - 1);
+          items.push({ key: ci, node: cell.type.create(attrs, cell.content) });
+        });
+      }
+      for (const t of covering) {
+        const key = insIdx(i, t.left);
+        for (let j = 0; j < t.cs * cols; j++) {
+          const node = k === 0 && j === 0
+            ? t.cell.type.create({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null }, t.cell.content)
+            : cellType.createAndFill({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null })!;
+          items.push({ key: key + j * 0.001 + 0.5, node });
+        }
+      }
+      items.sort((a, b) => a.key - b.key);
+      newRows.push(row.type.create(row.attrs, items.map((it) => it.node)));
+    }
+  }
+  tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
+};
+
 export const KxTableCommands = Extension.create({
   name: "kxTable",
 
@@ -707,72 +840,16 @@ export const KxTableCommands = Extension.create({
             }
           }
           if (!targets.size) return false;
-          // no-op guard: every target already exactly cols×rows? still split.
           if (!dispatch) return true;
-
-          const colMult = new Map<number, number>();
-          const rowMult = new Map<number, number>();
-          for (const t of targets.values()) {
-            for (let cj = t.left; cj < t.left + t.cs; cj++) colMult.set(cj, cols);
-            for (let ri = t.top; ri < t.top + t.rs; ri++) rowMult.set(ri, rows);
-          }
-          const targetCols = [...colMult.keys()];
-          const targetRows = [...rowMult.keys()];
-          const overlaps = (s: number, len: number, set: number[]) =>
-            set.filter((v) => v >= s && v < s + len).length;
-
-          const cellType = state.schema.nodes.tableCell;
-          const rowsArr: { node: PMNode; off: number }[] = [];
-          table.forEach((r, off) => rowsArr.push({ node: r, off }));
-          // grid index where a column belongs among a row's children
-          const insIdx = (i: number, c: number) => {
-            const { node, off } = rowsArr[i];
-            let k = node.childCount;
-            node.forEach((cell, coff, ci) => {
-              const rc = map_.findCell(off + 1 + coff);
-              if (rc.left + ((cell.attrs.colspan as number) || 1) > c && k === node.childCount) k = ci;
-            });
-            return k;
-          };
-
-          const newRows: PMNode[] = [];
-          for (let i = 0; i < rowsArr.length; i++) {
-            const { node: row, off } = rowsArr[i];
-            const mult = rowMult.get(i) ?? 1;
-            // covering targets (child of this row, or reaching down via rowspan)
-            const covering = [...targets.values()].filter((t) => t.top <= i && i < t.top + t.rs);
-            for (let k = 0; k < mult; k++) {
-              const items: { key: number; node: PMNode }[] = [];
-              if (k === 0) {
-                row.forEach((cell, coff, ci) => {
-                  const cellOff = off + 1 + coff;
-                  const rc = map_.findCell(cellOff);
-                  const cs = (cell.attrs.colspan as number) || 1;
-                  const rs = (cell.attrs.rowspan as number) || 1;
-                  if (targets.has(cellOff)) return;            // emitted as region below
-                  const attrs = { ...cell.attrs };
-                  const csOv = overlaps(rc.left, cs, targetCols);
-                  const rsOv = overlaps(rc.top, rs, targetRows);
-                  if (csOv) { attrs.colspan = cs + csOv * (cols - 1); attrs.colwidth = null; }
-                  if (rsOv) attrs.rowspan = rs + rsOv * (rows - 1);
-                  items.push({ key: ci, node: cell.type.create(attrs, cell.content) });
-                });
-              }
-              for (const t of covering) {
-                const key = insIdx(i, t.left);
-                for (let j = 0; j < t.cs * cols; j++) {
-                  const node = k === 0 && j === 0
-                    ? t.cell.type.create({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null }, t.cell.content)
-                    : cellType.createAndFill({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null })!;
-                  items.push({ key: key + j * 0.001 + 0.5, node });
-                }
-              }
-              items.sort((a, b) => a.key - b.key);
-              newRows.push(row.type.create(row.attrs, items.map((it) => it.node)));
-            }
-          }
-          tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
+          splitCellsInTable(tr, state.schema, tablePos, table, targets, cols, rows);
           return true;
+        },
+
+      insertQuickTable:
+        (key) =>
+        ({ commands }) => {
+          const tpl = QUICK_TABLES.find((t) => t.key === key);
+          return tpl ? commands.insertContent(tpl.build()) : false;
         },
 
       mergeAdjacentTable:

@@ -9,7 +9,7 @@ import { Subscript } from "@tiptap/extension-subscript";
 import { Superscript } from "@tiptap/extension-superscript";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
 import { KxTable, KxTableRow, KxTableHeader, KxTableCell, KxTableCommands } from "./extensions/table";
-import { KxTableHandles } from "./extensions/tableHandles";
+import { KxTableHandles, getTableTool } from "./extensions/tableHandles";
 import { CodeBlockLowlight } from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Mathematics } from "@tiptap/extension-mathematics";
@@ -46,7 +46,7 @@ import { ContextMenu, type ContextMenuState } from "./ContextMenu";
 import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
-import { TABLE_PRESET_SWATCHES } from "./extensions/table";
+import { TABLE_PRESET_SWATCHES, QUICK_TABLES } from "./extensions/table";
 import { SortDialog } from "./SortDialog";
 import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
@@ -943,6 +943,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { label: "Merge with table below", onClick: () => ed.chain().focus().mergeAdjacentTable("next").run() },
     { label: "Convert to text…", onClick: () => setSepDlg("toText") },
     { divider: true },
+    {
+      label: "Draw table", checked: getTableTool() === "draw",
+      onClick: () => ed.commands.setTableTool("draw"),
+    },
+    {
+      label: "Eraser", checked: getTableTool() === "erase",
+      onClick: () => ed.commands.setTableTool("erase"),
+    },
+    { divider: true },
     { label: "View gridlines", checked: gridlines, onClick: () => setGridlines((g) => !g) },
     { label: "Table properties…", onClick: () => setTableProps(true) },
     { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
@@ -1059,6 +1068,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
                   />
                 ),
               },
+              { divider: true },
+              {
+                label: "Quick tables", submenu: QUICK_TABLES.map((qt) => ({
+                  label: qt.label,
+                  onClick: () => ed.chain().focus().insertQuickTable(qt.key).run(),
+                })),
+              },
+              { divider: true },
+              { label: "Draw table", onClick: () => ed.commands.setTableTool("draw") },
               { divider: true },
               { label: "Convert text to table…", onClick: () => setSepDlg("toTable") },
             ],
