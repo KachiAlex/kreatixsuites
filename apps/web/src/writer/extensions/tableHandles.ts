@@ -7,8 +7,11 @@
 // Interior column borders and cell drag-selection are already handled by
 // columnResizing/tableEditing in the base Table extension.
 import { Extension } from "@tiptap/core";
-import { Plugin, PluginKey, NodeSelection } from "@tiptap/pm/state";
-import { TableMap, CellSelection } from "@tiptap/pm/tables";
+import { Plugin, PluginKey, NodeSelection, TextSelection } from "@tiptap/pm/state";
+import {
+  TableMap, CellSelection,
+  addRowBefore, addRowAfter, addColumnBefore, addColumnAfter,
+} from "@tiptap/pm/tables";
 import type { EditorView } from "@tiptap/pm/view";
 
 const GRAB_PX = 5; // invisible grab zone around borders
@@ -173,7 +176,8 @@ const selZoneHit = (view: EditorView, ev: MouseEvent): SelZone | null => {
     // border-resize grab zone
     const rect = cell.getBoundingClientRect();
     const dl = ev.clientX - rect.left;
-    if (dl > GRAB_PX && dl <= 15 && ev.clientY > rect.top + 2 && ev.clientY < rect.bottom - 2) {
+    // strip starts past the boundary-insert band (GRAB..11px = ⊕ insert zone)
+    if (dl > 11 && dl <= 18 && ev.clientY > rect.top + 2 && ev.clientY < rect.bottom - 2) {
       const at = view.posAtCoords({ left: rect.left + rect.width / 2, top: rect.top + rect.height / 2 });
       const pos = at && cellPosAt(view, at.pos);
       if (pos != null) return { kind: "cell", cellPos: pos };
@@ -326,6 +330,36 @@ export const KxTableHandles = Extension.create({
           corner.style.display = "none";
           document.body.appendChild(corner);
 
+          // ⊕ boundary-insert controls (Word 2013+): a hairline along the
+          // boundary + a circle at the table edge; click inserts a row/column
+          const mkIns = (cls: string, title: string) => {
+            const w = document.createElement("div");
+            w.className = `kx-tbl-ins ${cls}`;
+            const line = document.createElement("div");
+            line.className = "kx-ins-line";
+            const btn = document.createElement("div");
+            btn.className = "kx-ins-btn";
+            btn.title = title;
+            btn.textContent = "+";
+            w.appendChild(line);
+            w.appendChild(btn);
+            w.style.display = "none";
+            document.body.appendChild(w);
+            return w;
+          };
+          const insRow = mkIns("row", "Insert row");
+          const insCol = mkIns("col", "Insert column");
+
+          type InsCand = { kind: "row" | "col"; index: number; at: number; d: number };
+          let insCand: (InsCand & { tablePos: number }) | null = null;
+          let insTbl: HTMLElement | null = null;
+          const hideIns = () => {
+            insRow.style.display = "none";
+            insCol.style.display = "none";
+            insCand = null;
+            insTbl = null;
+          };
+
           let gripPos: number | null = null;
           let gripTbl: HTMLElement | null = null;
 
@@ -347,10 +381,146 @@ export const KxTableHandles = Extension.create({
             gripTbl = tbl;
           };
 
+          /** Doc pos + element for a tbody (used when the pointer sits just
+          *  outside the table where tableAt can't see it). */
+          const tableFromTbody = (tbody: HTMLElement): { pos: number; el: HTMLElement } | null => {
+            const td = tbody.querySelector("td,th") as HTMLElement | null;
+            if (!td) return null;
+            const r = td.getBoundingClientRect();
+            const at = view.posAtCoords({ left: r.left + 2, top: r.top + 2 });
+            if (!at) return null;
+            const $p = view.state.doc.resolve(at.inside >= 0 ? at.inside : at.pos);
+            for (let d = $p.depth; d >= 0; d--) {
+              if ($p.node(d).type.name === "table") return { pos: $p.before(d), el: tbody };
+            }
+            return null;
+          };
+
+          /** Hit-test row/col boundaries just past the resize grab zone. */
+          const updateIns = (e: MouseEvent) => {
+            if (!view.editable || e.buttons) return hideIns();
+            const tgt = e.target as HTMLElement | null;
+            if (insRow.contains(tgt) || insCol.contains(tgt)) return; // keep alive over the ⊕
+            let t = tableAt(view, e);
+            if (!t) {
+              // pointer in the margin band just outside a table edge
+              let best: { pos: number; el: HTMLElement } | null = null;
+              let bestD = 15;
+              for (const tb of view.dom.querySelectorAll("tbody")) {
+                const r = tb.getBoundingClientRect();
+                if (!r.width) continue;
+                const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
+                const dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom);
+                const d = Math.hypot(dx, dy);
+                if (d <= bestD) { const t2 = tableFromTbody(tb as HTMLElement); if (t2) { best = t2; bestD = d; } }
+              }
+              t = best;
+            }
+            if (!t) return hideIns();
+            const rect = t.el.getBoundingClientRect();
+            const table = view.state.doc.nodeAt(t.pos);
+            if (!table) return hideIns();
+            const map = TableMap.get(table);
+            // boundary positions (CSS px offsets relative to the table rect)
+            const colB = [0];
+            let acc = 0;
+            for (const w of measureColumns(t.el, map, table)) colB.push((acc += w));
+            const rowB = [0];
+            for (const tr of t.el.querySelectorAll("tr")) {
+              rowB.push(tr.getBoundingClientRect().bottom - rect.top);
+            }
+            let best: InsCand | null = null;
+            if (e.clientY > rect.top + 4 && e.clientY < rect.bottom + 4) {
+              for (let k = 0; k < colB.length; k++) {
+                const d = Math.abs(e.clientX - (rect.left + colB[k]));
+                if (d > GRAB_PX && d <= 11 && (!best || d < best.d)) {
+                  best = { kind: "col", index: k, at: rect.left + colB[k], d };
+                }
+              }
+            }
+            if (e.clientX > rect.left + 4 && e.clientX < rect.right + 4) {
+              for (let j = 0; j < rowB.length; j++) {
+                const d = Math.abs(e.clientY - (rect.top + rowB[j]));
+                if (d > GRAB_PX && d <= 11 && (!best || d < best.d)) {
+                  best = { kind: "row", index: j, at: rect.top + rowB[j], d };
+                }
+              }
+            }
+            if (!best) return hideIns();
+            insCand = { ...best, tablePos: t.pos };
+            insTbl = t.el;
+            if (best.kind === "row") {
+              insCol.style.display = "none";
+              insRow.style.display = "block";
+              insRow.style.left = `${rect.left}px`;
+              insRow.style.top = `${best.at}px`;
+              insRow.style.width = `${rect.width}px`;
+            } else {
+              insRow.style.display = "none";
+              insCol.style.display = "block";
+              insCol.style.left = `${best.at}px`;
+              insCol.style.top = `${rect.top}px`;
+              insCol.style.height = `${rect.height}px`;
+            }
+          };
+
+          /** First doc pos of a cell node inside table row `rowIdx`. */
+          const rowCellPos = (tablePos: number, table: any, rowIdx: number) => {
+            let p = -1;
+            table.forEach((_r: any, off: number, i: number) => {
+              if (i === rowIdx) p = tablePos + 1 + off + 1;
+            });
+            return p;
+          };
+          /** Doc pos of a cell occupying grid column `col`. */
+          const colCellPos = (tablePos: number, table: any, map: TableMap, col: number) => {
+            let p = -1;
+            table.forEach((row: any, roff: number) =>
+              row.forEach((cell: any, coff: number) => {
+                if (p >= 0) return;
+                const rc = map.findCell(roff + 1 + coff);
+                const span = (cell.attrs.colspan as number) || 1;
+                if (rc.left <= col && col < rc.left + span) p = tablePos + 1 + roff + 1 + coff;
+              }),
+            );
+            return p;
+          };
+
+          const onInsDown = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const c = insCand;
+            if (!c) return;
+            const { state } = view;
+            const table = state.doc.nodeAt(c.tablePos);
+            if (table?.type.name !== "table") return;
+            const map = TableMap.get(table);
+            let cellPos = -1;
+            let cmd: typeof addRowBefore;
+            if (c.kind === "row") {
+              const append = c.index >= table.childCount;
+              cellPos = rowCellPos(c.tablePos, table, append ? table.childCount - 1 : c.index);
+              cmd = append ? addRowAfter : addRowBefore;
+            } else {
+              const append = c.index >= map.width;
+              cellPos = colCellPos(c.tablePos, table, map, append ? map.width - 1 : c.index);
+              cmd = append ? addColumnAfter : addColumnBefore;
+            }
+            if (cellPos < 0) return;
+            try {
+              view.dispatch(state.tr.setSelection(
+                TextSelection.near(state.doc.resolve(cellPos + 1), 1),
+              ).scrollIntoView());
+              cmd(view.state, view.dispatch);
+            } catch { /* schema refused the insertion point */ }
+            hideIns();
+          };
+
           const onMove = (e: MouseEvent) => {
             const hit = view.editable && !e.buttons ? tableAt(view, e) : null;
             if (hit) place(hit.el, hit.pos);
             else if (e.target !== grip && e.target !== corner) hide();
+            updateIns(e);
           };
 
           /** Shared move-table drag state, used by the grip. */
@@ -463,6 +633,7 @@ export const KxTableHandles = Extension.create({
           };
 
           const onScroll = () => {
+            hideIns();
             if (gripPos != null && gripTbl?.isConnected) {
               const r = gripTbl.getBoundingClientRect();
               grip.style.left = `${r.left - 18}px`;
@@ -476,9 +647,17 @@ export const KxTableHandles = Extension.create({
           window.addEventListener("scroll", onScroll, true);
           grip.addEventListener("mousedown", onGripDown);
           corner.addEventListener("mousedown", onCornerDown);
+          (insRow.querySelector(".kx-ins-btn") as HTMLElement).addEventListener("mousedown", onInsDown);
+          (insCol.querySelector(".kx-ins-btn") as HTMLElement).addEventListener("mousedown", onInsDown);
 
           return {
             update: () => {
+              // keep the ⊕ control alive across unrelated transactions
+              // (selection, paginator settle); hide only if its table vanished
+              if (insCand) {
+                const node = view.state.doc.nodeAt(insCand.tablePos);
+                if (node?.type.name !== "table" || !insTbl?.isConnected) hideIns();
+              }
               if (gripPos == null) return;
               const node = view.state.doc.nodeAt(gripPos);
               if (node?.type.name !== "table" || !gripTbl?.isConnected) hide();
@@ -489,6 +668,8 @@ export const KxTableHandles = Extension.create({
               window.removeEventListener("scroll", onScroll, true);
               grip.remove();
               corner.remove();
+              insRow.remove();
+              insCol.remove();
             },
           };
         },

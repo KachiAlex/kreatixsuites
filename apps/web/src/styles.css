@@ -234,6 +234,16 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .kx-tbl-grip:hover{border-color:var(--k-orange);color:var(--k-orange)}
 .kx-tbl-corner{position:fixed;z-index:60;width:9px;height:9px;background:#fff;border:1.5px solid #8A7F76;cursor:nwse-resize;user-select:none}
 .kx-tbl-corner:hover{background:var(--k-orange);border-color:var(--k-orange)}
+.kx-tbl-ins{position:fixed;z-index:61;pointer-events:none}
+.kx-tbl-ins .kx-ins-line{position:absolute;background:#4d9fff;border-radius:2px;opacity:.9}
+.kx-tbl-ins.row{height:0}
+.kx-tbl-ins.row .kx-ins-line{left:0;right:0;top:-1px;height:2px}
+.kx-tbl-ins.col{width:0}
+.kx-tbl-ins.col .kx-ins-line{top:0;bottom:0;left:-1px;width:2px}
+.kx-tbl-ins .kx-ins-btn{position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;border:1.5px solid #4d9fff;color:#4d9fff;font-size:14px;font-weight:600;line-height:1;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.kx-tbl-ins .kx-ins-btn:hover{background:#4d9fff;color:#fff}
+.kx-tbl-ins.row .kx-ins-btn{left:-9px;top:-9px}
+.kx-tbl-ins.col .kx-ins-btn{top:-9px;left:-9px}
 .ProseMirror td[data-bg],.ProseMirror th[data-bg]{background-clip:padding-box}
 
 /* table insert grid picker */
