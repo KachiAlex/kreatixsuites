@@ -47,7 +47,7 @@ import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { SortDialog } from "./SortDialog";
-import { CellsDialog } from "./CellsDialog";
+import { CellsDialog, SplitCellsDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -93,6 +93,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [tableProps, setTableProps] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [cellsDlg, setCellsDlg] = useState<"insert" | "delete" | null>(null);
+  const [splitDlg, setSplitDlg] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -799,6 +800,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { divider: true },
     { label: "Merge cells", onClick: () => ed.chain().focus().mergeCells().run() },
     { label: "Split cell", onClick: () => ed.chain().focus().splitCell().run() },
+    { label: "Split cells…", onClick: () => setSplitDlg(true) },
     { label: "Repeat header row", checked: !!ed.getAttributes("table").repeatHeader, onClick: () => ed.chain().focus().toggleHeaderRepeat().run() },
     { label: "Toggle header row cells", onClick: () => ed.chain().focus().toggleHeaderRow().run() },
     { divider: true },
@@ -1467,6 +1469,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {tableProps && editor && <TablePropertiesDialog editor={editor} onClose={() => setTableProps(false)} />}
       {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
       {cellsDlg && editor && <CellsDialog editor={editor} mode={cellsDlg} onClose={() => setCellsDlg(null)} />}
+      {splitDlg && editor && <SplitCellsDialog editor={editor} onClose={() => setSplitDlg(false)} />}
       {ctxMenu && <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
       {bordersPos && editor && (
         <div className="ctx-overlay" onClick={() => setBordersPos(null)} onContextMenu={(e) => { e.preventDefault(); setBordersPos(null); }}>

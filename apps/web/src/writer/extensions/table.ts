@@ -38,6 +38,8 @@ declare module "@tiptap/core" {
       deleteCellsUp: () => ReturnType;
       /** Move the selected row(s) one row up/down (Word Alt+Shift+↑/↓). */
       moveTableRow: (dir: "up" | "down") => ReturnType;
+      /** Split selected cells into cols×rows sub-cells (Word Split Cells). */
+      splitCellsGrid: (cols: number, rows: number) => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -532,6 +534,113 @@ export const KxTableCommands = Extension.create({
       deleteCellsUp:
         () =>
         ({ tr, state, dispatch }) => shiftColumnCells({ tr, state, dispatch }, "delete"),
+
+      /** Word's Split Cells: divide the selected cell(s) into `cols × rows`
+       *  sub-cells. Every covered grid column splits into `cols` and every
+       *  covered row into `rows`, with neighbours' colspan/rowspan grown to
+       *  match — so a plain 1×1 cell splits into a true sub-grid, and a
+       *  merged region subdivides its spans. Content stays top-left. */
+      splitCellsGrid:
+        (cols: number, rows: number) =>
+        ({ tr, state, dispatch }) => {
+          cols = Math.max(1, Math.min(64, Math.floor(cols) || 1));
+          rows = Math.max(1, Math.min(64, Math.floor(rows) || 1));
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          const sel = state.selection;
+          interface TCell { cell: PMNode; off: number; left: number; top: number; cs: number; rs: number }
+          const targets = new Map<number, TCell>();
+          const addTarget = (cell: PMNode, off: number) => {
+            if (targets.has(off)) return;
+            const rc = map_.findCell(off);
+            targets.set(off, {
+              cell, off, left: rc.left, top: rc.top,
+              cs: (cell.attrs.colspan as number) || 1, rs: (cell.attrs.rowspan as number) || 1,
+            });
+          };
+          const map_ = TableMap.get(table);
+          if (sel instanceof CellSelection) {
+            sel.forEachCell((n, pos) => addTarget(n, pos - tablePos - 1));
+          } else {
+            for (let dd = $from.depth; dd >= 0; dd--) {
+              const n = $from.node(dd).type.name;
+              if (n === "tableCell" || n === "tableHeader") {
+                addTarget($from.node(dd), $from.before(dd) - tablePos - 1);
+                break;
+              }
+            }
+          }
+          if (!targets.size) return false;
+          // no-op guard: every target already exactly cols×rows? still split.
+          if (!dispatch) return true;
+
+          const colMult = new Map<number, number>();
+          const rowMult = new Map<number, number>();
+          for (const t of targets.values()) {
+            for (let cj = t.left; cj < t.left + t.cs; cj++) colMult.set(cj, cols);
+            for (let ri = t.top; ri < t.top + t.rs; ri++) rowMult.set(ri, rows);
+          }
+          const targetCols = [...colMult.keys()];
+          const targetRows = [...rowMult.keys()];
+          const overlaps = (s: number, len: number, set: number[]) =>
+            set.filter((v) => v >= s && v < s + len).length;
+
+          const cellType = state.schema.nodes.tableCell;
+          const rowsArr: { node: PMNode; off: number }[] = [];
+          table.forEach((r, off) => rowsArr.push({ node: r, off }));
+          // grid index where a column belongs among a row's children
+          const insIdx = (i: number, c: number) => {
+            const { node, off } = rowsArr[i];
+            let k = node.childCount;
+            node.forEach((cell, coff, ci) => {
+              const rc = map_.findCell(off + 1 + coff);
+              if (rc.left + ((cell.attrs.colspan as number) || 1) > c && k === node.childCount) k = ci;
+            });
+            return k;
+          };
+
+          const newRows: PMNode[] = [];
+          for (let i = 0; i < rowsArr.length; i++) {
+            const { node: row, off } = rowsArr[i];
+            const mult = rowMult.get(i) ?? 1;
+            // covering targets (child of this row, or reaching down via rowspan)
+            const covering = [...targets.values()].filter((t) => t.top <= i && i < t.top + t.rs);
+            for (let k = 0; k < mult; k++) {
+              const items: { key: number; node: PMNode }[] = [];
+              if (k === 0) {
+                row.forEach((cell, coff, ci) => {
+                  const cellOff = off + 1 + coff;
+                  const rc = map_.findCell(cellOff);
+                  const cs = (cell.attrs.colspan as number) || 1;
+                  const rs = (cell.attrs.rowspan as number) || 1;
+                  if (targets.has(cellOff)) return;            // emitted as region below
+                  const attrs = { ...cell.attrs };
+                  const csOv = overlaps(rc.left, cs, targetCols);
+                  const rsOv = overlaps(rc.top, rs, targetRows);
+                  if (csOv) { attrs.colspan = cs + csOv * (cols - 1); attrs.colwidth = null; }
+                  if (rsOv) attrs.rowspan = rs + rsOv * (rows - 1);
+                  items.push({ key: ci, node: cell.type.create(attrs, cell.content) });
+                });
+              }
+              for (const t of covering) {
+                const key = insIdx(i, t.left);
+                for (let j = 0; j < t.cs * cols; j++) {
+                  const node = k === 0 && j === 0
+                    ? t.cell.type.create({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null }, t.cell.content)
+                    : cellType.createAndFill({ ...t.cell.attrs, colspan: 1, rowspan: 1, colwidth: null })!;
+                  items.push({ key: key + j * 0.001 + 0.5, node });
+                }
+              }
+              items.sort((a, b) => a.key - b.key);
+              newRows.push(row.type.create(row.attrs, items.map((it) => it.node)));
+            }
+          }
+          tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
+          return true;
+        },
 
       sortTableRows:
         (dir = "asc", opts) =>

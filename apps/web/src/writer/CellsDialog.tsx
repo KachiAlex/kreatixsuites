@@ -16,6 +16,38 @@ const DELETE_OPTS: { k: string; label: string }[] = [
   { k: "column", label: "Delete entire column" },
 ];
 
+/** Word-style Split Cells dialog — columns × rows counts. */
+export function SplitCellsDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
+  const [cols, setCols] = useState(2);
+  const [rows, setRows] = useState(1);
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card tp-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Split cells">
+        <h3>Split cells</h3>
+        <div className="tp-body">
+          <div className="ps-row">
+            <label className="ps-field"><span>Number of columns</span>
+              <input type="number" min={1} max={32} value={cols}
+                onChange={(e) => setCols(Math.max(1, Math.min(32, Number(e.target.value) || 1)))} />
+            </label>
+          </div>
+          <div className="ps-row">
+            <label className="ps-field"><span>Number of rows</span>
+              <input type="number" min={1} max={32} value={rows}
+                onChange={(e) => setRows(Math.max(1, Math.min(32, Number(e.target.value) || 1)))} />
+            </label>
+          </div>
+        </div>
+        <div className="ps-actions">
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm"
+            onClick={() => { editor.chain().focus().splitCellsGrid(cols, rows).run(); onClose(); }}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Word-style Insert/Delete Cells dialog. Under ProseMirror's uniform grid,
  *  horizontal shifts degenerate to column ops (rows can't be ragged);
  *  vertical shifts cascade cells through the column, extending rowspans. */
