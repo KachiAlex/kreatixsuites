@@ -41,6 +41,9 @@ import { Field } from "./extensions/field";
 import { Bookmark } from "./extensions/bookmark";
 import { Tof } from "./extensions/tof";
 import { CaptionDialog, BookmarkDialog, CrossRefDialog } from "./ReferenceDialogs";
+import { docVocabulary, suggest, synonyms } from "./proofing";
+import { ReadabilityDialog, AccessibilityDialog } from "./ToolDialogs";
+import { Spellcheck, SPELL_KEY } from "./extensions/spellcheck";
 import { Embed } from "./extensions/embed";
 import { RichImage } from "./extensions/image";
 import { LinkPopover } from "./LinkPopover";
@@ -95,6 +98,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [query, setQuery] = useState("");
   const [replace, setReplace] = useState("");
   const [matchCase, setMatchCase] = useState(false);
+  const [findWord, setFindWord] = useState(false);
+  const [findWild, setFindWild] = useState(false);
+  const [readDlg, setReadDlg] = useState(false);
+  const [a11yDlg, setA11yDlg] = useState(false);
+  const [navTab, setNavTab] = useState<"headings" | "results">("headings");
+  const [dragOver, setDragOver] = useState<number | null>(null);
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [specialChars, setSpecialChars] = useState(false);
@@ -195,6 +204,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       Field,
       Bookmark,
       Tof,
+      Spellcheck,
       Embed,
       PaginationPlus.configure({
         ...PAGE_SIZES.LETTER,
@@ -586,6 +596,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       paged: (ctx.editor?.storage.PaginationPlus?.enabled as boolean) ?? false,
       trackMode: (ctx.editor?.storage as unknown as Record<string, { mode?: string }> | undefined)?.trackChanges?.mode ?? "edit",
       showMarks: (ctx.editor?.storage.KxParaFormat?.showMarks as boolean) ?? false,
+      spellOn: (ctx.editor?.storage.spellcheck?.enabled as boolean) ?? true,
     }),
   });
 
@@ -600,9 +611,26 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const matches = useMemo(() => {
     if (!editor || !query) return [] as { from: number; to: number }[];
     const out: { from: number; to: number }[] = [];
+    // Build the matcher: plain substring, whole-word, or wildcard (* ?)
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let re: RegExp | null = null;
+    if (findWild) {
+      try {
+        re = new RegExp(query.split("*").map((p) => p.split("?").map(esc).join("[\\s\\S]")).join("[\\s\\S]*"),
+          matchCase ? "g" : "gi");
+      } catch { re = null; }
+    } else if (findWord) {
+      re = new RegExp(`\\b${esc(query)}\\b`, matchCase ? "g" : "gi");
+    }
     const needle = matchCase ? query : query.toLowerCase();
     editor.state.doc.descendants((node, pos) => {
       if (!node.isText || !node.text) return;
+      if (re) {
+        for (const m of node.text.matchAll(re)) {
+          if (m[0]) out.push({ from: pos + (m.index ?? 0), to: pos + (m.index ?? 0) + m[0].length });
+        }
+        return;
+      }
       const hay = matchCase ? node.text : node.text.toLowerCase();
       let i = hay.indexOf(needle);
       while (i !== -1) {
@@ -611,7 +639,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       }
     });
     return out;
-  }, [editor, query, matchCase, state]);
+  }, [editor, query, matchCase, findWord, findWild, state]);
 
   const jump = useCallback((dir: 1 | -1) => {
     if (!editor || !matches.length) return;
@@ -918,6 +946,29 @@ export function WriterEditor({ item, initialDoc, permission }: {
     }).run();
   };
 
+  // Word nav-pane drag: move a heading + its section (until the next same-or-
+  // higher-level heading) to before the drop target heading.
+  const moveHeading = useCallback((fromIdx: number, toIdx: number) => {
+    const ed = editorRef.current;
+    if (!ed || fromIdx === toIdx) return;
+    const hs = outline;
+    const src = hs[fromIdx], dst = hs[toIdx];
+    if (!src || !dst) return;
+    const doc = ed.state.doc;
+    let end = doc.content.size;
+    for (let i = fromIdx + 1; i < hs.length; i++) {
+      if (hs[i].level <= src.level) { end = hs[i].pos; break; }
+    }
+    if (dst.pos >= src.pos && dst.pos < end) return; // dropped inside own section
+    const slice = doc.slice(src.pos, end);
+    ed.chain().focus().command(({ tr }) => {
+      tr.delete(src.pos, end);
+      const insPos = dst.pos > end ? dst.pos - (end - src.pos) : dst.pos;
+      tr.insert(insPos, slice.content);
+      return true;
+    }).run();
+  }, [outline]);
+
   // ---- clipboard + file ops used by menus and shortcuts ----
   const doCopy = useCallback(async (cut: boolean) => {
     if (!editor) return;
@@ -1189,6 +1240,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
     ];
     const toolItems: MenuItem[] = [
       { label: "Word count", onClick: () => setWordCountOpen(true) },
+      { label: "Readability statistics", onClick: () => setReadDlg(true) },
+      { label: "Check accessibility", onClick: () => setA11yDlg(true) },
+      { label: "Spellcheck squiggles", checked: state?.spellOn, onClick: () => ed.chain().focus().toggleSpellcheck().run() },
+      { divider: true },
       { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
       ...(canMutate ? [
         { label: "Kreatix AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
@@ -1573,6 +1628,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
             <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Aa
           </label>
+          <label title="Whole words only" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={findWord} disabled={findWild} onChange={(e) => setFindWord(e.target.checked)} /> word
+          </label>
+          <label title="Wildcards: * any run, ? any char" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={findWild} onChange={(e) => setFindWild(e.target.checked)} /> *?
+          </label>
           <span style={{ fontSize: 11, color: "#A19A95" }}>{matches.length} match{matches.length === 1 ? "" : "es"}</span>
           <button className="rb" onClick={() => jump(-1)}>↑</button>
           <button className="rb" onClick={() => jump(1)}>↓</button>
@@ -1593,12 +1654,45 @@ export function WriterEditor({ item, initialDoc, permission }: {
       <div className="doc-canvas" style={{ marginRight: panel !== "none" ? 330 : 0, marginLeft: panel === "outline" ? 240 : 0 }}>
         {panel === "outline" && (
           <div className="outline-pane">
-            <div className="outline-head">Outline</div>
-            {outline.length === 0 && <div className="outline-empty">Headings you add will appear here</div>}
-            {outline.map((h, i) => (
-              <button key={i} className="outline-item" style={{ paddingLeft: 8 + h.level * 12 }}
-                onClick={() => jumpTo(h.pos)}>{h.text}</button>
-            ))}
+            <div className="nav-tabs">
+              <button className={`nav-tab ${navTab === "headings" ? "on" : ""}`} onClick={() => setNavTab("headings")}>Headings</button>
+              <button className={`nav-tab ${navTab === "results" ? "on" : ""}`} onClick={() => setNavTab("results")}>Results{matches.length ? ` (${matches.length})` : ""}</button>
+            </div>
+            {navTab === "headings" ? (
+              <>
+                <div className="outline-head">Headings <span className="outline-hint">drag to reorder</span></div>
+                {outline.length === 0 && <div className="outline-empty">Headings you add will appear here</div>}
+                {outline.map((h, i) => (
+                  <button key={`${h.pos}-${i}`} className={`outline-item ${dragOver === i ? "drop" : ""}`}
+                    style={{ paddingLeft: 8 + h.level * 12 }}
+                    draggable={canMutate}
+                    onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); e.dataTransfer.effectAllowed = "move"; }}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(i); }}
+                    onDragLeave={() => setDragOver((d) => (d === i ? null : d))}
+                    onDrop={(e) => {
+                      e.preventDefault(); setDragOver(null);
+                      const src = Number(e.dataTransfer.getData("text/plain"));
+                      if (Number.isFinite(src)) moveHeading(src, i);
+                    }}
+                    onClick={() => jumpTo(h.pos)}>{h.text}</button>
+                ))}
+              </>
+            ) : (
+              <>
+                <div className="outline-head">{matches.length} result{matches.length === 1 ? "" : "s"} for “{query}”</div>
+                {!query && <div className="outline-empty">Use Find (Ctrl+F) to search</div>}
+                {query && matches.length === 0 && <div className="outline-empty">No matches</div>}
+                {matches.map((m, i) => {
+                  const snippet = editor?.state.doc.textBetween(Math.max(0, m.from - 24), Math.min(editor.state.doc.content.size, m.to + 24), " ", " ") ?? "";
+                  return (
+                    <button key={`${m.from}-${i}`} className="outline-item result"
+                      onClick={() => { jumpTo(m.from); setFindOpen(true); }}>
+                      {i + 1}. …{snippet}…
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
@@ -1648,6 +1742,30 @@ export function WriterEditor({ item, initialDoc, permission }: {
               });
               return;
             }
+            // misspelled word → suggestions + dictionary actions
+            const miss = target.closest<HTMLElement>(".kx-spell");
+            if (miss) {
+              e.preventDefault();
+              const pos = editor.view.posAtCoords(coords);
+              const word = miss.dataset.word ?? "";
+              const hit = pos && (SPELL_KEY.getState(editor.state) ?? []).find((x) => pos.pos >= x.from && pos.pos <= x.to);
+              const vocab = docVocabulary(editor.state.doc.textContent);
+              const sugg = suggest(word, vocab, 5);
+              const items: MenuItem[] = [
+                ...sugg.map((s) => ({
+                  label: s, onClick: () => {
+                    if (!hit) return;
+                    editor.chain().focus().insertContentAt({ from: hit.from, to: hit.to }, s).run();
+                  },
+                })),
+                ...(sugg.length ? [] : [{ label: "(no suggestions)", onClick: () => {} }]),
+                { divider: true },
+                { label: `Add "${word}" to dictionary`, onClick: () => editor.chain().learnWord(word).run() },
+                { label: "Ignore all", onClick: () => editor.chain().ignoreWord(word).run() },
+              ];
+              setCtxMenu({ x: e.clientX, y: e.clientY, items });
+              return;
+            }
             const anchor = target.closest<HTMLAnchorElement>(".ProseMirror a");
             if (anchor) {
               e.preventDefault();
@@ -1671,7 +1789,39 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 { label: "Remove link", onClick: () => editor.chain().focus().unsetLink().run() },
               );
               setCtxMenu({ x: e.clientX, y: e.clientY, items });
+              return;
             }
+            // plain text → synonyms / paragraph / caption shortcuts
+            const pos = editor.view.posAtCoords(coords);
+            if (!pos || !target.closest(".ProseMirror")) return;
+            e.preventDefault();
+            const $p = editor.state.doc.resolve(pos.pos);
+            const around = $p.parent.textBetween(Math.max(0, $p.parentOffset - 40), Math.min($p.parent.content.size, $p.parentOffset + 40), undefined, " ");
+            const caret = $p.parentOffset <= 40 ? $p.parentOffset : 40;
+            const wm = /[A-Za-z'’-]+/g; let word = "";
+            for (const m of around.matchAll(wm)) {
+              const s = m.index ?? 0;
+              if (caret >= s && caret <= s + m[0].length) { word = m[0]; break; }
+            }
+            const syns = word ? synonyms(word) : [];
+            const items: MenuItem[] = [
+              ...(syns.length ? [{
+                label: `Synonyms for "${word}"`, submenu: syns.map((s) => ({
+                  label: s, onClick: () => {
+                    const from = pos.pos - (around.slice(0, caret).match(/[A-Za-z'’-]*$/)?.[0].length ?? 0);
+                    const to = pos.pos + (around.slice(caret).match(/^[A-Za-z'’-]*/)?.[0].length ?? 0);
+                    editor.chain().focus().insertContentAt({ from, to }, s).run();
+                  },
+                })),
+              }] : []),
+              { label: "Find in document", onClick: () => { if (word) setQuery(word); setFindOpen(true); } },
+              ...(canMutate ? [
+                { divider: true } as MenuItem,
+                { label: "Paragraph…", onClick: () => setParaDlg(true) },
+                { label: "Insert caption…", onClick: () => setCaptionDlg(true) },
+              ] : []),
+            ];
+            setCtxMenu({ x: e.clientX, y: e.clientY, items });
           }}>
             <EditorContent editor={editor} />
           </div>
@@ -1722,6 +1872,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
         <ParagraphDialog editor={editor} onClose={() => setParaDlg(false)} />
       )}
       {captionDlg && editor && <CaptionDialog editor={editor} onClose={() => setCaptionDlg(false)} />}
+      {readDlg && editor && <ReadabilityDialog editor={editor} onClose={() => setReadDlg(false)} />}
+      {a11yDlg && editor && <AccessibilityDialog editor={editor} onClose={() => setA11yDlg(false)} />}
       {bookmarkDlg && editor && <BookmarkDialog editor={editor} onClose={() => setBookmarkDlg(false)} />}
       {xrefDlg && editor && <CrossRefDialog editor={editor} onClose={() => setXrefDlg(false)} />}
       {sepDlg && editor && (

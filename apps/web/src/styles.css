@@ -879,6 +879,21 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .kx-field:hover{background:rgba(120,120,120,.22)}
 .kx-bookmark{box-shadow:inset 0 -1px 0 #B9B2AC}
 .kx-caption-para{color:#4E4945;font-size:12.5px}
+.kx-spell{text-decoration:underline wavy #D64545;text-decoration-skip-ink:none;text-underline-offset:2.5px}
+.nav-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:0 6px 8px}
+.nav-tab{border:0;background:none;font-size:11px;font-weight:700;color:#A19A95;padding:6px 10px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.nav-tab.on{color:var(--k-orange);border-bottom-color:var(--k-orange)}
+.outline-hint{font-weight:400;text-transform:none;letter-spacing:0;color:#C4BCB5;font-size:9px}
+.outline-item.drop{box-shadow:inset 0 2px 0 var(--k-orange)}
+.outline-item.result{font-size:11px;color:#5A5450;white-space:normal;line-height:1.35}
+.read-hero{display:flex;align-items:center;gap:14px;margin-bottom:12px}
+.read-score{font-size:30px;font-weight:800;color:var(--k-orange);min-width:64px;text-align:center}
+.read-name{font-size:13px;font-weight:700;color:#3A3633}
+.read-sub{font-size:11px;color:#8B837D}
+.read-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+.read-table td{padding:5px 8px;border-bottom:1px solid var(--line)}
+.read-table td:last-child{text-align:right;font-weight:600}
+.a11y-issue{font-size:12px;color:#5A5450;padding:3px 0 3px 8px}
 .doc-toc{border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:16px 0;background:#FBF9F7}
 .toc-item{font-size:13px;padding:2px 0;color:#3A3633}
 .toc-empty{color:#A19A95;font-style:italic}
