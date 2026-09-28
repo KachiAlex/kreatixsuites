@@ -149,6 +149,38 @@ export const KxTable = BaseTable.extend({
         parseHTML: (el: HTMLElement) => el.getAttribute("data-repeat-header") === "true",
         renderHTML: (a: Record<string, unknown>) => a.repeatHeader ? { "data-repeat-header": "true" } : {},
       },
+      // Word "Table Style Options" — composable emphasis/banding flags that
+      // layer on top of a preset via CSS (explicit cell shading still wins)
+      optHeaderRow: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-hdr") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optHeaderRow ? { "data-opt-hdr": "true" } : {},
+      },
+      optTotalRow: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-total") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optTotalRow ? { "data-opt-total": "true" } : {},
+      },
+      optFirstCol: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-fcol") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optFirstCol ? { "data-opt-fcol": "true" } : {},
+      },
+      optLastCol: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-lcol") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optLastCol ? { "data-opt-lcol": "true" } : {},
+      },
+      optBandedRows: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-brows") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optBandedRows ? { "data-opt-brows": "true" } : {},
+      },
+      optBandedCols: {
+        default: false,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-bcols") === "true",
+        renderHTML: (a: Record<string, unknown>) => a.optBandedCols ? { "data-opt-bcols": "true" } : {},
+      },
     };
   },
 });

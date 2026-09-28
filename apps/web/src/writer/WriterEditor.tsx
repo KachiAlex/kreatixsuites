@@ -833,6 +833,20 @@ export function WriterEditor({ item, initialDoc, permission }: {
         { label: "Outline only", onClick: () => ed.chain().focus().applyTablePreset("outline").run() },
       ],
     },
+    {
+      label: "Style options", submenu: ([
+        ["optHeaderRow", "Header row"],
+        ["optTotalRow", "Total row"],
+        ["optFirstCol", "First column"],
+        ["optLastCol", "Last column"],
+        ["optBandedRows", "Banded rows"],
+        ["optBandedCols", "Banded columns"],
+      ] as const).map(([attr, label]) => ({
+        label,
+        checked: !!ed.getAttributes("table")[attr],
+        onClick: () => ed.chain().focus().setTableAttributes({ [attr]: !ed.getAttributes("table")[attr] }).run(),
+      })),
+    },
     { divider: true },
     { label: "Split table", onClick: () => ed.chain().focus().splitTable().run() },
     { label: "Convert to text", onClick: () => ed.chain().focus().convertTableToText("\t").run() },

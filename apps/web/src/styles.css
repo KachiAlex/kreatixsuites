@@ -245,6 +245,20 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .kx-tbl-ins.row .kx-ins-btn{left:-9px;top:-9px}
 .kx-tbl-ins.col .kx-ins-btn{top:-9px;left:-9px}
 .ProseMirror td[data-bg],.ProseMirror th[data-bg]{background-clip:padding-box}
+/* Word Table Style Options — composable emphasis + banding; explicit cell
+   shading (data-bg) always wins over option shading */
+.ProseMirror table[data-opt-hdr] tbody>tr:first-child td,
+.ProseMirror table[data-opt-hdr] tbody>tr:first-child th{font-weight:700}
+.ProseMirror table[data-opt-hdr] tbody>tr:first-child td:not([data-bg]){background:#EFE9E3}
+.ProseMirror table[data-opt-total] tbody>tr:last-child td{font-weight:600;border-top-width:2px}
+.ProseMirror table[data-opt-fcol] tbody td:first-child,
+.ProseMirror table[data-opt-fcol] tbody th:first-child{font-weight:600}
+.ProseMirror table[data-opt-lcol] tbody td:last-child,
+.ProseMirror table[data-opt-lcol] tbody th:last-child{font-weight:600}
+.ProseMirror table[data-opt-brows] tbody>tr:nth-child(even) td:not([data-bg]),
+.ProseMirror table[data-opt-brows] tbody>tr:nth-child(even) th:not([data-bg]){background:rgba(0,0,0,.038)}
+.ProseMirror table[data-opt-bcols] tbody td:nth-child(even):not([data-bg]),
+.ProseMirror table[data-opt-bcols] tbody th:nth-child(even):not([data-bg]){background:rgba(0,0,0,.038)}
 
 /* table insert grid picker */
 .tgp{padding:10px 12px;min-width:0}

@@ -715,6 +715,44 @@ export const KxTableHandles = Extension.create({
             } else hide();
           };
 
+          // The resizable-table NodeView keeps its <table> element across
+          // updates, so attrs' renderHTML never re-emits. Sync the
+          // data-attrs/CSS-vars that drive styling directly onto the DOM.
+          const BOOL_ATTRS: [string, string][] = [
+            ["repeatHeader", "data-repeat-header"],
+            ["optHeaderRow", "data-opt-hdr"],
+            ["optTotalRow", "data-opt-total"],
+            ["optFirstCol", "data-opt-fcol"],
+            ["optLastCol", "data-opt-lcol"],
+            ["optBandedRows", "data-opt-brows"],
+            ["optBandedCols", "data-opt-bcols"],
+          ];
+          const STR_ATTRS: [string, string][] = [
+            ["align", "data-align"],
+            ["widthMode", "data-width-mode"],
+          ];
+          const syncTableAttrs = () => {
+            view.state.doc.descendants((node, pos) => {
+              if (node.type.name !== "table") return true;
+              const dom = view.nodeDOM(pos) as HTMLElement | null;
+              const tbl = (dom?.tagName === "TABLE" ? dom : dom?.querySelector?.("table")) as HTMLElement | null;
+              if (!tbl) return true;
+              for (const [k, dn] of BOOL_ATTRS) {
+                if (node.attrs[k]) tbl.setAttribute(dn, "true");
+                else tbl.removeAttribute(dn);
+              }
+              for (const [k, dn] of STR_ATTRS) {
+                const v = node.attrs[k] as string | null;
+                if (v) tbl.setAttribute(dn, v);
+                else tbl.removeAttribute(dn);
+              }
+              tbl.style.setProperty("--twidth", node.attrs.widthPct ? `${node.attrs.widthPct}%` : "");
+              tbl.style.setProperty("--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : "");
+              return true;
+            });
+          };
+          setTimeout(syncTableAttrs, 0);
+
           document.addEventListener("mousemove", onMove, true);
           document.addEventListener("dblclick", onDblClick, true);
           window.addEventListener("scroll", onScroll, true);
@@ -725,6 +763,7 @@ export const KxTableHandles = Extension.create({
 
           return {
             update: () => {
+              syncTableAttrs();
               // keep the ⊕ control alive across unrelated transactions
               // (selection, paginator settle); hide only if its table vanished
               if (insCand) {
