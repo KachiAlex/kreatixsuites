@@ -748,6 +748,21 @@ export const KxTableHandles = Extension.create({
               }
               tbl.style.setProperty("--twidth", node.attrs.widthPct ? `${node.attrs.widthPct}%` : "");
               tbl.style.setProperty("--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : "");
+              const cm = node.attrs.cellMargins as { top?: number; right?: number; bottom?: number; left?: number } | null;
+              tbl.style.setProperty("--kx-cmt", cm?.top != null ? `${cm.top}px` : "");
+              tbl.style.setProperty("--kx-cmr", cm?.right != null ? `${cm.right}px` : "");
+              tbl.style.setProperty("--kx-cmb", cm?.bottom != null ? `${cm.bottom}px` : "");
+              tbl.style.setProperty("--kx-cml", cm?.left != null ? `${cm.left}px` : "");
+              const cs = node.attrs.cellSpacing as number | null;
+              if (cs != null) {
+                tbl.setAttribute("data-cell-spacing", String(cs));
+                tbl.style.borderSpacing = `${cs}px`;
+                tbl.style.borderCollapse = "separate";
+              } else {
+                tbl.removeAttribute("data-cell-spacing");
+                tbl.style.borderSpacing = "";
+                tbl.style.borderCollapse = "";
+              }
               return true;
             });
           };

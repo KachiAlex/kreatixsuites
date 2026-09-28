@@ -191,6 +191,27 @@ export const KxTable = BaseTable.extend({
         parseHTML: (el: HTMLElement) => el.getAttribute("data-opt-bcols") === "true",
         renderHTML: (a: Record<string, unknown>) => a.optBandedCols ? { "data-opt-bcols": "true" } : {},
       },
+      // Word Table Options: table-wide default cell margins (px per side)
+      // and spacing between cells (px). Per-cell `padding` overrides margins.
+      cellMargins: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const raw = el.getAttribute("data-cell-margins");
+          if (!raw) return null;
+          try { return JSON.parse(raw); } catch { return null; }
+        },
+        renderHTML: (a: Record<string, unknown>) =>
+          a.cellMargins ? { "data-cell-margins": JSON.stringify(a.cellMargins) } : {},
+      },
+      cellSpacing: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const s = el.getAttribute("data-cell-spacing");
+          return s ? parseInt(s) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) =>
+          a.cellSpacing ? { "data-cell-spacing": String(a.cellSpacing) } : {},
+      },
     };
   },
 });

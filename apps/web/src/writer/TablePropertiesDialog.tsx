@@ -38,6 +38,13 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
   const [widthPct, setWidthPct] = useState<number>((ta.widthPct as number) ?? 100);
   const [indent, setIndent] = useState((ta.indent as number) ?? 0);
   const [repeatHeader, setRepeatHeader] = useState(!!ta.repeatHeader);
+  const cm = (ta.cellMargins as Record<string, number> | null) ?? null;
+  const [mTop, setMTop] = useState<number | "">(cm?.top ?? "");
+  const [mRight, setMRight] = useState<number | "">(cm?.right ?? "");
+  const [mBottom, setMBottom] = useState<number | "">(cm?.bottom ?? "");
+  const [mLeft, setMLeft] = useState<number | "">(cm?.left ?? "");
+  const [spacingOn, setSpacingOn] = useState(ta.cellSpacing != null);
+  const [spacing, setSpacing] = useState<number>((ta.cellSpacing as number) ?? 4);
   const [rowH, setRowH] = useState<number | "">((ra.height as number) ?? "");
   const [rowMode, setRowMode] = useState((ra.heightMode as string) ?? "atLeast");
   const [cantSplit, setCantSplit] = useState(!!ra.cantSplit);
@@ -53,10 +60,14 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
 
   const apply = () => {
     const chain = editor.chain().focus();
+    const margins = { top: mTop === "" ? undefined : mTop, right: mRight === "" ? undefined : mRight,
+      bottom: mBottom === "" ? undefined : mBottom, left: mLeft === "" ? undefined : mLeft };
     chain.setTableAttributes({
       align: align === "left" ? null : align,
       widthMode, widthPct: widthMode === "pct" ? widthPct : null,
       indent, repeatHeader,
+      cellMargins: Object.values(margins).some((v) => v !== undefined) ? margins : null,
+      cellSpacing: spacingOn ? spacing : null,
     });
     if (rowH !== "") chain.setRowHeight(Number(rowH), rowMode as "atLeast" | "exact");
     if (cantSplit) chain.command(({ tr, state: s }) => {
@@ -123,6 +134,26 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
                 <input type="checkbox" checked={repeatHeader} onChange={(e) => setRepeatHeader(e.target.checked)} />
                 Repeat header row at the top of each page
               </label>
+            </div>
+            <div className="ps-row" style={{ flexWrap: "wrap" }}>
+              <span style={{ width: "100%", fontSize: 11, fontWeight: 700, color: "#6B645E" }}>Default cell margins (px)</span>
+              {([
+                ["Top", mTop, setMTop], ["Left", mLeft, setMLeft],
+                ["Bottom", mBottom, setMBottom], ["Right", mRight, setMRight],
+              ] as const).map(([lbl, v, set]) => field(lbl, (
+                <input type="number" min={0} value={v} placeholder="auto" key={lbl}
+                  onChange={(e) => (set as (x: number | "") => void)(e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))} />
+              )))}
+            </div>
+            <div className="ps-row">
+              <label className="ps-check">
+                <input type="checkbox" checked={spacingOn} onChange={(e) => setSpacingOn(e.target.checked)} />
+                Allow spacing between cells
+              </label>
+              {spacingOn && field("Spacing (px)", (
+                <input type="number" min={0} max={40} value={spacing}
+                  onChange={(e) => setSpacing(Math.max(0, Math.min(40, Number(e.target.value) || 0)))} />
+              ))}
             </div>
           </div>
         )}
