@@ -176,6 +176,18 @@ export const KxTable = BaseTable.extend({
         parseHTML: (el: HTMLElement) => Math.round(parseInt(el.style.marginLeft || "0") / 24),
         renderHTML: (a: Record<string, unknown>) => a.indent ? { style: `--tindent:${(a.indent as number) * 24}px` } : {},
       },
+      // pixel-precise left offset written by outer-edge drags (supersedes the
+      // coarse `indent` steps; cleared when the dialog sets indent explicitly)
+      indentPx: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-indent-px");
+          return v != null ? parseInt(v) : null;
+        },
+        renderHTML: (a: Record<string, unknown>) => a.indentPx != null
+          ? { "data-indent-px": String(a.indentPx), style: `--tindent:${a.indentPx}px` }
+          : {},
+      },
       repeatHeader: {
         default: false,
         parseHTML: (el: HTMLElement) => el.getAttribute("data-repeat-header") === "true",

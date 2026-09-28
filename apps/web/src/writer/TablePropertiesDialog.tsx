@@ -76,7 +76,9 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
       widthPct: widthUnit === "pct" ? widthVal : null,
       widthAbs: widthUnit !== "pct" ? widthVal : null,
       widthAbsUnit: widthUnit !== "pct" ? widthUnit : null,
-      indent, repeatHeader,
+      // keep drag-set pixel indent unless the user changed the steps value
+      indent, indentPx: indent === ((ta.indent as number) ?? 0) ? ta.indentPx : null,
+      repeatHeader,
       cellMargins: Object.values(margins).some((v) => v !== undefined) ? margins : null,
       cellSpacing: spacingOn ? spacing : null,
       altText: altText.trim() || null,

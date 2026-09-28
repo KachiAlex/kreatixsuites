@@ -117,6 +117,30 @@ const col0BorderHit = (view: EditorView, ev: MouseEvent) => {
   return { ctx, width: rect.width, startX: ev.clientX };
 };
 
+/** Outer-edge hit: left edge of a first-column cell or right edge of a
+ *  last-column cell. The lib only writes colwidth — under the page's
+ *  100% table width the outer edge itself can never move, so these are
+ *  intercepted (capture phase) and resized via the table's width/indent. */
+const outerEdgeHit = (view: EditorView, ev: MouseEvent) => {
+  const cell = (ev.target as HTMLElement | null)?.closest?.("td,th") as HTMLElement | null;
+  if (!cell || !view.dom.contains(cell)) return null;
+  const rect = cell.getBoundingClientRect();
+  const ctx = cellCtx(view, ev, rect);
+  if (!ctx) return null;
+  const cellNode = view.state.doc.nodeAt(ctx.cellStart);
+  const span = (cellNode?.attrs.colspan as number) || 1;
+  const tbody = cell.closest("tbody") as HTMLElement | null;
+  if (!tbody) return null;
+  if (Math.abs(ev.clientX - rect.left) <= GRAB_PX && ctx.colIdx === 0) {
+    return { side: "left" as const, ctx, rect, tbody, span };
+  }
+  if (Math.abs(ev.clientX - rect.right) <= GRAB_PX
+    && ctx.colIdx + span - 1 === ctx.map.width - 1) {
+    return { side: "right" as const, ctx, rect, tbody, span };
+  }
+  return null;
+};
+
 /** Doc position of the Nth row inside a table. */
 const setColWidth = (tr: any, tablePos: number, table: any, map: TableMap, colIdx: number, width: number) => {
   table.forEach((row: any, off: number) => {
@@ -612,34 +636,6 @@ export const KxTableHandles = Extension.create({
                 return true;
               }
 
-              const cHit = col0BorderHit(view, event);
-              if (cHit) {
-                event.preventDefault();
-                event.stopPropagation();
-                const guide = mkGuide("kx-col-guide");
-                guide.style.left = `${event.clientX}px`;
-                let dx = 0;
-                const move = (e: MouseEvent) => {
-                  dx = e.clientX - cHit.startX;
-                  guide.style.left = `${e.clientX}px`;
-                };
-                const up = () => {
-                  window.removeEventListener("mousemove", move, true);
-                  guide.remove();
-                  view.dom.classList.remove("kx-colgrab");
-                  const width = Math.max(24, cHit.width + dx / zoom);
-                  const { state } = view;
-                  const table = state.doc.nodeAt(cHit.ctx.tablePos);
-                  if (table?.type.name === "table") {
-                    const tr = state.tr;
-                    setColWidth(tr, cHit.ctx.tablePos, table, cHit.ctx.map, 0, width);
-                    view.dispatch(tr);
-                  }
-                };
-                window.addEventListener("mousemove", move, true);
-                window.addEventListener("mouseup", up, { once: true, capture: true });
-                return true;
-              }
             },
 
             mouseleave: (view) => {
@@ -1042,6 +1038,73 @@ export const KxTableHandles = Extension.create({
             }
           };
 
+          // Outer table edges (Word): the lib's columnResizing only writes
+          // colwidth — under the page-pinned table width the outer edge can
+          // never move. Intercept in capture phase and resize the TABLE:
+          // right edge → widthAbs follows the pointer (left edge fixed);
+          // left edge → table shifts via indentPx (right edge fixed) and
+          // column 0 absorbs the delta so interior boundaries stay put.
+          const onEdgeDown = (e: MouseEvent) => {
+            if (tableTool || !view.editable || e.button !== 0) return;
+            const hit = outerEdgeHit(view, e);
+            if (!hit) return;
+            const table0 = view.state.doc.nodeAt(hit.ctx.tablePos);
+            if (table0?.type.name !== "table") return;
+            e.preventDefault();
+            e.stopPropagation();
+            const zoom = zoomOf(view);
+            const { ctx, tbody, span, side } = hit;
+            const gridCol = side === "left" ? 0 : ctx.colIdx + span - 1;
+            const cols0 = measureColumns(tbody, ctx.map, table0).map((w) => w / zoom);
+            const tRect = tbody.getBoundingClientRect();
+            const w0 = tRect.width / zoom;
+            // content-left for indentPx math
+            const cs = getComputedStyle(view.dom);
+            const contentL = view.dom.getBoundingClientRect().left
+              + (parseFloat(cs.paddingLeft) || 0);
+            const indentPx0 = (table0.attrs.indentPx as number | null)
+              ?? (tRect.left - contentL) / zoom;
+            const guide = mkGuide("kx-col-guide");
+            guide.style.left = `${e.clientX}px`;
+            let dx = 0;
+            const move = (ev2: MouseEvent) => {
+              dx = ev2.clientX - e.clientX;
+              guide.style.left = `${ev2.clientX}px`;
+            };
+            const up = () => {
+              window.removeEventListener("mousemove", move, true);
+              guide.remove();
+              view.dom.classList.remove("kx-colgrab");
+              const d = dx / zoom;
+              const { state } = view;
+              const table = state.doc.nodeAt(ctx.tablePos);
+              if (table?.type.name !== "table") return;
+              const tr = state.tr;
+              // pin the aligned table's current left edge via indentPx
+              const attrs: Record<string, unknown> = {
+                ...table.attrs, widthMode: "fixed", widthAbsUnit: "px", widthPct: null,
+              };
+              if (side === "right") {
+                const newColW = Math.max(24, cols0[gridCol] + d);
+                const delta = newColW - cols0[gridCol];
+                attrs.widthAbs = Math.round(Math.max(40, w0 + delta));
+                if (table.attrs.align) { attrs.align = null; attrs.indentPx = Math.round(indentPx0); }
+                setColWidth(tr, ctx.tablePos, table, ctx.map, gridCol, newColW);
+              } else {
+                const newColW = Math.max(24, cols0[0] - d);
+                const delta = cols0[0] - newColW; // actual shift applied
+                attrs.widthAbs = Math.round(Math.max(40, w0 - delta));
+                attrs.align = null;
+                attrs.indentPx = Math.round(indentPx0 + delta);
+                setColWidth(tr, ctx.tablePos, table, ctx.map, 0, newColW);
+              }
+              tr.setNodeMarkup(ctx.tablePos, undefined, attrs);
+              view.dispatch(tr);
+            };
+            window.addEventListener("mousemove", move, true);
+            window.addEventListener("mouseup", up, { once: true, capture: true });
+          };
+
           // Escape exits the tool even when the editor isn't focused
           const onKey = (e: KeyboardEvent) => {
             if (!tableTool || e.key !== "Escape") return;
@@ -1101,7 +1164,9 @@ export const KxTableHandles = Extension.create({
                 v ? el.style.setProperty(name, v) : el.style.removeProperty(name);
               setVar(tbl, "--twidth",
                 absPx != null ? `${absPx}px` : node.attrs.widthPct ? `${node.attrs.widthPct}%` : null);
-              setVar(tbl, "--tindent", node.attrs.indent ? `${node.attrs.indent * 24}px` : null);
+              const ipx = node.attrs.indentPx as number | null;
+              setVar(tbl, "--tindent",
+                ipx != null ? `${ipx}px` : node.attrs.indent ? `${node.attrs.indent * 24}px` : null);
               // wrap vars live on the float box — the tableWrapper parent
               const wrapHost = tbl.parentElement?.classList.contains("tableWrapper")
                 ? tbl.parentElement as HTMLElement : tbl;
@@ -1183,6 +1248,7 @@ export const KxTableHandles = Extension.create({
 
           document.addEventListener("mousemove", onMove, true);
           document.addEventListener("dblclick", onDblClick, true);
+          document.addEventListener("mousedown", onEdgeDown, true);
           document.addEventListener("keydown", onKey, true);
           window.addEventListener("scroll", onScroll, true);
           grip.addEventListener("mousedown", onGripDown);
@@ -1221,6 +1287,7 @@ export const KxTableHandles = Extension.create({
               viewRef = null;
               document.removeEventListener("mousemove", onMove, true);
               document.removeEventListener("dblclick", onDblClick, true);
+              document.removeEventListener("mousedown", onEdgeDown, true);
               document.removeEventListener("keydown", onKey, true);
               window.removeEventListener("scroll", onScroll, true);
               grip.remove();
