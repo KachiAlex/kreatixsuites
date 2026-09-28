@@ -771,6 +771,17 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .swatch{width:26px;height:26px;border-radius:6px;border:1px solid rgba(0,0,0,.12);cursor:pointer;padding:0}
 .swatch.on{outline:2px solid var(--k-orange);outline-offset:1px}
 .swatch.none{background:#fff;font-size:11px;color:#A19A95}
+.style-label{display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.style-drop .rb-drop-menu{max-height:380px;overflow:auto}
+.style-list{display:flex;flex-direction:column;min-width:200px}
+.style-opt{display:flex;align-items:center;width:100%;text-align:left;border:0;background:none;padding:4px 8px;border-radius:8px;cursor:pointer}
+.style-opt:hover{background:#F6F2EE}
+.style-opt.on{background:var(--k-orange-soft)}
+.style-prev{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.style-mod{border:0;background:none;color:#A19A95;cursor:pointer;font-size:11px;padding:2px 4px;border-radius:5px;opacity:0}
+.style-opt:hover .style-mod{opacity:1}
+.style-mod:hover{background:#EFEAE4;color:#5F5B56}
+.style-foot{border-top:1px solid var(--line);margin-top:5px;padding-top:5px}
 
 /* ---- writer: outline + doc chrome ---- */
 .outline-pane{position:fixed;left:0;top:118px;bottom:0;width:240px;overflow:auto;background:#FBF9F7;border-right:1px solid var(--line);padding:14px 8px;z-index:5}

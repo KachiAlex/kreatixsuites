@@ -51,7 +51,9 @@ import { SortDialog } from "./SortDialog";
 import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog, FormulaDialog } from "./CellsDialog";
 import { TableFormula } from "./extensions/tableFormula";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
-import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
+import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, StylePicker } from "./controls";
+import { KxStyles, serializeStyles, loadStyleDefs, allStyleDefs, type StyleDef } from "./extensions/styles";
+import { StyleDialog } from "./StyleDialog";
 import { Ruler } from "./Ruler";
 import { exportDocx, importDocx } from "./docx";
 import { ensureDocFonts } from "./fonts";
@@ -99,6 +101,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [formulaOpen, setFormulaOpen] = useState(false);
   const [sepDlg, setSepDlg] = useState<"toText" | "toTable" | null>(null);
   const [insertTbl, setInsertTbl] = useState(false);
+  const [styleDlg, setStyleDlg] = useState<string | null>(null);
   const [gridlines, setGridlines] = useState(() => localStorage.getItem("kx.gridlines") !== "off");
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
@@ -117,13 +120,32 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const pendingJson = useRef<unknown>(null);
   const editorRef = useRef<Editor | null>(null);
+  // collab docs start empty until the Y.Doc syncs/seeds — staging a save before
+  // that would overwrite the canonical head with an empty doc
+  const collabReady = useRef(false);
 
   // collab session — created synchronously so useEditor can bind the Y.Doc
   const { user } = useAuth();
   const sessionRef = useRef<CollabSession | null>(null);
   if (user && !sessionRef.current) sessionRef.current = createCollabSession(item.id, user);
   const session = sessionRef.current;
-  useEffect(() => () => { sessionRef.current?.destroy(); sessionRef.current = null; }, []);
+  // StrictMode double-mounts run cleanup→setup immediately; a real unmount
+  // leaves the count at 0, so deferring lets remounts cancel the teardown
+  // (a destroyed provider would otherwise leave collab silently dead).
+  const sessionMounts = useRef(0);
+  useEffect(() => {
+    sessionMounts.current += 1;
+    return () => {
+      sessionMounts.current -= 1;
+      const s = sessionRef.current;
+      setTimeout(() => {
+        if (sessionMounts.current === 0 && sessionRef.current === s) {
+          s?.destroy();
+          sessionRef.current = null;
+        }
+      }, 0);
+    };
+  }, []);
 
   const editor = useEditor({
     editable: canMutate,
@@ -145,6 +167,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       Mathematics,
       CharacterCount,
       CommentMark,
+      KxStyles,
       ParagraphSpacing,
       ListStyle,
       PageBreak, SectionBreak, ColumnBreak, Columns,
@@ -182,7 +205,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
     // collab mode: content is driven by the shared Y.Doc (seeded after sync)
     content: session ? undefined : ((initialDoc as { doc?: object })?.doc ?? (initialDoc as object)),
     onUpdate: ({ editor }) => {
-      pendingJson.current = { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor) };
+      // never serialize the pre-sync empty collab doc over the canonical head
+      if (sessionRef.current && !collabReady.current) return;
+      pendingJson.current = { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor) };
       setSaveState("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(flushSave, 1200);
@@ -242,6 +267,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   useEffect(() => {
     const setup = (initialDoc as { pageSetup?: Parameters<typeof applyPageSetup>[1] })?.pageSetup;
     if (editor && setup) applyPageSetup(editor, setup);
+    if (editor) loadStyleDefs(editor, (initialDoc as { styles?: Record<string, StyleDef> })?.styles);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
@@ -289,11 +315,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   // page-setup changes only mutate extension storage — stage the save manually
   const savePageSetup = useCallback(() => {
-    if (!editorRef.current) return;
+    if (!editorRef.current || (sessionRef.current && !collabReady.current)) return;
     pendingJson.current = {
       kind: "writer",
       doc: editorRef.current.getJSON(),
       pageSetup: readPageSetup(editorRef.current),
+      styles: serializeStyles(editorRef.current),
     };
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -304,10 +331,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
   // seed the shared doc from canonical JSON — exactly once, lowest clientID wins
   useEffect(() => {
     if (!session || !editor) return;
-    const frag = session.ydoc.getXmlFragment("default");
     const meta = session.ydoc.getMap<unknown>("meta");
+    // The Collaboration binding fills the fragment with the default empty
+    // paragraph at bind time, so XmlFragment.length is unreliable — an
+    // effectively-empty doc is a single empty textblock.
+    const docIsEmpty = () => {
+      const d = editor.state.doc;
+      return d.childCount <= 1 && !!d.firstChild?.isTextblock && d.firstChild.content.size === 0;
+    };
     const seed = () => {
-      if (frag.length || meta.get("seeded")) return;
+      if (!docIsEmpty() || meta.get("seeded")) return;
       const json = ((initialDoc as { doc?: object })?.doc ?? initialDoc) as { type?: string } | null;
       session.ydoc.transact(() => {
         if (json?.type === "doc") {
@@ -319,12 +352,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
     };
     let done = false;
     const elect = () => {
-      if (done || frag.length || meta.get("seeded")) return;
+      collabReady.current = true;
+      if (done || !docIsEmpty() || meta.get("seeded")) return;
       const ids = [...session.awareness.getStates().keys()];
       if (Math.min(...ids) === session.awareness.clientID) { done = true; seed(); }
     };
     void session.whenSynced.then(() => setTimeout(elect, 150));
-    const t = setTimeout(() => { done = true; seed(); }, 2500); // offline fallback
+    const t = setTimeout(() => { done = true; collabReady.current = true; seed(); }, 2500); // offline fallback
     return () => clearTimeout(t);
   }, [session, editor, initialDoc]);
 
@@ -431,6 +465,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
         : ctx.editor?.isActive("heading", { level: 6 }) ? "h6"
         : ctx.editor?.isActive("blockquote") ? "quote"
         : ctx.editor?.isActive("codeBlock") ? "code" : "p",
+      styleKey: ctx.editor?.isActive("heading", { level: 1 }) ? "heading1"
+        : ctx.editor?.isActive("heading", { level: 2 }) ? "heading2"
+        : ctx.editor?.isActive("heading", { level: 3 }) ? "heading3"
+        : ctx.editor?.isActive("heading", { level: 4 }) ? "heading4"
+        : ctx.editor?.isActive("heading", { level: 5 }) ? "heading5"
+        : ctx.editor?.isActive("heading", { level: 6 }) ? "heading6"
+        : ctx.editor?.isActive("blockquote") ? "quote"
+        : (ctx.editor?.getAttributes("paragraph").styleName as string) ?? "normal",
       align: ctx.editor?.isActive({ textAlign: "center" }) ? "center"
         : ctx.editor?.isActive({ textAlign: "right" }) ? "right"
         : ctx.editor?.isActive({ textAlign: "justify" }) ? "justify" : "left",
@@ -711,14 +753,39 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   const print = () => { download("pdf"); };
 
-  const setBlock = (v: string) => {
-    const c = editor?.chain().focus();
-    if (!c) return;
-    if (v === "p") c.setParagraph().run();
-    else if (v === "quote") c.toggleBlockquote().run();
-    else if (v === "code") c.toggleCodeBlock().run();
-    else c.toggleHeading({ level: Number(v[1]) as 1 | 2 | 3 | 4 | 5 | 6 }).run();
-  };
+  /** Word "Create a style…" — snapshot the selection's look into a named style. */
+  const createStyleFromSelection = useCallback(async () => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const name = await askText({ title: "New style", placeholder: "Style name" });
+    if (!name?.trim()) return;
+    const label = name.trim();
+    const key = `user-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "style"}-${Date.now().toString(36)}`;
+    const { $from } = ed.state.selection;
+    const node = $from.parent;
+    const ts = ed.getAttributes("textStyle") as Record<string, unknown>;
+    const def: Partial<StyleDef> & { key: string } = {
+      key,
+      label,
+      node: node.type.name === "heading" ? "heading" : node.type.name === "blockquote" ? "blockquote" : "paragraph",
+      level: node.type.name === "heading" ? (node.attrs.level as number) : undefined,
+      fontFamily: (ts.fontFamily as string) || undefined,
+      fontSize: (ts.fontSize as string) || undefined,
+      color: (ts.color as string) || undefined,
+      bold: ed.isActive("bold") || undefined,
+      italic: ed.isActive("italic") || undefined,
+      underline: ed.isActive("underline") || undefined,
+      align: (node.attrs.textAlign as StyleDef["align"]) || undefined,
+      lineHeight: (node.attrs.lineHeight as string) || undefined,
+      spaceBefore: (node.attrs.spaceBefore as number) || undefined,
+      spaceAfter: (node.attrs.spaceAfter as number) || undefined,
+      indent: (node.attrs.indent as number) || undefined,
+      nextStyle: "normal",
+    };
+    ed.chain().focus().modifyStyle(def).applyStyle(key).run();
+    savePageSetup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askText]);
 
   const insertLink = async () => {
     if (!canMutate) return;
@@ -785,7 +852,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     if (!editor) return;
     try {
       const r = await api.post<{ item: { id: string } }>("/api/drive", { name: `Copy of ${title}`, kind: "writer" });
-      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor) };
+      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor) };
       await api.put(`/api/files/${r.item.id}/content`, { content: payload });
       toast("Copy created");
       navigate(`/edit/${r.item.id}`);
@@ -962,10 +1029,6 @@ export function WriterEditor({ item, initialDoc, permission }: {
   ];
   const menus = useMemo<{ label: string; items: MenuItem[] }[]>(() => {
     if (!ed) return [];
-    const headingItem = (n: number): MenuItem => ({
-      label: `Heading ${n}`, checked: state?.block === `h${n}`,
-      onClick: () => ed.chain().focus().toggleHeading({ level: n as 1 }).run(),
-    });
     const fileItems: MenuItem[] = [
       ...(canMutate ? [
         { label: "Import .docx…", onClick: () => importRef.current?.click() },
@@ -1140,11 +1203,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ],
           },
           {
-            label: "Paragraph styles", submenu: [
-              { label: "Normal text", checked: state?.block === "p", onClick: () => ed.chain().focus().setParagraph().run() },
-              { label: "Quote", checked: state?.block === "quote", onClick: () => ed.chain().focus().toggleBlockquote().run() },
+            label: "Styles", submenu: [
+              ...allStyleDefs(ed).map((d): MenuItem => ({
+                label: d.label,
+                checked: state?.styleKey === d.key,
+                onClick: () => ed.chain().focus().applyStyle(d.key).run(),
+              })),
+              { label: "Code block", checked: state?.block === "code", onClick: () => ed.chain().focus().toggleCodeBlock().run() },
               { divider: true },
-              ...[1, 2, 3, 4, 5, 6].map(headingItem),
+              { label: "Modify style…", onClick: () => setStyleDlg(state?.styleKey ?? "normal") },
+              { label: "New style from selection…", onClick: () => void createStyleFromSelection() },
+              { label: "Clear formatting", onClick: () => ed.chain().focus().unsetAllMarks().clearNodes().run() },
             ],
           },
           {
@@ -1318,12 +1387,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <div className="rb-sep" />
           <ZoomDrop zoom={zoom} onZoom={setZoom} />
           <div className="rb-sep" />
-          <select className="rb-sel" value={state?.block ?? "p"} onChange={(e) => setBlock(e.target.value)} title="Style">
-            <option value="p">Normal</option>
-            {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={`h${n}`}>Heading {n}</option>)}
-            <option value="quote">Quote</option>
-            <option value="code">Code block</option>
-          </select>
+          {editor && (
+            <StylePicker editor={editor}
+              current={state?.block === "code" ? "normal" : state?.styleKey ?? "normal"}
+              onModify={(k) => setStyleDlg(k)}
+              onCreate={() => void createStyleFromSelection()} />
+          )}
+          {state?.block === "code" && <span className="perm-badge">code</span>}
           {editor && <FontPicker editor={editor} current={state?.font ?? ""} />}
           {editor && <FontSizePicker editor={editor} current={state?.fontSize ?? ""} />}
           <div className="rb-sep" />
@@ -1516,6 +1586,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {splitDlg && editor && <SplitCellsDialog editor={editor} onClose={() => setSplitDlg(false)} />}
       {formulaOpen && editor && <FormulaDialog editor={editor} onClose={() => setFormulaOpen(false)} />}
       {insertTbl && editor && <InsertTableDialog editor={editor} onClose={() => setInsertTbl(false)} />}
+      {styleDlg !== null && editor && (
+        <StyleDialog editor={editor} styleKey={styleDlg} onClose={() => { setStyleDlg(null); savePageSetup(); }} />
+      )}
       {sepDlg && editor && (
         <SeparatorDialog
           title={sepDlg === "toText" ? "Convert table to text — separate with" : "Convert text to table — separate at"}

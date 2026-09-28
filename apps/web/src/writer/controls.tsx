@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { FONTS, ensureFont, type FontDef } from "./fonts";
+import { allStyleDefs, type StyleDef } from "./extensions/styles";
 
 const TEXT_COLORS = [
   "#171717", "#5F5B56", "#A19A95", "#FFFFFF",
@@ -109,6 +110,59 @@ export function ColorSwatch({ editor, kind, current }: { editor: Editor; kind: "
       )}
     </Drop>
   );
+}
+
+export function StylePicker({ editor, current, onModify, onCreate }: {
+  editor: Editor; current: string;
+  onModify: (key: string) => void; onCreate: () => void;
+}) {
+  const [, force] = useState(0);
+  // re-render when styles change (doc load, modify)
+  useEffect(() => {
+    const upd = () => force((n) => n + 1);
+    editor.on("transaction", upd);
+    return () => { editor.off("transaction", upd); };
+  }, [editor]);
+  const defs = allStyleDefs(editor);
+  const cur = defs.find((d) => d.key === current);
+  return (
+    <Drop title="Styles" className="style-drop" width={240}
+      label={<span className="style-label" style={previewStyle(cur)}>{cur?.label ?? "Normal"} ▾</span>}>
+      {(close) => (
+        <div className="style-list">
+          {defs.map((d) => (
+            <div key={d.key} className={`style-opt ${current === d.key ? "on" : ""}`}
+              onClick={() => { applyStyleSafe(editor, d.key); close(); }}
+              title={`${d.label} — right-click Modify`}>
+              <span className="style-prev" style={previewStyle(d)}>{d.label}</span>
+              <button className="style-mod" title="Modify style…"
+                onClick={(e) => { e.stopPropagation(); close(); onModify(d.key); }}>⚙</button>
+            </div>
+          ))}
+          <div className="style-foot">
+            <button className="menu-li" onClick={() => { close(); onCreate(); }}>＋ New style from selection…</button>
+          </div>
+        </div>
+      )}
+    </Drop>
+  );
+}
+
+/** Def → inline preview style for the swatch. */
+function previewStyle(d: StyleDef | undefined): React.CSSProperties {
+  if (!d) return {};
+  return {
+    fontFamily: d.fontFamily || undefined,
+    fontSize: d.fontSize ? Math.min(18, parseInt(d.fontSize)) : undefined,
+    fontWeight: d.bold ? 700 : undefined,
+    fontStyle: d.italic ? "italic" : undefined,
+    textDecoration: d.underline ? "underline" : undefined,
+    color: d.color || undefined,
+  };
+}
+
+function applyStyleSafe(editor: Editor, key: string) {
+  editor.chain().focus().applyStyle(key).run();
 }
 
 const ZOOMS = [50, 75, 90, 100, 125, 150, 200];
