@@ -696,15 +696,16 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .outline-item:hover{background:#F0EBE5}
 
 /* ---- writer: doc internals ---- */
-.page-break{display:flex;align-items:flex-start;gap:12px;margin:28px 0;color:#B0A79E;font-size:11px;user-select:none}
-.page-break::before,.page-break::after{content:"";flex:1;border-top:1.5px dashed #D8D0C8}
-.page-break-label{text-transform:uppercase;letter-spacing:.08em;font-weight:700;white-space:nowrap;flex-shrink:0}
+/* NB: must stay a plain block — display:flex/inline-block would make the box a
+   BFC that cannot overlap the paginator's float walls, pushing the element
+   below every wall (infinite page growth). The pad mechanism relies on the
+   box overlapping floats freely; only its label/lines matter visually. */
+.page-break{position:relative;margin:28px 0;border-top:1.5px dashed #D8D0C8;color:#B0A79E;font-size:11px;user-select:none}
+.page-break-label{position:absolute;top:0;left:50%;transform:translate(-50%,-60%);background:var(--bg,#F8F7F5);padding:0 12px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;white-space:nowrap}
 @media print{.page-break{page-break-after:always;border:0}.page-break .page-break-label{display:none}}
 /* section + column breaks share the break chrome; tint them differently */
-.section-break{color:#7C9CC4}
-.section-break::before,.section-break::after{border-top-style:solid;border-top-color:#B9CBE0}
-.column-break{color:#9C8AB8;margin:14px 0}
-.column-break::before,.column-break::after{border-top-color:#CFC3E0}
+.section-break{color:#7C9CC4;border-top-style:solid;border-top-color:#B9CBE0}
+.column-break{color:#9C8AB8;margin:14px 0;border-top-color:#CFC3E0}
 @media print{.section-break[data-force-break]{page-break-after:always}.column-break{break-after:column}}
 /* multi-column regions (continuous sections) */
 .doc-columns{column-fill:balance;orphans:2;widows:2;margin:4px 0}
@@ -772,6 +773,9 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 /* ---- writer: pagination (tiptap-pagination-plus) ---- */
 .doc-page:has(.rm-with-pagination){background:transparent;box-shadow:none;border:0;padding:0;width:auto;min-height:0}
 .rm-with-pagination{background:#fff;box-shadow:0 10px 40px rgba(46,35,29,.10);border-radius:4px;margin-left:auto;margin-right:auto}
+/* per-section geometry active: walls paint their own paper */
+.rm-with-pagination[data-kx-sections]{background:transparent;box-shadow:none;isolation:isolate}
+.kx-sect-block{transition:none}
 .rm-pagination-gap{display:block}
 .rm-page-break .page{background:transparent}
 .rm-first-page-header,.rm-pages-wrapper [class*="header"],.rm-pages-wrapper [class*="footer"]{font-size:11px;color:#8B837D}

@@ -296,38 +296,11 @@ function tableOf(node: Block): Table | null {
   if (!rows.length) return null;
   const ta = (node.attrs ?? {}) as Record<string, unknown>;
 
-  // rowspan continuation cells: OOXML wants a <w:tc vMerge="continue">
-  // placeholder in every row spanned — our model stores rowspan only on the
-  // origin cell. Track pending merges per grid column.
-  const pending = new Map<number, { remain: number; span: number }>();
+  // rowspan: the docx lib auto-generates <w:tc vMerge="continue"> placeholders
+  // in the following rows from cell.options.rowSpan — no manual tracking needed.
   const tableRows = rows.map((r, ri) => {
     const ra = (r.attrs ?? {}) as Record<string, unknown>;
-    const cells: TableCell[] = [];
-    let gridCol = 0;
-    const flushPending = () => {
-      for (;;) {
-        const m = pending.get(gridCol);
-        if (!m || m.remain <= 0) break;
-        cells.push(new TableCell({
-          verticalMerge: "continue" as never,
-          columnSpan: m.span > 1 ? m.span : undefined,
-          children: [new Paragraph({})],
-        }));
-        m.remain -= 1;
-        if (m.remain <= 0) pending.delete(gridCol);
-        gridCol += m.span;
-      }
-    };
-    for (const c of ((r.content ?? []) as Block[])) {
-      flushPending();
-      const ca = (c.attrs ?? {}) as Record<string, unknown>;
-      const rs = (ca.rowspan as number) || 1;
-      const cs = (ca.colspan as number) || 1;
-      if (rs > 1) pending.set(gridCol, { remain: rs - 1, span: cs });
-      cells.push(docxCell(c));
-      gridCol += cs;
-    }
-    flushPending();
+    const cells: TableCell[] = ((r.content ?? []) as Block[]).map(docxCell);
     return new TableRow({
       children: cells,
       tableHeader: ta.repeatHeader && ri === 0 ? true : undefined,
@@ -377,11 +350,13 @@ function sectionProps(attrs: Record<string, unknown>): {
     top: pxToDxa(attrs.marginTop), bottom: pxToDxa(attrs.marginBottom),
     left: pxToDxa(attrs.marginLeft), right: pxToDxa(attrs.marginRight),
   };
+  const pnStart = typeof attrs.pnStart === "number" ? attrs.pnStart : null;
   const page: NonNullable<ISectionPropertiesOptions["page"]> = {
     ...(w || h ? { size: { width: w ?? 12240, height: h ?? 15840 } } : {}),
     ...(Object.values(margin).some((v) => v != null) ? { margin: margin as never } : {}),
+    ...(pnStart != null ? { pageNumbers: { start: pnStart } } : {}),
   };
-  if (page.size || page.margin) (properties as { page?: unknown }).page = page;
+  if (page.size || page.margin || page.pageNumbers) (properties as { page?: unknown }).page = page;
   const hf = (l: unknown, r: unknown) =>
     new Paragraph({
       children: [
@@ -515,17 +490,61 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     (_, t) => `<w:r><w:t xml:space="preserve">⟦${t === "page" ? "KXPB" : "KXCB"}⟧</w:t></w:r>`,
   );
 
-  // paragraph-level <w:sectPr> (mid-doc section breaks) → sentinel run placed
-  // after the pPr so mammoth emits it as paragraph text. The body-level
-  // trailing sectPr doesn't match (not inside pPr) — it describes the last
-  // section, not a break.
-  docXml = docXml.replace(
-    /<w:sectPr\b[\s\S]*?<\/w:sectPr>\s*<\/w:pPr>/g,
-    (m) => {
-      const sect = m.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/)?.[0] ?? "";
-      return `</w:pPr><w:r><w:t xml:space="preserve">⟦KXSB:${b64enc(sect)}⟧</w:t></w:r>`;
-    },
-  );
+  // OOXML sectPr describes the section it CLOSES; our sectionBreak node
+  // describes the section it INTRODUCES. So the marker at the end of
+  // section i (i-th pPr-level sectPr) carries props of sectPr i+1 (or the
+  // body-level trailing sectPr for the final boundary). Marker payload is
+  // JSON: section type, page geometry, columns, page-numbering restart,
+  // and header/footer text resolved through document.xml.rels.
+  {
+    const src = docXml;
+    const sects = [...src.matchAll(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/g)]
+      .map((m) => ({ xml: m[0], idx: m.index ?? 0, pPr: /^\s*<\/w:pPr>/.test(src.slice((m.index ?? 0) + m[0].length)) }));
+    const pPrSects = sects.filter((s) => s.pPr);
+    const bodySect = sects.find((s) => !s.pPr);
+
+    if (pPrSects.length) {
+      const relsXml = await zip.file("word/_rels/document.xml.rels")?.async("text") ?? "";
+      const relMap: Record<string, string> = {};
+      for (const r of relsXml.matchAll(/Id="([^"]+)"[^>]*Target="([^"]+)"/g)) relMap[r[1]] = r[2];
+      const hfText = async (sect: string, kind: "header" | "footer") => {
+        const rid = sect.match(new RegExp(`<w:${kind}Reference\\b[^>]*r:id="([^"]+)"`))?.[1];
+        const part = rid && relMap[rid]
+          ? await zip.file(`word/${relMap[rid]}`)?.async("text") : undefined;
+        if (!part) return null;
+        const text = [...part.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((m) => xmlUnescape(m[1])).join("");
+        return text.trim() || null;
+      };
+      const sectProps = async (sect: string) => {
+        const wv = (tag: string, name: string) =>
+          sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
+        const dxa = (tag: string, name: string) => {
+          const v = wv(tag, name); return v ? Math.round(parseInt(v) / 15) : null;
+        };
+        return {
+          type: wv("type", "val") ?? "nextPage",
+          pageWidth: dxa("pgSz", "w"), pageHeight: dxa("pgSz", "h"),
+          marginTop: dxa("pgMar", "top"), marginBottom: dxa("pgMar", "bottom"),
+          marginLeft: dxa("pgMar", "left"), marginRight: dxa("pgMar", "right"),
+          cols: wv("cols", "num") ? parseInt(wv("cols", "num")!) : null,
+          colGap: wv("cols", "space") ? Math.round(parseInt(wv("cols", "space")!) / 15) : null,
+          pnStart: wv("pgNumType", "start") ? parseInt(wv("pgNumType", "start")!) : null,
+          headerText: await hfText(sect, "header"),
+          footerText: await hfText(sect, "footer"),
+        };
+      };
+      const payloads: string[] = [];
+      for (let i = 0; i < pPrSects.length; i++) {
+        const next = i + 1 < pPrSects.length ? pPrSects[i + 1].xml : bodySect?.xml ?? "";
+        payloads.push(b64enc(JSON.stringify(next ? await sectProps(next) : {})));
+      }
+      let mi = 0;
+      docXml = docXml.replace(
+        /<w:sectPr\b[\s\S]*?<\/w:sectPr>(\s*<\/w:pPr>)/g,
+        (_, tail) => `${tail}<w:r><w:t xml:space="preserve">⟦KXSB:${payloads[mi++] ?? ""}⟧</w:t></w:r>`,
+      );
+    }
+  }
 
   if (docXml === original) return { buffer: arrayBuffer, docXml };
   zip.file("word/document.xml", docXml);
@@ -549,36 +568,64 @@ function mathMarkersToHtml(html: string): string {
       `<span data-type="inline-math" data-latex="${attrEsc(b64dec(b))}"></span>`);
 }
 
-/** Page/column/section break sentinels → the break nodes' parse HTML. */
+interface SectMarkerProps {
+  type?: string; pageWidth?: number | null; pageHeight?: number | null;
+  marginTop?: number | null; marginBottom?: number | null;
+  marginLeft?: number | null; marginRight?: number | null;
+  cols?: number | null; colGap?: number | null; pnStart?: number | null;
+  headerText?: string | null; footerText?: string | null;
+}
+
+/** Page/column/section break sentinels → the break nodes' parse HTML.
+ *  A cols>1 incoming section opens a `columns` wrapper that closes at the
+ *  next section boundary (tracked sequentially). */
 function breakMarkersToHtml(html: string): string {
   const DIV: Record<string, string> = {
     KXPB: `<div data-type="page-break" class="page-break"></div>`,
     KXCB: `<div data-type="column-break" class="page-break column-break"></div>`,
   };
-  const sectAttrs = (b: string) => {
-    const sect = b64dec(b);
-    const wval = (tag: string, name: string) =>
-      sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
-    const dxa = (tag: string, name: string) => {
-      const v = wval(tag, name);
-      return v ? Math.round(parseInt(v) / 15) : null;
-    };
-    const type = wval("type", "val") ?? "nextPage";
-    let s = `data-section-type="${type}"`;
-    const pairs: [string, number | null][] = [
-      ["data-page-width", dxa("pgSz", "w")], ["data-page-height", dxa("pgSz", "h")],
-      ["data-margin-top", dxa("pgMar", "top")], ["data-margin-bottom", dxa("pgMar", "bottom")],
-      ["data-margin-left", dxa("pgMar", "left")], ["data-margin-right", dxa("pgMar", "right")],
+  html = html
+    .replace(/<p>⟦(KXPB|KXCB)⟧<\/p>/g, (_, t) => DIV[t])
+    .replace(/⟦(KXPB|KXCB)⟧/g, (_, t) => `</p>${DIV[t]}<p>`);
+
+  const esc = (s: string | null | undefined) =>
+    (s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const sectDiv = (p: SectMarkerProps) => {
+    let s = `data-section-type="${esc(p.type ?? "nextPage")}"`;
+    const pairs: [string, number | null | undefined][] = [
+      ["data-page-width", p.pageWidth], ["data-page-height", p.pageHeight],
+      ["data-margin-top", p.marginTop], ["data-margin-bottom", p.marginBottom],
+      ["data-margin-left", p.marginLeft], ["data-margin-right", p.marginRight],
+      ["data-pn-start", p.pnStart],
     ];
     for (const [k, v] of pairs) if (v != null) s += ` ${k}="${v}"`;
+    if (p.headerText) s += ` data-header-left="${esc(p.headerText)}"`;
+    if (p.footerText) s += ` data-footer-left="${esc(p.footerText)}"`;
     return `<div data-type="section-break" ${s} class="page-break section-break"></div>`;
   };
-  // whole-paragraph markers collapse cleanly; mid-text markers split the <p>
-  return html
-    .replace(/<p>⟦(KXPB|KXCB)⟧<\/p>/g, (_, t) => DIV[t])
-    .replace(/⟦(KXPB|KXCB)⟧/g, (_, t) => `</p>${DIV[t]}<p>`)
-    .replace(/<p>⟦KXSB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_, b) => sectAttrs(b))
-    .replace(/⟦KXSB:([A-Za-z0-9+/=]*)⟧/g, (_, b) => `</p>${sectAttrs(b)}<p>`);
+
+  const re = /(<p>)?⟦KXSB:([A-Za-z0-9+/=]*)⟧(<\/p>)?/g;
+  let out = "", colsOpen = false, pos = 0;
+  const closeCols = () => { if (colsOpen) { out += "</div>"; colsOpen = false; } };
+  for (const m of html.matchAll(re)) {
+    const [tok, openP, b64, closeP] = m;
+    out += html.slice(pos, m.index);
+    pos = (m.index ?? 0) + tok.length;
+    const p: SectMarkerProps = b64 ? JSON.parse(b64dec(b64)) : {};
+    closeCols();
+    const wholePara = Boolean(openP && closeP);
+    const hasCols = (p.cols ?? 0) > 1;
+    if (!wholePara) out += "</p>";
+    // continuous + columns == our bare `columns` node (no visible break)
+    if (!hasCols || p.type !== "continuous") out += sectDiv(p);
+    if (hasCols) {
+      out += `<div data-type="columns" data-cols="${p.cols}" style="column-gap:${p.colGap ?? 36}px">`;
+      colsOpen = true;
+    }
+    if (!wholePara) out += "<p>";
+  }
+  closeCols();
+  return out + html.slice(pos);
 }
 
 // ---- DOCX table props re-import --------------------------------------------
@@ -587,6 +634,8 @@ function breakMarkersToHtml(html: string): string {
 
 interface XmlCell {
   bg?: string; vAlign?: string; pad?: number; colw?: number; dir?: string;
+  /** vMerge-continue placeholder — mammoth drops these from the HTML. */
+  merged?: boolean;
   borders?: { side: string; w: number; style: string; color: string }[];
 }
 interface XmlRow { height?: number; exact?: boolean; cantSplit?: boolean; header?: boolean; cells: XmlCell[] }
@@ -655,6 +704,8 @@ function extractXmlTables(docXml: string): XmlTbl[] {
       // w:tc
       const pr = props(docXml, re.lastIndex, "tc");
       const cell: XmlCell = {};
+      const vm = pr.match(/<w:vMerge\b[^>]*>/)?.[0];
+      if (vm && (!/w:val="/.test(vm) || /w:val="continue"/.test(vm))) cell.merged = true;
       const shd = wVal(pr, "shd", "fill");
       if (shd && shd !== "auto") cell.bg = "#" + shd;
       const va = wVal(pr, "vAlign", "val");
@@ -735,10 +786,11 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
         row.height ? `height:${row.height}px` : "");
     }
     if (name === "tr") return tok;
-    // td / th
+    // td / th — skip XML vMerge-continue cells (mammoth emits no td for them)
     if (isClose) return top.headerRow ? "</th>" : tok;
     top.c++;
-    const cell = top.tbl?.rows[top.r]?.cells[top.c];
+    let cell = top.tbl?.rows[top.r]?.cells[top.c];
+    while (cell?.merged) { top.c++; cell = top.tbl?.rows[top.r]?.cells[top.c]; }
     const open = top.headerRow && name === "td" ? tok.replace(/<td/, "<th") : tok;
     if (!cell) return open;
     const style = [

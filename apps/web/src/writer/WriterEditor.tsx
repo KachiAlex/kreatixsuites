@@ -37,7 +37,7 @@ import { Embed } from "./extensions/embed";
 import { RichImage } from "./extensions/image";
 import { LinkPopover } from "./LinkPopover";
 import { SpecialChars } from "./SpecialChars";
-import { PageSetupDialog, PageNumbersDialog, PageSetupSync, readPageSetup, applyPageSetup } from "./PageSetup";
+import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup } from "./PageSetup";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
 import { ContextMenu, type ContextMenuState } from "./ContextMenu";
@@ -150,6 +150,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         onFooterClick: () => setPageSetupOpen(true),
       }),
       PageSetupSync,
+      SectionGeometry,
       TrackChangesExtension.configure({
         author: {
           id: user?.id ?? "anon",

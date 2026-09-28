@@ -44,7 +44,11 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
       ] },
       { type: "pageBreak" },
       { type: "paragraph", content: [{ type: "text", text: "after break" }] },
-      { type: "sectionBreak", attrs: { type: "nextPage", marginTop: 72 } },
+      { type: "sectionBreak", attrs: { type: "nextPage", marginTop: 72, pnStart: 5, headerLeft: "S2H", footerLeft: "S2F" } },
+      { type: "columns", attrs: { count: 3, gap: 48 }, content: [
+        { type: "paragraph", content: [{ type: "text", text: "columned one" }] },
+        { type: "paragraph", content: [{ type: "text", text: "columned two" }] },
+      ] },
       { type: "paragraph", content: [{ type: "text", text: "in section two" }] },
       { type: "table", attrs: { align: "center", widthMode: "pct", widthPct: 60, repeatHeader: true }, content: [
         { type: "tableRow", attrs: { height: 40, heightMode: "atLeast" }, content: [
@@ -57,7 +61,7 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
           { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "b3" }] }] },
         ] },
         { type: "tableRow", content: [
-          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "c2" }] }] },
+          { type: "tableCell", attrs: { backgroundColor: "#00FF00" }, content: [{ type: "paragraph", content: [{ type: "text", text: "c2" }] }] },
           { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "c3" }] }] },
         ] },
       ] },
@@ -90,8 +94,20 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     check("docx: vMerge", !!xml && xml.includes("vMerge"));
     check("docx: gridSpan", !!xml && xml.includes("gridSpan"));
     check("docx: section break", !!xml && /<w:sectPr[^>]*>[\s\S]*?w:val="nextPage"/.test(xml) || !!xml && xml.includes("nextPage"));
+    check("docx: pgNumType start", !!xml && /<w:pgNumType[^>]*w:start="5"/.test(xml));
+    check("docx: cols export", !!xml && /<w:cols[^>]*w:num="3"/.test(xml));
+    const hfParts = await Promise.all([
+      zip.file("word/header2.xml")?.async("text"), zip.file("word/footer2.xml")?.async("text"),
+      zip.file("word/header1.xml")?.async("text"), zip.file("word/footer1.xml")?.async("text"),
+    ]);
+    check("docx: sect header part", hfParts.some((t) => t && t.includes("S2H")));
+    check("docx: sect footer part", hfParts.some((t) => t && t.includes("S2F")));
     // re-import: annotations survive
     check("docx: section-break node", html.includes('data-type="section-break"') && html.includes('data-section-type="nextPage"'));
+    check("docx: pnStart reimport", html.includes('data-pn-start="5"'));
+    check("docx: sect header reimport", html.includes('data-header-left="S2H"'));
+    check("docx: sect footer reimport", html.includes('data-footer-left="S2F"'));
+    check("docx: columns reimport", html.includes('data-type="columns"') && html.includes('data-cols="3"'));
     check("docx: tbl align reimport", html.includes('data-align="center"'));
     check("docx: tbl width reimport", /width:60%/.test(html));
     check("docx: repeat-header reimport", html.includes('data-repeat-header="true"'));
@@ -102,6 +118,16 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     check("docx: vAlign reimport", /vertical-align:middle/.test(html));
     check("docx: th from tblHeader", /<th\b/.test(html));
     check("docx: page-break node", html.includes('data-type="page-break"'));
+    // vMerge alignment: c2's XML cell follows a vMerge-continue placeholder that
+    // mammoth drops — the annotator must skip it so #00FF00 lands on c2, not c3
+    {
+      const d = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+      const tds = [...d.querySelectorAll("td")];
+      const c2 = tds.find((t) => t.textContent === "c2");
+      const c3 = tds.find((t) => t.textContent === "c3");
+      check("docx: vMerge align (bg on c2)", !!c2 && (c2 as HTMLElement).getAttribute("style")?.includes("00FF00") === true);
+      check("docx: vMerge align (none on c3)", !!c3 && !(c3 as HTMLElement).getAttribute("style")?.includes("00FF00"));
+    }
   }
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
 }

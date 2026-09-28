@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   tiptap-pagination-plus@3.1.0:
-    hash: 5aa31595950ec26cedda428eae373f949983e0bbc65fb0610902dee28c26c955
+    hash: b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d
     path: patches/tiptap-pagination-plus@3.1.0.patch
 
 importers:
@@ -234,7 +234,7 @@ importers:
         version: 7.18.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       tiptap-pagination-plus:
         specifier: ^3.1.0
-        version: 3.1.0(patch_hash=5aa31595950ec26cedda428eae373f949983e0bbc65fb0610902dee28c26c955)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
+        version: 3.1.0(patch_hash=b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
       tiptap-track-changes:
         specifier: ^0.2.1
         version: 0.2.1(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
@@ -3704,7 +3704,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
-  tiptap-pagination-plus@3.1.0(patch_hash=5aa31595950ec26cedda428eae373f949983e0bbc65fb0610902dee28c26c955)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3):
+  tiptap-pagination-plus@3.1.0(patch_hash=b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3):
     dependencies:
       '@tiptap/core': 3.31.3(@tiptap/pm@3.31.3)
       '@tiptap/pm': 3.31.3

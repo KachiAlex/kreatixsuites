@@ -1,8 +1,26 @@
 diff --git a/dist/PaginationPlus.js b/dist/PaginationPlus.js
-index 186b6759ba503bbc707e3d8efa98e8b6e396b026..dac710dddb3f879c6c715c4b0009120490e0c97a 100644
+index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f44defc1c1 100644
 --- a/dist/PaginationPlus.js
 +++ b/dist/PaginationPlus.js
-@@ -288,8 +288,16 @@ export const PaginationPlus = Extension.create({
+@@ -79,6 +79,8 @@ const getPageConfig = (_storage, _currentOptions) => {
+         headerLeft: (_q = _storage.headerLeft) !== null && _q !== void 0 ? _q : defaultPageConfig.headerLeft,
+         customHeader: (_r = _storage.customHeader) !== null && _r !== void 0 ? _r : defaultPageConfig.customHeader,
+         customFooter: (_s = _storage.customFooter) !== null && _s !== void 0 ? _s : defaultPageConfig.customFooter,
++        // kx: per-section geometry — Record<pageNumber, Partial<page size/margins>>
++        pageGeometry: _storage.pageGeometry,
+     };
+     return {
+         config: pageConfig,
+@@ -105,6 +107,8 @@ const getPageConfigFromOptions = (_currentOptions) => {
+         headerLeft: (_q = _currentOptions.headerLeft) !== null && _q !== void 0 ? _q : defaultPageConfig.headerLeft,
+         customHeader: (_r = _currentOptions.customHeader) !== null && _r !== void 0 ? _r : defaultPageConfig.customHeader,
+         customFooter: (_s = _currentOptions.customFooter) !== null && _s !== void 0 ? _s : defaultPageConfig.customFooter,
++        // kx: per-section geometry passthrough
++        pageGeometry: _currentOptions.pageGeometry,
+     };
+ };
+ const paginationKey = new PluginKey("pagination");
+@@ -288,8 +292,16 @@ export const PaginationPlus = Extension.create({
                          if (storage.enabled === storage.appliedConfig.enabled && storage.enabled === false && storage.appliedConfig.enabled === false) {
                              return oldDeco;
                          }
@@ -21,3 +39,238 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..dac710dddb3f879c6c715c4b00091204
                          const getNewDecoration = () => {
                              const { options: _currentOptions, config: pageConfig } = getPageConfig(storage, this.options);
                              updateCssVariables(editor.view.dom, _currentOptions);
+@@ -323,7 +335,9 @@ export const PaginationPlus = Extension.create({
+                             storage.footerLeft !== storage.appliedConfig.footerLeft ||
+                             storage.footerRight !== storage.appliedConfig.footerRight ||
+                             !deepEqualIterative(storage.appliedConfig.customHeader, storage.customHeader) ||
+-                            !deepEqualIterative(storage.appliedConfig.customFooter, storage.customFooter)) {
++                            !deepEqualIterative(storage.appliedConfig.customFooter, storage.customFooter) ||
++                            // kx: per-section geometry map changed → rebuild walls
++                            storage.appliedConfig.pageGeometry !== pageConfig.pageGeometry) {
+                             return getNewDecoration();
+                         }
+                         return oldDeco;
+@@ -386,7 +400,12 @@ export const PaginationPlus = Extension.create({
+                             for (const page of pagesSetToCheck) {
+                                 const headerHeight = headerHeightForCurrentPages.has(page) ? headerHeightForCurrentPages.get(page) || 0 : headerHeightForCurrentPages.get(0) || 0;
+                                 const footerHeight = footerHeightForCurrentPages.has(page) ? footerHeightForCurrentPages.get(page) || 0 : footerHeightForCurrentPages.get(0) || 0;
+-                                const { _pageHeaderHeight, _pageHeight } = getHeight(_currentOptions, headerHeight, footerHeight);
++                                // kx: resolve per-section geometry for this page
++                                const _pgm = _currentOptions.pageGeometry;
++                                let _pg = _pgm && _pgm[page];
++                                if (_pgm && !_pg) { for (let p = page - 1; p >= 1; p--) { if (_pgm[p]) { _pg = _pgm[p]; break; } } }
++                                const _eff = _pg ? Object.assign({}, _currentOptions, _pg) : _currentOptions;
++                                const { _pageHeaderHeight, _pageHeight } = getHeight(_eff, headerHeight, footerHeight);
+                                 const contentHeight = page === 1 ? _pageHeight + _pageHeaderHeight : _pageHeight;
+                                 if (page === 1) {
+                                     pageContentHeightVariable[`rm-page-content-first`] = `${contentHeight}px`;
+@@ -540,6 +559,22 @@ const calculatePageCount = (view, pageOptions, headerHeight = 0, footerHeight =
+             const lastPageGap = lastElementRect.bottom -
+                 lastPageBreakRect.bottom;
+             if (lastPageGap > 0) {
++                // kx: when per-section geometry is active, each added page can
++                // have a different content height — consume the gap iteratively.
++                const _geo = pageOptions.pageGeometry;
++                if (_geo) {
++                    let gap = lastPageGap, added = 0, page = currentPageCount + 1;
++                    while (gap > 0 && added < 500) {
++                        let g = _geo[page];
++                        if (!g) { for (let p = page - 1; p >= 1; p--) { if (_geo[p]) { g = _geo[p]; break; } } }
++                        const eff = g ? Object.assign({}, pageOptions, g) : pageOptions;
++                        const ch = eff.pageHeight
++                            - (eff.contentMarginTop + eff.marginTop + headerHeight)
++                            - (eff.contentMarginBottom + eff.marginBottom + footerHeight);
++                        gap -= ch; added++; page++;
++                    }
++                    return currentPageCount + added;
++                }
+                 const addPage = Math.ceil(lastPageGap / pageContentAreaHeight);
+                 return currentPageCount + addPage;
+             }
+@@ -579,13 +614,42 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+     }
+     const commonHeaderOptions = { headerLeft: pageOptions.headerLeft, headerRight: pageOptions.headerRight };
+     const commonFooterOptions = { footerLeft: pageOptions.footerLeft, footerRight: pageOptions.footerRight };
++    // kx: when a per-section geometry map is supplied, every wall resolves its
++    // own page options (pageGeometry[pageNumber] overrides globals) and paints
++    // its own paper via a centered background — the outer container then goes
++    // transparent so differing widths look right.
++    const _geoMap = pageOptions.pageGeometry;
++    const _geoActive = _geoMap && Object.keys(_geoMap).length > 0;
++    // a page inherits the geometry of the nearest earlier keyed page —
++    // sections span page ranges, so the map only needs boundary starts.
++    const geoOf = (n) => {
++        if (!_geoActive) return pageOptions;
++        let g = _geoMap[n];
++        if (!g) { for (let p = n - 1; p >= 1; p--) { if (_geoMap[p]) { g = _geoMap[p]; break; } } }
++        return g ? Object.assign({}, pageOptions, g) : pageOptions;
++    };
++    // float span = at least the global paper width (blocks line boxes),
++    // wider when the section page is wider; painted paper centered inside.
++    const paintPaper = (el, pageW) => {
++        const extra = Math.max(0, pageW - pageOptions.pageWidth);
++        el.style.boxSizing = "border-box";
++        el.style.width = `calc(100% + ${pageOptions.marginLeft + pageOptions.marginRight + extra}px)`;
++        el.style.marginLeft = `${-pageOptions.marginLeft - extra / 2}px`;
++        el.style.marginRight = `${-pageOptions.marginRight - extra / 2}px`;
++        el.style.backgroundImage = "linear-gradient(#fff,#fff)";
++        el.style.backgroundRepeat = "no-repeat";
++        el.style.backgroundSize = `${pageW}px 100%`;
++        el.style.backgroundPosition = "center";
++    };
+     const pageWidget = Decoration.widget(0, (view) => {
+         const _pageGap = pageOptions.pageGap;
+         const _pageBreakBackground = pageOptions.pageBreakBackground;
+         const el = document.createElement("div");
+         el.dataset.rmPagination = "true";
+         const pageBreakDefinition = (firstPage, pageHeader, pageFooter, headerHeight, footerHeight, pageNumber) => {
+-            const { _pageHeaderHeight, _pageHeight } = getHeight(pageOptions, headerHeight, footerHeight);
++            const eff = geoOf(pageNumber);
++            const effNext = geoOf(pageNumber + 1);
++            const { _pageHeaderHeight, _pageHeight } = getHeight(eff, headerHeight, footerHeight);
+             const pageContainer = document.createElement("div");
+             pageContainer.classList.add("rm-page-break");
+             const page = document.createElement("div");
+@@ -593,35 +657,94 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+             page.style.position = "relative";
+             page.style.float = "left";
+             page.style.clear = "both";
+-            const marginTop = firstPage
+-                ? `calc(${_pageHeaderHeight}px + ${_pageHeight}px)`
+-                : _pageHeight + "px";
+-            if (pageNumber) {
+-                page.style.marginTop = `var(--rm-page-content-${pageNumber}, ${marginTop})`;
++            if (_geoActive && pageNumber) {
++                // Consume the band via marginTop on a zero-height float — a real
++                // height gives the float a border box that displaces inline-level
++                // content below every wall, and widening the float itself trips
++                // float-placement constraints; both feed lastPageGap>0 and grow
++                // pages forever. The band's paper is painted by an absolutely
++                // positioned child anchored to the float's (zero-area) box.
++                const band = firstPage ? _pageHeaderHeight + _pageHeight : _pageHeight;
++                page.style.marginTop = `${band}px`;
++                page.style.height = "0px";
++                const paper = document.createElement("div");
++                paper.classList.add("kx-page-paper");
++                const extra = Math.max(0, eff.pageWidth - pageOptions.pageWidth);
++                paper.style.position = "absolute";
++                // float box sits at the content column's left edge → shift left
++                // by the global left margin (+ half the width surplus) so the
++                // paint canvas matches the breaker's full-paper span
++                paper.style.left = `${-pageOptions.marginLeft - extra / 2}px`;
++                paper.style.width = `${pageOptions.pageWidth + extra}px`;
++                paper.style.bottom = "0px";
++                paper.style.height = `${band}px`;
++                paper.style.pointerEvents = "none";
++                // paint behind the band's in-flow text (abspos stacks on top by default)
++                paper.style.zIndex = "-1";
++                paper.style.backgroundImage = "linear-gradient(#fff,#fff)";
++                paper.style.backgroundRepeat = "no-repeat";
++                paper.style.backgroundSize = `${eff.pageWidth}px 100%`;
++                paper.style.backgroundPosition = "center";
++                paper.style.boxShadow = "0 10px 40px rgba(46,35,29,.10)";
++                page.appendChild(paper);
+             }
+             else {
+-                page.style.marginTop = firstPage
+-                    ? `var(--rm-page-content-first, ${marginTop})`
+-                    : `var(--rm-page-content-general, ${marginTop})`;
++                const marginTop = firstPage
++                    ? `calc(${_pageHeaderHeight}px + ${_pageHeight}px)`
++                    : _pageHeight + "px";
++                if (pageNumber) {
++                    page.style.marginTop = `var(--rm-page-content-${pageNumber}, ${marginTop})`;
++                }
++                else {
++                    page.style.marginTop = firstPage
++                        ? `var(--rm-page-content-first, ${marginTop})`
++                        : `var(--rm-page-content-general, ${marginTop})`;
++                }
+             }
+             const pageBreak = document.createElement("div");
+             pageBreak.classList.add("breaker");
+-            pageBreak.style.width = `calc(100% + var(--rm-margin-left) + var(--rm-margin-right))`;
+-            pageBreak.style.marginLeft = `calc(-1 * var(--rm-margin-left))`;
+-            pageBreak.style.marginRight = `calc(-1 * var(--rm-margin-right))`;
+             pageBreak.style.position = "relative";
+             pageBreak.style.float = "left";
+             pageBreak.style.clear = "both";
+             pageBreak.style.left = `0px`;
+             pageBreak.style.right = `0px`;
+             pageBreak.style.zIndex = "2";
++            if (_geoActive && pageNumber) {
++                // footer belongs to this page, header to the next — each gets
++                // its own paper width (centered) and margin vars.
++                paintPaper(pageBreak, Math.max(eff.pageWidth, effNext.pageWidth));
++                pageFooter.style.display = "flex";
++                pageFooter.style.width = `${eff.pageWidth}px`;
++                pageFooter.style.margin = "0 auto";
++                pageFooter.style.setProperty("--rm-margin-bottom", `${eff.marginBottom}px`);
++                pageFooter.style.setProperty("--rm-margin-left", `${eff.marginLeft}px`);
++                pageFooter.style.setProperty("--rm-margin-right", `${eff.marginRight}px`);
++                pageHeader.style.display = "flex";
++                pageHeader.style.width = `${effNext.pageWidth}px`;
++                pageHeader.style.margin = "0 auto";
++                pageHeader.style.setProperty("--rm-margin-top", `${effNext.marginTop}px`);
++                pageHeader.style.setProperty("--rm-margin-left", `${effNext.marginLeft}px`);
++                pageHeader.style.setProperty("--rm-margin-right", `${effNext.marginRight}px`);
++            }
++            else {
++                pageBreak.style.width = `calc(100% + var(--rm-margin-left) + var(--rm-margin-right))`;
++                pageBreak.style.marginLeft = `calc(-1 * var(--rm-margin-left))`;
++                pageBreak.style.marginRight = `calc(-1 * var(--rm-margin-right))`;
++            }
+             const pageSpace = document.createElement("div");
+             pageSpace.classList.add("rm-pagination-gap");
+             pageSpace.style.height = _pageGap + "px";
+             pageSpace.style.borderLeft = "1px solid";
+             pageSpace.style.borderRight = "1px solid";
+             pageSpace.style.position = "relative";
+-            pageSpace.style.setProperty("width", "calc(100% + 2px)", "important");
++            if (_geoActive && pageNumber) {
++                // page side edges drawn at the NEXT page's width
++                pageSpace.style.width = `${effNext.pageWidth + 2}px`;
++                pageSpace.style.margin = "0 auto";
++            }
++            else {
++                pageSpace.style.setProperty("width", "calc(100% + 2px)", "important");
++            }
+             pageSpace.style.left = "-1px";
+             pageSpace.style.backgroundColor = _pageBreakBackground;
+             pageSpace.style.borderLeftColor = _pageBreakBackground;
+@@ -658,7 +781,8 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+             else {
+                 const __pageHeader = getHeader(commonHeaderOptions.headerRight, commonHeaderOptions.headerLeft, headerClickEvent(headerPageNumber, pageOptions.onHeaderClick));
+                 const __pageFooter = getFooter(commonFooterOptions.footerRight, commonFooterOptions.footerLeft, footerClickEvent(pageNumber, pageOptions.onFooterClick));
+-                fragment.appendChild(pageBreakDefinition(i === 0, __pageHeader, __pageFooter, _headerHeight, _footerHeight));
++                // kx: pass pageNumber so per-section geometry resolves here too
++                fragment.appendChild(pageBreakDefinition(i === 0, __pageHeader, __pageFooter, _headerHeight, _footerHeight, _geoActive ? pageNumber : undefined));
+             }
+         }
+         el.append(fragment);
+@@ -674,6 +798,25 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+         }
+         const el = getHeader(_headerOptions.headerRight, _headerOptions.headerLeft, headerClickEvent(pageNumber, pageOptions.onHeaderClick));
+         el.classList.add("rm-first-page-header");
++        // kx: paint page-1's top-margin band when per-section geometry is on
++        if (_geoActive) {
++            const g1 = geoOf(1);
++            const extra = Math.max(0, g1.pageWidth - pageOptions.pageWidth);
++            const inset = Math.max(0, (pageOptions.pageWidth - g1.pageWidth) / 2);
++            el.style.boxSizing = "border-box";
++            el.style.width = `calc(100% + ${pageOptions.marginLeft + pageOptions.marginRight + extra}px)`;
++            el.style.marginLeft = `${-pageOptions.marginLeft - extra / 2}px`;
++            el.style.marginRight = `${-pageOptions.marginRight - extra / 2}px`;
++            el.style.paddingLeft = `${inset}px`;
++            el.style.paddingRight = `${inset}px`;
++            el.style.backgroundImage = "linear-gradient(#fff,#fff)";
++            el.style.backgroundRepeat = "no-repeat";
++            el.style.backgroundSize = `${g1.pageWidth}px 100%`;
++            el.style.backgroundPosition = "center";
++            el.style.setProperty("--rm-margin-top", `${g1.marginTop}px`);
++            el.style.setProperty("--rm-margin-left", `${g1.marginLeft}px`);
++            el.style.setProperty("--rm-margin-right", `${g1.marginRight}px`);
++        }
+         return el;
+     }, { side: -1 });
+     return [pageWidget, firstHeaderWidget];

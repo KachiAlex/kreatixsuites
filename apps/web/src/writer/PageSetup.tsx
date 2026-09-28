@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Editor } from "@tiptap/react";
 import { PAGE_SIZES, type PageSize } from "tiptap-pagination-plus";
 
@@ -139,6 +140,201 @@ export function pairFor(setup: PageSetup, page: number, region: "header" | "foot
 const pageCountOf = (view: { dom: HTMLElement }) =>
   view.dom.querySelectorAll(".rm-page-break").length || 1;
 
+/** A sectionBreak node resolved to the 1-based page its following section starts on. */
+interface SectionBoundary {
+  startPage: number;
+  attrs: Record<string, unknown>;
+}
+
+/**
+ * Map section-break elements to page numbers. Walls and break elements
+ * interleave in float-flow, so count the walls whose rect sits above each
+ * break — the break ends its section on that page; the new section's first
+ * page is two bands later (band after the wall the break pads into).
+ */
+function sectionBoundaries(view: Editor["view"]): SectionBoundary[] {
+  const dom = view.dom;
+  const wallTops = [...dom.querySelectorAll("#pages > .rm-page-break")]
+    .map((w) => w.querySelector(".breaker")?.getBoundingClientRect().top
+      ?? w.getBoundingClientRect().top)
+    .sort((a, b) => a - b);
+  const out: SectionBoundary[] = [];
+  for (const el of dom.querySelectorAll<HTMLElement>(".page-break.section-break")) {
+    let attrs: Record<string, unknown> = {};
+    try {
+      const pos = view.posAtDOM(el, 0);
+      const node = view.state.doc.nodeAt(pos);
+      if (node?.type.name === "sectionBreak") attrs = node.attrs;
+    } catch {
+      /* fall back to data-* attrs */
+      attrs = {
+        headerLeft: el.getAttribute("data-header-left"),
+        headerRight: el.getAttribute("data-header-right"),
+        footerLeft: el.getAttribute("data-footer-left"),
+        footerRight: el.getAttribute("data-footer-right"),
+        pnStart: el.getAttribute("data-pn-start"),
+      };
+    }
+    const top = el.getBoundingClientRect().top;
+    const before = wallTops.filter((t) => t < top + 1).length;
+    out.push({ startPage: before + 2, attrs });
+  }
+  return out.sort((a, b) => a.startPage - b.startPage);
+}
+
+/** The section boundary governing page p (last boundary at or before it). */
+const sectionForPage = (bounds: SectionBoundary[], p: number) => {
+  let cur: SectionBoundary | null = null;
+  for (const b of bounds) if (b.startPage <= p) cur = b;
+  return cur;
+};
+
+/* ------------------ per-section page geometry ------------------ */
+
+export interface SectGeo {
+  pageWidth?: number; pageHeight?: number;
+  marginTop?: number; marginBottom?: number;
+  marginLeft?: number; marginRight?: number;
+}
+
+const GEO_KEYS = ["pageWidth", "pageHeight", "marginTop", "marginBottom", "marginLeft", "marginRight"] as const;
+
+/** Geometry overrides a boundary introduces; null when it inherits the doc setup. */
+function sectGeoOf(attrs: Record<string, unknown>): SectGeo | null {
+  const g: SectGeo = {};
+  let any = false;
+  for (const k of GEO_KEYS) {
+    const v = attrs[k];
+    if (typeof v === "number" && v > 0) { g[k] = v; any = true; }
+  }
+  return any ? g : null;
+}
+
+/** Global geometry the paginator currently uses (section base = doc setup). */
+function globalGeo(editor: Editor): Required<SectGeo> {
+  const s = editor.storage.PaginationPlus as unknown as Record<string, number> | undefined;
+  return {
+    pageWidth: s?.pageWidth ?? 816, pageHeight: s?.pageHeight ?? 1056,
+    marginTop: s?.marginTop ?? 76, marginBottom: s?.marginBottom ?? 76,
+    marginLeft: s?.marginLeft ?? 84, marginRight: s?.marginRight ?? 84,
+  };
+}
+
+/**
+ * Margins that shift a block into a section's content band: paper centered
+ * on the paper column, content inset by the section's own margins.
+ */
+function blockMargins(geo: SectGeo, g: Required<SectGeo>): { ml: number; mr: number } {
+  const sectW = geo.pageWidth ?? g.pageWidth;
+  const dx = (g.pageWidth - sectW) / 2;
+  return {
+    ml: dx + (geo.marginLeft ?? g.marginLeft) - g.marginLeft,
+    mr: dx + (geo.marginRight ?? g.marginRight) - g.marginRight,
+  };
+}
+
+/**
+ * Per-section geometry for the live paginator:
+ *  - a DecorationSet that shifts every top-level block in a section to that
+ *    section's content band (page width / horizontal margins);
+ *  - a layout-driven page→geometry map pushed into storage.pageGeometry,
+ *    which our PaginationPlus patch turns into per-page wall geometry
+ *    (page size, paper paint, header/footer margin vars).
+ * Page count/band heights are recomputed by the patched paginator; this
+ * plugin only feeds it the map and re-feeds it when breaks move bands.
+ */
+export const SectionGeometry = Extension.create({
+  name: "kxSectionGeometry",
+
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    const buildDecos = (doc: import("@tiptap/pm/model").Node) => {
+      const g = globalGeo(editor);
+      const decos: Decoration[] = [];
+      let cur: SectGeo | null = null;
+      doc.forEach((node, offset) => {
+        if (node.type.name === "sectionBreak") { cur = sectGeoOf(node.attrs); return; }
+        if (!cur) return;
+        const { ml, mr } = blockMargins(cur, g);
+        if (Math.abs(ml) > 0.5 || Math.abs(mr) > 0.5) {
+          decos.push(Decoration.node(offset, offset + node.nodeSize, {
+            class: "kx-sect-block",
+            style: `margin-left:${ml.toFixed(1)}px;margin-right:${mr.toFixed(1)}px`,
+          }));
+        }
+      });
+      return DecorationSet.create(doc, decos);
+    };
+
+    return [
+      new Plugin({
+        key: new PluginKey("kxSectionGeometry"),
+        state: {
+          init: (_, s) => buildDecos(s.doc),
+          apply: (tr, set, _os, ns) => {
+            const next = tr.docChanged ? buildDecos(ns.doc) : set.map(tr.mapping, tr.doc);
+            return next;
+          },
+        },
+        props: {
+          decorations(state) { return this.getState(state); },
+        },
+        view() {
+          let lastSig = "";
+          let scheduled = false;
+          return {
+            update(view) {
+              if (scheduled || !editor.storage.PaginationPlus) return;
+              scheduled = true;
+              requestAnimationFrame(() => {
+                scheduled = false;
+                if (view.isDestroyed || !editor.storage.PaginationPlus) return;
+                try {
+                const bounds = sectionBoundaries(view);
+                // map keyed by section start page — the paginator falls back to
+                // the nearest earlier entry, so ranges don't need filling
+                const geo: Record<number, SectGeo> = {};
+                for (const b of bounds) {
+                  const g = sectGeoOf(b.attrs);
+                  if (g) geo[b.startPage] = g;
+                }
+                const sig = JSON.stringify([bounds.map((b) => b.startPage), geo]);
+                if (sig === lastSig) return;
+                lastSig = sig;
+                const store = editor.storage.PaginationPlus as { pageGeometry?: Record<number, SectGeo> };
+                const hasGeo = Object.keys(geo).length > 0;
+                store.pageGeometry = hasGeo ? geo : undefined;
+                view.dom.toggleAttribute("data-kx-sections", hasGeo);
+                view.dispatch(view.state.tr.setMeta("kx-page-setup", true));
+                } catch (e) { console.error("kxSectionGeometry", e); }
+              });
+            },
+            destroy() {},
+          };
+        },
+      }),
+    ];
+  },
+});
+
+const SECTION_STYLE_ID = "kx-section-style";
+
+/** Page-number restarts: counter-reset on the wall that prints page P's footer. */
+function syncSectionResets(bounds: SectionBoundary[]) {
+  let el = document.getElementById(SECTION_STYLE_ID) as HTMLStyleElement | null;
+  const rules = bounds
+    .filter((b) => typeof b.attrs.pnStart === "number" && (b.attrs.pnStart as number) >= 0)
+    .map((b) => `#pages > .rm-page-break:nth-child(${b.startPage}) { counter-reset: page-number ${(b.attrs.pnStart as number) - 1} !important; }`)
+    .join("\n");
+  if (!rules) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement("style");
+    el.id = SECTION_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  if (el.textContent !== rules) el.textContent = rules;
+}
+
 /**
  * Resolve the whole header/footer state for the live page count:
  * expands {total}, derives per-page variants, writes storage directly
@@ -147,6 +343,8 @@ const pageCountOf = (view: { dom: HTMLElement }) =>
 function syncVariants(editor: Editor, setup: PageSetup) {
   const s = editor.storage.PaginationPlus as unknown as HfStorage;
   const count = pageCountOf(editor.view);
+  const bounds = sectionBoundaries(editor.view);
+  syncSectionResets(bounds);
   const baseH: HfPair = { left: expand(setup.headerLeft, count), right: expand(setup.headerRight, count) };
   const baseF: HfPair = { left: expand(setup.footerLeft, count), right: expand(setup.footerRight, count) };
   s.headerLeft = baseH.left; s.headerRight = baseH.right;
@@ -156,8 +354,14 @@ function syncVariants(editor: Editor, setup: PageSetup) {
   const customHeader: Record<number, { headerLeft: string; headerRight: string }> = {};
   const customFooter: Record<number, { footerLeft: string; footerRight: string }> = {};
   for (let p = 1; p <= count; p++) {
-    const h = pairFor(setup, p, "header");
-    const f = pairFor(setup, p, "footer");
+    let h = pairFor(setup, p, "header");
+    let f = pairFor(setup, p, "footer");
+    const b = sectionForPage(bounds, p);
+    // non-null section header/footer attrs replace the global resolution
+    if (b && (b.attrs.headerLeft != null || b.attrs.headerRight != null))
+      h = { left: String(b.attrs.headerLeft ?? ""), right: String(b.attrs.headerRight ?? "") };
+    if (b && (b.attrs.footerLeft != null || b.attrs.footerRight != null))
+      f = { left: String(b.attrs.footerLeft ?? ""), right: String(b.attrs.footerRight ?? "") };
     const he = { left: expand(h.left, count), right: expand(h.right, count) };
     const fe = { left: expand(f.left, count), right: expand(f.right, count) };
     if (!same(he, baseH)) customHeader[p] = { headerLeft: he.left, headerRight: he.right };
@@ -224,23 +428,32 @@ export const PageSetupSync = Extension.create({
       new Plugin({
         key: new PluginKey("kxPageSetupSync"),
         view() {
-          let lastCount = -1;
+          let lastSig = "";
           let scheduled = false;
           return {
             update(view) {
-              if (scheduled) return;
-              if (!editor.storage.PaginationPlus) return;
-              const count = pageCountOf(view);
-              if (count === lastCount) return;
-              lastCount = count;
+              if (scheduled || !editor.storage.PaginationPlus) return;
+              // re-resolve when page count OR break positions change —
+              // section breaks shift bands while forced pads settle
+              const sig = pageCountOf(view) + "|" +
+                [...view.dom.querySelectorAll(".page-break.section-break")]
+                  .map((el) => Math.round(el.getBoundingClientRect().top))
+                  .join(",");
+              if (sig === lastSig) return;
+              lastSig = sig;
               scheduled = true;
               requestAnimationFrame(() => {
                 scheduled = false;
                 if (view.isDestroyed) return;
                 const setup = (editor.storage.KxPageSetup as { setup?: PageSetup })?.setup;
                 if (!setup) return;
+                const s = editor.storage.PaginationPlus as unknown as HfStorage;
+                const before = JSON.stringify([s.customHeader, s.customFooter]);
                 syncVariants(editor, setup);
-                view.dispatch(view.state.tr.setMeta("kx-page-setup", true));
+                // only nudge a paginator rebuild if the records changed
+                if (JSON.stringify([s.customHeader, s.customFooter]) !== before) {
+                  view.dispatch(view.state.tr.setMeta("kx-page-setup", true));
+                }
               });
             },
             destroy() {},
