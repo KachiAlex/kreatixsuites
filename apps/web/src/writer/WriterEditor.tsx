@@ -46,6 +46,7 @@ import { ContextMenu, type ContextMenuState } from "./ContextMenu";
 import { TableGridPicker } from "./TableGridPicker";
 import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
+import { TABLE_PRESET_SWATCHES } from "./extensions/table";
 import { SortDialog } from "./SortDialog";
 import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog } from "./CellsDialog";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
@@ -900,10 +901,26 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
     {
       label: "Table style", submenu: [
-        { label: "Plain grid", onClick: () => ed.chain().focus().applyTablePreset("plain").run() },
-        { label: "Banded rows", onClick: () => ed.chain().focus().applyTablePreset("banded").run() },
-        { label: "Header accent", onClick: () => ed.chain().focus().applyTablePreset("headerAccent").run() },
-        { label: "Outline only", onClick: () => ed.chain().focus().applyTablePreset("outline").run() },
+        {
+          custom: (
+            <div className="tsg-wrap">
+              <div className="tsg-title">Table styles</div>
+              <div className="tsg">
+                {TABLE_PRESET_SWATCHES.map((s) => (
+                  <button key={s.key} className="tsg-sw" title={s.label}
+                    onClick={() => ed.chain().focus().applyTablePreset(s.key).run()}>
+                    <span className="tsg-mini" style={{ borderColor: s.edge }}>
+                      <i style={{ background: s.hdr ?? "transparent", borderColor: s.edge }} />
+                      <i style={{ background: s.band ?? "transparent", borderColor: s.edge }} />
+                      <i style={{ background: "transparent", borderColor: s.edge }} />
+                    </span>
+                    <span className="tsg-lb">{s.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ),
+        },
       ],
     },
     {

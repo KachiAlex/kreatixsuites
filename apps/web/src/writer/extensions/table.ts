@@ -49,7 +49,7 @@ declare module "@tiptap/core" {
       /** Split the table at the row containing the cursor. */
       splitTable: () => ReturnType;
       /** Apply a named style preset across the whole table. */
-      applyTablePreset: (preset: "plain" | "banded" | "headerAccent" | "outline") => ReturnType;
+      applyTablePreset: (preset: string) => ReturnType;
       convertTextToTable: (delim?: string) => ReturnType;
       convertTableToText: (delim?: string) => ReturnType;
     };
@@ -427,6 +427,88 @@ const shiftColumnCells = (
   tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
   return true;
 };
+
+// ---- table style presets --------------------------------------------------
+// Each preset maps a cell's grid position to {bg, borders} — Word-style
+// gallery where styles know which edges are on the perimeter.
+
+interface PresetCtx { top: number; left: number; bottom: number; right: number; H: number; W: number }
+type PresetOut = { bg: string | null; borders: CellBorders | null };
+
+const line = (w: number, c: string): CellBorders => ({
+  top: { style: "solid", width: w, color: c },
+  right: { style: "solid", width: w, color: c },
+  bottom: { style: "solid", width: w, color: c },
+  left: { style: "solid", width: w, color: c },
+});
+const perim = (x: PresetCtx, w: number, c: string): CellBorders => {
+  const b = { style: "solid", width: w, color: c };
+  const out: CellBorders = {};
+  if (x.top === 0) out.top = b;
+  if (x.bottom === x.H) out.bottom = b;
+  if (x.left === 0) out.left = b;
+  if (x.right === x.W) out.right = b;
+  return out;
+};
+const rowRules = (w: number, c: string): CellBorders => ({
+  top: { style: "solid", width: w, color: c },
+  bottom: { style: "solid", width: w, color: c },
+});
+const booktabs = (x: PresetCtx): CellBorders => {
+  const out: CellBorders = {};
+  if (x.top === 0) {
+    out.top = { style: "solid", width: 2, color: "#3A3633" };
+    out.bottom = { style: "solid", width: 1, color: "#6B645E" };
+  }
+  if (x.bottom === x.H) out.bottom = { style: "solid", width: 2, color: "#3A3633" };
+  return out;
+};
+
+export const TABLE_PRESETS: Record<string, (x: PresetCtx) => PresetOut> = {
+  plain: () => ({ bg: null, borders: line(1, "#DDD6D0") }),
+  gridDark: () => ({ bg: null, borders: line(1, "#9A908A") }),
+  outline: (x) => ({ bg: null, borders: perim(x, 1, "#9A908A") }),
+  list: () => ({ bg: null, borders: rowRules(1, "#DDD6D0") }),
+  booktabs: (x) => ({ bg: null, borders: booktabs(x) }),
+  banded: (x) => ({
+    bg: x.top === 0 ? "#F2782E" : x.top % 2 === 0 ? "#FBF3EC" : null,
+    borders: line(1, "#E4D9CE"),
+  }),
+  headerAccent: (x) => ({ bg: x.top === 0 ? "#3A3633" : null, borders: line(1, "#DDD6D0") }),
+  blueAccent: (x) => ({
+    bg: x.top === 0 ? "#2563EB" : x.top % 2 === 0 ? "#EFF6FF" : null,
+    borders: line(1, "#BFDBFE"),
+  }),
+  greenAccent: (x) => ({
+    bg: x.top === 0 ? "#15803D" : x.top % 2 === 0 ? "#F0FDF4" : null,
+    borders: line(1, "#BBF7D0"),
+  }),
+  purpleAccent: (x) => ({
+    bg: x.top === 0 ? "#7C3AED" : x.top % 2 === 0 ? "#FAF5FF" : null,
+    borders: line(1, "#DDD6FE"),
+  }),
+  minimalDark: (x) => ({ bg: x.top === 0 ? "#3A3633" : null, borders: rowRules(1, "#DDD6D0") }),
+  roseAccent: (x) => ({
+    bg: x.top === 0 ? "#BE123C" : x.top % 2 === 0 ? "#FFF1F2" : null,
+    borders: line(1, "#FECDD3"),
+  }),
+};
+
+/** Swatch descriptors for the styles gallery thumbnails. */
+export const TABLE_PRESET_SWATCHES: { key: string; label: string; hdr: string | null; band: string | null; edge: string }[] = [
+  { key: "plain", label: "Plain grid", hdr: null, band: null, edge: "#DDD6D0" },
+  { key: "gridDark", label: "Grid — dark lines", hdr: null, band: null, edge: "#9A908A" },
+  { key: "outline", label: "Outline only", hdr: null, band: null, edge: "#9A908A" },
+  { key: "list", label: "List — row rules", hdr: null, band: null, edge: "#DDD6D0" },
+  { key: "booktabs", label: "Book tabs", hdr: null, band: null, edge: "#3A3633" },
+  { key: "banded", label: "Banded — accent", hdr: "#F2782E", band: "#FBF3EC", edge: "#E4D9CE" },
+  { key: "headerAccent", label: "Header accent", hdr: "#3A3633", band: null, edge: "#DDD6D0" },
+  { key: "blueAccent", label: "Blue accent", hdr: "#2563EB", band: "#EFF6FF", edge: "#BFDBFE" },
+  { key: "greenAccent", label: "Green accent", hdr: "#15803D", band: "#F0FDF4", edge: "#BBF7D0" },
+  { key: "purpleAccent", label: "Purple accent", hdr: "#7C3AED", band: "#FAF5FF", edge: "#DDD6FE" },
+  { key: "roseAccent", label: "Rose accent", hdr: "#BE123C", band: "#FFF1F2", edge: "#FECDD3" },
+  { key: "minimalDark", label: "Minimal — dark head", hdr: "#3A3633", band: null, edge: "#DDD6D0" },
+];
 
 export const KxTableCommands = Extension.create({
   name: "kxTable",
@@ -866,30 +948,33 @@ export const KxTableCommands = Extension.create({
           const { $from } = state.selection;
           const table = $from.node(d);
           const tablePos = $from.before(d);
-          const line = (w: number, c: string): CellBorders => ({
-            top: { style: "solid", width: w, color: c },
-            right: { style: "solid", width: w, color: c },
-            bottom: { style: "solid", width: w, color: c },
-            left: { style: "solid", width: w, color: c },
-          });
-          table.forEach((row, off, ri) => {
+          const map = TableMap.get(table);
+          const spec = TABLE_PRESETS[preset];
+          if (!spec) return false;
+          table.forEach((row, off) => {
             row.forEach((cell, coff) => {
               const pos = tablePos + 1 + off + 1 + coff;
-              const a = { ...cell.attrs };
-              if (preset === "plain") {
-                a.backgroundColor = null;
-                a.borders = line(1, "#DDD6D0");
-              } else if (preset === "banded") {
-                a.backgroundColor = ri === 0 ? "#F2782E" : ri % 2 === 0 ? "#FBF3EC" : null;
-                a.borders = line(1, "#E4D9CE");
-              } else if (preset === "headerAccent") {
-                a.backgroundColor = ri === 0 ? "#3A3633" : null;
-                a.borders = line(1, "#DDD6D0");
-              } else if (preset === "outline") {
-                a.backgroundColor = null;
-                a.borders = null; // keep default thin grid
+              const rc = map.findCell(off + 1 + coff);
+              const out = spec({
+                top: rc.top, left: rc.left,
+                bottom: rc.top + ((cell.attrs.rowspan as number) || 1),
+                right: rc.left + ((cell.attrs.colspan as number) || 1),
+                H: map.height, W: map.width,
+              });
+              // fill unspecified sides with "none" so they override the
+              // default grid border instead of silently inheriting it
+              let borders = out.borders;
+              if (borders) {
+                borders = { ...borders };
+                for (const s of ["top", "right", "bottom", "left"] as const) {
+                  if (!borders[s]) borders[s] = { style: "none", width: 0, color: "transparent" };
+                }
               }
-              tr.setNodeMarkup(pos, undefined, a);
+              tr.setNodeMarkup(pos, undefined, {
+                ...cell.attrs,
+                backgroundColor: out.bg,
+                borders,
+              });
             });
           });
           return true;

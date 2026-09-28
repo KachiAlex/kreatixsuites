@@ -221,6 +221,17 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 /* gridlines off: blank default borders; explicit cell borders are inline styles and win */
 .ProseMirror.kx-no-gridlines td,.ProseMirror.kx-no-gridlines th{border-color:transparent}
 .ProseMirror.kx-no-gridlines table{border-color:transparent}
+
+/* table styles gallery */
+.tsg-wrap{padding:6px 8px}
+.tsg-title{font-size:10px;font-weight:700;color:#8A817A;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.tsg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:280px}
+.tsg-sw{display:flex;flex-direction:column;align-items:center;gap:3px;background:transparent;border:0;cursor:pointer;padding:4px;border-radius:6px}
+.tsg-sw:hover{background:#F5F1ED}
+.tsg-mini{display:flex;flex-direction:column;width:64px;height:40px;border:1px solid #DDD6D0;border-radius:3px;overflow:hidden}
+.tsg-mini i{flex:1;border-bottom:1px solid;display:block}
+.tsg-mini i:last-child{border-bottom:0}
+.tsg-lb{font-size:9px;color:#6B645E;text-align:center;line-height:1.1}
 .ProseMirror th{background:#F5F1ED;font-weight:700}
 .ProseMirror .selectedCell{outline:2px solid rgba(242,120,46,.55);outline-offset:-2px;background:rgba(242,120,46,.07)}
 .ProseMirror .column-resize-handle{position:absolute;right:-2px;top:0;bottom:-2px;width:4px;background:var(--k-orange);pointer-events:none}
