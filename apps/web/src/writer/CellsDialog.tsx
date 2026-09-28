@@ -184,3 +184,50 @@ export function CellsDialog({ editor, mode, onClose }: { editor: Editor; mode: M
     </div>
   );
 }
+
+/** Word's Table ▸ Formula dialog: expression + number format. */
+export function FormulaDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
+  const sel = editor.state.selection as { node?: { type: { name: string }; attrs: Record<string, unknown> } };
+  const cur = sel.node?.type.name === "tableFormula" ? sel.node.attrs : null;
+  const [expr, setExpr] = useState((cur?.expr as string) ?? "=SUM(ABOVE)");
+  const [fmt, setFmt] = useState((cur?.fmt as string) ?? "");
+  const apply = () => {
+    const e = expr.trim();
+    if (!e) return;
+    editor.chain().focus().insertTableFormula(e, fmt || null).run();
+    onClose();
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card tp-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Formula">
+        <h3>Formula</h3>
+        <div className="tp-body">
+          <label className="ps-field"><span>Formula</span>
+            <input autoFocus value={expr} onChange={(e) => setExpr(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
+              placeholder="=SUM(ABOVE)" spellCheck={false} />
+          </label>
+          <label className="ps-field"><span>Number format</span>
+            <select value={fmt} onChange={(e) => setFmt(e.target.value)}>
+              <option value="">General</option>
+              <option value="0">0</option>
+              <option value="0.00">0.00</option>
+              <option value="#,##0">#,##0</option>
+              <option value="#,##0.00">#,##0.00</option>
+              <option value="0%">0%</option>
+              <option value="$#,##0.00">$#,##0.00</option>
+            </select>
+          </label>
+          <div className="ps-hint" style={{ fontSize: 11, color: "#8A7F76" }}>
+            Functions: SUM, AVERAGE, COUNT, MIN, MAX, PRODUCT, ABS, ROUND, MOD.
+            Args: ABOVE / BELOW / LEFT / RIGHT, cell refs (B2), ranges (A1:B3).
+          </div>
+        </div>
+        <div className="ps-actions">
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={apply}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}

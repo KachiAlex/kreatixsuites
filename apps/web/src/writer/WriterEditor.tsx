@@ -48,7 +48,8 @@ import { BordersPicker } from "./BordersPicker";
 import { TablePropertiesDialog } from "./TablePropertiesDialog";
 import { TABLE_PRESET_SWATCHES, QUICK_TABLES } from "./extensions/table";
 import { SortDialog } from "./SortDialog";
-import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog } from "./CellsDialog";
+import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog, FormulaDialog } from "./CellsDialog";
+import { TableFormula } from "./extensions/tableFormula";
 import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop } from "./controls";
 import { Ruler } from "./Ruler";
@@ -95,6 +96,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [sortOpen, setSortOpen] = useState(false);
   const [cellsDlg, setCellsDlg] = useState<"insert" | "delete" | null>(null);
   const [splitDlg, setSplitDlg] = useState(false);
+  const [formulaOpen, setFormulaOpen] = useState(false);
   const [sepDlg, setSepDlg] = useState<"toText" | "toTable" | null>(null);
   const [insertTbl, setInsertTbl] = useState(false);
   const [gridlines, setGridlines] = useState(() => localStorage.getItem("kx.gridlines") !== "off");
@@ -137,7 +139,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Subscript, Superscript,
       TaskList, TaskItem.configure({ nested: true }),
-      KxTable.configure({ resizable: true, allowTableNodeSelection: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands, KxTableHandles,
+      KxTable.configure({ resizable: true, allowTableNodeSelection: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands, KxTableHandles, TableFormula,
       RichImage,
       CodeBlockLowlight.configure({ lowlight: createLowlight(common) }),
       Mathematics,
@@ -890,6 +892,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
         { label: "Sort…", onClick: () => setSortOpen(true) },
       ],
     },
+    { label: "Formula…", onClick: () => setFormulaOpen(true) },
+    { label: "Update formulas", onClick: () => ed.commands.updateTableFormulas() },
     { label: "Distribute columns evenly", onClick: () => ed.chain().focus().distributeColumnsEvenly().run() },
     { label: "Distribute rows evenly", onClick: () => ed.chain().focus().distributeRowsEvenly().run() },
     {
@@ -1510,6 +1514,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {sortOpen && editor && <SortDialog editor={editor} onClose={() => setSortOpen(false)} />}
       {cellsDlg && editor && <CellsDialog editor={editor} mode={cellsDlg} onClose={() => setCellsDlg(null)} />}
       {splitDlg && editor && <SplitCellsDialog editor={editor} onClose={() => setSplitDlg(false)} />}
+      {formulaOpen && editor && <FormulaDialog editor={editor} onClose={() => setFormulaOpen(false)} />}
       {insertTbl && editor && <InsertTableDialog editor={editor} onClose={() => setInsertTbl(false)} />}
       {sepDlg && editor && (
         <SeparatorDialog

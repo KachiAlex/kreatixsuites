@@ -252,6 +252,11 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .ProseMirror.kx-tool-draw,.ProseMirror.kx-tool-draw *{cursor:crosshair!important}
 .ProseMirror.kx-tool-erase,.ProseMirror.kx-tool-erase *{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><g transform='rotate(-45 8 8)'><rect x='3' y='4' width='10' height='7' rx='1' fill='%23F2782E'/><rect x='3' y='9' width='10' height='4' rx='1' fill='%23555'/></g></svg>") 4 12, cell!important}
 .kx-draw-guide{position:fixed;border:1.5px dashed var(--k-orange);background:rgba(242,120,46,.06);pointer-events:none;z-index:90}
+
+/* table formula fields — Word-style field shading */
+.kx-formula{background:rgba(0,0,0,.06);border-radius:3px;padding:0 2px;cursor:default}
+.kx-formula.ProseMirror-selectednode{background:rgba(242,120,46,.18);outline:1px solid var(--k-orange)}
+.kx-formula-err{color:#C0392B;font-style:italic}
 .kx-tbl-corner{position:fixed;z-index:60;width:9px;height:9px;background:#fff;border:1.5px solid #8A7F76;cursor:nwse-resize;user-select:none}
 .kx-tbl-corner:hover{background:var(--k-orange);border-color:var(--k-orange)}
 .kx-tbl-ins{position:fixed;z-index:61;pointer-events:none}
