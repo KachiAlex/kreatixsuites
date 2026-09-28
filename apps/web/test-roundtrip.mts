@@ -69,7 +69,7 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     ],
   };
   const blob = await exportDocxBytes(doc as never, "report");
-  const html = await importDocx(fileOf(await blob.arrayBuffer(), "report.docx"));
+  const html = (await importDocx(fileOf(await blob.arrayBuffer(), "report.docx"))).html;
   check("docx: heading text", html.includes("Quarterly Report"));
   check("docx: inline text", html.includes("Revenue grew") && html.includes("42 percent"));
   check("docx: table cells", html.includes("Metric") && html.includes("Value"));
@@ -130,6 +130,70 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     }
   }
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
+}
+
+// ---------- DOCX: styles.xml / numbering.xml / comments / doc-props ----------
+{
+  const { Paragraph } = await import("docx");
+  void Paragraph;
+  const JSZip = (await import("jszip")).default;
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", attrs: { styleName: "title" }, content: [{ type: "text", text: "Spec Doc" }] },
+      { type: "paragraph", attrs: { styleName: "myStyle" }, content: [{ type: "text", text: "styled body" }] },
+      { type: "orderedList", attrs: { listStyle: "lower-roman", start: 3 }, content: [
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "three" }] }] },
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "four" }] }] },
+      ] },
+      { type: "bulletList", content: [
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "b1" }] }] },
+      ] },
+      { type: "paragraph", content: [
+        { type: "text", text: "plain " },
+        { type: "text", text: "commented", marks: [{ type: "comment", attrs: { commentId: "c-1" } }] },
+        { type: "text", text: " tail" },
+      ] },
+      { type: "paragraph", attrs: { indentPx: 60, indentRight: "40px", firstLine: "32px", lineSpacingRule: "exact:28px", dir: "rtl" },
+        content: [{ type: "text", text: "fmt para" }] },
+    ],
+  };
+  const blob = await exportDocxBytes(doc as never, "styled", {
+    styles: { myStyle: { key: "myStyle", label: "My Style", node: "paragraph", italic: true, color: "#123456" } },
+    comments: [{ anchor: "c-1", body: "a note", author: "Ann" }],
+    docProps: { title: "Spec Title", subject: "QA", author: "Kreatix", keywords: "a, b", category: "spec", comments: "notes here" },
+    pageSetup: { sizeName: "A4", width: 794, height: 1123, marginTop: 96, marginBottom: 96, marginLeft: 96, marginRight: 96 } as never,
+  });
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const stylesXml = await zip.file("word/styles.xml")?.async("text") ?? "";
+  check("docx styles.xml: custom style", stylesXml.includes('w:styleId="kx-myStyle"') && stylesXml.includes('w:val="My Style"'));
+  check("docx styles.xml: title def", stylesXml.includes('w:styleId="kx-title"'));
+  const numXml = await zip.file("word/numbering.xml")?.async("text") ?? "";
+  check("docx numbering: lowerRoman", numXml.includes('w:val="lowerRoman"'));
+  check("docx numbering: bullet", numXml.includes('w:val="bullet"'));
+  const commentsXml = await zip.file("word/comments.xml")?.async("text") ?? "";
+  check("docx comments.xml: body", commentsXml.includes("a note"));
+  const docXml2 = await zip.file("word/document.xml")?.async("text") ?? "";
+  check("docx comment range", docXml2.includes("commentRangeStart") && docXml2.includes("commentReference"));
+  check("docx pStyle ref", docXml2.includes('w:pStyle w:val="kx-myStyle"'));
+  check("docx numPr ref", docXml2.includes("w:numId"));
+  check("docx exact spacing", docXml2.includes('w:lineRule="exact"') || docXml2.includes('w:lineRule="atLeast"'));
+  check("docx bidi", docXml2.includes("<w:bidi"));
+  const coreXml = await zip.file("docProps/core.xml")?.async("text") ?? "";
+  check("docx core.xml: title", coreXml.includes("<dc:title>Spec Title</dc:title>"));
+  check("docx core.xml: author", coreXml.includes("<dc:creator>Kreatix</dc:creator>"));
+  const sectXml = docXml2;
+  check("docx sectPr: gutter+A4", sectXml.includes("w:gutter") && /w:pgSz[^>]*w:w="11910"/.test(sectXml));
+
+  // re-import — styles/numbering/comments/props come back
+  const res = await importDocx(fileOf(await blob.arrayBuffer(), "styled.docx"));
+  check("docx re: pStyle→data-style", /data-style="(title|imp_kx-myStyle)"/.test(res.html));
+  check("docx re: imported defs", Object.keys(res.styles).length > 0);
+  check("docx re: roman ol", /list-style-type:lower-roman/.test(res.html));
+  check("docx re: ol start", res.html.includes('start="3"'));
+  check("docx re: comment mark", res.html.includes('data-comment-id="docx-'));
+  check("docx re: comment body", res.comments.some((c) => c.body === "a note"));
+  check("docx re: docProps", res.docProps.title === "Spec Title" && res.docProps.author === "Kreatix");
 }
 
 // ---------- MD / RTF / ODT exporters ----------

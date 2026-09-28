@@ -1,11 +1,18 @@
 import {
-  AlignmentType, ColumnBreak as DocxColumnBreak, Document, Footer, FootnoteReferenceRun,
-  Header, HeadingLevel, ImageRun, Math as DocxMath, MathRun, Packer, Paragraph,
-  PageBreak as DocxPageBreak, SectionType, Table, TableCell, TableRow,
+  AlignmentType, ColumnBreak as DocxColumnBreak, CommentRangeEnd, CommentRangeStart,
+  CommentReference, Document, Footer, FootnoteReferenceRun,
+  Header, HeadingLevel, ImageRun, LevelFormat, LevelSuffix, Math as DocxMath, MathRun,
+  Packer, PageBreak as DocxPageBreak, PageOrientation, Paragraph, SectionType,
+  Table, TableCell, TableRow,
   TextDirection, TextRun, VerticalAlignTable, WidthType,
-  type File as DocxFile, type ISectionOptions, type ISectionPropertiesOptions,
+  type File as DocxFile, type IParagraphStyleOptions, type ISectionOptions,
+  type ISectionPropertiesOptions, type ParagraphChild,
 } from "docx";
 import mammoth from "mammoth";
+import type { Editor } from "@tiptap/core";
+import { DEFAULT_STYLES, loadStyleDefs, styleDefsOf, type StyleDef } from "./extensions/styles";
+import type { DocProps } from "./DocProps";
+import type { PageSetup } from "./PageSetup";
 
 type Json = Record<string, unknown>;
 
@@ -17,6 +24,25 @@ interface Block {
   content?: Block[] | Inline[];
   text?: string;
   marks?: Mark[];
+}
+
+/** Optional context for a full-fidelity export (comments, named styles,
+ *  doc properties, page geometry). */
+export interface DocxExportOpts {
+  comments?: { anchor?: string | null; body: string; author?: { displayName?: string } | string; createdAt?: string; resolved?: boolean }[];
+  docProps?: DocProps;
+  styles?: Record<string, StyleDef>;
+  pageSetup?: PageSetup;
+}
+
+/** Result of a DOCX import — editor HTML plus the parts mammoth can't carry. */
+export interface DocxImportResult {
+  html: string;
+  /** Named-style defs recovered from styles.xml, keyed for KxStyles. */
+  styles: Record<string, StyleDef>;
+  docProps: DocProps;
+  /** Anchored comments from comments.xml → post to the comments API. */
+  comments: { anchor: string; body: string; author?: string; createdAt?: string }[];
 }
 
 const HEADINGS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
@@ -45,52 +71,80 @@ function textStyle(n: Inline | Block, inherited: Mark[]): { font?: string; color
 
 type Run = TextRun | FootnoteReferenceRun | ImageRun | DocxMath;
 
-function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Run[] {
-  return (nodes ?? []).flatMap((n): Run[] => {
-    if (n.type === "hardBreak") return [new TextRun({ break: 1 })];
-    if (n.type === "footnote") {
-      footnoteSeq += 1;
-      footnoteTexts.set(String(footnoteSeq), (n.attrs?.note as string) ?? "");
-      return [new FootnoteReferenceRun(footnoteSeq)];
+/** anchor (comment mark id) → OOXML comment id, assigned in doc order. */
+const commentNums = new Map<string, number>();
+const commentNum = (anchor: string): number => {
+  let n = commentNums.get(anchor);
+  if (n == null) { n = commentNums.size + 1; commentNums.set(anchor, n); }
+  return n;
+};
+
+function runsFor(n: Inline, inherited: Mark[]): Run[] {
+  if (n.type === "hardBreak") return [new TextRun({ break: 1 })];
+  if (n.type === "footnote") {
+    footnoteSeq += 1;
+    footnoteTexts.set(String(footnoteSeq), (n.attrs?.note as string) ?? "");
+    return [new FootnoteReferenceRun(footnoteSeq)];
+  }
+  if (n.type === "inlineMath") {
+    // native OMML equation zone — Word renders it as a real equation object
+    // and can rebuild the LaTeX source from its equation editor
+    return [new DocxMath({ children: [new MathRun((n.attrs?.latex as string) ?? "")] })];
+  }
+  if (n.type === "image") {
+    const src = (n.attrs?.src as string) ?? "";
+    const data = imgCache.get(src);
+    if (!data) return [new TextRun({ text: "[image]" })];
+    try {
+      return [new ImageRun({
+        type: src.startsWith("data:image/png") ? "png" : src.startsWith("data:image/jpeg") || src.startsWith("data:image/jpg") ? "jpg" : src.startsWith("data:image/gif") ? "gif" : "png",
+        data,
+        transformation: { width: Math.min(600, Number(n.attrs?.width) || 400), height: 300 },
+        altText: { name: (n.attrs?.alt as string) ?? "image", title: (n.attrs?.alt as string) ?? "image", description: (n.attrs?.alt as string) ?? "" },
+      })];
+    } catch {
+      return [new TextRun({ text: "[image]" })];
     }
-    if (n.type === "inlineMath") {
-      // native OMML equation zone — Word renders it as a real equation object
-      // and can rebuild the LaTeX source from its equation editor
-      return [new DocxMath({ children: [new MathRun((n.attrs?.latex as string) ?? "")] })];
-    }
-    if (n.type === "image") {
-      const src = (n.attrs?.src as string) ?? "";
-      const data = imgCache.get(src);
-      if (!data) return [new TextRun({ text: "[image]" })];
-      try {
-        return [new ImageRun({
-          type: src.startsWith("data:image/png") ? "png" : src.startsWith("data:image/jpeg") || src.startsWith("data:image/jpg") ? "jpg" : src.startsWith("data:image/gif") ? "gif" : "png",
-          data,
-          transformation: { width: Math.min(600, Number(n.attrs?.width) || 400), height: 300 },
-          altText: { name: (n.attrs?.alt as string) ?? "image", title: (n.attrs?.alt as string) ?? "image", description: (n.attrs?.alt as string) ?? "" },
-        })];
-      } catch {
-        return [new TextRun({ text: "[image]" })];
-      }
-    }
-    if (n.type !== "text" || !n.text) return [];
-    const marks = [...inherited, ...(n.marks ?? [])];
-    const has = (t: string) => marks.some((m) => m.type === t);
-    const st = textStyle(n, []);
-    const link = marks.find((m) => m.type === "link");
-    return [new TextRun({
-      text: n.text,
-      bold: has("bold") || undefined,
-      italics: has("italic") || undefined,
-      underline: has("underline") || link ? {} : undefined,
-      strike: has("strike") || undefined,
-      color: link ? "0563C1" : st.color,
-      font: st.font,
-      size: st.size,
-      superScript: has("superscript") || undefined,
-      subScript: has("subscript") || undefined,
-    })];
-  });
+  }
+  if (n.type !== "text" || !n.text) return [];
+  const marks = [...inherited, ...(n.marks ?? [])];
+  const has = (t: string) => marks.some((m) => m.type === t);
+  const st = textStyle(n, []);
+  const link = marks.find((m) => m.type === "link");
+  return [new TextRun({
+    text: n.text,
+    bold: has("bold") || undefined,
+    italics: has("italic") || undefined,
+    underline: has("underline") || link ? {} : undefined,
+    strike: has("strike") || undefined,
+    color: link ? "0563C1" : st.color,
+    font: st.font,
+    size: st.size,
+    superScript: has("superscript") || undefined,
+    subScript: has("subscript") || undefined,
+  })];
+}
+
+/** Inline nodes → Paragraph children, interleaving comment range boundaries
+ *  (commentRangeStart/End + a trailing commentReference run per comment). */
+function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): ParagraphChild[] {
+  const out: ParagraphChild[] = [];
+  let open: string | null = null;
+  const used = new Set<string>();
+  const setOpen = (next: string | null) => {
+    if (open != null) { out.push(new CommentRangeEnd(commentNum(open))); open = null; }
+    if (next != null) { out.push(new CommentRangeStart(commentNum(next))); open = next; used.add(next); }
+  };
+  for (const n of nodes ?? []) {
+    const runs = runsFor(n, inherited);
+    if (!runs.length) continue;
+    const cid = ((n.marks ?? []).find((m) => m.type === "comment")?.attrs?.commentId as string | undefined) ?? null;
+    if (cid !== open) setOpen(cid);
+    out.push(...runs);
+  }
+  setOpen(null);
+  for (const c of used) out.push(new TextRun({ children: [new CommentReference(commentNum(c))] }));
+  return out;
 }
 
 const imgCache = new Map<string, Uint8Array>();
@@ -120,68 +174,158 @@ async function prefetchImages(doc: Block): Promise<void> {
   await Promise.all(jobs);
 }
 
-function spacing(node: Block) {
-  const line = node.attrs?.lineHeight as string | undefined;
-  const before = node.attrs?.spaceBefore as number | undefined;
-  const after = node.attrs?.spaceAfter as number | undefined;
-  if (!line && !before && !after) return undefined;
-  return {
-    line: line ? Math.round(parseFloat(line) * 240) : undefined,
-    before: before ? before * 20 : undefined,
-    after: after ? after * 20 : undefined,
-  };
+const pxToDxa = (px: unknown): number | undefined =>
+  typeof px === "number" && Number.isFinite(px) ? Math.round(px * 15) : undefined;
+
+const cssPx = (v: unknown): number | undefined => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const n = parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : undefined;
+};
+
+const STYLE_ID = (key: string) => `kx-${key.replace(/[^\w-]/g, "")}`;
+
+/** Style keys actually referenced by document paragraphs — styles.xml emits
+ *  these plus every definition in the doc payload. */
+const usedStyleKeys = new Set<string>();
+
+/** OOXML numbering definitions: reference → format/start. */
+const numRefs = new Map<string, { fmt: (typeof LevelFormat)[keyof typeof LevelFormat]; start: number; bullet: boolean }>();
+
+const OL_FORMAT: Record<string, (typeof LevelFormat)[keyof typeof LevelFormat]> = {
+  "lower-alpha": LevelFormat.LOWER_LETTER,
+  "upper-alpha": LevelFormat.UPPER_LETTER,
+  "lower-roman": LevelFormat.LOWER_ROMAN,
+  "upper-roman": LevelFormat.UPPER_ROMAN,
+  decimal: LevelFormat.DECIMAL,
+};
+
+const BULLET_FORMAT: Record<string, string> = {
+  disc: "•", circle: "◦", square: "▪",
+};
+
+function numberingRef(node: Block, bullet: boolean, level: number): { reference: string; level: number } {
+  const a = node.attrs ?? {};
+  const css = (a.listStyle as string) || (bullet ? "disc" : "decimal");
+  const start = Number(a.start ?? 1) || 1;
+  const ref = bullet ? `kx-ul-${css}` : `kx-ol-${css}-${start}`;
+  if (!numRefs.has(ref)) {
+    numRefs.set(ref, {
+      fmt: bullet ? LevelFormat.BULLET : (OL_FORMAT[css] ?? LevelFormat.DECIMAL),
+      start, bullet,
+    });
+  }
+  return { reference: ref, level };
 }
 
-/** Word ▸ Paragraph ▸ Line and Page Breaks attrs → OOXML pPr props. */
-function paginationProps(node: Block) {
+function spacing(node: Block) {
   const a = node.attrs ?? {};
+  const before = cssPx(a.spaceBefore);
+  const after = cssPx(a.spaceAfter);
+  const rule = a.lineSpacingRule as string | undefined; // "mode:value"
+  const lh = a.lineHeight as string | undefined;
+  const sp: Record<string, number | string | undefined> = {};
+  if (before != null) sp.before = pxToDxa(before);
+  if (after != null) sp.after = pxToDxa(after);
+  if (rule) {
+    const [mode, v] = rule.split(":");
+    if (mode === "multiple") sp.line = Math.round((parseFloat(v) || 1) * 240);
+    else if (v) {
+      const px = v.endsWith("pt") ? parseFloat(v) * 96 / 72 : parseFloat(v);
+      if (Number.isFinite(px)) { sp.line = pxToDxa(px); sp.lineRule = mode; }
+    }
+  } else if (lh) {
+    if (/px$/.test(lh)) { sp.line = pxToDxa(parseFloat(lh)); sp.lineRule = "exact"; }
+    else if (/pt$/.test(lh)) { sp.line = Math.round(parseFloat(lh) * 20); sp.lineRule = "exact"; }
+    else sp.line = Math.round((parseFloat(lh) || 1) * 240);
+  }
+  return Object.values(sp).some((v) => v != null) ? sp as never : undefined;
+}
+
+const TAB_TYPES: Record<string, "left" | "right" | "center" | "decimal"> = {
+  left: "left", right: "right", center: "center", decimal: "decimal",
+};
+
+/** All paragraph-format attrs (Phase 2) + pagination → OOXML pPr options. */
+function paraProps(node: Block) {
+  const a = node.attrs ?? {};
+  const ind: Record<string, number | undefined> = {};
+  if (a.indentPx != null) ind.left = pxToDxa(cssPx(a.indentPx));
+  else if (a.indent) ind.left = pxToDxa((a.indent as number) * 24);
+  const ir = cssPx(a.indentRight);
+  if (ir != null) ind.right = pxToDxa(ir);
+  const fl = cssPx(a.firstLine);
+  if (fl != null) { if (fl >= 0) ind.firstLine = pxToDxa(fl); else ind.hanging = pxToDxa(-fl); }
+
+  const pb = a.pBorders as { top?: BorderSpec; right?: BorderSpec; bottom?: BorderSpec; left?: BorderSpec } | null | undefined;
+  const border = pb ? {
+    top: docxBorder(pb.top), right: docxBorder(pb.right),
+    bottom: docxBorder(pb.bottom), left: docxBorder(pb.left),
+  } as never : undefined;
+
+  const tabs = Array.isArray(a.tabs) ? (a.tabs as { pos: number; align: string }[]) : null;
+
   return {
+    alignment: ALIGN[(a.textAlign as string) ?? ""] as never,
+    spacing: spacing(node),
+    indent: Object.keys(ind).length ? ind as never : undefined,
     pageBreakBefore: a.pageBreakBefore ? true : undefined,
     keepNext: a.keepNext ? true : undefined,
     keepLines: a.keepLines ? true : undefined,
     widowControl: a.widowOrphan ? true : undefined,
+    border,
+    shading: a.pShading ? { fill: hex(String(a.pShading)) } as never : undefined,
+    tabStops: tabs?.length
+      ? tabs.map((t) => ({ type: TAB_TYPES[t.align] ?? "left", position: pxToDxa(t.pos) ?? 0 })) as never
+      : undefined,
+    bidirectional: a.dir === "rtl" ? true : undefined,
   };
 }
 
-function blockToParagraphs(node: Block): Paragraph[] {
+function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
   switch (node.type) {
     case "heading": {
       const level = Number(node.attrs?.level ?? 1);
       return [new Paragraph({
         heading: HEADINGS[level] ?? HeadingLevel.HEADING_6,
-        alignment: ALIGN[(node.attrs?.textAlign as string) ?? ""] as never,
-        spacing: spacing(node),
-        ...paginationProps(node),
-        indent: node.attrs?.indent ? { left: (node.attrs.indent as number) * 480 } : undefined,
+        ...paraProps(node),
         children: inlineRuns(node.content as Inline[]) as never,
       })];
     }
-    case "paragraph":
+    case "paragraph": {
+      const key = node.attrs?.styleName as string | undefined;
+      if (key) usedStyleKeys.add(key);
       return [new Paragraph({
-        alignment: ALIGN[(node.attrs?.textAlign as string) ?? ""] as never,
-        spacing: spacing(node),
-        ...paginationProps(node),
-        indent: node.attrs?.indent ? { left: (node.attrs.indent as number) * 480 } : undefined,
+        ...paraProps(node),
+        style: key ? STYLE_ID(key) : undefined,
         children: inlineRuns(node.content as Inline[]) as never,
       })];
+    }
     case "blockquote":
-      return (node.content as Block[]).flatMap(blockToParagraphs).map(
+      return (node.content as Block[]).flatMap((b) => blockToParagraphs(b, listDepth)).map(
         (p) => new Paragraph({ ...p, indent: { left: 400 }, border: undefined }),
       );
     case "bulletList":
       return (node.content as Block[]).flatMap((li) =>
         (li.content as Block[]).flatMap((p) =>
           p.type === "paragraph"
-            ? [new Paragraph({ bullet: { level: 0 }, children: inlineRuns(p.content as Inline[]) as never })]
-            : blockToParagraphs(p),
+            ? [new Paragraph({
+                numbering: numberingRef(node, true, listDepth),
+                children: inlineRuns(p.content as Inline[]) as never,
+              })]
+            : blockToParagraphs(p, listDepth + 1),
         ),
       );
     case "orderedList":
-      return (node.content as Block[]).flatMap((li, i) =>
+      return (node.content as Block[]).flatMap((li) =>
         (li.content as Block[]).flatMap((p) =>
           p.type === "paragraph"
-            ? [new Paragraph({ children: [new TextRun({ text: `${i + 1}. ` }), ...(inlineRuns(p.content as Inline[]) as TextRun[])] })]
-            : blockToParagraphs(p),
+            ? [new Paragraph({
+                numbering: numberingRef(node, false, listDepth),
+                ...paraProps(p),
+                children: inlineRuns(p.content as Inline[]) as never,
+              })]
+            : blockToParagraphs(p, listDepth + 1),
         ),
       );
     case "taskList":
@@ -231,9 +375,6 @@ function textOf(node: Block): string {
     .map((n) => ("text" in n && n.text) || textOf(n as Block))
     .join("");
 }
-
-const pxToDxa = (px: unknown): number | undefined =>
-  typeof px === "number" && Number.isFinite(px) ? Math.round(px * 15) : undefined;
 
 const DOCX_ALIGN: Record<string, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
   left: AlignmentType.LEFT, center: AlignmentType.CENTER, right: AlignmentType.RIGHT,
@@ -374,10 +515,52 @@ function sectionProps(attrs: Record<string, unknown>): {
   return { properties, headers, footers };
 }
 
+const ALIGN_STYLES: Record<string, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
+  left: AlignmentType.LEFT, center: AlignmentType.CENTER,
+  right: AlignmentType.RIGHT, justify: AlignmentType.JUSTIFIED,
+};
+
+const halfPoints = (css: string | undefined): number | undefined => {
+  if (!css) return undefined;
+  if (css.endsWith("pt")) return Math.round(parseFloat(css) * 2);
+  return Math.round(parseFloat(css) * 1.5); // px → half-points
+};
+
+/** StyleDef → OOXML paragraph style entry for styles.xml. */
+function docxStyleOf(def: StyleDef): IParagraphStyleOptions {
+  return {
+    id: STYLE_ID(def.key),
+    name: def.label,
+    ...(def.nextStyle ? { next: STYLE_ID(def.nextStyle) } : {}),
+    run: {
+      font: def.fontFamily?.replace(/['"]/g, "").split(",")[0].trim() || undefined,
+      size: halfPoints(def.fontSize),
+      bold: def.bold || undefined,
+      italics: def.italic || undefined,
+      underline: def.underline ? {} : undefined,
+      color: def.color ? hex(def.color) : undefined,
+    },
+    paragraph: {
+      alignment: def.align ? ALIGN_STYLES[def.align] : undefined,
+      indent: def.indent ? { left: pxToDxa(def.indent * 28) } : undefined,
+      spacing: (def.spaceBefore != null || def.spaceAfter != null || def.lineHeight) ? {
+        before: def.spaceBefore != null ? pxToDxa(def.spaceBefore) : undefined,
+        after: def.spaceAfter != null ? pxToDxa(def.spaceAfter) : undefined,
+        line: def.lineHeight
+          ? /px$/.test(def.lineHeight) ? pxToDxa(parseFloat(def.lineHeight)) : Math.round(parseFloat(def.lineHeight) * 240)
+          : undefined,
+      } : undefined,
+    },
+  };
+}
+
 /** TipTap JSON → .docx bytes (no download side effect — used by tests + export). */
-export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
+export async function exportDocxBytes(doc: Block, name: string, opts: DocxExportOpts = {}): Promise<Blob> {
   footnoteTexts.clear();
   footnoteSeq = 0;
+  commentNums.clear();
+  numRefs.clear();
+  usedStyleKeys.clear();
   await prefetchImages(doc);
 
   // Split top-level blocks into OOXML sections: sectionBreak closes the
@@ -427,9 +610,71 @@ export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
   for (const [id, text] of footnoteTexts) {
     footnotes[Number(id)] = { children: [new Paragraph({ children: [new TextRun({ text })] })] };
   }
+
+  // styles.xml — every used key resolves (payload defs > built-in defaults)
+  const stylesPayload = opts.styles ?? {};
+  const emitKeys = new Set([...Object.keys(stylesPayload), ...usedStyleKeys]);
+  const paragraphStyles = [...emitKeys]
+    .map((k) => ({ ...DEFAULT_STYLES.find((d) => d.key === k), ...stylesPayload[k], key: k } as StyleDef))
+    .filter((d) => d.node === "paragraph")
+    .map(docxStyleOf);
+
+  // numbering.xml — real numbering instances for ordered + bulleted lists
+  const numConfigs = [...numRefs].map(([reference, r]) => ({
+    reference,
+    levels: Array.from({ length: 9 }, (_, lvl) => ({
+      level: lvl,
+      format: r.fmt,
+      text: r.bullet ? (BULLET_FORMAT[reference.split("-").pop() ?? "disc"] ?? "•") : `%${lvl + 1}.`,
+      alignment: AlignmentType.START as never,
+      start: r.bullet ? undefined : r.start,
+      suffix: LevelSuffix.TAB as never,
+      style: { paragraph: { indent: { left: (lvl + 1) * 360, hanging: 240 } } },
+    })),
+  }));
+
+  // comments.xml — anchored comments carry their text + author
+  const commentDefs = (opts.comments ?? []).map((c) => ({
+    id: commentNum(c.anchor ?? `unanchored-${Math.random()}`),
+    author: typeof c.author === "string" ? c.author : c.author?.displayName ?? "",
+    date: c.createdAt ? new Date(c.createdAt) : undefined,
+    children: [new Paragraph({ children: [new TextRun({ text: c.body })] })],
+  }));
+
+  // first section carries the doc's page setup (size/margins/orientation/gutter)
+  const ps = opts.pageSetup;
+  if (ps && sections.length) {
+    const w = pxToDxa(ps.width), h = pxToDxa(ps.height);
+    sections[0] = {
+      ...sections[0],
+      properties: {
+        ...(sections[0].properties ?? {}),
+        page: {
+          size: {
+            width: w, height: h,
+            orientation: (ps.orientation === "landscape" ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT) as never,
+          },
+          margin: {
+            top: pxToDxa(ps.marginTop), bottom: pxToDxa(ps.marginBottom),
+            left: pxToDxa(ps.marginLeft), right: pxToDxa(ps.marginRight),
+            gutter: pxToDxa(ps.gutter ?? 0),
+          },
+          ...(ps.pnStart && ps.pnStart !== 1 ? { pageNumbers: { start: ps.pnStart } } : {}),
+        } as never,
+      },
+    };
+  }
+
+  const dp = opts.docProps ?? {};
   const file = new Document({
-    creator: "Kreatix Business Suite",
-    title: name,
+    creator: dp.author || "Kreatix Business Suite",
+    title: dp.title || name,
+    subject: dp.subject || undefined,
+    keywords: dp.keywords || undefined,
+    description: dp.comments || undefined,
+    styles: paragraphStyles.length ? { paragraphStyles } : undefined,
+    numbering: numConfigs.length ? { config: numConfigs } : undefined,
+    comments: commentDefs.length ? { children: commentDefs } : undefined,
     footnotes: footnotes as never,
     sections,
   }) as DocxFile;
@@ -437,8 +682,8 @@ export async function exportDocxBytes(doc: Block, name: string): Promise<Blob> {
 }
 
 /** TipTap JSON → .docx download (KBS-WRITER-001) */
-export async function exportDocx(doc: Block, name: string) {
-  const blob = await exportDocxBytes(doc, name);
+export async function exportDocx(doc: Block, name: string, opts: DocxExportOpts = {}) {
+  const blob = await exportDocxBytes(doc, name, opts);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -467,14 +712,162 @@ const mathText = (xml: string) =>
 
 const MATH_I = /⟦KXMI:([A-Za-z0-9+/=]*)⟧/g;
 
+// ---- OOXML package metadata (styles/numbering/comments/doc-props) ----------
+
+interface ImportedStyle {
+  id: string; name: string;
+  def: Partial<StyleDef> & { node: "paragraph" };
+  nextId?: string;
+}
+interface NumberingInfo { fmt: string; start?: number }
+interface DocxMeta {
+  /** OOXML styleId → parsed paragraph style. */
+  styles: Map<string, ImportedStyle>;
+  /** "numId:ilvl" → number format + start. */
+  numFmt: Map<string, NumberingInfo>;
+  comments: { id: string; author?: string; date?: string; body: string }[];
+  docProps: DocProps;
+}
+
+const wAttr = (tag: string, attr: string) =>
+  tag.match(new RegExp(`w:${attr}="([^"]*)"`))?.[1];
+
+const tagText = (xml: string, tag: string) => {
+  const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
+  return m ? xmlUnescape(m[1]).trim() : undefined;
+};
+
+/** Parse word/styles.xml paragraph styles into KxStyle-shaped defs. */
+function parseStylesXml(xml: string): Map<string, ImportedStyle> {
+  const out = new Map<string, ImportedStyle>();
+  for (const m of xml.matchAll(/<w:style\b[^>]*w:type="paragraph"[\s\S]*?<\/w:style>/g)) {
+    const s = m[0];
+    const id = s.match(/<w:style\b[^>]*w:styleId="([^"]+)"/)?.[1];
+    if (!id) continue;
+    const name = wAttr(s.match(/<w:name\b[^>]*>/)?.[0] ?? "", "val") ?? id;
+    const rpr = s.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "";
+    const ppr = s.match(/<w:pPr>([\s\S]*?)<\/w:pPr>/)?.[1] ?? "";
+    const sz = rpr.match(/<w:sz\b[^>]*w:val="(\d+)"/)?.[1];
+    const jc = wAttr(ppr.match(/<w:jc\b[^>]*>/)?.[0] ?? "", "val");
+    const spacing = ppr.match(/<w:spacing\b[^>]*>/)?.[0] ?? "";
+    const ind = ppr.match(/<w:ind\b[^>]*>/)?.[0] ?? "";
+    const line = spacing.match(/w:line="(\d+)"/)?.[1];
+    const lineRule = wAttr(spacing, "lineRule") ?? "auto";
+    const off = (tag: string) => rpr.match(new RegExp(`<w:${tag}\\b[^>]*>`))?.[0];
+    const boolOn = (tag: string) => {
+      const t = off(tag); if (!t) return undefined;
+      return !/w:val="(0|false|off|none)"/.test(t);
+    };
+    const color = wAttr(off("color") ?? "", "val");
+    const indLeft = ind.match(/w:left="(\d+)"/)?.[1];
+    const def: ImportedStyle["def"] = { node: "paragraph" };
+    const font = wAttr(rpr.match(/<w:rFonts\b[^>]*>/)?.[0] ?? "", "ascii");
+    if (font) def.fontFamily = `'${font}', serif`;
+    if (sz) def.fontSize = `${Math.round(parseInt(sz) * 2 / 3)}px`; // half-pt → px
+    if (boolOn("b")) def.bold = true;
+    if (boolOn("i")) def.italic = true;
+    if (boolOn("u")) def.underline = true;
+    if (color && color !== "auto") def.color = `#${color}`;
+    if (jc === "center" || jc === "right" || jc === "both") def.align = jc === "both" ? "justify" : jc;
+    const sb = spacing.match(/w:before="(\d+)"/)?.[1];
+    const sa = spacing.match(/w:after="(\d+)"/)?.[1];
+    if (sb) def.spaceBefore = Math.round(parseInt(sb) / 15);
+    if (sa) def.spaceAfter = Math.round(parseInt(sa) / 15);
+    if (line) def.lineHeight = lineRule === "auto" ? String(parseInt(line) / 240) : `${Math.round(parseInt(line) / 15)}px`;
+    if (indLeft) def.indent = Math.round(parseInt(indLeft) / 15 / 28) || undefined;
+    out.set(id, {
+      id, name, def,
+      nextId: wAttr(s.match(/<w:next\b[^>]*>/)?.[0] ?? "", "val"),
+    });
+  }
+  return out;
+}
+
+/** Parse word/numbering.xml → "numId:ilvl" → fmt + start. */
+function parseNumberingXml(xml: string): Map<string, NumberingInfo> {
+  const out = new Map<string, NumberingInfo>();
+  const numToAbs = new Map<string, string>();
+  for (const m of xml.matchAll(/<w:num\b[^>]*w:numId="(\d+)"[\s\S]*?<\/w:num>/g)) {
+    const abs = m[0].match(/<w:abstractNumId\b[^>]*w:val="(\d+)"/)?.[1];
+    if (abs) numToAbs.set(m[1], abs);
+  }
+  const absMap = new Map<string, Map<string, NumberingInfo>>();
+  for (const m of xml.matchAll(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"[\s\S]*?<\/w:abstractNum>/g)) {
+    const lvls = new Map<string, NumberingInfo>();
+    for (const l of m[0].matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[\s\S]*?<\/w:lvl>/g)) {
+      lvls.set(l[1], {
+        fmt: wAttr(l[0].match(/<w:numFmt\b[^>]*>/)?.[0] ?? "", "val") ?? "decimal",
+        start: parseInt(wAttr(l[0].match(/<w:start\b[^>]*>/)?.[0] ?? "", "val") ?? "1") || 1,
+      });
+    }
+    absMap.set(m[1], lvls);
+  }
+  for (const [numId, absId] of numToAbs) {
+    const lvls = absMap.get(absId);
+    if (!lvls) continue;
+    for (const [ilvl, info] of lvls) out.set(`${numId}:${ilvl}`, info);
+    if (lvls.get("0")) out.set(numId, lvls.get("0")!);
+  }
+  return out;
+}
+
+/** Parse word/comments.xml → comment list. */
+function parseCommentsXml(xml: string): DocxMeta["comments"] {
+  const out: DocxMeta["comments"] = [];
+  for (const m of xml.matchAll(/<w:comment\b([^>]*)>([\s\S]*?)<\/w:comment>/g)) {
+    const id = wAttr(m[1], "id"); if (!id) continue;
+    const body = [...m[2].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)]
+      .map((t) => xmlUnescape(t[1])).join("").trim();
+    out.push({ id, author: wAttr(m[1], "author"), date: wAttr(m[1], "date"), body });
+  }
+  return out;
+}
+
+/** Parse docProps/core.xml → document properties. */
+function parseCoreXml(xml: string): DocProps {
+  const get = (tag: string) => tagText(xml, tag) || undefined;
+  return {
+    title: get("dc:title"), subject: get("dc:subject"), author: get("dc:creator"),
+    keywords: get("cp:keywords"), category: get("cp:category"), comments: get("dc:description"),
+  };
+}
+
 /** Rewrite math zones + break constructs in document.xml as sentinel text
  *  runs; returns the (possibly rewritten) package and the rewritten xml. */
-async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string }> {
+async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string; meta: DocxMeta }> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(arrayBuffer);
+  const meta: DocxMeta = {
+    styles: parseStylesXml(await zip.file("word/styles.xml")?.async("text") ?? ""),
+    numFmt: parseNumberingXml(await zip.file("word/numbering.xml")?.async("text") ?? ""),
+    comments: parseCommentsXml(await zip.file("word/comments.xml")?.async("text") ?? ""),
+    docProps: parseCoreXml(await zip.file("docProps/core.xml")?.async("text") ?? ""),
+  };
   let docXml = await zip.file("word/document.xml")?.async("text");
-  if (!docXml) return { buffer: arrayBuffer, docXml: "" };
+  if (!docXml) return { buffer: arrayBuffer, docXml: "", meta };
   const original = docXml;
+
+  // w:pStyle / w:numPr / comment ranges → sentinel runs (mammoth drops the
+  // original constructs; the sentinels survive as literal text we post-process).
+  const sentinel = (text: string) =>
+    `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
+  docXml = docXml.replace(
+    /<w:pPr>(?:(?!<\/w:pPr>)[\s\S])*?<w:pStyle\b[^>]*w:val="([^"]+)"[^>]*\/?>[\s\S]*?<\/w:pPr>/g,
+    (m, id) => `${m}${sentinel(`KXPS:${id}`)}`,
+  );
+  docXml = docXml.replace(
+    /<w:pPr>(?:(?!<\/w:pPr>)[\s\S])*?<w:numPr>([\s\S]*?)<\/w:numPr>[\s\S]*?<\/w:pPr>/g,
+    (m, numpr) => {
+      const id = numpr.match(/<w:numId\b[^>]*w:val="(\d+)"/)?.[1] ?? "0";
+      const lvl = numpr.match(/<w:ilvl\b[^>]*w:val="(\d+)"/)?.[1] ?? "0";
+      return `${m}${sentinel(`KXN:${id}:${lvl}`)}`;
+    },
+  );
+  docXml = docXml
+    .replace(/<w:commentRangeStart\b[^>]*w:id="([^"]+)"[^>]*\/?>/g, (_, id) => sentinel(`KXCS:${id}`))
+    .replace(/<w:commentRangeEnd\b[^>]*w:id="([^"]+)"[^>]*\/?>/g, (_, id) => sentinel(`KXCE:${id}`))
+    // comment-reference runs carry no text — drop them entirely
+    .replace(/<w:r>(?:(?!<\/w:r>)[\s\S])*?<w:commentReference\b[^>]*\/?>[\s\S]*?<\/w:r>/g, "");
 
   if (docXml.includes("<m:oMath")) {
     const run = (body: string, tag: string) =>
@@ -546,9 +939,9 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     }
   }
 
-  if (docXml === original) return { buffer: arrayBuffer, docXml };
+  if (docXml === original) return { buffer: arrayBuffer, docXml, meta };
   zip.file("word/document.xml", docXml);
-  return { buffer: await zip.generateAsync({ type: "arraybuffer" }), docXml };
+  return { buffer: await zip.generateAsync({ type: "arraybuffer" }), docXml, meta };
 }
 
 const b64dec = (s: string) =>
@@ -805,16 +1198,128 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
   });
 }
 
-/** .docx file → HTML string for editor.setContent (mammoth preserves structure) */
-export async function importDocx(file: File): Promise<string> {
+// ---- pStyle / numbering / comment sentinel post-processing -----------------
+
+const BUILTIN_STYLE_KEYS: Record<string, string> = {
+  title: "title", subtitle: "subtitle", caption: "caption",
+  listparagraph: "listParagraph", quote: "imp_quote", intensequote: "imp_intenseQuote",
+};
+
+/** OOXML styleId → Kreatix style key; null = structural (normal/headings). */
+function styleKeyFor(meta: DocxMeta, id: string): string | null {
+  const name = meta.styles.get(id)?.name ?? id;
+  const norm = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (norm === "normal" || /^heading[1-6]$/.test(norm)) return null; // native
+  if (norm.startsWith("heading") && /^heading\d+$/.test(norm)) return null;
+  return BUILTIN_STYLE_KEYS[norm] ?? `imp_${id.replace(/[^\w-]/g, "")}`;
+}
+
+/** styleId → key map + the KxStyle defs those keys resolve to. */
+function buildStyleMaps(meta: DocxMeta): { idToKey: Map<string, string>; styles: Record<string, StyleDef> } {
+  const idToKey = new Map<string, string>();
+  const styles: Record<string, StyleDef> = {};
+  for (const [id, s] of meta.styles) {
+    const key = styleKeyFor(meta, id);
+    if (!key) continue;
+    idToKey.set(id, key);
+    const builtin = DEFAULT_STYLES.find((d) => d.key === key);
+    styles[key] = { ...builtin, ...s.def, key, label: s.name };
+  }
+  // resolve OOXML next-style ids → keys
+  for (const [id, s] of meta.styles) {
+    const key = idToKey.get(id);
+    if (key && s.nextId) {
+      const nk = styleKeyFor(meta, s.nextId);
+      styles[key].nextStyle = nk ?? "normal";
+    }
+  }
+  return { idToKey, styles };
+}
+
+/** ⟦KXPS:id⟧ at a paragraph's start → data-style attr on the <p>. */
+function styleMarkersToHtml(html: string, idToKey: Map<string, string>): string {
+  html = html.replace(
+    /<(p|h[1-6])\b([^>]*)>((?:<[a-z][^>]*>)*)⟦KXPS:([^⟧]+)⟧/g,
+    (_m, tag, attrs, lead, id) => {
+      if (tag !== "p") return `<${tag}${attrs}>${lead}`;
+      const key = idToKey.get(id) ?? `imp_${String(id).replace(/[^\w-]/g, "")}`;
+      return `<p${attrs} data-style="${attrEsc(key)}">${lead}`;
+    },
+  );
+  return html.replace(/⟦KXPS:[^⟧]+⟧/g, "");
+}
+
+const NUM_CSS: Record<string, string> = {
+  decimal: "decimal", decimalZero: "decimal-leading-zero",
+  upperLetter: "upper-alpha", lowerLetter: "lower-alpha",
+  upperRoman: "upper-roman", lowerRoman: "lower-roman",
+  bullet: "disc", none: "none",
+};
+
+/** ⟦KXN:numId:ilvl⟧ inside list items → list-style-type/start on the parent
+ *  <ol>; sentinels stripped afterward. */
+function numMarkersToHtml(html: string, meta: DocxMeta): string {
+  html = html.replace(
+    /<(ol|ul)>((?:(?!<\/?(?:ol|ul)\b)[\s\S]){0,1200}?)(⟦KXN:(\d+):(\d+)⟧)/g,
+    (m, tag, pre, sentinel, numId, lvl) => {
+      const info = meta.numFmt.get(`${numId}:${lvl}`) ?? meta.numFmt.get(numId);
+      if (tag !== "ol" || !info || info.fmt === "bullet") return m;
+      const css = NUM_CSS[info.fmt];
+      const attrs =
+        (css && css !== "decimal" ? ` style="list-style-type:${css}"` : "") +
+        (info.start && info.start > 1 ? ` start="${info.start}"` : "");
+      return `<${tag}${attrs}>${pre}${sentinel}`;
+    },
+  );
+  return html.replace(/⟦KXN:\d+:\d+⟧/g, "");
+}
+
+/** ⟦KXCS:id⟧…⟦KXCE:id⟧ → <span data-comment-id> marks. */
+function commentMarkersToHtml(html: string): string {
+  const ids = [...html.matchAll(/⟦KXCS:(\d+)⟧/g)].map((m) => m[1]);
+  for (const id of new Set(ids)) {
+    html = html.replace(
+      new RegExp(`⟦KXCS:${id}⟧([\\s\\S]*?)⟦KXCE:${id}⟧`),
+      (_, body) => `<span data-comment-id="docx-${id}">${body}</span>`,
+    );
+  }
+  return html.replace(/⟦KX[CS][SE]:\d+⟧/g, "");
+}
+
+const EMPTY_META: DocxMeta = { styles: new Map(), numFmt: new Map(), comments: [], docProps: {} };
+
+/** .docx file → editor HTML + recovered package metadata. */
+export async function importDocx(file: File): Promise<DocxImportResult> {
   const arrayBuffer = await file.arrayBuffer();
-  const { buffer, docXml } = await preprocessDocx(arrayBuffer).catch(() => ({ buffer: arrayBuffer, docXml: "" }));
+  const { buffer, docXml, meta } = await preprocessDocx(arrayBuffer)
+    .catch(() => ({ buffer: arrayBuffer, docXml: "", meta: EMPTY_META }));
   // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
   const result = await mammoth.convertToHtml({ arrayBuffer: buffer }).catch(() =>
     mammoth.convertToHtml({ buffer: Buffer.from(buffer) } as never));
   let html = breakMarkersToHtml(mathMarkersToHtml(result.value));
-  if (docXml) html = annotateTableHtml(html, extractXmlTables(docXml));
-  return html;
+  const { idToKey, styles } = buildStyleMaps(meta);
+  if (docXml) {
+    html = annotateTableHtml(html, extractXmlTables(docXml));
+    html = styleMarkersToHtml(html, idToKey);
+    html = numMarkersToHtml(html, meta);
+    html = commentMarkersToHtml(html);
+  }
+  return {
+    html,
+    styles,
+    docProps: meta.docProps,
+    comments: meta.comments.map((c) => ({
+      anchor: `docx-${c.id}`, body: c.body, author: c.author, createdAt: c.date,
+    })),
+  };
+}
+
+/** Post-import: register imported named-style defs in the editor so
+ *  data-style'd paragraphs render + persist in the styles payload. */
+export function applyDocxImport(editor: Editor, res: DocxImportResult): void {
+  if (Object.keys(res.styles).length) {
+    loadStyleDefs(editor, { ...styleDefsOf(editor), ...res.styles });
+  }
 }
 
 export type { Json };

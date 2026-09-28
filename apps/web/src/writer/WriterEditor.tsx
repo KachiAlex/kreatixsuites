@@ -71,7 +71,7 @@ import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, Sty
 import { KxStyles, serializeStyles, loadStyleDefs, allStyleDefs, type StyleDef } from "./extensions/styles";
 import { StyleDialog } from "./StyleDialog";
 import { Ruler } from "./Ruler";
-import { exportDocx, importDocx } from "./docx";
+import { applyDocxImport, exportDocx, importDocx } from "./docx";
 import { ensureDocFonts } from "./fonts";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
@@ -754,9 +754,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       const ext = f.name.split(".").pop()?.toLowerCase();
       let other: string;
       if (ext === "docx") {
-        const html = await importDocx(f);
+        const res = await importDocx(f);
         const d = document.createElement("div");
-        d.innerHTML = html;
+        d.innerHTML = res.html;
         other = d.innerText;
       } else {
         other = await f.text();
@@ -986,9 +986,22 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const onImport = async (f: File) => {
     if (!canMutate) { toast("You don't have edit access"); return; }
     try {
-      const html = await importDocx(f);
-      editor?.commands.setContent(html);
+      const res = await importDocx(f);
+      editor?.commands.setContent(res.html);
       editor?.commands.fixTables(); // repair any malformed table geometry post-import
+      if (editor) applyDocxImport(editor, res); // named styles from styles.xml
+      if (Object.values(res.docProps).some(Boolean))
+        setDocProps({ ...docPropsRef.current, ...res.docProps });
+      const imported = res.comments.filter((c) => c.body.trim());
+      if (imported.length) {
+        for (const c of imported) {
+          await api.post(`/api/files/${item.id}/comments`, {
+            anchor: c.anchor,
+            body: c.author ? `${c.author}: ${c.body}` : c.body,
+          }).catch(() => {});
+        }
+        loadComments();
+      }
       toast(`Imported ${f.name}`);
     } catch {
       toast("Could not import that file");
@@ -1021,7 +1034,16 @@ export function WriterEditor({ item, initialDoc, permission }: {
     const json = editor.getJSON() as never;
     const name = title;
     try {
-      if (fmt === "docx") return exportDocx(json, name);
+      if (fmt === "docx") {
+        const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
+          .then((r) => r.comments).catch(() => [] as Comment[]);
+        return exportDocx(json, name, {
+          comments,
+          docProps: docPropsRef.current,
+          styles: serializeStyles(editor),
+          pageSetup: readPageSetup(editor),
+        });
+      }
       const mod = await import("./export/index");
       if (fmt === "md") return mod.downloadMd(json, name);
       if (fmt === "html") return mod.downloadHtml(name, editor.getHTML(), readPageSetup(editor));
