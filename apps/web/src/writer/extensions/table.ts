@@ -11,6 +11,8 @@ import {
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { CommandProps } from "@tiptap/core";
 import { TableMap, CellSelection } from "@tiptap/pm/tables";
+import { TextSelection } from "@tiptap/pm/state";
+import type { ResolvedPos } from "@tiptap/pm/model";
 
 // ---- types ----------------------------------------------------------------
 
@@ -34,6 +36,8 @@ declare module "@tiptap/core" {
       insertCellsDown: () => ReturnType;
       /** Delete the cell under the cursor, shifting cells below up (Word "Shift cells up"). */
       deleteCellsUp: () => ReturnType;
+      /** Move the selected row(s) one row up/down (Word Alt+Shift+↑/↓). */
+      moveTableRow: (dir: "up" | "down") => ReturnType;
       distributeColumnsEvenly: () => ReturnType;
       distributeRowsEvenly: () => ReturnType;
       autofitTable: (mode: "contents" | "window" | "fixed") => ReturnType;
@@ -474,6 +478,53 @@ export const KxTableCommands = Extension.create({
           return true;
         },
 
+      /** Word's Alt+Shift+↑/↓ — move the row(s) under the selection up/down
+       *  one row; selection follows so repeat presses keep moving. */
+      moveTableRow:
+        (dir: "up" | "down") =>
+        ({ tr, state, dispatch }) => {
+          const d = tableDepthAt(state);
+          if (d == null) return false;
+          const { $from, $to } = state.selection;
+          const table = $from.node(d);
+          const tablePos = $from.before(d);
+          const cellOf = (p: ResolvedPos) => {
+            for (let dd = p.depth; dd >= 0; dd--) {
+              const n = p.node(dd).type.name;
+              if (n === "tableCell" || n === "tableHeader") return p.before(dd);
+            }
+            return -1;
+          };
+          const c1 = cellOf($from), c2 = cellOf($to);
+          if (c1 < 0 || c2 < 0) return false;
+          const map = TableMap.get(table);
+          const rc1 = map.findCell(c1 - tablePos - 1);
+          const rc2 = map.findCell(c2 - tablePos - 1);
+          const rows: PMNode[] = [];
+          table.forEach((r) => rows.push(r));
+          const H = rows.length;
+          const r0 = Math.min(rc1.top, rc2.top);
+          const r1 = Math.max(
+            rc1.top + ((table.nodeAt(c1 - tablePos - 1)?.attrs.rowspan as number) || 1) - 1,
+            rc2.top + ((table.nodeAt(c2 - tablePos - 1)?.attrs.rowspan as number) || 1) - 1,
+          );
+          if (dir === "up" ? r0 === 0 : r1 >= H - 1) return false;
+          if (!dispatch) return true;
+          const order: PMNode[] = [];
+          if (dir === "up") {
+            order.push(...rows.slice(0, r0 - 1), ...rows.slice(r0, r1 + 1), rows[r0 - 1], ...rows.slice(r1 + 1));
+          } else {
+            order.push(...rows.slice(0, r0), rows[r1 + 1], ...rows.slice(r0, r1 + 1), ...rows.slice(r1 + 2));
+          }
+          tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, order));
+          // put the caret in the first cell of the moved block's new spot
+          const newIdx = dir === "up" ? r0 - 1 : r0 + 1;
+          let pos = tablePos + 1;
+          for (let i = 0; i < newIdx; i++) pos += order[i].nodeSize;
+          tr.setSelection(TextSelection.near(tr.doc.resolve(pos + 2)));
+          return true;
+        },
+
       insertCellsDown:
         () =>
         ({ tr, state, dispatch }) => shiftColumnCells({ tr, state, dispatch }, "insert"),
@@ -706,6 +757,13 @@ export const KxTableCommands = Extension.create({
           ));
           return true;
         },
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      "Alt-Shift-ArrowUp": () => this.editor.commands.moveTableRow("up"),
+      "Alt-Shift-ArrowDown": () => this.editor.commands.moveTableRow("down"),
     };
   },
 });
