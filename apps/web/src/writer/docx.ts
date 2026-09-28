@@ -2,7 +2,7 @@ import {
   AlignmentType, ColumnBreak as DocxColumnBreak, Document, Footer, FootnoteReferenceRun,
   Header, HeadingLevel, ImageRun, Math as DocxMath, MathRun, Packer, Paragraph,
   PageBreak as DocxPageBreak, SectionType, Table, TableCell, TableRow,
-  TextRun, VerticalAlign, WidthType,
+  TextDirection, TextRun, VerticalAlignTable, WidthType,
   type File as DocxFile, type ISectionOptions, type ISectionPropertiesOptions,
 } from "docx";
 import mammoth from "mammoth";
@@ -232,26 +232,128 @@ function textOf(node: Block): string {
     .join("");
 }
 
-function tableOf(node: Block): Table | null {
-  const rows = (node.content ?? []) as Block[];
-  if (!rows.length) return null;
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: rows.map(
-      (r) => new TableRow({
-        children: ((r.content ?? []) as Block[]).map(
-          (c) => new TableCell({
-            children: ((c.content ?? []) as Block[]).flatMap(blockToParagraphs),
-            verticalAlign: VerticalAlign.TOP,
-          }),
-        ),
-      }),
-    ),
+const pxToDxa = (px: unknown): number | undefined =>
+  typeof px === "number" && Number.isFinite(px) ? Math.round(px * 15) : undefined;
+
+const DOCX_ALIGN: Record<string, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
+  left: AlignmentType.LEFT, center: AlignmentType.CENTER, right: AlignmentType.RIGHT,
+};
+
+const DOCX_BORDER: Record<string, string> = {
+  solid: "single", dashed: "dashed", dotted: "dotted", double: "double", none: "nil",
+};
+
+const VALIGN: Record<string, (typeof VerticalAlignTable)[keyof typeof VerticalAlignTable]> = {
+  top: VerticalAlignTable.TOP, middle: VerticalAlignTable.CENTER, bottom: VerticalAlignTable.BOTTOM,
+};
+
+const TEXT_DIR: Record<string, (typeof TextDirection)[keyof typeof TextDirection]> = {
+  "vertical-rl": TextDirection.TOP_TO_BOTTOM_RIGHT_TO_LEFT,
+  "vertical-lr": TextDirection.BOTTOM_TO_TOP_LEFT_TO_RIGHT,
+};
+
+interface BorderSpec { style: string; width: number; color: string }
+interface CellBorders { top?: BorderSpec; right?: BorderSpec; bottom?: BorderSpec; left?: BorderSpec }
+
+const hex = (c: string) => c.replace(/^#/, "").toUpperCase();
+
+function docxBorder(side?: BorderSpec) {
+  if (!side) return undefined;
+  const style = DOCX_BORDER[side.style] ?? "single";
+  if (style === "nil") return { style: "nil", size: 0, color: "FFFFFF" };
+  return {
+    style,
+    size: Math.max(1, Math.round(side.width * 6)), // eighths of a point ≈ px*6
+    color: hex(side.color),
+  };
+}
+
+function docxCell(c: Block): TableCell {
+  const a = (c.attrs ?? {}) as Record<string, unknown>;
+  const borders = a.borders as CellBorders | null | undefined;
+  const pad = a.padding as number | null | undefined;
+  const cw = Array.isArray(a.colwidth) ? (a.colwidth as number[])[0] : null;
+  return new TableCell({
+    children: ((c.content ?? []) as Block[]).flatMap(blockToParagraphs),
+    columnSpan: (a.colspan as number) > 1 ? (a.colspan as number) : undefined,
+    rowSpan: (a.rowspan as number) > 1 ? (a.rowspan as number) : undefined,
+    width: cw ? { size: pxToDxa(cw)!, type: WidthType.DXA } : undefined,
+    shading: a.backgroundColor ? { fill: hex(a.backgroundColor as string) } : undefined,
+    verticalAlign: VALIGN[(a.vAlign as string) ?? ""] ?? VerticalAlignTable.TOP,
+    textDirection: TEXT_DIR[(a.textDirection as string) ?? ""] ?? undefined,
+    margins: pad != null
+      ? { top: pxToDxa(pad), bottom: pxToDxa(pad), left: pxToDxa(pad), right: pxToDxa(pad), marginUnitType: WidthType.DXA }
+      : undefined,
+    borders: borders ? {
+      top: docxBorder(borders.top), right: docxBorder(borders.right),
+      bottom: docxBorder(borders.bottom), left: docxBorder(borders.left),
+    } as never : undefined,
   });
 }
 
-const pxToDxa = (px: unknown): number | undefined =>
-  typeof px === "number" && Number.isFinite(px) ? Math.round(px * 15) : undefined;
+function tableOf(node: Block): Table | null {
+  const rows = (node.content ?? []) as Block[];
+  if (!rows.length) return null;
+  const ta = (node.attrs ?? {}) as Record<string, unknown>;
+
+  // rowspan continuation cells: OOXML wants a <w:tc vMerge="continue">
+  // placeholder in every row spanned — our model stores rowspan only on the
+  // origin cell. Track pending merges per grid column.
+  const pending = new Map<number, { remain: number; span: number }>();
+  const tableRows = rows.map((r, ri) => {
+    const ra = (r.attrs ?? {}) as Record<string, unknown>;
+    const cells: TableCell[] = [];
+    let gridCol = 0;
+    const flushPending = () => {
+      for (;;) {
+        const m = pending.get(gridCol);
+        if (!m || m.remain <= 0) break;
+        cells.push(new TableCell({
+          verticalMerge: "continue" as never,
+          columnSpan: m.span > 1 ? m.span : undefined,
+          children: [new Paragraph({})],
+        }));
+        m.remain -= 1;
+        if (m.remain <= 0) pending.delete(gridCol);
+        gridCol += m.span;
+      }
+    };
+    for (const c of ((r.content ?? []) as Block[])) {
+      flushPending();
+      const ca = (c.attrs ?? {}) as Record<string, unknown>;
+      const rs = (ca.rowspan as number) || 1;
+      const cs = (ca.colspan as number) || 1;
+      if (rs > 1) pending.set(gridCol, { remain: rs - 1, span: cs });
+      cells.push(docxCell(c));
+      gridCol += cs;
+    }
+    flushPending();
+    return new TableRow({
+      children: cells,
+      tableHeader: ta.repeatHeader && ri === 0 ? true : undefined,
+      cantSplit: ra.cantSplit ? true : undefined,
+      height: ra.height ? {
+        value: pxToDxa(ra.height as number)!,
+        rule: (ra.heightMode === "exact" ? "exact" : "atLeast") as never,
+      } : undefined,
+    });
+  });
+
+  const firstRowCells = ((rows[0]?.content ?? []) as Block[]);
+  const columnWidths = firstRowCells
+    .map((c) => { const w = (c.attrs as Record<string, unknown> | undefined)?.colwidth; return Array.isArray(w) && w[0] ? pxToDxa(w[0] as number) : 0; });
+
+  return new Table({
+    width: ta.widthMode === "pct" && ta.widthPct
+      ? { size: ta.widthPct as number, type: WidthType.PERCENTAGE } // lib emits w:w="60%" — valid OOXML percent literal
+      : { size: 100, type: WidthType.PERCENTAGE },
+    alignment: DOCX_ALIGN[(ta.align as string) ?? ""] ?? undefined,
+    indent: ta.indent ? { size: pxToDxa((ta.indent as number) * 24)!, type: WidthType.DXA } : undefined,
+    layout: ta.widthMode === "fixed" ? ("fixed" as never) : undefined,
+    columnWidths: columnWidths.some((w) => w) ? columnWidths.map((w) => w ?? 0) : undefined,
+    rows: tableRows,
+  });
+}
 
 const SECTION_TYPES: Record<string, (typeof SectionType)[keyof typeof SectionType]> = {
   nextPage: SectionType.NEXT_PAGE,
@@ -390,19 +492,44 @@ const mathText = (xml: string) =>
 
 const MATH_I = /⟦KXMI:([A-Za-z0-9+/=]*)⟧/g;
 
-/** Rewrite math zones in document.xml as sentinel text runs. */
-async function tagMathZones(arrayBuffer: ArrayBuffer): Promise<ArrayBuffer> {
+/** Rewrite math zones + break constructs in document.xml as sentinel text
+ *  runs; returns the (possibly rewritten) package and the rewritten xml. */
+async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string }> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(arrayBuffer);
-  const docXml = await zip.file("word/document.xml")?.async("text");
-  if (!docXml || !docXml.includes("<m:oMath")) return arrayBuffer;
-  const run = (body: string, tag: string) =>
-    `<w:r><w:t xml:space="preserve">⟦${tag}:${b64enc(mathText(body))}⟧</w:t></w:r>`;
-  const tagged = docXml
-    .replace(/<m:oMathPara\b[\s\S]*?<\/m:oMathPara>/g, (m) => run(m, "KXMB"))
-    .replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (m) => run(m, "KXMI"));
-  zip.file("word/document.xml", tagged);
-  return zip.generateAsync({ type: "arraybuffer" });
+  let docXml = await zip.file("word/document.xml")?.async("text");
+  if (!docXml) return { buffer: arrayBuffer, docXml: "" };
+  const original = docXml;
+
+  if (docXml.includes("<m:oMath")) {
+    const run = (body: string, tag: string) =>
+      `<w:r><w:t xml:space="preserve">⟦${tag}:${b64enc(mathText(body))}⟧</w:t></w:r>`;
+    docXml = docXml
+      .replace(/<m:oMathPara\b[\s\S]*?<\/m:oMathPara>/g, (m) => run(m, "KXMB"))
+      .replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (m) => run(m, "KXMI"));
+  }
+
+  // <w:r><w:br w:type="page|column"/></w:r> → sentinel runs (mammoth drops them)
+  docXml = docXml.replace(
+    /<w:r\b[^>]*>\s*<w:br\b[^>]*w:type="(page|column)"[^>]*\/?>\s*<\/w:r>/g,
+    (_, t) => `<w:r><w:t xml:space="preserve">⟦${t === "page" ? "KXPB" : "KXCB"}⟧</w:t></w:r>`,
+  );
+
+  // paragraph-level <w:sectPr> (mid-doc section breaks) → sentinel run placed
+  // after the pPr so mammoth emits it as paragraph text. The body-level
+  // trailing sectPr doesn't match (not inside pPr) — it describes the last
+  // section, not a break.
+  docXml = docXml.replace(
+    /<w:sectPr\b[\s\S]*?<\/w:sectPr>\s*<\/w:pPr>/g,
+    (m) => {
+      const sect = m.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/)?.[0] ?? "";
+      return `</w:pPr><w:r><w:t xml:space="preserve">⟦KXSB:${b64enc(sect)}⟧</w:t></w:r>`;
+    },
+  );
+
+  if (docXml === original) return { buffer: arrayBuffer, docXml };
+  zip.file("word/document.xml", docXml);
+  return { buffer: await zip.generateAsync({ type: "arraybuffer" }), docXml };
 }
 
 const b64dec = (s: string) =>
@@ -422,14 +549,220 @@ function mathMarkersToHtml(html: string): string {
       `<span data-type="inline-math" data-latex="${attrEsc(b64dec(b))}"></span>`);
 }
 
+/** Page/column/section break sentinels → the break nodes' parse HTML. */
+function breakMarkersToHtml(html: string): string {
+  const DIV: Record<string, string> = {
+    KXPB: `<div data-type="page-break" class="page-break"></div>`,
+    KXCB: `<div data-type="column-break" class="page-break column-break"></div>`,
+  };
+  const sectAttrs = (b: string) => {
+    const sect = b64dec(b);
+    const wval = (tag: string, name: string) =>
+      sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
+    const dxa = (tag: string, name: string) => {
+      const v = wval(tag, name);
+      return v ? Math.round(parseInt(v) / 15) : null;
+    };
+    const type = wval("type", "val") ?? "nextPage";
+    let s = `data-section-type="${type}"`;
+    const pairs: [string, number | null][] = [
+      ["data-page-width", dxa("pgSz", "w")], ["data-page-height", dxa("pgSz", "h")],
+      ["data-margin-top", dxa("pgMar", "top")], ["data-margin-bottom", dxa("pgMar", "bottom")],
+      ["data-margin-left", dxa("pgMar", "left")], ["data-margin-right", dxa("pgMar", "right")],
+    ];
+    for (const [k, v] of pairs) if (v != null) s += ` ${k}="${v}"`;
+    return `<div data-type="section-break" ${s} class="page-break section-break"></div>`;
+  };
+  // whole-paragraph markers collapse cleanly; mid-text markers split the <p>
+  return html
+    .replace(/<p>⟦(KXPB|KXCB)⟧<\/p>/g, (_, t) => DIV[t])
+    .replace(/⟦(KXPB|KXCB)⟧/g, (_, t) => `</p>${DIV[t]}<p>`)
+    .replace(/<p>⟦KXSB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_, b) => sectAttrs(b))
+    .replace(/⟦KXSB:([A-Za-z0-9+/=]*)⟧/g, (_, b) => `</p>${sectAttrs(b)}<p>`);
+}
+
+// ---- DOCX table props re-import --------------------------------------------
+// Mammoth emits plain <table><tr><td> — all tblPr/trPr/tcPr are lost. Walk
+// document.xml's table tree, then annotate the HTML in encounter order.
+
+interface XmlCell {
+  bg?: string; vAlign?: string; pad?: number; colw?: number; dir?: string;
+  borders?: { side: string; w: number; style: string; color: string }[];
+}
+interface XmlRow { height?: number; exact?: boolean; cantSplit?: boolean; header?: boolean; cells: XmlCell[] }
+interface XmlTbl { align?: string; widthPct?: number; indent?: number; fixed?: boolean; repeatHeader?: boolean; rows: XmlRow[] }
+
+const wVal = (tag: string, prop: string, name: string) =>
+  tag.match(new RegExp(`<w:${prop}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
+
+const VALIGN_IN: Record<string, string> = { center: "middle", top: "top", bottom: "bottom", both: "middle" };
+const BSTYLE_IN: Record<string, string> = {
+  single: "solid", dashed: "dashed", dotted: "dotted", double: "double",
+  thick: "solid", wave: "solid", nil: "none", none: "none",
+};
+const DIR_IN: Record<string, string> = { tbRl: "vertical-rl", btLr: "vertical-lr" };
+
+function extractXmlTables(docXml: string): XmlTbl[] {
+  const tables: XmlTbl[] = [];
+  // stack of open containers; cur = innermost {tbl,row}
+  const stack: { kind: string; tbl?: XmlTbl; row?: XmlRow }[] = [];
+  const curTbl = () => [...stack].reverse().find((s) => s.tbl)?.tbl;
+  const curRow = () => [...stack].reverse().find((s) => s.row)?.row;
+  const props = (xml: string, from: number, tag: string) =>
+    xml.slice(from).match(new RegExp(`^\\s*<w:${tag}Pr\\b[\\s\\S]*?<\\/w:${tag}Pr>`))?.[0] ?? "";
+
+  const re = /<\/?w:(tbl|tr|tc)\b[^>]*>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(docXml))) {
+    const [tok, name] = m;
+    const open = !tok.startsWith("</");
+    const selfClose = tok.endsWith("/>");
+    if (!open) {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].kind === name) { stack.length = i; break; }
+      }
+      continue;
+    }
+    if (name === "tbl") {
+      const pr = props(docXml, re.lastIndex, "tbl");
+      const tblW = pr.match(/<w:tblW\b[^>]*>/)?.[0] ?? "";
+      const jc = wVal(pr, "jc", "val");
+      const tbl: XmlTbl = {
+        align: jc === "center" || jc === "right" || jc === "left" ? jc : undefined,
+        widthPct: /w:type="pct"/.test(tblW)
+          ? (() => { const w = wVal(tblW, "tblW", "w") ?? "0"; return w.includes("%") ? parseInt(w) : Math.round(parseInt(w) / 50); })()
+          : undefined,
+        indent: (() => { const v = wVal(pr, "tblInd", "w"); return v ? Math.round(parseInt(v) / 15 / 24) : undefined; })(),
+        fixed: /w:tblLayout\b[^>]*w:type="fixed"/.test(pr) || undefined,
+        rows: [],
+      };
+      tables.push(tbl);
+      if (!selfClose) stack.push({ kind: "tbl", tbl });
+    } else if (name === "tr") {
+      const pr = props(docXml, re.lastIndex, "tr");
+      const h = pr.match(/<w:trHeight\b[^>]*>/)?.[0] ?? "";
+      const row: XmlRow = {
+        height: wVal(h, "trHeight", "val") ? Math.round(parseInt(wVal(h, "trHeight", "val")!) / 15) : undefined,
+        exact: wVal(h, "trHeight", "hRule") === "exact" || undefined,
+        cantSplit: /<w:cantSplit\b/.test(pr) || undefined,
+        header: /<w:tblHeader\b/.test(pr) || undefined,
+        cells: [],
+      };
+      curTbl()?.rows.push(row);
+      if (row.header && curTbl()) curTbl()!.repeatHeader = true;
+      if (!selfClose) stack.push({ kind: "tr", row });
+    } else {
+      // w:tc
+      const pr = props(docXml, re.lastIndex, "tc");
+      const cell: XmlCell = {};
+      const shd = wVal(pr, "shd", "fill");
+      if (shd && shd !== "auto") cell.bg = "#" + shd;
+      const va = wVal(pr, "vAlign", "val");
+      if (va && VALIGN_IN[va]) cell.vAlign = VALIGN_IN[va];
+      const tcW = pr.match(/<w:tcW\b[^>]*>/)?.[0] ?? "";
+      if (/w:type="dxa"/.test(tcW)) cell.colw = Math.round(parseInt(wVal(tcW, "tcW", "w") ?? "0") / 15);
+      const tcMar = pr.match(/<w:tcMar\b[\s\S]*?<\/w:tcMar>/)?.[0];
+      if (tcMar) {
+        const top = tcMar.match(/<w:top\b[^>]*w:w="(\d+)"/)?.[1];
+        if (top) cell.pad = Math.round(parseInt(top) / 15);
+      }
+      const dir = wVal(pr, "textDirection", "val");
+      if (dir && DIR_IN[dir]) cell.dir = DIR_IN[dir];
+      const tcB = pr.match(/<w:tcBorders\b[\s\S]*?<\/w:tcBorders>/)?.[0];
+      if (tcB) {
+        cell.borders = [];
+        for (const side of ["top", "right", "bottom", "left"]) {
+          const t = tcB.match(new RegExp(`<w:${side}\\b[^>]*>`))?.[0];
+          if (!t) continue;
+          const val = wVal(t, side, "val");
+          if (!val || val === "nil" || val === "none") continue;
+          cell.borders.push({
+            side,
+            w: Math.max(1, Math.round(parseInt(wVal(t, side, "sz") ?? "8") / 6)),
+            style: BSTYLE_IN[val] ?? "solid",
+            color: "#" + (wVal(t, side, "color") ?? "000000").replace(/^auto$/, "000000"),
+          });
+        }
+      }
+      curRow()?.cells.push(cell);
+      if (!selfClose) stack.push({ kind: "tc" });
+    }
+  }
+  return tables;
+}
+
+/** Inject the extracted props into mammoth's <table>/<tr>/<td> tags. */
+function annotateTableHtml(html: string, tables: XmlTbl[]): string {
+  if (!tables.length) return html;
+  let ti = 0;
+  const ctx: { tbl: XmlTbl | null; r: number; c: number; headerRow: boolean }[] = [];
+  const inject = (tag: string, attrs: string, style: string) => {
+    let out = tag;
+    if (style) {
+      out = /style="[^"]*"/.test(out)
+        ? out.replace(/style="([^"]*)"/, `style="$1;${attrEsc(style)}"`)
+        : out.replace(/\s*\/?>$/, ` style="${attrEsc(style)}">`);
+    }
+    if (attrs) out = out.replace(/\s*\/?>$/, `${attrs}>`);
+    return out;
+  };
+  return html.replace(/<\/?(table|tr|td|th)\b[^>]*>/gi, (tok) => {
+    const isClose = tok.startsWith("</");
+    const name = tok.match(/<\/?(table|tr|td|th)/i)?.[1].toLowerCase();
+    const top = ctx[ctx.length - 1];
+    if (name === "table" && !isClose) {
+      const tbl = tables[ti++] ?? null;
+      ctx.push({ tbl, r: -1, c: -1, headerRow: false });
+      if (!tbl) return tok;
+      const style = [
+        tbl.widthPct ? `width:${tbl.widthPct}%` : "",
+        tbl.indent ? `margin-left:${tbl.indent * 24}px` : "",
+      ].filter(Boolean).join(";");
+      const attrs =
+        (tbl.align ? ` data-align="${tbl.align}"` : "") +
+        (tbl.widthPct ? ` data-width-mode="pct"` : tbl.fixed ? ` data-width-mode="fixed"` : "") +
+        (tbl.repeatHeader ? ` data-repeat-header="true"` : "");
+      return inject(tok, attrs, style);
+    }
+    if (name === "table" && isClose) { ctx.pop(); return tok; }
+    if (!top) return tok;
+    if (name === "tr" && !isClose) {
+      top.r++; top.c = -1;
+      const row = top.tbl?.rows[top.r];
+      top.headerRow = !!row?.header;
+      if (!row) return tok;
+      return inject(tok, row.cantSplit ? ` data-cant-split="true"` : "",
+        row.height ? `height:${row.height}px` : "");
+    }
+    if (name === "tr") return tok;
+    // td / th
+    if (isClose) return top.headerRow ? "</th>" : tok;
+    top.c++;
+    const cell = top.tbl?.rows[top.r]?.cells[top.c];
+    const open = top.headerRow && name === "td" ? tok.replace(/<td/, "<th") : tok;
+    if (!cell) return open;
+    const style = [
+      cell.bg ? `background-color:${cell.bg}` : "",
+      cell.vAlign ? `vertical-align:${cell.vAlign}` : "",
+      cell.pad != null ? `padding:${cell.pad}px` : "",
+      cell.dir ? `writing-mode:${cell.dir}` : "",
+      ...(cell.borders ?? []).map((b) => `border-${b.side}:${b.w}px ${b.style} ${b.color}`),
+    ].filter(Boolean).join("; ");
+    const attrs = cell.colw ? ` data-colwidth="${cell.colw}"` : "";
+    return inject(open, attrs, style);
+  });
+}
+
 /** .docx file → HTML string for editor.setContent (mammoth preserves structure) */
 export async function importDocx(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
-  const source = await tagMathZones(arrayBuffer).catch(() => arrayBuffer);
+  const { buffer, docXml } = await preprocessDocx(arrayBuffer).catch(() => ({ buffer: arrayBuffer, docXml: "" }));
   // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
-  const result = await mammoth.convertToHtml({ arrayBuffer: source }).catch(() =>
-    mammoth.convertToHtml({ buffer: Buffer.from(source) } as never));
-  return mathMarkersToHtml(result.value);
+  const result = await mammoth.convertToHtml({ arrayBuffer: buffer }).catch(() =>
+    mammoth.convertToHtml({ buffer: Buffer.from(buffer) } as never));
+  let html = breakMarkersToHtml(mathMarkersToHtml(result.value));
+  if (docXml) html = annotateTableHtml(html, extractXmlTables(docXml));
+  return html;
 }
 
 export type { Json };

@@ -44,6 +44,23 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
       ] },
       { type: "pageBreak" },
       { type: "paragraph", content: [{ type: "text", text: "after break" }] },
+      { type: "sectionBreak", attrs: { type: "nextPage", marginTop: 72 } },
+      { type: "paragraph", content: [{ type: "text", text: "in section two" }] },
+      { type: "table", attrs: { align: "center", widthMode: "pct", widthPct: 60, repeatHeader: true }, content: [
+        { type: "tableRow", attrs: { height: 40, heightMode: "atLeast" }, content: [
+          { type: "tableHeader", attrs: { backgroundColor: "#F2782E", vAlign: "middle" }, content: [{ type: "paragraph", content: [{ type: "text", text: "H1" }] }] },
+          { type: "tableHeader", attrs: { colspan: 2 }, content: [{ type: "paragraph", content: [{ type: "text", text: "H23" }] }] },
+        ] },
+        { type: "tableRow", attrs: { cantSplit: true }, content: [
+          { type: "tableCell", attrs: { rowspan: 2, borders: { top: { style: "dashed", width: 2, color: "#FF0000" } } }, content: [{ type: "paragraph", content: [{ type: "text", text: "merged" }] }] },
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "b2" }] }] },
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "b3" }] }] },
+        ] },
+        { type: "tableRow", content: [
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "c2" }] }] },
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "c3" }] }] },
+        ] },
+      ] },
       { type: "blockMath", attrs: { latex: "x^2+y^2" } },
     ],
   };
@@ -62,6 +79,29 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     const xml = await zip.file("word/document.xml")?.async("text");
     check("docx: math as OMML", !!xml && xml.includes("oMath") && xml.includes("x^2+y^2"));
     check("docx: math round-trips", /data-type="(inline|block)-math"[^>]*data-latex="x\^2\+y\^2"/.test(html));
+    // table props in the exported OOXML
+    check("docx: tbl center align", !!xml && /<w:jc w:val="center"\/>/.test(xml));
+    check("docx: tbl width pct", !!xml && /<w:tblW [^>]*w:w="60%"/.test(xml));
+    check("docx: tblHeader repeat", !!xml && xml.includes("tblHeader"));
+    check("docx: trHeight", !!xml && xml.includes("trHeight"));
+    check("docx: cantSplit", !!xml && xml.includes("cantSplit"));
+    check("docx: cell shading", !!xml && /<w:shd [^>]*w:fill="F2782E"/.test(xml));
+    check("docx: cell borders", !!xml && /<w:top w:val="dashed"/.test(xml));
+    check("docx: vMerge", !!xml && xml.includes("vMerge"));
+    check("docx: gridSpan", !!xml && xml.includes("gridSpan"));
+    check("docx: section break", !!xml && /<w:sectPr[^>]*>[\s\S]*?w:val="nextPage"/.test(xml) || !!xml && xml.includes("nextPage"));
+    // re-import: annotations survive
+    check("docx: section-break node", html.includes('data-type="section-break"') && html.includes('data-section-type="nextPage"'));
+    check("docx: tbl align reimport", html.includes('data-align="center"'));
+    check("docx: tbl width reimport", /width:60%/.test(html));
+    check("docx: repeat-header reimport", html.includes('data-repeat-header="true"'));
+    check("docx: cell bg reimport", /background-color:#F2782E/i.test(html));
+    check("docx: cell border reimport", /border-top:2px dashed #FF0000/i.test(html));
+    check("docx: row height reimport", /height:40px/.test(html));
+    check("docx: cantSplit reimport", html.includes('data-cant-split="true"'));
+    check("docx: vAlign reimport", /vertical-align:middle/.test(html));
+    check("docx: th from tblHeader", /<th\b/.test(html));
+    check("docx: page-break node", html.includes('data-type="page-break"'));
   }
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
 }

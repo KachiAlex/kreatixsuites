@@ -191,7 +191,10 @@ export function WriterEditor({ item, initialDoc, permission }: {
     },
   });
   editorRef.current = editor;
-  useEffect(() => { (window as any).__editor = editor ?? undefined; }, [editor]);
+  useEffect(() => {
+    // dev-only debug hook for headless harnesses
+    if (import.meta.env.DEV) (window as any).__editor = editor ?? undefined;
+  }, [editor]);
 
   /** Upload an image as Drive media owned by this doc, then embed it.
    *  Falls back to a data URL if the upload gate rejects it. */
@@ -629,6 +632,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     try {
       const html = await importDocx(f);
       editor?.commands.setContent(html);
+      editor?.commands.fixTables(); // repair any malformed table geometry post-import
       toast(`Imported ${f.name}`);
     } catch {
       toast("Could not import that file");
@@ -1274,11 +1278,73 @@ export function WriterEditor({ item, initialDoc, permission }: {
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
           {editor && showRuler && <Ruler editor={editor} canMutate={canMutate} />}
           <div className="doc-page" onContextMenu={(e) => {
-            if (!editor || !canMutate) return;
+            if (!editor) return;
             const target = e.target as HTMLElement;
+            const coords = { left: e.clientX, top: e.clientY };
             if (target.closest(".ProseMirror table")) {
+              if (!canMutate) return;
               e.preventDefault();
               setCtxMenu({ x: e.clientX, y: e.clientY, items: tableMenuItems({ x: e.clientX, y: e.clientY }) });
+              return;
+            }
+            if (target.closest(".ProseMirror img")) {
+              if (!canMutate) return;
+              e.preventDefault();
+              const pos = editor.view.posAtCoords(coords);
+              if (pos) editor.chain().focus().setNodeSelection(pos.pos).run();
+              setCtxMenu({
+                x: e.clientX, y: e.clientY, items: [
+                  { label: "Align left", onClick: () => editor.chain().focus().setImageAlign("left").run() },
+                  { label: "Align center", onClick: () => editor.chain().focus().setImageAlign("center").run() },
+                  { label: "Align right", onClick: () => editor.chain().focus().setImageAlign("right").run() },
+                  { label: "Inline (no wrap)", onClick: () => editor.chain().focus().setImageAlign("none").run() },
+                  { divider: true },
+                  { label: "Size 25%", onClick: () => editor.chain().focus().setImageWidth(220).run() },
+                  { label: "Size 50%", onClick: () => editor.chain().focus().setImageWidth(440).run() },
+                  { label: "Size 75%", onClick: () => editor.chain().focus().setImageWidth(660).run() },
+                  { label: "Full width", onClick: () => editor.chain().focus().setImageWidth(null).run() },
+                  { divider: true },
+                  {
+                    label: "Alt text…", onClick: () => {
+                      void askText({ title: "Alt text", initial: (editor.getAttributes("image").alt as string) ?? "" })
+                        .then((alt) => { if (alt !== null) editor.chain().focus().updateAttributes("image", { alt }).run(); });
+                    },
+                  },
+                  {
+                    label: "Caption…", onClick: () => {
+                      void askText({ title: "Caption", initial: (editor.getAttributes("image").caption as string) ?? "" })
+                        .then((cap) => { if (cap !== null) editor.chain().focus().updateAttributes("image", { caption: cap }).run(); });
+                    },
+                  },
+                  { divider: true },
+                  { label: "Delete image", danger: true, onClick: () => editor.chain().focus().deleteSelection().run() },
+                ],
+              });
+              return;
+            }
+            const anchor = target.closest<HTMLAnchorElement>(".ProseMirror a");
+            if (anchor) {
+              e.preventDefault();
+              const pos = editor.view.posAtCoords(coords);
+              if (pos) {
+                editor.chain().focus().setTextSelection(pos.pos).extendMarkRange("link").run();
+              }
+              const href = anchor.getAttribute("href") ?? "";
+              const items: MenuItem[] = [
+                { label: "Open link", onClick: () => window.open(href, "_blank", "noopener") },
+                { label: "Copy link", onClick: () => void navigator.clipboard.writeText(href).catch(() => toast("Could not copy link")) },
+              ];
+              if (canMutate) items.push(
+                { divider: true },
+                {
+                  label: "Edit link…", onClick: () => {
+                    void askText({ title: "Edit link", placeholder: "https://", initial: href })
+                      .then((u) => { if (u?.trim()) editor.chain().focus().extendMarkRange("link").setLink({ href: u.trim() }).run(); });
+                  },
+                },
+                { label: "Remove link", onClick: () => editor.chain().focus().unsetLink().run() },
+              );
+              setCtxMenu({ x: e.clientX, y: e.clientY, items });
             }
           }}>
             <EditorContent editor={editor} />
@@ -1299,6 +1365,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           onRestore={async () => {
             const r = await api.get<{ content: { doc: object } }>(`/api/files/${item.id}/content`);
             editor?.commands.setContent(r.content.doc);
+            editor?.commands.fixTables();
           }} toast={toast} />
       )}
       {panel === "ai" && (
