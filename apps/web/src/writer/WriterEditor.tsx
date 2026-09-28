@@ -9,6 +9,7 @@ import { Subscript } from "@tiptap/extension-subscript";
 import { Superscript } from "@tiptap/extension-superscript";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
 import { KxTable, KxTableRow, KxTableHeader, KxTableCell, KxTableCommands } from "./extensions/table";
+import { KxTableHandles } from "./extensions/tableHandles";
 import { CodeBlockLowlight } from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Mathematics } from "@tiptap/extension-mathematics";
@@ -126,7 +127,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Subscript, Superscript,
       TaskList, TaskItem.configure({ nested: true }),
-      KxTable.configure({ resizable: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands,
+      KxTable.configure({ resizable: true, allowTableNodeSelection: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands, KxTableHandles,
       RichImage,
       CodeBlockLowlight.configure({ lowlight: createLowlight(common) }),
       Mathematics,
