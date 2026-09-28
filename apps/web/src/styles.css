@@ -223,6 +223,9 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .ProseMirror.resize-cursor,.ProseMirror.resize-cursor *{cursor:col-resize!important}
 .ProseMirror.kx-rowgrab,.ProseMirror.kx-rowgrab *{cursor:row-resize!important}
 .ProseMirror.kx-colgrab,.ProseMirror.kx-colgrab *{cursor:col-resize!important}
+.ProseMirror.kx-selcell,.ProseMirror.kx-selcell *{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path d='M4 12 L12 4 M12 4 H6.5 M12 4 V9.5' stroke='black' stroke-width='2.2' fill='none' stroke-linecap='round'/></svg>") 8 8, default!important}
+.ProseMirror.kx-selrow,.ProseMirror.kx-selrow *{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path d='M2.5 8 H13 M13 8 L9 4.5 M13 8 L9 11.5' stroke='black' stroke-width='2.2' fill='none' stroke-linecap='round'/></svg>") 8 8, default!important}
+.ProseMirror.kx-selcol,.ProseMirror.kx-selcol *{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path d='M8 2.5 V13 M8 13 L4.5 9 M8 13 L11.5 9' stroke='black' stroke-width='2.2' fill='none' stroke-linecap='round'/></svg>") 8 8, default!important}
 .ProseMirror table.ProseMirror-selectednode{outline:2px solid rgba(242,120,46,.7);outline-offset:1px}
 .kx-row-guide{position:fixed;left:0;right:0;height:0;border-top:2px solid var(--k-orange);pointer-events:none;z-index:90}
 .kx-col-guide{position:fixed;top:0;bottom:0;width:0;border-left:2px solid var(--k-orange);pointer-events:none;z-index:90}

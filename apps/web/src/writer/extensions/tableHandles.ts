@@ -8,7 +8,7 @@
 // columnResizing/tableEditing in the base Table extension.
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey, NodeSelection } from "@tiptap/pm/state";
-import { TableMap } from "@tiptap/pm/tables";
+import { TableMap, CellSelection } from "@tiptap/pm/tables";
 import type { EditorView } from "@tiptap/pm/view";
 
 const GRAB_PX = 5; // invisible grab zone around borders
@@ -147,6 +147,59 @@ const mkGuide = (cls: string) => {
   return g;
 };
 
+// ---- selection affordances (cell arrow / row strip / column strip) ----------
+
+type SelZone =
+  | { kind: "cell"; cellPos: number }
+  | { kind: "row"; cellPos: number }   // a cell in the target row
+  | { kind: "col"; cellPos: number };  // a cell in the target column
+
+/** Doc pos of the cell node whose content contains the given pos. */
+const cellPosAt = (view: EditorView, pos: number): number | null => {
+  const $p = view.state.doc.resolve(pos);
+  for (let d = $p.depth; d >= 0; d--) {
+    const n = $p.node(d).type.name;
+    if (n === "tableCell" || n === "tableHeader") return $p.before(d);
+  }
+  return null;
+};
+
+/** Which selection zone (if any) the pointer is in. */
+const selZoneHit = (view: EditorView, ev: MouseEvent): SelZone | null => {
+  const target = ev.target as HTMLElement | null;
+  const cell = target?.closest?.("td,th");
+  if (cell && view.dom.contains(cell)) {
+    // cell-select arrow strip: just inside the cell's left edge, past the
+    // border-resize grab zone
+    const rect = cell.getBoundingClientRect();
+    const dl = ev.clientX - rect.left;
+    if (dl > GRAB_PX && dl <= 15 && ev.clientY > rect.top + 2 && ev.clientY < rect.bottom - 2) {
+      const at = view.posAtCoords({ left: rect.left + rect.width / 2, top: rect.top + rect.height / 2 });
+      const pos = at && cellPosAt(view, at.pos);
+      if (pos != null) return { kind: "cell", cellPos: pos };
+    }
+    return null;
+  }
+  // strips outside cells: scan the editor's tbodies (cheap — tables are few)
+  for (const tbody of view.dom.querySelectorAll("tbody")) {
+    const tr = tbody.getBoundingClientRect();
+    if (tr.width === 0) continue;
+    // left of the table edge → row select strip
+    if (ev.clientX < tr.left && ev.clientX > tr.left - 22 && ev.clientY >= tr.top && ev.clientY <= tr.bottom) {
+      const at = view.posAtCoords({ left: tr.left + 6, top: ev.clientY });
+      const pos = at && cellPosAt(view, at.pos);
+      if (pos != null) return { kind: "row", cellPos: pos };
+    }
+    // above the table's top edge → column select strip
+    if (ev.clientY < tr.top && ev.clientY > tr.top - 20 && ev.clientX >= tr.left && ev.clientX <= tr.right) {
+      const at = view.posAtCoords({ left: ev.clientX, top: tr.top + 6 });
+      const pos = at && cellPosAt(view, at.pos);
+      if (pos != null) return { kind: "col", cellPos: pos };
+    }
+  }
+  return null;
+};
+
 export const KxTableHandles = Extension.create({
   name: "kxTableHandles",
 
@@ -161,13 +214,34 @@ export const KxTableHandles = Extension.create({
               if (!view.editable || event.buttons) return;
               const rowHit = rowBorderHit(view, event);
               const colHit = !rowHit && col0BorderHit(view, event);
+              const zone = !rowHit && !colHit ? selZoneHit(view, event) : null;
               view.dom.classList.toggle("kx-rowgrab", !!rowHit);
               view.dom.classList.toggle("kx-colgrab", !!colHit);
+              view.dom.classList.toggle("kx-selcell", zone?.kind === "cell");
+              view.dom.classList.toggle("kx-selrow", zone?.kind === "row");
+              view.dom.classList.toggle("kx-selcol", zone?.kind === "col");
             },
 
             mousedown: (view, event) => {
               if (!view.editable || event.button !== 0) return;
               const zoom = zoomOf(view);
+
+              const zone = selZoneHit(view, event);
+              if (zone) {
+                event.preventDefault();
+                event.stopPropagation();
+                const { state } = view;
+                // resolve AT the cell boundary — node(-1)=row, nodeAfter=cell,
+                // which is what cellAround expects inside row/colSelection
+                const $c = state.doc.resolve(zone.cellPos);
+                const sel = zone.kind === "cell"
+                  ? CellSelection.create(state.doc, zone.cellPos)
+                  : zone.kind === "row"
+                    ? CellSelection.rowSelection($c, $c)
+                    : CellSelection.colSelection($c, $c);
+                view.dispatch(state.tr.setSelection(sel));
+                return true;
+              }
 
               const rHit = rowBorderHit(view, event);
               if (rHit) {
@@ -231,6 +305,9 @@ export const KxTableHandles = Extension.create({
             mouseleave: (view) => {
               view.dom.classList.remove("kx-rowgrab");
               view.dom.classList.remove("kx-colgrab");
+              view.dom.classList.remove("kx-selcell");
+              view.dom.classList.remove("kx-selrow");
+              view.dom.classList.remove("kx-selcol");
             },
           },
         },
