@@ -374,6 +374,11 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .comment.resolved{opacity:.55}
 .comment .c-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .comment .c-av{width:26px;height:26px;border-radius:50%;background:#343434;color:#fff;font-size:9px;display:grid;place-items:center;font-weight:800}
+.mention-drop{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:95;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 24px rgba(46,35,29,.14);overflow:hidden}
+.mention-item{display:flex;align-items:center;gap:7px;width:100%;padding:6px 9px;border:0;background:transparent;font-size:12px;cursor:pointer;text-align:left}
+.mention-item.on{background:#F6F2EE}
+.mention-item .mention-mail{margin-left:auto;font-size:10.5px;color:var(--muted)}
+.mention-token{color:var(--k-orange-dark);font-weight:700}
 .comment .c-head b{font-size:12px}.comment .c-head span{font-size:10px;color:#A19A95;margin-left:auto}
 .comment .c-body{font-size:12px;line-height:1.5;color:#3A3633}
 .comment .c-actions{display:flex;gap:6px;margin-top:8px}
@@ -947,10 +952,32 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .drop-item:disabled{opacity:.45;cursor:default}
 .drop-check{margin-left:auto;color:var(--k-orange)}
 .suggest-badge{border:1px solid var(--k-orange);background:var(--k-orange-soft);color:var(--k-orange-dark);border-radius:9px;padding:4px 10px;font-size:11.5px;font-weight:700;cursor:pointer}
-.ProseMirror .insertion{text-decoration:underline;text-decoration-color:var(--suggest-color,#3B82C4);text-decoration-thickness:1.5px;text-underline-offset:2px}
-.ProseMirror .deletion{text-decoration:line-through;text-decoration-color:var(--suggest-color,#3B82C4);opacity:.65}
-.ProseMirror .formatChange{outline:1px dashed var(--suggest-color,#3B82C4);outline-offset:1px}
+.ProseMirror .insertion,.ProseMirror ins[data-change-id]{text-decoration:underline;text-decoration-color:var(--suggest-color,#3B82C4);text-decoration-thickness:1.5px;text-underline-offset:2px}
+.ProseMirror .deletion,.ProseMirror del[data-change-id]{text-decoration:line-through;text-decoration-color:var(--suggest-color,#3B82C4);opacity:.65}
+.ProseMirror .formatChange,.ProseMirror span[data-format-change]{outline:1px dashed var(--suggest-color,#3B82C4);outline-offset:1px}
 .ProseMirror [data-tracked]{border-left:2px solid var(--k-orange);padding-left:6px}
+/* markup display modes (Word Review ▸ Display for Review) */
+.mk-none .ProseMirror del[data-change-id]{display:none}
+.mk-none .ProseMirror ins[data-change-id]{text-decoration:none}
+.mk-none .ProseMirror .formatChange{outline:none}
+.mk-original .ProseMirror ins[data-change-id]{display:none}
+.mk-original .ProseMirror del[data-change-id]{text-decoration:none;opacity:1}
+.mk-simple .ProseMirror del[data-change-id]{display:none}
+.mk-simple .ProseMirror ins[data-change-id]{text-decoration:none}
+.mk-simple .ProseMirror p:has(ins[data-change-id]),
+.mk-simple .ProseMirror p:has(del[data-change-id]),
+.mk-simple .ProseMirror h1:has(ins[data-change-id]),
+.mk-simple .ProseMirror h2:has(ins[data-change-id]),
+.mk-simple .ProseMirror h3:has(ins[data-change-id]),
+.mk-simple .ProseMirror h4:has(ins[data-change-id]),
+.mk-simple .ProseMirror h5:has(ins[data-change-id]),
+.mk-simple .ProseMirror h6:has(ins[data-change-id]),
+.mk-simple .ProseMirror li:has(ins[data-change-id]),
+.mk-simple .ProseMirror blockquote:has(ins[data-change-id]){box-shadow:-4px 0 0 0 var(--k-orange)}
+/* per-type markup filter */
+.hide-ins .ProseMirror ins[data-change-id]{display:none}
+.hide-del .ProseMirror del[data-change-id]{display:none}
+.hide-fmt .ProseMirror .formatChange{outline:none}
 .suggest-item{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px}
 .suggest-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
 .suggest-author{font-size:11.5px;font-weight:700}

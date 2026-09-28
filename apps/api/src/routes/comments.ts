@@ -29,6 +29,24 @@ export function commentRoutes(app: FastifyInstance) {
     return { comments: rows.map(commentOut) };
   });
 
+  /** Users who can be @mentioned on this file: owner + users it is shared with. */
+  app.get("/api/files/:id/mentionable", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "commenter")) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const rows = await q<{ id: string; email: string; display_name: string; initials: string }>(
+      `SELECT id, email, display_name, initials FROM users
+       WHERE id = $1 OR id IN (SELECT user_id FROM shares WHERE file_id = $2)
+       ORDER BY display_name`,
+      [item.owner_id, item.id],
+    );
+    return {
+      users: rows.map((u) => ({ id: u.id, email: u.email, displayName: u.display_name, initials: u.initials })),
+    };
+  });
+
   app.post("/api/files/:id/comments", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);

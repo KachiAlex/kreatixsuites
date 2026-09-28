@@ -36,6 +36,8 @@ export interface PageSetup {
   pnFormat: PageNumberFormat;
   /** Number assigned to page 1. */
   pnStart: number;
+  /** Doc-level flag: when set, all editors are locked into suggest mode. */
+  trackingLocked?: boolean;
 }
 
 export const DEFAULT_SETUP: PageSetup = {

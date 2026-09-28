@@ -44,6 +44,8 @@ import { CaptionDialog, BookmarkDialog, CrossRefDialog } from "./ReferenceDialog
 import { docVocabulary, suggest, synonyms } from "./proofing";
 import { ReadabilityDialog, AccessibilityDialog } from "./ToolDialogs";
 import { Spellcheck, SPELL_KEY } from "./extensions/spellcheck";
+import { diffDocs, docText } from "./diff";
+import { getTrackedChanges } from "tiptap-track-changes";
 import { Embed } from "./extensions/embed";
 import { RichImage, IMG_MULTI, WRAP_LABELS, effectiveWrap, imagePreset, type ImageWrap } from "./extensions/image";
 import { ImageLayoutDialog } from "./ImageDialogs";
@@ -105,6 +107,13 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [readDlg, setReadDlg] = useState(false);
   const [a11yDlg, setA11yDlg] = useState(false);
   const [imgDlgPos, setImgDlgPos] = useState<number | null>(null);
+  // review: markup display mode + markup filtering + tracking lock + compare
+  const [markupMode, setMarkupMode] = useState<"all" | "simple" | "none" | "original">(
+    () => (localStorage.getItem("kx.markup") as "all" | "simple" | "none" | "original" | null) ?? "all");
+  const [hideTypes, setHideTypes] = useState<Set<string>>(new Set());
+  const [hideAuthors, setHideAuthors] = useState<Set<string>>(new Set());
+  const [trackLocked, setTrackLocked] = useState(false);
+  const compareRef = useRef<HTMLInputElement>(null);
   const [navTab, setNavTab] = useState<"headings" | "results">("headings");
   const [dragOver, setDragOver] = useState<number | null>(null);
   const [wordCountOpen, setWordCountOpen] = useState(false);
@@ -609,6 +618,58 @@ export function WriterEditor({ item, initialDoc, permission }: {
     if (!editor) return;
     editor.setEditable(canMutate && (state?.trackMode ?? "edit") !== "view");
   }, [editor, canMutate, state?.trackMode]);
+
+  // markup display modes + type/author filtering — classes on the page wrapper
+  useEffect(() => {
+    const wrap = document.querySelector(".doc-zoom");
+    if (!wrap) return;
+    for (const m of ["mk-all", "mk-simple", "mk-none", "mk-original", "hide-ins", "hide-del", "hide-fmt"]) wrap.classList.remove(m);
+    wrap.classList.add(`mk-${markupMode}`);
+    for (const t of hideTypes) wrap.classList.add(`hide-${t}`);
+    localStorage.setItem("kx.markup", markupMode);
+  }, [markupMode, hideTypes, editor]);
+
+  // lock tracking → reviewers can't leave suggest mode (doc-level flag rides
+  // along in the pageSetup payload, so it persists + collab-syncs via save)
+  useEffect(() => {
+    const tl = (initialDoc as { pageSetup?: { trackingLocked?: boolean } })?.pageSetup?.trackingLocked;
+    if (tl) setTrackLocked(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+  const toggleTrackLock = useCallback(() => {
+    if (!editor) return;
+    const next = !trackLocked;
+    setTrackLocked(next);
+    const cur = readPageSetup(editor);
+    editor.storage.KxPageSetup = { setup: { ...cur, trackingLocked: next } };
+    if (next) (editor.commands as unknown as Record<string, (m: string) => boolean>).setTrackChangesMode("suggest");
+    savePageSetup();
+    toast(next ? "Change tracking locked — all edits become suggestions" : "Change tracking unlocked");
+  }, [editor, trackLocked, savePageSetup, toast]);
+
+  /** Compare-lite: diff the current doc against an imported file, shown as
+   *  insertion/deletion markup in place of the content (undoable). */
+  const onCompare = async (f: File) => {
+    if (!editor) return;
+    try {
+      const ext = f.name.split(".").pop()?.toLowerCase();
+      let other: string;
+      if (ext === "docx") {
+        const html = await importDocx(f);
+        const d = document.createElement("div");
+        d.innerHTML = html;
+        other = d.innerText;
+      } else {
+        other = await f.text();
+      }
+      const marked = diffDocs(docText(editor.state.doc), other);
+      editor.commands.setContent(marked);
+      setMarkupMode("all");
+      toast(`Compared with ${f.name} — differences shown as markup`);
+    } catch {
+      toast("Could not compare that file");
+    }
+  };
 
   // ---- find & replace (KBS-WRITER-017) ----
   const matches = useMemo(() => {
@@ -1577,11 +1638,52 @@ export function WriterEditor({ item, initialDoc, permission }: {
           },
         ],
       },
+      {
+        label: "Review", items: [
+          { label: "Suggestions", checked: panel === "suggest", onClick: () => setPanel(panel === "suggest" ? "none" : "suggest") },
+          ...(canEdit ? [
+            { label: "Accept all suggestions", onClick: () => (ed.commands as unknown as Record<string, () => boolean>).acceptAll() },
+            { label: "Reject all suggestions", onClick: () => (ed.commands as unknown as Record<string, () => boolean>).rejectAll() },
+          ] : []),
+          { divider: true },
+          {
+            label: "Markup display", submenu: ([
+              ["all", "All markup"], ["simple", "Simple markup"], ["none", "No markup"], ["original", "Original"],
+            ] as const).map(([v, label]) => ({
+              label, checked: markupMode === v, onClick: () => setMarkupMode(v),
+            })),
+          },
+          {
+            label: "Show markup", submenu: [
+              { label: "Insertions", checked: !hideTypes.has("ins"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("ins") ? n.delete("ins") : n.add("ins"); return n; }) },
+              { label: "Deletions", checked: !hideTypes.has("del"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("del") ? n.delete("del") : n.add("del"); return n; }) },
+              { label: "Formatting", checked: !hideTypes.has("fmt"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("fmt") ? n.delete("fmt") : n.add("fmt"); return n; }) },
+              ...(() => {
+                const authors = new Map<string, string>();
+                for (const c of getTrackedChanges(ed)) authors.set(c.authorId, c.authorName);
+                if (!authors.size) return [] as MenuItem[];
+                return [
+                  { divider: true } as MenuItem,
+                  ...[...authors].map(([id, name]) => ({
+                    label: name, checked: !hideAuthors.has(id),
+                    onClick: () => setHideAuthors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }),
+                  })),
+                ];
+              })(),
+            ],
+          },
+          { divider: true },
+          ...(canEdit ? [
+            { label: "Lock change tracking", checked: trackLocked, onClick: toggleTrackLock },
+            { label: "Compare document…", onClick: () => compareRef.current?.click() },
+          ] : []),
+        ] as MenuItem[],
+      },
       { label: "Tools", items: toolItems },
     );
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment]);
+  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment, markupMode, hideTypes, hideAuthors, trackLocked]);
 
   const wcStats = useMemo(() => {
     if (!wordCountOpen || !editor) return null;
@@ -1677,7 +1779,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <button className="rb rb-opt" title="Paragraph settings" onClick={() => setParaDlg(true)}>¶…</button>
           <div className="ribbon-end">
             {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
-            {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode} />}
+            {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode ?? (trackLocked ? "suggest" : undefined)} />}
             <span className="word-count" role="button" tabIndex={0} title="Word count"
               onClick={() => setWordCountOpen(true)} onKeyDown={(e) => e.key === "Enter" && setWordCountOpen(true)}>
               {state?.words ?? 0} words
@@ -1986,6 +2088,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
       <input ref={importRef} type="file" accept=".docx" hidden onChange={(e) => e.target.files?.[0] && onImport(e.target.files[0])} />
       <input ref={textImportRef} type="file" accept=".md,.txt,.html,.htm" hidden onChange={(e) => e.target.files?.[0] && onTextImport(e.target.files[0])} />
       <input ref={imageRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && onImage(e.target.files[0])} />
+      <input ref={compareRef} type="file" accept=".docx,.txt,.md,.html,.htm" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onCompare(f); e.target.value = ""; }} />
+      {hideAuthors.size > 0 && (
+        <style>{[...hideAuthors].map((id) =>
+          `.ProseMirror ins[data-author-id="${id}"],.ProseMirror del[data-author-id="${id}"],.ProseMirror .formatChange[data-author-id="${id}"]{display:none!important}`).join("\n")}
+        </style>
+      )}
       {msg && <div className="toast">{msg}</div>}
     </div>
   );
