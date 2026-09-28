@@ -31,6 +31,8 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { CommentMark } from "./extensions";
 import { ParagraphSpacing, ListStyle } from "./extensions/spacing";
+import { KxParaFormat } from "./extensions/paraFormat";
+import { ParagraphDialog } from "./ParagraphDialog";
 import { PageBreak, SectionBreak, ColumnBreak, Columns } from "./extensions/nodes";
 import { ForcedBreaks } from "./extensions/forcedBreaks";
 import { Footnote } from "./extensions/footnote";
@@ -102,6 +104,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [sepDlg, setSepDlg] = useState<"toText" | "toTable" | null>(null);
   const [insertTbl, setInsertTbl] = useState(false);
   const [styleDlg, setStyleDlg] = useState<string | null>(null);
+  const [paraDlg, setParaDlg] = useState(false);
+  // Format Painter: armed state + captured format (single-use; sticky on dbl-click)
+  const [painterOn, setPainterOn] = useState(false);
+  const painter = useRef<{
+    sticky: boolean; armedAt: number;
+    marks: { type: string; attrs: Record<string, unknown> }[];
+    nodeType: string; nodeAttrs: Record<string, unknown>;
+  } | null>(null);
   const [gridlines, setGridlines] = useState(() => localStorage.getItem("kx.gridlines") !== "off");
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [bordersPos, setBordersPos] = useState<{ x: number; y: number } | null>(null);
@@ -169,6 +179,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       CommentMark,
       KxStyles,
       ParagraphSpacing,
+      KxParaFormat,
       ListStyle,
       PageBreak, SectionBreak, ColumnBreak, Columns,
       ForcedBreaks,
@@ -385,12 +396,89 @@ export function WriterEditor({ item, initialDoc, permission }: {
     return () => window.removeEventListener("online", on);
   }, [flushSave]);
 
+  // ---- Format Painter ----
+  const copyFormat = useCallback((sticky: boolean) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const { $from } = ed.state.selection;
+    const parent = $from.parent;
+    // marks at cursor / in selection
+    const markMap = new Map<string, { type: string; attrs: Record<string, unknown> }>();
+    if (!ed.state.selection.empty) {
+      ed.state.doc.nodesBetween(ed.state.selection.from, ed.state.selection.to, (n) => {
+        if (n.isText) for (const m of n.marks) markMap.set(m.type.name, { type: m.type.name, attrs: { ...m.attrs } });
+      });
+    } else {
+      for (const m of ed.state.storedMarks ?? $from.marks()) markMap.set(m.type.name, { type: m.type.name, attrs: { ...m.attrs } });
+    }
+    painter.current = {
+      sticky,
+      armedAt: Date.now(),
+      marks: [...markMap.values()],
+      nodeType: parent.type.name,
+      nodeAttrs: { ...parent.attrs },
+    };
+    setPainterOn(true);
+  }, []);
+
+  const paintFormat = useCallback(() => {
+    const ed = editorRef.current;
+    const fmt = painter.current;
+    if (!ed || !fmt) return;
+    const { from, to } = ed.state.selection;
+    if (from === to) return;
+    ed.chain().focus().command(({ tr, state }) => {
+      // strip existing marks, then apply copied marks
+      tr.removeMark(from, to);
+      for (const m of fmt.marks) {
+        const mt = state.schema.marks[m.type];
+        if (mt) tr.addMark(from, to, mt.create(m.attrs));
+      }
+      // paragraph-level formatting: copy attrs type-safe (only paragraph↔heading
+      // conversion; list/block containers keep their own type)
+      state.doc.nodesBetween(from, to, (n, pos) => {
+        if (!n.isTextblock) return true;
+        const convertible = n.type.name === "paragraph" || n.type.name === "heading";
+        const target = convertible && (fmt.nodeType === "paragraph" || fmt.nodeType === "heading")
+          ? state.schema.nodes[fmt.nodeType]
+          : n.type;
+        const attrs = { ...n.attrs, ...fmt.nodeAttrs };
+        if (target.name === "heading") attrs.level = fmt.nodeAttrs.level ?? attrs.level;
+        else delete (attrs as Record<string, unknown>).level;
+        tr.setNodeMarkup(pos, target, attrs);
+        return true;
+      });
+      return true;
+    }).run();
+    if (!fmt.sticky) { painter.current = null; setPainterOn(false); }
+  }, []);
+
+  // armed painter applies to the NEXT drag-selection it sees (Word parity)
+  useEffect(() => {
+    const ed = editor;
+    if (!ed || !painterOn) return;
+    const onSel = () => {
+      if (!painter.current) return;
+      const { from, to } = ed.state.selection;
+      // ignore the selection that armed the painter (same tick) — only paint fresh drags
+      if (from !== to && Date.now() - painter.current.armedAt > 250) paintFormat();
+    };
+    ed.on("selectionUpdate", onSel);
+    return () => { ed.off("selectionUpdate", onSel); };
+  }, [editor, painterOn, paintFormat]);
+
   // global editor shortcuts the browser would otherwise steal
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
+      if (e.shiftKey && (k === "c" || k === "v") && canMutate) {
+        e.preventDefault();
+        if (k === "c") copyFormat(false);
+        else paintFormat();
+        return;
+      }
       if (k === "f" || k === "h") {
         e.preventDefault();
         setFindOpen(true);
@@ -414,7 +502,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flushSave, canMutate, title]);
+  }, [flushSave, canMutate, title, copyFormat, paintFormat]);
 
   // flush on unmount / pagehide (autosave durability, KBS-SHARED-003)
   useEffect(() => {
@@ -484,6 +572,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       image: ctx.editor?.isActive("image") ?? false,
       paged: (ctx.editor?.storage.PaginationPlus?.enabled as boolean) ?? false,
       trackMode: (ctx.editor?.storage as unknown as Record<string, { mode?: string }> | undefined)?.trackChanges?.mode ?? "edit",
+      showMarks: (ctx.editor?.storage.KxParaFormat?.showMarks as boolean) ?? false,
     }),
   });
 
@@ -1074,6 +1163,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       { label: "Print layout", checked: state?.paged, onClick: () => { ed.chain().focus().togglePagination().run(); } },
       { label: "Show outline", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
       { label: "Show ruler", checked: showRuler, onClick: () => setShowRuler(!showRuler) },
+      { label: "Formatting marks (¶)", checked: state?.showMarks, onClick: () => ed.chain().focus().toggleShowMarks().run() },
       { divider: true },
       {
         label: "Zoom", submenu: [50, 75, 90, 100, 125, 150, 200].map((z) => ({
@@ -1225,6 +1315,14 @@ export function WriterEditor({ item, initialDoc, permission }: {
               { divider: true },
               { label: "Increase indent", onClick: () => ed.chain().focus().increaseIndent().run() },
               { label: "Decrease indent", onClick: () => ed.chain().focus().decreaseIndent().run() },
+              { divider: true },
+              { label: "Paragraph…", onClick: () => setParaDlg(true) },
+            ],
+          },
+          {
+            label: "Sort text", submenu: [
+              { label: "A → Z", onClick: () => ed.chain().focus().sortParagraphs("asc").run() },
+              { label: "Z → A", onClick: () => ed.chain().focus().sortParagraphs("desc").run() },
             ],
           },
           {
@@ -1425,6 +1523,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <button className={`rb rb-opt ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
           <button className={`rb rb-opt ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
           <button className="rb rb-opt" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
+          <button className={`rb rb-opt ${painterOn ? "on" : ""}`} title="Format Painter (click = one use · double-click = repeat · then select text to paint)"
+            onClick={() => (painterOn ? (painter.current = null, setPainterOn(false)) : copyFormat(false))}
+            onDoubleClick={() => copyFormat(true)}>🖌</button>
+          <button className={`rb rb-opt ${state?.showMarks ? "on" : ""}`} title="Show formatting marks" onClick={() => editor?.chain().focus().toggleShowMarks().run()}>¶</button>
+          <button className="rb rb-opt" title="Paragraph settings" onClick={() => setParaDlg(true)}>¶…</button>
           <div className="ribbon-end">
             {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
             {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode} />}
@@ -1588,6 +1691,9 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {insertTbl && editor && <InsertTableDialog editor={editor} onClose={() => setInsertTbl(false)} />}
       {styleDlg !== null && editor && (
         <StyleDialog editor={editor} styleKey={styleDlg} onClose={() => { setStyleDlg(null); savePageSetup(); }} />
+      )}
+      {paraDlg && editor && (
+        <ParagraphDialog editor={editor} onClose={() => setParaDlg(false)} />
       )}
       {sepDlg && editor && (
         <SeparatorDialog

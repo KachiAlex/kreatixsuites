@@ -340,6 +340,14 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .tp-tab{border:0;background:transparent;font-size:12px;font-weight:700;color:#8B8480;padding:8px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
 .tp-tab.on{color:var(--k-orange);border-bottom-color:var(--k-orange)}
 .tp-body{min-height:150px}
+.tp-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
+
+/* formatting marks (¶ show/hide) + measured tab stops */
+.kx-pilcrow{color:#B9B2AC;user-select:none;pointer-events:none;font-family:inherit}
+.kx-mark-space{background:radial-gradient(circle at 50% 58%,#B9B2AC 1px,transparent 1.6px)}
+.kx-mark-tab{display:inline-block;min-width:.8em;position:relative;vertical-align:baseline}
+.kx-mark-tab::after{content:"→";position:absolute;left:0;top:0;color:#B9B2AC;pointer-events:none}
+.kx-tabspan{display:inline-block;overflow:hidden;vertical-align:baseline;white-space:pre}
 .tp-btnrow{display:flex;gap:5px}
 .tp-opt{border:1px solid var(--line);border-radius:8px;background:#fff;font-size:11px;padding:6px 12px;cursor:pointer;text-transform:capitalize}
 .tp-opt.on{border-color:var(--k-orange);background:var(--k-orange-pale);color:var(--k-orange);font-weight:700}
