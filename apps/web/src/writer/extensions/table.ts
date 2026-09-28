@@ -10,7 +10,7 @@ import {
 } from "@tiptap/extension-table";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { CommandProps } from "@tiptap/core";
-import { TableMap } from "@tiptap/pm/tables";
+import { TableMap, CellSelection } from "@tiptap/pm/tables";
 
 // ---- types ----------------------------------------------------------------
 
@@ -239,10 +239,26 @@ export const KxTableCommands = Extension.create({
 
       setCellAttributes:
         (attrs) =>
-        ({ commands }) => {
-          let ok = false;
-          for (const [k, v] of Object.entries(attrs)) ok = commands.setCellAttribute(k, v) || ok;
-          return ok;
+        ({ tr, state, dispatch }) => {
+          // One setNodeMarkup per cell — chained setCellAttribute calls read
+          // stale doc attrs, so only the last key would survive.
+          const { selection } = state;
+          if (selection instanceof CellSelection) {
+            if (!dispatch) return true;
+            selection.forEachCell((node, pos) => {
+              tr.setNodeMarkup(pos, undefined, { ...node.attrs, ...attrs });
+            });
+            return true;
+          }
+          const $f = selection.$from;
+          for (let d = $f.depth; d >= 0; d--) {
+            const n = $f.node(d).type.name;
+            if (n === "tableCell" || n === "tableHeader") {
+              if (dispatch) tr.setNodeMarkup($f.before(d), undefined, { ...$f.node(d).attrs, ...attrs });
+              return true;
+            }
+          }
+          return false;
         },
 
       setRowHeight:

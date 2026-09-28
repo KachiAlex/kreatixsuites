@@ -17,6 +17,7 @@ import { PaginationPlus, PAGE_SIZES } from "tiptap-pagination-plus";
 import { TrackChangesExtension } from "tiptap-track-changes";
 import { CharacterCount } from "@tiptap/extensions";
 import { TextSelection } from "@tiptap/pm/state";
+import { CellSelection } from "@tiptap/pm/tables";
 import { Collaboration } from "@tiptap/extension-collaboration";
 import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
@@ -806,6 +807,59 @@ export function WriterEditor({ item, initialDoc, permission }: {
         label: v, checked: (ed.getAttributes("tableCell").vAlign ?? ed.getAttributes("tableHeader").vAlign) === v,
         onClick: () => ed.chain().focus().setCellAttributes({ vAlign: v }).run(),
       })),
+    },
+    {
+      label: "Text direction", submenu: ([
+        [null, "Horizontal"],
+        ["vertical-rl", "Rotate 90° (top → bottom)"],
+        ["vertical-lr", "Rotate 270° (bottom → top)"],
+      ] as const).map(([v, label]) => ({
+        label,
+        checked: (ed.getAttributes("tableCell").textDirection ?? ed.getAttributes("tableHeader").textDirection ?? null) === v,
+        onClick: () => ed.chain().focus().setCellAttributes({ textDirection: v }).run(),
+      })),
+    },
+    {
+      label: "Cell alignment", custom: (
+        <div className="ag9-wrap">
+          <div className="ag9-title">Cell alignment</div>
+          <div className="ag9">
+            {(["top", "middle", "bottom"] as const).map((v) =>
+              (["left", "center", "right"] as const).map((h) => (
+                <button
+                  key={`${v}-${h}`} className="ag9-btn" title={`${v} ${h}`}
+                  onClick={() => {
+                    const chain = ed.chain().focus().setCellAttributes({ vAlign: v });
+                    if (ed.state.selection instanceof CellSelection) {
+                      chain.setTextAlign(h);
+                    } else {
+                      // apply to every paragraph in the cell under the cursor
+                      chain.command(({ tr, state: s }) => {
+                        const $f = s.selection.$from;
+                        for (let d = $f.depth; d >= 0; d--) {
+                          const n = $f.node(d).type.name;
+                          if (n === "tableCell" || n === "tableHeader") {
+                            s.doc.nodesBetween($f.start(d), $f.end(d), (node, pos) => {
+                              if (node.type.name === "paragraph" || node.type.name === "heading") {
+                                tr.setNodeMarkup(pos, undefined, { ...node.attrs, textAlign: h });
+                              }
+                            });
+                            break;
+                          }
+                        }
+                        return true;
+                      });
+                    }
+                    chain.run();
+                  }}
+                >
+                  <i className={`ag9-bar h-${h[0]} v-${v[0]}`} />
+                </button>
+              )),
+            )}
+          </div>
+        </div>
+      ),
     },
     { divider: true },
     {
