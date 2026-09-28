@@ -45,7 +45,9 @@ import { docVocabulary, suggest, synonyms } from "./proofing";
 import { ReadabilityDialog, AccessibilityDialog } from "./ToolDialogs";
 import { Spellcheck, SPELL_KEY } from "./extensions/spellcheck";
 import { Embed } from "./extensions/embed";
-import { RichImage } from "./extensions/image";
+import { RichImage, IMG_MULTI, WRAP_LABELS, effectiveWrap, imagePreset, type ImageWrap } from "./extensions/image";
+import { ImageLayoutDialog } from "./ImageDialogs";
+import { measureBands } from "./banding";
 import { LinkPopover } from "./LinkPopover";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup } from "./PageSetup";
@@ -102,6 +104,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [findWild, setFindWild] = useState(false);
   const [readDlg, setReadDlg] = useState(false);
   const [a11yDlg, setA11yDlg] = useState(false);
+  const [imgDlgPos, setImgDlgPos] = useState<number | null>(null);
   const [navTab, setNavTab] = useState<"headings" | "results">("headings");
   const [dragOver, setDragOver] = useState<number | null>(null);
   const [wordCountOpen, setWordCountOpen] = useState(false);
@@ -1180,6 +1183,92 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { label: "Table properties…", onClick: () => setTableProps(true) },
     { label: "Delete table", danger: true, onClick: () => ed.chain().focus().deleteTable().run() },
   ];
+  /** Shared image menu (Format ▸ Image + right-click context menu). */
+  const imageMenuItems = (ed: Editor, pos: number | null): MenuItem[] => {
+    const a = ed.getAttributes("image");
+    const wrap = effectiveWrap(a);
+    const floating = wrap === "behind" || wrap === "front";
+    const multi = IMG_MULTI.getState(ed.state) ?? new Set<number>();
+    const selPos = pos ?? (ed.state.selection as { $from?: { pos: number } }).$from?.pos ?? null;
+    const preset = (h: "left" | "center" | "right", v: "top" | "middle" | "bottom") => {
+      if (selPos === null) return;
+      const p = imagePreset(ed, selPos, h, v, measureBands(ed.view.dom as HTMLElement));
+      if (p) ed.chain().focus().updateAttributes("image", p).run();
+    };
+    const rotateBy = (d: number) => ed.chain().focus().updateAttributes("image", { rotate: (((Number(a.rotate) || 0) + d) % 360 + 360) % 360 }).run();
+    const items: MenuItem[] = [
+      {
+        label: "Wrap text", submenu: (Object.keys(WRAP_LABELS) as ImageWrap[]).map((v) => ({
+          label: WRAP_LABELS[v], checked: wrap === v,
+          onClick: () => ed.chain().focus().setImageWrap(v, v === "square" || v === "tight" ? "left" : undefined).run(),
+        })),
+      },
+      floating ? {
+        label: "Position", submenu: ([
+          ["top", "left"], ["top", "center"], ["top", "right"],
+          ["middle", "left"], ["middle", "center"], ["middle", "right"],
+          ["bottom", "left"], ["bottom", "center"], ["bottom", "right"],
+        ] as ["top" | "middle" | "bottom", "left" | "center" | "right"][]).map(([v, h]) => ({
+          label: `${v[0].toUpperCase()}${v.slice(1)} ${h}`, onClick: () => preset(h, v),
+        })),
+      } : {
+        label: "Align", submenu: (["left", "center", "right", "none"] as const).map((al) => ({
+          label: al === "none" ? "Inline (no wrap)" : `Align ${al}`, checked: a.align === al,
+          onClick: () => ed.chain().focus().setImageAlign(al).run(),
+        })),
+      },
+      {
+        label: "Rotate & flip", submenu: [
+          { label: "Rotate right 90°", onClick: () => rotateBy(90) },
+          { label: "Rotate left 90°", onClick: () => rotateBy(-90) },
+          { label: "Flip horizontal", checked: !!a.flipH, onClick: () => ed.chain().focus().updateAttributes("image", { flipH: !a.flipH }).run() },
+          { label: "Flip vertical", checked: !!a.flipV, onClick: () => ed.chain().focus().updateAttributes("image", { flipV: !a.flipV }).run() },
+          { label: "Reset", onClick: () => ed.chain().focus().updateAttributes("image", { rotate: 0, flipH: false, flipV: false }).run() },
+        ],
+      },
+      {
+        label: "Size", submenu: [
+          { label: "25%", onClick: () => ed.chain().focus().setImageWidth(220).run() },
+          { label: "50%", onClick: () => ed.chain().focus().setImageWidth(440).run() },
+          { label: "75%", onClick: () => ed.chain().focus().setImageWidth(660).run() },
+          { label: "Full width", onClick: () => ed.chain().focus().updateAttributes("image", { width: null, height: null }).run() },
+          { divider: true },
+          { label: "Layout options…", onClick: () => { if (selPos !== null) setImgDlgPos(selPos); } },
+        ],
+      },
+      ...(multi.size > 1 ? [{
+        label: `Arrange (${multi.size} images)`, submenu: [
+          { label: "Align lefts", onClick: () => ed.chain().arrangeImages("alignLeft").run() },
+          { label: "Align centers", onClick: () => ed.chain().arrangeImages("alignCenter").run() },
+          { label: "Align rights", onClick: () => ed.chain().arrangeImages("alignRight").run() },
+          { label: "Align tops", onClick: () => ed.chain().arrangeImages("alignTop").run() },
+          { label: "Align middles", onClick: () => ed.chain().arrangeImages("alignMiddle").run() },
+          { label: "Align bottoms", onClick: () => ed.chain().arrangeImages("alignBottom").run() },
+          { divider: true },
+          { label: "Distribute horizontally", onClick: () => ed.chain().arrangeImages("distH").run() },
+          { label: "Distribute vertically", onClick: () => ed.chain().arrangeImages("distV").run() },
+          { divider: true },
+          { label: "Bring forward", onClick: () => ed.chain().arrangeImages("fwd").run() },
+          { label: "Send backward", onClick: () => ed.chain().arrangeImages("back").run() },
+        ] as MenuItem[],
+      } as MenuItem] : []),
+      { divider: true },
+      {
+        label: "Alt text…", onClick: () => {
+          void askText({ title: "Alt text", initial: (a.alt as string) ?? "" })
+            .then((alt) => { if (alt !== null) ed.chain().focus().updateAttributes("image", { alt }).run(); });
+        },
+      },
+      {
+        label: "Caption…", onClick: () => {
+          void askText({ title: "Caption", initial: (a.caption as string) ?? "" })
+            .then((cap) => { if (cap !== null) ed.chain().focus().updateAttributes("image", { caption: cap }).run(); });
+        },
+      },
+    ];
+    return items;
+  };
+
   const menus = useMemo<{ label: string; items: MenuItem[] }[]>(() => {
     if (!ed) return [];
     const fileItems: MenuItem[] = [
@@ -1484,30 +1573,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
             submenu: state?.inTable ? tableMenuItems() : [{ label: "Click inside a table first", disabled: true }],
           },
           {
-            label: "Image", submenu: state?.image ? [
-              { label: "Align left", onClick: () => ed.chain().focus().setImageAlign("left").run() },
-              { label: "Align center", onClick: () => ed.chain().focus().setImageAlign("center").run() },
-              { label: "Align right", onClick: () => ed.chain().focus().setImageAlign("right").run() },
-              { label: "Inline (no wrap)", onClick: () => ed.chain().focus().setImageAlign("none").run() },
-              { divider: true },
-              { label: "Size ▸ 25%", onClick: () => ed.chain().focus().setImageWidth(220).run() },
-              { label: "Size ▸ 50%", onClick: () => ed.chain().focus().setImageWidth(440).run() },
-              { label: "Size ▸ 75%", onClick: () => ed.chain().focus().setImageWidth(660).run() },
-              { label: "Full width", onClick: () => ed.chain().focus().setImageWidth(null).run() },
-              { divider: true },
-              {
-                label: "Alt text…", onClick: () => {
-                  void askText({ title: "Alt text", initial: (ed.getAttributes("image").alt as string) ?? "" })
-                    .then((alt) => { if (alt !== null) ed.chain().focus().updateAttributes("image", { alt }).run(); });
-                },
-              },
-              {
-                label: "Caption…", onClick: () => {
-                  void askText({ title: "Caption", initial: (ed.getAttributes("image").caption as string) ?? "" })
-                    .then((cap) => { if (cap !== null) ed.chain().focus().updateAttributes("image", { caption: cap }).run(); });
-                },
-              },
-            ] : [{ label: "Select an image first", disabled: true }],
+            label: "Image", submenu: state?.image ? imageMenuItems(ed, null) : [{ label: "Select an image first", disabled: true }],
           },
         ],
       },
@@ -1714,28 +1780,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
               if (pos) editor.chain().focus().setNodeSelection(pos.pos).run();
               setCtxMenu({
                 x: e.clientX, y: e.clientY, items: [
-                  { label: "Align left", onClick: () => editor.chain().focus().setImageAlign("left").run() },
-                  { label: "Align center", onClick: () => editor.chain().focus().setImageAlign("center").run() },
-                  { label: "Align right", onClick: () => editor.chain().focus().setImageAlign("right").run() },
-                  { label: "Inline (no wrap)", onClick: () => editor.chain().focus().setImageAlign("none").run() },
-                  { divider: true },
-                  { label: "Size 25%", onClick: () => editor.chain().focus().setImageWidth(220).run() },
-                  { label: "Size 50%", onClick: () => editor.chain().focus().setImageWidth(440).run() },
-                  { label: "Size 75%", onClick: () => editor.chain().focus().setImageWidth(660).run() },
-                  { label: "Full width", onClick: () => editor.chain().focus().setImageWidth(null).run() },
-                  { divider: true },
-                  {
-                    label: "Alt text…", onClick: () => {
-                      void askText({ title: "Alt text", initial: (editor.getAttributes("image").alt as string) ?? "" })
-                        .then((alt) => { if (alt !== null) editor.chain().focus().updateAttributes("image", { alt }).run(); });
-                    },
-                  },
-                  {
-                    label: "Caption…", onClick: () => {
-                      void askText({ title: "Caption", initial: (editor.getAttributes("image").caption as string) ?? "" })
-                        .then((cap) => { if (cap !== null) editor.chain().focus().updateAttributes("image", { caption: cap }).run(); });
-                    },
-                  },
+                  ...imageMenuItems(editor, pos?.pos ?? null),
                   { divider: true },
                   { label: "Delete image", danger: true, onClick: () => editor.chain().focus().deleteSelection().run() },
                 ],
@@ -1874,6 +1919,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       {captionDlg && editor && <CaptionDialog editor={editor} onClose={() => setCaptionDlg(false)} />}
       {readDlg && editor && <ReadabilityDialog editor={editor} onClose={() => setReadDlg(false)} />}
       {a11yDlg && editor && <AccessibilityDialog editor={editor} onClose={() => setA11yDlg(false)} />}
+      {imgDlgPos !== null && editor && <ImageLayoutDialog editor={editor} pos={imgDlgPos} onClose={() => setImgDlgPos(null)} />}
       {bookmarkDlg && editor && <BookmarkDialog editor={editor} onClose={() => setBookmarkDlg(false)} />}
       {xrefDlg && editor && <CrossRefDialog editor={editor} onClose={() => setXrefDlg(false)} />}
       {sepDlg && editor && (
