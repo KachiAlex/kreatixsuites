@@ -7,6 +7,8 @@ export interface SlideObject {
   rotate?: number;
   z: number;
   groupId?: string;
+  name?: string;    // P7 — selection-pane display name
+  hidden?: boolean; // P7 — selection-pane eye toggle (hidden in editor + presenter)
 
   // text
   html?: string;

@@ -48,6 +48,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const [bgMenu, setBgMenu] = useState(false); // P2.5 — background panel
   const [railView, setRailView] = useState<"slides" | "outline" | "sorter">("slides"); // P4.1/P4.2
   const [sorterSel, setSorterSel] = useState<Set<number>>(new Set()); // P4.2 — sorter multi-select
+  const [renameId, setRenameId] = useState<string | null>(null); // P7 — object rename in selection pane
+  const [presStart, setPresStart] = useState<number | null>(null); // P7 — F5 vs Shift+F5
   const dragSlide = useRef<number | null>(null); // P4.2 — sorter drag source
   const [grad, setGrad] = useState({ c1: "#FFFFFF", c2: "#F2782E", angle: 135 });
   const bgImageRef = useRef<HTMLInputElement>(null);
@@ -798,6 +800,32 @@ export function PresentEditor({ item, initialDoc, permission }: {
         e.preventDefault();
         pasteObjects(objs);
       }
+      // P7 — shortcut map completion
+      else if (e.key === "F5") {
+        e.preventDefault();
+        setPresStart(e.shiftKey ? slideIdx : 0);
+        setPresenting("present");
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d" && canEdit && selection.size) {
+        e.preventDefault();
+        pasteObjects(slide.objects.filter((o) => selection.has(o.id)));
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); setFindOpen((v) => !v); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m" && canEdit) { e.preventDefault(); addSlide(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault(); setSelection(new Set(slide.objects.map((o) => o.id)));
+      }
+      else if (e.key.startsWith("Arrow") && canEdit && selection.size) {
+        e.preventDefault();
+        const d = e.shiftKey ? 10 : 1;
+        const dx = e.key === "ArrowLeft" ? -d : e.key === "ArrowRight" ? d : 0;
+        const dy = e.key === "ArrowUp" ? -d : e.key === "ArrowDown" ? d : 0;
+        mutateSlide((s) => s.objects.forEach((o) => { if (selection.has(o.id)) { o.x += dx; o.y += dy; } }));
+      }
+      else if (e.key === "PageDown" || e.key === "PageUp") {
+        e.preventDefault();
+        setSlideIdx((i) => Math.max(0, Math.min(deck.slides.length - 1, i + (e.key === "PageDown" ? 1 : -1))));
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1446,10 +1474,10 @@ export function PresentEditor({ item, initialDoc, permission }: {
       )}
 
       {presenting !== "none" && (
-        <Presenter deck={deck} theme={theme} startIndex={Math.min(slideIdx, (activeShow?.length ?? deck.slides.length) - 1)}
+        <Presenter deck={deck} theme={theme} startIndex={Math.min(presStart ?? slideIdx, (activeShow?.length ?? deck.slides.length) - 1)}
           presenterView={presenting === "presenter"} showSlides={activeShow}
           onRehearsed={(times) => mutate((d) => { for (const [k, v] of Object.entries(times)) d.slides[+k].advanceAfter = v; })}
-          onClose={() => { setPresenting("none"); setActiveShow(undefined); }} />
+          onClose={() => { setPresenting("none"); setActiveShow(undefined); setPresStart(null); }} />
       )}
 
       {showDlg && (
@@ -1486,21 +1514,49 @@ export function PresentEditor({ item, initialDoc, permission }: {
           </div>
           <div className="sp-body">
             {[...slide.objects].sort((a, b) => b.z - a.z).map((o) => (
-              <div key={o.id} className={`obj-row ${selection.has(o.id) ? "sel" : ""}`}
+              <div key={o.id} className={`obj-row ${selection.has(o.id) ? "sel" : ""} ${o.hidden ? "obj-hidden" : ""}`}
                 onClick={(e) => {
                   const grp = o.groupId ? slide.objects.filter((x) => x.groupId === o.groupId) : [o];
                   const next = e.shiftKey ? new Set(selection) : new Set<string>();
                   grp.forEach((g) => next.add(g.id));
                   setSelection(next);
                 }}>
-                <span className="obj-ico">{o.type === "text" ? "T" : o.type === "shape" ? "▭" : o.type === "image" ? "🖼" : o.type === "table" ? "⊞" : o.type === "chart" ? "📊" : "╱"}</span>
-                <span className="obj-name">{objName(o, slide.objects.indexOf(o))}</span>
+                <span className="obj-ico">{o.type === "text" ? "T" : o.type === "shape" ? "▭" : o.type === "image" ? "🖼" : o.type === "table" ? "⊞" : o.type === "chart" ? "📊" : o.type === "media" ? "🎬" : "╱"}</span>
+                {renameId === o.id ? (
+                  <input className="obj-rename" autoFocus defaultValue={o.name ?? objName(o, slide.objects.indexOf(o))}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setRenameId(null); e.stopPropagation(); }}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      mutateSlide((s) => { const x = s.objects.find((y) => y.id === o.id); if (x) x.name = v || undefined; });
+                      setRenameId(null);
+                    }} />
+                ) : (
+                  <span className="obj-name" title="Double-click to rename"
+                    onDoubleClick={(e) => { e.stopPropagation(); setRenameId(o.id); }}>
+                    {o.name ?? objName(o, slide.objects.indexOf(o))}
+                  </span>
+                )}
                 {o.anim && <span className="obj-anim" title={`Animates on click ${o.anim.order}`}>✦{o.anim.order}</span>}
-                <span className="obj-ops">
-                  <button title="Raise" onClick={(e) => { e.stopPropagation(); setSelection(new Set([o.id])); setZ("up", new Set([o.id])); }}>↑</button>
-                  <button title="Lower" onClick={(e) => { e.stopPropagation(); setSelection(new Set([o.id])); setZ("down", new Set([o.id])); }}>↓</button>
-                  <button title="Delete" onClick={(e) => { e.stopPropagation(); delSelected(new Set([o.id])); }}>✕</button>
+                <span className="obj-ops" onClick={(e) => e.stopPropagation()}>
+                  <button title={o.hidden ? "Show object" : "Hide object"} className={o.hidden ? "on" : ""}
+                    onClick={() => mutateSlide((s) => { const x = s.objects.find((y) => y.id === o.id); if (x) x.hidden = !x.hidden; })}>
+                    {o.hidden ? "🚫" : "👁"}
+                  </button>
+                  <button title="Rename" onClick={() => setRenameId(o.id)}>✎</button>
+                  <button title="Raise" onClick={() => { setSelection(new Set([o.id])); setZ("up", new Set([o.id])); }}>↑</button>
+                  <button title="Lower" onClick={() => { setSelection(new Set([o.id])); setZ("down", new Set([o.id])); }}>↓</button>
+                  <button title="Delete" onClick={() => delSelected(new Set([o.id]))}>✕</button>
                 </span>
+                {selection.has(o.id) && (o.type === "image" || o.type === "media" || o.type === "shape") && (
+                  <input className="obj-alt" placeholder="Alt text (accessibility)…" defaultValue={o.alt ?? ""}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); e.stopPropagation(); }}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      mutateSlide((s) => { const x = s.objects.find((y) => y.id === o.id); if (x) x.alt = v || undefined; });
+                    }} />
+                )}
               </div>
             ))}
             {!slide.objects.length && <div className="empty">No objects on this slide</div>}

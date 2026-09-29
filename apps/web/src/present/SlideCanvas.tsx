@@ -262,7 +262,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
           </marker>
         </defs>
       </svg>
-      {under?.map((o) => <ObjView key={`u${o.id}`} o={o} theme={theme} />)}
+      {under?.map((o) => <ObjView key={`u${o.id}`} o={o} theme={theme} hidden={!!o.hidden} />)}
       {(() => { const aSteps = animStep !== undefined ? animSteps(objs) : null; return objs.map((o0) => {
         // connector bbox derives from resolved endpoints so it tracks
         // attached objects even when the stored box is stale
@@ -291,7 +291,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
         <ObjView key={o.id} o={o} theme={theme} connPts={connPts}
           selected={interactive && selection.has(o.id)}
           editing={editingId === o.id}
-          hidden={hidden}
+          hidden={hidden || !!o0.hidden}
           fx={fx}
           onMouseDown={(e) => selectObj(o, e)}
           onPointerDown={(e) => startDrag(e, o)}
@@ -444,7 +444,7 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
 
   const textEl = (editingNow: boolean) =>
     editingNow ? (
-      <div className="s-text editing" contentEditable suppressContentEditableWarning data-oid={o.id}
+      <div className="s-text editing" contentEditable suppressContentEditableWarning data-oid={o.id} spellCheck
         style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
         dangerouslySetInnerHTML={{ __html: o.html ?? "" }}
         onBlur={(e) => onTextBlur?.((e.target as HTMLElement).innerHTML)}
@@ -534,7 +534,7 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
                     textAlign: meta.cellStyle?.[`${i},${j}`]?.align,
                   };
                   return editing ? (
-                    <td key={j} rowSpan={sp?.rs} colSpan={sp?.cs} contentEditable suppressContentEditableWarning
+                    <td key={j} rowSpan={sp?.rs} colSpan={sp?.cs} contentEditable suppressContentEditableWarning spellCheck
                       className={inSel(i, j) ? "cellsel" : undefined}
                       style={st}
                       onPointerDown={(e) => { e.stopPropagation(); setCellSel({ r1: i, c1: j, r2: i, c2: j }); }}

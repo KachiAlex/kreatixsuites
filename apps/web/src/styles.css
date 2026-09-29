@@ -1360,3 +1360,10 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .s-media-audio{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;box-sizing:border-box}
 .s-media-audio .s-media-icon{font-size:22px;color:#fff}
 .s-media-audio audio{max-height:40px}
+
+/* Present P7 — selection pane rename/eye/alt-text */
+.obj-hidden{opacity:.55}
+.obj-hidden .obj-name{text-decoration:line-through}
+.obj-rename{flex:1;min-width:60px;font-size:12px;padding:1px 4px;border:1px solid var(--k-orange);border-radius:4px;outline:none}
+.obj-alt{flex-basis:100%;font-size:11px;padding:3px 6px;margin-top:3px;border:1px solid var(--border);border-radius:5px;outline:none}
+.obj-alt:focus{border-color:var(--k-orange)}
