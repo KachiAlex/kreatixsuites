@@ -652,6 +652,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const [findQ, setFindQ] = useState("");
   const [replaceQ, setReplaceQ] = useState("");
   const [findOpen, setFindOpen] = useState(false);
+  const [activeShow, setActiveShow] = useState<number[] | undefined>(undefined); // P5.3 — show being presented
+  const [showDlg, setShowDlg] = useState(false); // P5.3 — custom shows manager
   const [printLayout, setPrintLayout] = useState<"slides" | "handout2" | "handout4" | "handout6" | "notes">("slides");
   const findBarRef = useRef<HTMLDivElement>(null);
   const findMatches = useMemo(() => {
@@ -996,6 +998,26 @@ export function PresentEditor({ item, initialDoc, permission }: {
               ))}
             </select>
           )}
+          {/* P5.2 — auto-advance + kiosk loop; P5.3 — custom shows; P5.4 — grid/ruler */}
+          <input className="rb-sel" style={{ width: 58 }} type="number" min={0} step={1} title="Auto-advance after N seconds (0 = manual)"
+            value={Math.round((slide.advanceAfter ?? 0) / 1000)}
+            onChange={(e) => mutateSlide((s) => { s.advanceAfter = Math.max(0, Number(e.target.value) || 0) * 1000 || undefined; })} />
+          <button className={`rb ${deck.showLoop ? "on" : ""}`} title="Kiosk loop — restart deck at end (P5.2)"
+            onClick={() => mutate((d) => { d.showLoop = !d.showLoop; })}>⟲</button>
+          <select className="rb-sel" value="" title="Custom shows (P5.3)"
+            onChange={(e) => {
+              if (e.target.value === "__manage") setShowDlg(true);
+              else if (e.target.value) { const s = deck.shows?.[Number(e.target.value)]; if (s) { setActiveShow(s.slides); setPresenting("present"); } }
+              e.target.value = "";
+            }}>
+            <option value="">Shows…</option>
+            {(deck.shows ?? []).map((s, i) => <option key={i} value={i}>▶ {s.name}</option>)}
+            <option value="__manage">⚙ Manage…</option>
+          </select>
+          <button className={`rb ${deck.showGrid ? "on" : ""}`} title="Gridlines (P5.4)"
+            onClick={() => mutate((d) => { d.showGrid = !d.showGrid; })}>⌗</button>
+          <button className={`rb ${deck.showRuler ? "on" : ""}`} title="Ruler + guides — drag from ruler edges to create guides (P5.4)"
+            onClick={() => mutate((d) => { d.showRuler = !d.showRuler; })}>📏</button>
           <div className="rb-sep" />
           {editingObj && (
             <>
@@ -1344,6 +1366,10 @@ export function PresentEditor({ item, initialDoc, permission }: {
                 onTableCommit={onTableCommit} onObjDblClick={onObjDblClick}
                 onEditingChange={setEditingObj}
                 cropId={cropId} onCropChange={setCropId} />
+              {deck.showGrid && <div className="slide-grid" style={{ backgroundSize: `${40 * zoom}px ${40 * zoom}px` }} />}
+              {(deck.showRuler || (deck.guides?.v?.length ?? 0) > 0 || (deck.guides?.h?.length ?? 0) > 0) && canEdit && (
+                <GuidesLayer zoom={zoom} deck={deck} mutate={mutate} rulerOn={!!deck.showRuler} />
+              )}
             </div>
           </div>
           <textarea className="notes-box" placeholder="Speaker notes…" disabled={!canEdit}
@@ -1396,8 +1422,15 @@ export function PresentEditor({ item, initialDoc, permission }: {
       )}
 
       {presenting !== "none" && (
-        <Presenter deck={deck} theme={theme} startIndex={slideIdx}
-          presenterView={presenting === "presenter"} onClose={() => setPresenting("none")} />
+        <Presenter deck={deck} theme={theme} startIndex={Math.min(slideIdx, (activeShow?.length ?? deck.slides.length) - 1)}
+          presenterView={presenting === "presenter"} showSlides={activeShow}
+          onRehearsed={(times) => mutate((d) => { for (const [k, v] of Object.entries(times)) d.slides[+k].advanceAfter = v; })}
+          onClose={() => { setPresenting("none"); setActiveShow(undefined); }} />
+      )}
+
+      {showDlg && (
+        <ShowsDialog deck={deck} mutate={mutate} onClose={() => setShowDlg(false)}
+          onPlay={(slides) => { setActiveShow(slides); setPresenting("present"); setShowDlg(false); }} />
       )}
 
       {/* table dialog */}
@@ -1597,6 +1630,129 @@ function ChartDialog({ initial, onSave, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" onClick={save}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- P5.4 guides layer — rulers + draggable guide lines ----------
+function GuidesLayer({ zoom, deck, mutate, rulerOn }: {
+  zoom: number;
+  deck: Deck;
+  mutate: (fn: (d: Deck) => void, actionKey?: string) => void;
+  rulerOn: boolean;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ axis: "v" | "h"; idx: number } | null>(null);
+  const pt = (e: React.PointerEvent) => {
+    const r = box.current!.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / zoom, y: (e.clientY - r.top) / zoom };
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const p = pt(e);
+    mutate((dk) => {
+      const g = dk.guides!;
+      const arr = (d.axis === "v" ? g.v : g.h)!;
+      arr[d.idx] = Math.round(d.axis === "v" ? p.x : p.y);
+    }, `guide:${d.axis}:${d.idx}`);
+  };
+  const onUp = () => { drag.current = null; };
+  const startGuide = (axis: "v" | "h", idx: number) => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    drag.current = { axis, idx };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const fromRuler = (axis: "v" | "h") => (e: React.PointerEvent) => {
+    const p = pt(e);
+    let idx = 0;
+    mutate((dk) => {
+      const g = (dk.guides ??= {});
+      const arr = (axis === "v" ? (g.v ??= []) : (g.h ??= []));
+      idx = arr.push(Math.round(axis === "v" ? p.x : p.y)) - 1;
+    });
+    drag.current = { axis, idx };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const delGuide = (axis: "v" | "h", idx: number) =>
+    mutate((d) => { const g = d.guides!; const arr = (axis === "v" ? g.v : g.h)!; arr.splice(idx, 1); });
+
+  return (
+    <div ref={box} className="guides-layer" onPointerMove={onMove} onPointerUp={onUp}>
+      {rulerOn && (
+        <>
+          <div className="ruler ruler-h" title="Drag down to create a horizontal guide"
+            onPointerDown={fromRuler("h")} onPointerMove={onMove} onPointerUp={onUp}
+            style={{ backgroundSize: `${40 * zoom}px 100%` }} />
+          <div className="ruler ruler-v" title="Drag right to create a vertical guide"
+            onPointerDown={fromRuler("v")} onPointerMove={onMove} onPointerUp={onUp}
+            style={{ backgroundSize: `100% ${40 * zoom}px` }} />
+        </>
+      )}
+      {(deck.guides?.v ?? []).map((x, i) => (
+        <div key={`v${i}`} className="gline gline-v" style={{ left: x * zoom }}
+          title="Drag to move — double-click to delete"
+          onPointerDown={startGuide("v", i)} onDoubleClick={() => delGuide("v", i)} />
+      ))}
+      {(deck.guides?.h ?? []).map((y, i) => (
+        <div key={`h${i}`} className="gline gline-h" style={{ top: y * zoom }}
+          title="Drag to move — double-click to delete"
+          onPointerDown={startGuide("h", i)} onDoubleClick={() => delGuide("h", i)} />
+      ))}
+    </div>
+  );
+}
+
+// ---------- P5.3 custom shows manager ----------
+function ShowsDialog({ deck, mutate, onPlay, onClose }: {
+  deck: Deck;
+  mutate: (fn: (d: Deck) => void) => void;
+  onPlay: (slides: number[]) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const shows = deck.shows ?? [];
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Custom slide shows</h3>
+        {shows.map((s, i) => (
+          <div key={i} className="obj-row" style={{ marginBottom: 4 }}>
+            <span className="obj-name">{s.name}</span>
+            <span style={{ fontSize: 11, color: "#A19A95" }}>{s.slides.length} slides</span>
+            <span className="obj-ops">
+              <button title="Present this show" onClick={() => onPlay(s.slides)}>▶</button>
+              <button title="Delete show" onClick={() => mutate((d) => { d.shows!.splice(i, 1); })}>✕</button>
+            </span>
+          </div>
+        ))}
+        {!shows.length && <div className="empty">No custom shows yet</div>}
+        <div style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 10 }}>
+          <input className="fb-in" style={{ width: "100%", marginBottom: 8 }} placeholder="New show name…"
+            value={name} onChange={(e) => setName(e.target.value)} />
+          <div style={{ maxHeight: 220, overflowY: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
+            {deck.slides.map((s, i) => (
+              <label key={s.id} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, padding: "3px 4px", borderRadius: 5, cursor: "pointer" }}>
+                <input type="checkbox" checked={picked.has(i)}
+                  onChange={(e) => { const n = new Set(picked); e.target.checked ? n.add(i) : n.delete(i); setPicked(n); }} />
+                <span>Slide {i + 1}{s.hidden ? " (hidden)" : ""}</span>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="btn-ghost btn-sm" onClick={() => setPicked(new Set(deck.slides.map((_, i) => i)))}>All</button>
+            <button className="btn-ghost btn-sm" onClick={() => setPicked(new Set())}>None</button>
+            <div style={{ flex: 1 }} />
+            <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+            <button className="btn-primary btn-sm" disabled={!name.trim() || !picked.size}
+              onClick={() => {
+                mutate((d) => { (d.shows ??= []).push({ name: name.trim(), slides: [...picked].sort((a, b) => a - b) }); });
+                setName(""); setPicked(new Set());
+              }}>Save show</button>
+          </div>
         </div>
       </div>
     </div>

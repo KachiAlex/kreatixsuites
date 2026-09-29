@@ -124,6 +124,7 @@ export interface Slide {
   hidden?: boolean;        // P2.3 — skipped during presentation
   sectionStart?: string;   // P2.2 — this slide heads a named section
   bgImage?: string;        // P2.5 — picture background (data URL), layered over `bg`
+  advanceAfter?: number;   // P5.2 — auto-advance after N ms (from rehearse or manual)
 }
 
 export interface Deck {
@@ -140,6 +141,14 @@ export interface Deck {
   slideH?: number;
   // P2.6 — per-deck saved theme variants (apply via deck.customTheme)
   themeVariants?: Theme[];
+  // P5.2 — kiosk mode: loop back to the first slide at the end
+  showLoop?: boolean;
+  // P5.3 — named subsets of the deck (slide indices)
+  shows?: { name: string; slides: number[] }[];
+  // P5.4 — persistent guide lines (slide coords)
+  guides?: { v?: number[]; h?: number[] };
+  showGrid?: boolean;
+  showRuler?: boolean;
 }
 
 export const deckSize = (deck: Deck): { w: number; h: number } =>

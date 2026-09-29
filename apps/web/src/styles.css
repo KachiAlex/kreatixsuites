@@ -652,6 +652,16 @@ textarea.inp{padding:8px 10px;height:auto}
 .pn-slide{border:1px solid #D8D2CC}
 .pn-num{font-size:11px;color:#7A726B}
 .pn-notes{width:640px;min-height:140px;border:1px dashed #C9C2BB;border-radius:8px;padding:12px;font-size:13px;line-height:1.6;white-space:pre-wrap}
+/* P5.4 — gridlines, rulers, guides */
+.slide-grid{position:absolute;inset:0;pointer-events:none;z-index:30;background-image:linear-gradient(to right,rgba(23,18,15,.09) 1px,transparent 1px),linear-gradient(to bottom,rgba(23,18,15,.09) 1px,transparent 1px)}
+.guides-layer{position:absolute;inset:0;z-index:60;overflow:visible}
+.ruler{position:absolute;background-color:rgba(255,255,255,.92);background-image:repeating-linear-gradient(to right,#B7AFA8 0 1px,transparent 1px);background-repeat:repeat;z-index:61;box-shadow:0 1px 4px rgba(23,18,15,.15)}
+.ruler-h{top:-18px;left:0;right:0;height:16px;cursor:row-resize;border-bottom:1px solid var(--line)}
+.ruler-v{left:-18px;top:0;bottom:0;width:16px;cursor:col-resize;border-right:1px solid var(--line);background-image:repeating-linear-gradient(to bottom,#B7AFA8 0 1px,transparent 1px)}
+.gline{position:absolute;background:#35C4DC;z-index:62;touch-action:none}
+.gline-v{top:-6px;bottom:-6px;width:5px;margin-left:-2px;cursor:col-resize;border-left:1px dashed #1FA4BC}
+.gline-h{left:-6px;right:-6px;height:5px;margin-top:-2px;cursor:row-resize;border-top:1px dashed #1FA4BC}
+.ink-layer polyline{pointer-events:none}
 
 .presenter-full{position:fixed;inset:0;background:#000;z-index:300;display:grid;place-items:center;cursor:pointer}
 .presenter-full .blank{position:absolute;inset:0}
