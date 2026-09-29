@@ -149,6 +149,10 @@ export interface Workbook {
   sheets: SheetData[];
   /** Named ranges: "TaxRate" → "Sheet1!$B$2" or "Sheet1!$B$2:$D$2" */
   names?: Record<string, string>;
+  /** Workbook properties (S8.4) — exported to XLSX/ODS docProps */
+  props?: { title?: string; subject?: string; author?: string; company?: string; keywords?: string };
+  /** Print/page setup (S8.3) */
+  print?: { orientation?: "portrait" | "landscape"; area?: string; gridlines?: boolean; fitWidth?: boolean };
 }
 
 export interface Ref { col: number; row: number }

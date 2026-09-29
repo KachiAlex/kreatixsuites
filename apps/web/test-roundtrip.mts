@@ -228,13 +228,18 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   const wb = {
     sheets: [
       { name: "P&L", cells: {
-        A1: { v: "Item" }, B1: { v: "Amount" },
-        A2: { v: "Revenue" }, B2: { v: 1200 },
+        A1: { v: "Item", s: { b: true, bg: "#F2782E" } }, B1: { v: "Amount" },
+        A2: { v: "Revenue" }, B2: { v: 1200, s: { fmt: "#,##0.00" } },
         A3: { v: "Costs" }, B3: { v: 800 },
         A4: { v: "Profit" }, B4: { f: "B2-B3" },
-      } },
+        A6: { v: "merged" },
+      }, merges: [{ c1: 0, r1: 5, c2: 2, r2: 5 }] as never,
+        colWidths: { 1: 160 }, hiddenCols: [2],
+        filter: { range: "A1:B4", cols: {} },
+      },
       { name: "Notes", cells: { A1: { v: "second sheet" } } },
     ],
+    props: { title: "P&L Book", author: "Kreatix" },
   };
   const bytes = await workbookToXLSXBytes(wb as never);
   const back = await xlsxToWorkbook(fileOf(bytes, "book.xlsx"));
@@ -242,6 +247,13 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("xlsx: values", back.sheets[0].cells.A2?.v === "Revenue" && back.sheets[0].cells.B2?.v === 1200);
   check("xlsx: formula survives", back.sheets[0].cells.B4?.f === "B2-B3");
   check("xlsx: second sheet text", back.sheets[1].cells.A1?.v === "second sheet");
+  // S8 fidelity: styles + merges + widths + hidden + autofilter
+  check("xlsx: bg style", back.sheets[0].cells.A1?.s?.bg?.toLowerCase() === "#f2782e");
+  check("xlsx: numfmt", back.sheets[0].cells.B2?.s?.fmt === "#,##0.00");
+  check("xlsx: merges", back.sheets[0].merges?.length === 1);
+  check("xlsx: col width", back.sheets[0].colWidths?.[1] === 160);
+  check("xlsx: hidden col", back.sheets[0].hiddenCols?.includes(2));
+  check("xlsx: autofilter", back.sheets[0].filter?.range === "A1:B4");
 }
 
 // ---------- CSV ----------

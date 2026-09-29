@@ -14,7 +14,7 @@ import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, C
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation, type FilterCrit, type TableSpec } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues, printSheet, type PrintOpts } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -65,6 +65,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [tableDlg, setTableDlg] = useState(false);
   const [chartEdit, setChartEdit] = useState<ChartSpec | null>(null);
   const [sparkDlg, setSparkDlg] = useState(false);
+  const [printDlg, setPrintDlg] = useState(false);
+  const [propsDlg, setPropsDlg] = useState(false);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const [borderMenu, setBorderMenu] = useState(false);
@@ -877,6 +879,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
         <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
+        <button className="btn-ghost btn-sm" title="Workbook properties" onClick={() => setPropsDlg(true)}>⋯</button>
+        <button className="btn-ghost btn-sm" title="Print / save as PDF" onClick={() => setPrintDlg(true)}>🖨</button>
+        <button className="btn-ghost btn-sm" title="Export .ods" onClick={() => void workbookToODS(wb, title)}>.ods</button>
         <button className="btn-primary btn-sm" onClick={() => void workbookToXLSX(wb, title)}>Export .xlsx</button>
       </div>
 
@@ -1256,6 +1261,15 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             mutateSheet((s) => { s.charts = s.charts?.map((c) => c.id === spec.id ? spec : c); });
             setChartEdit(null);
           }} />
+      )}
+      {printDlg && (
+        <PrintDialog sheet={sheet} wb={wb} defaultArea={usedRangeA1(sheet.cells)}
+          onPrint={(opts) => { mutate((w) => { w.print = opts; }); printSheet(dispSheet, wb, { ...opts, title }); setPrintDlg(false); }}
+          onClose={() => setPrintDlg(false)} />
+      )}
+      {propsDlg && (
+        <PropsDialog wb={wb} onSave={(p) => { mutate((w) => { w.props = p; }); setPropsDlg(false); }}
+          onClose={() => setPropsDlg(false)} />
       )}
       {sparkDlg && (
         <SparklineDialog anchor={anchorRef} sheet={sheet}
@@ -2146,6 +2160,80 @@ function SparklineDialog({ anchor, sheet, onApply, onClose }: {
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" disabled={!parseRange(range)}
             onClick={() => onApply(anchor, { range, type, color })}>Insert</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- S8: print/page setup + workbook properties ----------
+
+/** Print / PDF export dialog (S8.3). */
+function PrintDialog({ sheet, wb, defaultArea, onPrint, onClose }: {
+  sheet: SheetData; wb: Workbook; defaultArea: string;
+  onPrint: (opts: PrintOpts) => void; onClose: () => void;
+}) {
+  const saved = wb.print ?? {};
+  const [orientation, setOrientation] = useState<"portrait" | "landscape">(saved.orientation ?? "portrait");
+  const [area, setArea] = useState(saved.area ?? defaultArea);
+  const [gridlines, setGridlines] = useState(saved.gridlines ?? false);
+  const [fitWidth, setFitWidth] = useState(saved.fitWidth ?? true);
+  const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1 };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Print — {sheet.name}</h3>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <span style={{ fontSize: 12, width: 80 }}>Orientation</span>
+          {(["portrait", "landscape"] as const).map((o) => (
+            <button key={o} className={`ps-opt ${orientation === o ? "on" : ""}`}
+              style={{ textTransform: "capitalize" }} onClick={() => setOrientation(o)}>{o}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 12, width: 80 }}>Print area</span>
+          <input style={inp} value={area} onChange={(e) => setArea(e.target.value)} placeholder={defaultArea} />
+        </div>
+        <label className="frow" style={{ marginTop: 10 }}>
+          <input type="checkbox" checked={gridlines} onChange={(e) => setGridlines(e.target.checked)} /> Print gridlines
+        </label>
+        <label className="frow">
+          <input type="checkbox" checked={fitWidth} onChange={(e) => setFitWidth(e.target.checked)} /> Fit to page width
+        </label>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!!area && !parseRange(area)}
+            onClick={() => onPrint({ orientation, area: area || undefined, gridlines, fitWidth })}>Print / PDF</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Workbook properties (S8.4). */
+function PropsDialog({ wb, onSave, onClose }: {
+  wb: Workbook; onSave: (p: NonNullable<Workbook["props"]>) => void; onClose: () => void;
+}) {
+  const [p, setP] = useState<NonNullable<Workbook["props"]>>({ ...(wb.props ?? {}) });
+  const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1 };
+  const fld = (k: keyof NonNullable<Workbook["props"]>, label: string) => (
+    <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+      <span style={{ fontSize: 12, width: 80 }}>{label}</span>
+      <input style={inp} value={p[k] ?? ""} onChange={(e) => setP({ ...p, [k]: e.target.value })} />
+    </div>
+  );
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Workbook properties</h3>
+        {fld("title", "Title")}
+        {fld("subject", "Subject")}
+        {fld("author", "Author")}
+        {fld("company", "Company")}
+        {fld("keywords", "Keywords")}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => onSave(p)}>Save</button>
         </div>
       </div>
     </div>

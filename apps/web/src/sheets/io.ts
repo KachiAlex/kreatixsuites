@@ -1,4 +1,10 @@
-import type * as XLSX from "xlsx";
+import type * as XLSX from "xlsx-js-style";
+
+/** CJS interop — the dynamic import exposes the lib under .default */
+const xlsxLib = async (): Promise<typeof XLSX> => {
+  const m = await import("xlsx-js-style");
+  return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
+};
 import type { CellData, SheetData, Workbook, Validation } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill } from "./model";
 import { evaluateSheet, evaluateSheetIn, type EvalResult } from "./engine";
@@ -58,19 +64,73 @@ export function csvToSheet(name: string, text: string): SheetData {
 
 /** Workbook → .xlsx bytes (no download side effect — used by tests + export). */
 export async function workbookToXLSXBytes(wb: Workbook): Promise<Uint8Array> {
-  const XLSX = await import("xlsx");
+  const XLSX = await xlsxLib();
   const out = buildBook(XLSX, wb);
   return XLSX.write(out, { type: "array", bookType: "xlsx" }) as Uint8Array;
 }
 
 export async function workbookToXLSX(wb: Workbook, filename: string) {
-  const XLSX = await import("xlsx");
+  const XLSX = await xlsxLib();
   const out = buildBook(XLSX, wb);
   XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".xlsx");
 }
 
-function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
+/** ODS export (S8.4) — same workbook build, ods bookType. */
+export async function workbookToODS(wb: Workbook, filename: string) {
+  const XLSX = await xlsxLib();
+  const out = buildBook(XLSX, wb);
+  XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".ods", { bookType: "ods" });
+}
+
+/** Kreatix CellStyle → xlsx-js-style `cell.s`. */
+function styleToXLSX(s: CellData["s"]): NonNullable<XLSX.CellObject["s"]> {
+  const o: Record<string, unknown> = {};
+  if (!s) return o;
+  if (s.b || s.i || s.u || s.st || s.font || s.size || s.color)
+    o.font = {
+      ...(s.b ? { bold: true } : {}), ...(s.i ? { italic: true } : {}),
+      ...(s.u ? { underline: true } : {}), ...(s.st ? { strike: true } : {}),
+      ...(s.font ? { name: s.font } : {}), ...(s.size ? { sz: s.size } : {}),
+      ...(s.color ? { color: { rgb: s.color.replace("#", "") } } : {}),
+    };
+  if (s.bg) o.fill = { patternType: "solid", fgColor: { rgb: s.bg.replace("#", "") } };
+  if (s.align || s.valign || s.wrap || s.indent || s.rotate)
+    o.alignment = {
+      ...(s.align ? { horizontal: s.align } : {}),
+      ...(s.valign ? { vertical: s.valign === "top" ? "top" : s.valign === "bottom" ? "bottom" : "center" } : {}),
+      ...(s.wrap ? { wrapText: true } : {}),
+      ...(s.indent ? { indent: s.indent } : {}),
+      ...(s.rotate ? { textRotation: s.rotate } : {}),
+    };
+  if (s.borders) {
+    const edge = (e?: { w?: number; style?: string; color?: string }) =>
+      e ? { style: e.w && e.w > 1 ? "medium" : e.style === "dashed" ? "dashed" : e.style === "dotted" ? "dotted" : "thin",
+            ...(e.color ? { color: { rgb: e.color.replace("#", "") } } : {}) } : undefined;
+    const b = { top: edge(s.borders.top), right: edge(s.borders.right), bottom: edge(s.borders.bottom), left: edge(s.borders.left) };
+    if (b.top || b.right || b.bottom || b.left) o.border = b;
+  }
+  if (s.fmt) o.numFmt = s.fmt;
+  return o as NonNullable<XLSX.CellObject["s"]>;
+}
+
+/** xlsx-js-style `cell.s` + `z` → Kreatix CellStyle (import side: only
+ *  fill/numFmt reliably surface through the reader). */
+function styleFromXLSX(x: XLSX.CellObject): CellData["s"] | undefined {
+  const xs = x.s as { fgColor?: { rgb?: string }; patternType?: string } | undefined;
+  const s: NonNullable<CellData["s"]> = {};
+  const rgb = xs?.fgColor?.rgb;
+  if (xs?.patternType === "solid" && rgb) s.bg = `#${rgb.slice(-6)}`;
+  if (x.z && x.z !== "General") s.fmt = String(x.z);
+  return Object.keys(s).length ? s : undefined;
+}
+
+function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
   const out = XLSX.utils.book_new();
+  if (wb.props)
+    out.Props = {
+      Title: wb.props.title, Subject: wb.props.subject, Author: wb.props.author,
+      Company: wb.props.company, Keywords: wb.props.keywords, CreatedDate: new Date(),
+    };
   for (const sheet of wb.sheets) {
     const evals = evalsFor(sheet, wb);
     const ws: XLSX.WorkSheet = {};
@@ -89,20 +149,24 @@ function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
         v === null || v === undefined ? { t: "z" } :
         { t: "s", v: String(v) };
       if (cell.f && x.t !== "z") x.f = cell.f;
+      const xs = styleToXLSX(cell.s);
+      if (Object.keys(xs).length) x.s = xs;
       ws[ref] = x;
     }
     // grid chrome → xlsx: col widths, freeze, merges, autofilter, hidden rows/cols
-    if (sheet.colWidths && Object.keys(sheet.colWidths).length)
-      ws["!cols"] = Array.from({ length: maxC + 1 }, (_, c) => {
-        const w = sheet.colWidths![c];
-        const hidden = sheet.hiddenCols?.includes(c);
-        return w || hidden ? { wch: Math.max(1, Math.round((w ?? 100) / 9)), hidden } : {};
+    const maxCol = Math.max(maxC, ...Object.keys(sheet.colWidths ?? {}).map(Number), ...(sheet.hiddenCols ?? []));
+    const maxRow = Math.max(maxR, ...Object.keys(sheet.rowHeights ?? {}).map(Number), ...(sheet.hiddenRows ?? []));
+    if (sheet.colWidths || sheet.hiddenCols?.length)
+      ws["!cols"] = Array.from({ length: maxCol + 1 }, (_, c) => {
+        const w = sheet.colWidths?.[c];
+        const hidden = sheet.hiddenCols?.includes(c) || undefined;
+        return w || hidden ? { wpx: w ?? 100, hidden } : {};
       });
     if (sheet.rowHeights || sheet.hiddenRows?.length)
-      ws["!rows"] = Array.from({ length: maxR + 1 }, (_, r) => {
+      ws["!rows"] = Array.from({ length: maxRow + 1 }, (_, r) => {
         const h = sheet.rowHeights?.[r];
-        const hidden = sheet.hiddenRows?.includes(r);
-        return h || hidden ? { hpt: Math.round((h ?? 26) * 0.75), hidden } : {};
+        const hidden = sheet.hiddenRows?.includes(r) || undefined;
+        return h || hidden ? { hpx: h ?? 26, hidden } : {};
       });
     if (sheet.merges?.length)
       ws["!merges"] = sheet.merges.map((m) => ({ s: { c: m.c1, r: m.r1 }, e: { c: m.c2, r: m.r2 } }));
@@ -118,9 +182,9 @@ function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
 }
 
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
-  const XLSX = await import("xlsx");
+  const XLSX = await xlsxLib();
   const data = await file.arrayBuffer();
-  const wb = XLSX.read(data, { cellFormula: true });
+  const wb = XLSX.read(data, { cellFormula: true, cellStyles: true });
   const sheets: SheetData[] = wb.SheetNames.map((name) => {
     const ws = wb.Sheets[name];
     const cells: Record<string, CellData> = {};
@@ -130,7 +194,9 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       const cell: CellData = {};
       if (x.f) cell.f = x.f;
       if (x.v !== undefined) cell.v = x.v as string | number | boolean;
-      if (cell.f || cell.v !== undefined) cells[ref] = cell;
+      const st = styleFromXLSX(x);
+      if (st) cell.s = st;
+      if (cell.f || cell.v !== undefined || cell.s) cells[ref] = cell;
     }
     const sheet: SheetData = { name, cells };
     if (ws["!merges"]?.length)
@@ -139,16 +205,19 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       sheet.colWidths = {};
       sheet.hiddenCols = [];
       ws["!cols"].forEach((c, i) => {
-        if (c?.wch) sheet.colWidths![i] = Math.round(c.wch * 9);
+        const px = c?.wpx ?? (c?.wch ? Math.round(c.wch * 7.5) : undefined);
+        if (px) sheet.colWidths![i] = px;
         if (c?.hidden) sheet.hiddenCols!.push(i);
       });
       if (!sheet.hiddenCols.length) delete sheet.hiddenCols;
+      if (!Object.keys(sheet.colWidths).length) delete sheet.colWidths;
     }
     if (ws["!rows"]) {
       sheet.rowHeights = {};
       sheet.hiddenRows = [];
       ws["!rows"].forEach((r, i) => {
-        if (r?.hpt) sheet.rowHeights![i] = Math.round(r.hpt / 0.75);
+        const px = r?.hpx ?? (r?.hpt ? Math.round(r.hpt / 0.75) : undefined);
+        if (px) sheet.rowHeights![i] = px;
         if (r?.hidden) sheet.hiddenRows!.push(i);
       });
       if (!sheet.hiddenRows.length) delete sheet.hiddenRows;
@@ -532,3 +601,90 @@ export function usedRangeA1(cells: Record<string, CellData>): string {
 }
 
 export { rangeRefs, parseRange };
+
+// ---------- print / PDF (S8.3) ----------
+
+import { formatValue } from "./format";
+
+export interface PrintOpts {
+  orientation?: "portrait" | "landscape";
+  gridlines?: boolean;
+  fitWidth?: boolean;
+  /** print area "A1:H40" — defaults to used range */
+  area?: string;
+  title?: string;
+}
+
+/** Render a sheet range to a standalone print-ready HTML document. */
+export function sheetToPrintHTML(sheet: SheetData, wb: Workbook | undefined, opts: PrintOpts = {}): string {
+  const evals = evalsFor(sheet, wb);
+  const rng = (opts.area ? parseRange(opts.area) : null) ?? parseRange(usedRangeA1(sheet.cells)) ?? { c1: 0, r1: 0, c2: 0, r2: 0 };
+  const hiddenR = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? [])]);
+  const hiddenC = new Set(sheet.hiddenCols ?? []);
+  const covered = new Map<string, { c1: number; r1: number; c2: number; r2: number }>();
+  const heads = new Set<string>();
+  for (const m of sheet.merges ?? []) {
+    heads.add(toA1(m.c1, m.r1));
+    for (const ref of rangeRefs(m)) if (ref !== toA1(m.c1, m.r1)) covered.set(ref, m);
+  }
+  const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const edge = (e?: { w?: number; style?: string; color?: string }) =>
+    e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "#26221F"}` : "";
+  const rows: string[] = [];
+  for (let r = rng.r1; r <= rng.r2; r++) {
+    if (hiddenR.has(r)) continue;
+    const tds: string[] = [];
+    for (let c = rng.c1; c <= rng.c2; c++) {
+      if (hiddenC.has(c)) continue;
+      const ref = toA1(c, r);
+      if (covered.has(ref)) continue;
+      const cell = sheet.cells[ref];
+      const res = evals.get(ref);
+      const s = cell?.s ?? {};
+      const text = formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
+      const m = sheet.merges?.find((mm) => mm.c1 === c && mm.r1 === r);
+      const css = [
+        opts.gridlines ? "border:1px solid #D8D2CC" : "",
+        s.b ? "font-weight:700" : "", s.i ? "font-style:italic" : "",
+        s.u ? "text-decoration:underline" : "", s.st ? "text-decoration:line-through" : "",
+        s.u && s.st ? "text-decoration:underline line-through" : "",
+        s.font ? `font-family:${s.font}` : "", s.size ? `font-size:${s.size}pt` : "",
+        s.color ? `color:${s.color}` : "", s.bg ? `background:${s.bg}` : "",
+        `text-align:${s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left")}`,
+        s.valign ? `vertical-align:${s.valign}` : "",
+        s.wrap ? "white-space:normal" : "white-space:nowrap",
+        edge(s.borders?.top) ? `border-top:${edge(s.borders?.top)}` : "",
+        edge(s.borders?.bottom) ? `border-bottom:${edge(s.borders?.bottom)}` : "",
+        edge(s.borders?.left) ? `border-left:${edge(s.borders?.left)}` : "",
+        edge(s.borders?.right) ? `border-right:${edge(s.borders?.right)}` : "",
+      ].filter(Boolean).join(";");
+      const span = m ? ` colspan="${m.c2 - m.c1 + 1}" rowspan="${m.r2 - m.r1 + 1}"` : "";
+      tds.push(`<td${span} style="${css}">${esc(text)}</td>`);
+    }
+    rows.push(`<tr style="height:${(sheet.rowHeights?.[r] ?? 26) * 0.75}pt">${tds.join("")}</tr>`);
+  }
+  const colgroup = Array.from({ length: rng.c2 - rng.c1 + 1 }, (_, i) => {
+    const c = rng.c1 + i;
+    return hiddenC.has(c) ? "" : `<col style="width:${Math.round((sheet.colWidths?.[c] ?? 100) * 0.75)}pt">`;
+  }).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(opts.title ?? sheet.name)}</title>
+<style>
+@page { size: ${opts.orientation ?? "portrait"}; margin: 0.6in }
+body { font-family: Inter, Calibri, Arial, sans-serif; font-size: 10pt; color: #26221F }
+table { border-collapse: collapse; ${opts.fitWidth ? "width:100%;table-layout:fixed" : ""} }
+td { padding: 2px 6px; overflow: hidden }
+h1 { font-size: 14pt; margin: 0 0 10px }
+</style></head><body>
+<h1>${esc(opts.title ?? sheet.name)}</h1>
+<table><colgroup>${colgroup}</colgroup>${rows.join("\n")}</table>
+<script>window.onload = () => { window.print(); }<\/script>
+</body></html>`;
+}
+
+/** Open the sheet in a print window → user picks printer or Save-as-PDF. */
+export function printSheet(sheet: SheetData, wb: Workbook | undefined, opts: PrintOpts = {}) {
+  const w = window.open("", "_blank", "width=900,height=700");
+  if (!w) return;
+  w.document.write(sheetToPrintHTML(sheet, wb, opts));
+  w.document.close();
+}
