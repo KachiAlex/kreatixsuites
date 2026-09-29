@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
@@ -13,8 +13,8 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Deck, Slide, SlideObject, TransitionType } from "./model";
-import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries } from "./model";
-import { SlideCanvas, type ObjPatch } from "./SlideCanvas";
+import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint } from "./model";
+import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
 import { importPptx } from "./import";
@@ -37,7 +37,12 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const [newComment, setNewComment] = useState(false);
   const [presenting, setPresenting] = useState<"none" | "present" | "presenter">("none");
   const [printing, setPrinting] = useState(false);
+  const [editingObj, setEditingObj] = useState<string | null>(null); // P1.1 — text object in run-editing mode
+  const [cropId, setCropId] = useState<string | null>(null); // P1.6 — image in crop mode
+  const [paintArmed, setPaintArmed] = useState(false); // P1.8 — format painter armed
+  const fmtCopy = useRef<Partial<SlideObject> | null>(null);
   const [chartDlg, setChartDlg] = useState<{ id: string | null } | null>(null);
+  const [shapeMenu, setShapeMenu] = useState(false);
   const [tableDlg, setTableDlg] = useState<{ id: string | null } | null>(null);
   const imageRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
@@ -305,6 +310,28 @@ export function PresentEditor({ item, initialDoc, permission }: {
     mutateSlide((s) => s.objects.forEach((o) => { if (selection.has(o.id)) Object.assign(o, patch); }));
   };
 
+  // ---- P1.8 format painter — copy appearance fields, apply to next click
+  const FMT_KEYS = ["fill", "stroke", "strokeW", "fontSize", "color", "bold", "italic",
+    "align", "fontFamily", "imgOpacity", "imgFilter", "imgFlipH", "imgFlipV"] as const;
+  const copyFmt = () => {
+    if (!firstSel) return;
+    const out: Record<string, unknown> = {};
+    for (const k of FMT_KEYS) if (firstSel[k] !== undefined) out[k] = firstSel[k];
+    fmtCopy.current = out;
+    setPaintArmed(true);
+  };
+  /** Selection entry point — armed painter applies the copied format instead */
+  const handleSelect = (ids: Set<string>, additive: boolean) => {
+    if (paintArmed && fmtCopy.current && ids.size) {
+      const fmt = fmtCopy.current;
+      mutateSlide((s) => s.objects.forEach((o) => { if (ids.has(o.id)) Object.assign(o, fmt); }));
+      setPaintArmed(false);
+      return;
+    }
+    void additive;
+    setSelection(ids);
+  };
+
   const setZ = (mode: "front" | "back" | "up" | "down", ids?: Set<string>) => {
     const pick = ids ?? selection;
     mutateSlide((s) => {
@@ -369,8 +396,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
     mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.html = html; });
   };
 
-  const onTableCommit = (id: string, rows: string[][]) => {
-    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.table = rows; });
+  const onTableCommit = (id: string, rows: string[][], meta?: SlideObject["tableMeta"]) => {
+    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) { o.table = rows; if (meta !== undefined) o.tableMeta = meta; } });
   };
 
   const onObjDblClick = (o: SlideObject) => {
@@ -408,10 +435,56 @@ export function PresentEditor({ item, initialDoc, permission }: {
     o.type === "text" ? `Text ${i + 1}` : o.type === "shape" ? `${o.shape ?? "shape"} ${i + 1}`
       : `${o.type} ${i + 1}`;
 
+  // ---- P1.1/P1.2 run-level text commands — act on the focused editable div.
+  // Buttons must not steal focus (onMouseDown preventDefault) so the text
+  // selection survives; the div's onBlur commits innerHTML to the model.
+  const runCmd = (cmd: string, arg?: string) => {
+    const el = document.querySelector<HTMLElement>(`.s-text.editing[data-oid="${editingObj}"]`);
+    if (!el) return;
+    el.focus();
+    document.execCommand(cmd, false, arg);
+  };
+  /** Wrap the current selection in a styled span (px font-size / font-family
+   *  don't map onto execCommand's legacy args). */
+  const runSpan = (style: string) => {
+    const el = document.querySelector<HTMLElement>(`.s-text.editing[data-oid="${editingObj}"]`);
+    const sel = window.getSelection();
+    if (!el || !sel || sel.isCollapsed || !sel.rangeCount) return;
+    el.focus();
+    const range = sel.getRangeAt(0);
+    const span = document.createElement("span");
+    span.setAttribute("style", style);
+    try { range.surroundContents(span); }
+    catch { const frag = range.extractContents(); span.appendChild(frag); range.insertNode(span); }
+  };
+  const RunBtn = ({ cmd, arg, title, children }: { cmd: string; arg?: string; title: string; children: ReactNode }) => (
+    <button className="rb" title={title} onMouseDown={(e) => e.preventDefault()} onClick={() => runCmd(cmd, arg)}>{children}</button>
+  );
+
   // ---- insert objects ----
   const insertText = () => addObject({ type: "text", x: 120, y: 120, w: 480, h: 60, html: "Double-click to edit", fontSize: 24, color: theme.ink });
   const insertShape = (shape: string) => addObject({ type: "shape", shape: shape as SlideObject["shape"], x: 200, y: 160, w: 240, h: 160, fill: theme.accent, stroke: "none" });
   const insertLine = () => addObject({ type: "line", x: 200, y: 240, w: 320, h: 40, x2: 320, y2: 0, stroke: theme.ink, strokeW: 2 });
+  // P1.4 — connector: attaches to the two selected objects' facing anchors,
+  // or drops a free straight connector at center when <2 selected
+  const insertConnector = (kind: "straight" | "elbow" | "curve") => {
+    const targets = selObjs.filter((o) => o.type !== "connector");
+    if (targets.length === 2) {
+      const [a, b] = targets;
+      // pick facing sides from relative centers
+      const acx = a.x + a.w / 2, acy = a.y + a.h / 2, bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+      const horiz = Math.abs(bcx - acx) >= Math.abs(bcy - acy);
+      const sideA = horiz ? (bcx > acx ? "r" : "l") : (bcy > acy ? "b" : "t");
+      const sideB = horiz ? (bcx > acx ? "l" : "r") : (bcy > acy ? "t" : "b");
+      const p1 = anchorPoint(a, sideA), p2 = anchorPoint(b, sideB);
+      const bb = { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y) };
+      addObject({ type: "connector", ...bb, stroke: theme.ink, strokeW: 2,
+        conn: { kind, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, from: { id: a.id, side: sideA }, to: { id: b.id, side: sideB } } });
+    } else {
+      addObject({ type: "connector", x: 340, y: 250, w: 280, h: 40, stroke: theme.ink, strokeW: 2,
+        conn: { kind, x1: 340, y1: 270, x2: 620, y2: 270 } });
+    }
+  };
   const insertImage = async (f: File) => {
     const src = await new Promise<string>((res) => {
       const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(f);
@@ -486,7 +559,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).isContentEditable || /input|textarea|select/i.test((e.target as HTMLElement).tagName)) return;
       if ((e.key === "Delete" || e.key === "Backspace") && canEdit && selection.size) { e.preventDefault(); delSelected(); }
-      else if (e.key === "Escape") setSelection(new Set());
+      else if (e.key === "Escape") { setSelection(new Set()); setPaintArmed(false); setCropId(null); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") { e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && selection.size) {
@@ -571,12 +644,21 @@ export function PresentEditor({ item, initialDoc, permission }: {
           </select>
           <div className="rb-sep" />
           <button className="rb" title="Text box" onClick={insertText}>T</button>
-          <button className="rb" title="Rectangle" onClick={() => insertShape("rect")}>▭</button>
-          <button className="rb" title="Ellipse" onClick={() => insertShape("ellipse")}>◯</button>
-          <button className="rb" title="Triangle" onClick={() => insertShape("triangle")}>△</button>
-          <button className="rb" title="Arrow" onClick={() => insertShape("arrow")}>➜</button>
-          <button className="rb" title="Star" onClick={() => insertShape("star")}>★</button>
+          <div style={{ position: "relative" }}>
+            <button className="rb" title="Shapes" onClick={() => setShapeMenu((v) => !v)}>▢▾</button>
+            {shapeMenu && (
+              <div className="shape-menu">
+                {SHAPE_MENU.map((s) => (
+                  <button key={s.id} title={s.name}
+                    onClick={() => { insertShape(s.id); setShapeMenu(false); }}>{s.glyph}</button>
+                ))}
+              </div>
+            )}
+          </div>
           <button className="rb" title="Line" onClick={insertLine}>╱</button>
+          <button className="rb" title="Connector — straight (select 2 objects to auto-attach)" onClick={() => insertConnector("straight")}>↔</button>
+          <button className="rb" title="Connector — elbow" onClick={() => insertConnector("elbow")}>⌐</button>
+          <button className="rb" title="Connector — curved" onClick={() => insertConnector("curve")}>⌒</button>
           <button className="rb" title="Image" onClick={() => imageRef.current?.click()}>🖼</button>
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
@@ -590,7 +672,44 @@ export function PresentEditor({ item, initialDoc, permission }: {
             <option value="push">Push</option>
           </select>
           <div className="rb-sep" />
-          {firstSel?.type === "text" && (
+          {editingObj && (
+            <>
+              <RunBtn cmd="bold" title="Bold"><b>B</b></RunBtn>
+              <RunBtn cmd="italic" title="Italic"><i>I</i></RunBtn>
+              <RunBtn cmd="underline" title="Underline"><u>U</u></RunBtn>
+              <RunBtn cmd="strikeThrough" title="Strikethrough"><s>S</s></RunBtn>
+              <RunBtn cmd="superscript" title="Superscript">x²</RunBtn>
+              <RunBtn cmd="subscript" title="Subscript">x₂</RunBtn>
+              <select className="rb-sel" value="" title="Run font size (selected text)" style={{ width: 56 }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => { if (e.target.value) runSpan(`font-size:${e.target.value}px`); e.target.value = ""; }}>
+                <option value="">pt</option>
+                {[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 60, 72].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {["#171717", "#D64545", "#F2782E", "#3578E5", "#1F9D66", "#8E6BC8", "#A19A95", "#FFFFFF"].map((c) => (
+                <button key={c} className="rb" title={`Text ${c}`} style={{ padding: 4 }}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => runCmd("foreColor", c)}>
+                  <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: 3, background: c, border: "1px solid #D8D2CC" }} />
+                </button>
+              ))}
+              <div className="rb-sep" />
+              <RunBtn cmd="justifyLeft" title="Align left">⇤</RunBtn>
+              <RunBtn cmd="justifyCenter" title="Center">≡</RunBtn>
+              <RunBtn cmd="justifyRight" title="Align right">⇥</RunBtn>
+              <div className="rb-sep" />
+              <RunBtn cmd="insertUnorderedList" title="Bulleted list">•</RunBtn>
+              <RunBtn cmd="insertOrderedList" title="Numbered list">1.</RunBtn>
+              <RunBtn cmd="outdent" title="Decrease indent">⇤|</RunBtn>
+              <RunBtn cmd="indent" title="Increase indent">|⇥</RunBtn>
+              <div className="rb-sep" />
+              <button className="rb" title="Link selected text" onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { const u = prompt("Link URL:", "https://"); if (u) runCmd("createLink", u); }}>🔗</button>
+              <RunBtn cmd="unlink" title="Remove link">⛓</RunBtn>
+              <div className="rb-sep" />
+            </>
+          )}
+          {!editingObj && firstSel?.type === "text" && (
             <>
               <button className={`rb ${firstSel.bold ? "on" : ""}`} title="Bold" onClick={() => patchSel({ bold: !firstSel.bold })}><b>B</b></button>
               <button className={`rb ${firstSel.italic ? "on" : ""}`} title="Italic" onClick={() => patchSel({ italic: !firstSel.italic })}><i>I</i></button>
@@ -610,7 +729,33 @@ export function PresentEditor({ item, initialDoc, permission }: {
               <div className="rb-sep" />
             </>
           )}
-          {(firstSel?.type === "shape" || firstSel?.type === "line") && (
+          {firstSel?.type === "image" && !editingObj && (
+            <>
+              <button className={`rb ${cropId === firstSel.id ? "on" : ""}`} title="Crop mode — drag the edge bars; double-click image to exit"
+                onClick={() => setCropId(cropId === firstSel.id ? null : firstSel.id)}>⬚ Crop</button>
+              <button className="rb" title="Reset crop" onClick={() => patchSel({ imgCrop: { l: 0, t: 0, r: 0, b: 0 } })}>⟲</button>
+              <button className={`rb ${firstSel.imgFlipH ? "on" : ""}`} title="Flip horizontal" onClick={() => patchSel({ imgFlipH: !firstSel.imgFlipH })}>⇋</button>
+              <button className={`rb ${firstSel.imgFlipV ? "on" : ""}`} title="Flip vertical" onClick={() => patchSel({ imgFlipV: !firstSel.imgFlipV })}>⇵</button>
+              <select className="rb-sel" title="Opacity" value={firstSel.imgOpacity ?? 1}
+                onChange={(e) => patchSel({ imgOpacity: Number(e.target.value) })}>
+                <option value={1}>Opaque</option><option value={0.75}>75%</option><option value={0.5}>50%</option><option value={0.25}>25%</option>
+              </select>
+              <select className="rb-sel" title="Color filter" value={firstSel.imgFilter ?? "none"}
+                onChange={(e) => patchSel({ imgFilter: e.target.value as SlideObject["imgFilter"] })}>
+                <option value="none">No filter</option><option value="grayscale">Grayscale</option><option value="sepia">Sepia</option><option value="invert">Invert</option><option value="blur">Soft blur</option>
+              </select>
+              <div className="rb-sep" />
+            </>
+          )}
+          {firstSel?.type === "connector" && (
+            <select className="rb-sel" value={firstSel.conn?.kind ?? "straight"} title="Connector style"
+              onChange={(e) => patchSel({ conn: { ...firstSel.conn!, kind: e.target.value as "straight" | "elbow" | "curve" } })}>
+              <option value="straight">Straight</option>
+              <option value="elbow">Elbow</option>
+              <option value="curve">Curved</option>
+            </select>
+          )}
+          {(firstSel?.type === "shape" || firstSel?.type === "line" || firstSel?.type === "connector") && (
             <>
               <label className="rb" title="Fill" style={{ padding: 4, cursor: "pointer" }}>
                 ▨<input type="color" value={firstSel.fill ?? firstSel.stroke ?? "#F2782E"} style={{ position: "absolute", opacity: 0, width: 0 }}
@@ -619,6 +764,18 @@ export function PresentEditor({ item, initialDoc, permission }: {
               {firstSel.type === "shape" && (
                 <button className="rb" title="No fill" onClick={() => patchSel({ fill: "transparent" })}>∅</button>
               )}
+              <div className="rb-sep" />
+            </>
+          )}
+          {selCount > 0 && !editingObj && (
+            <>
+              <button className={`rb ${firstSel?.link ? "on" : ""}`} title="Object hyperlink (Ctrl+click to open, clickable in present mode)"
+                onClick={() => {
+                  const u = prompt("Link URL (empty to clear):", firstSel?.link ?? "https://");
+                  if (u !== null) patchSel({ link: u || undefined });
+                }}>🔗</button>
+              <button className={`rb ${paintArmed ? "on" : ""}`} title="Format painter — copy this object's formatting, then click the target"
+                onClick={copyFmt}>🖌</button>
               <div className="rb-sep" />
             </>
           )}
@@ -678,7 +835,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
         <div className="slide-rail">
           {deck.slides.map((s, i) => (
             <div key={s.id} className={`rail-slide ${i === slideIdx ? "active" : ""}`}
-              onClick={() => { setSlideIdx(i); setSelection(new Set()); }}>
+              onClick={() => { setSlideIdx(i); setSelection(new Set()); setEditingObj(null); setCropId(null); }}>
               <span className="rail-num">{i + 1}</span>
               <div className="rail-thumb" style={{ width: SLIDE_W * thumbScale, height: SLIDE_H * thumbScale }}>
                 <SlideCanvas slide={s} theme={theme} scale={thumbScale} selection={new Set()} />
@@ -701,9 +858,11 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <div className="canvas-wrap" ref={canvasWrap}>
             <div style={{ width: SLIDE_W * zoom, height: SLIDE_H * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
               <SlideCanvas slide={slide} theme={theme} scale={zoom} interactive
-                canEdit={canEdit} selection={selection} onSelect={setSelection}
+                canEdit={canEdit} selection={selection} onSelect={handleSelect}
                 onPatch={onPatch} onTextCommit={onTextCommit}
-                onTableCommit={onTableCommit} onObjDblClick={onObjDblClick} />
+                onTableCommit={onTableCommit} onObjDblClick={onObjDblClick}
+                onEditingChange={setEditingObj}
+                cropId={cropId} onCropChange={setCropId} />
             </div>
           </div>
           <textarea className="notes-box" placeholder="Speaker notes…" disabled={!canEdit}

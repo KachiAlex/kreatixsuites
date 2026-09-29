@@ -585,6 +585,13 @@ textarea.inp{padding:8px 10px;height:auto}
 .s-obj{position:absolute;user-select:none}
 .s-obj .s-text{width:100%;height:100%;padding:6px;line-height:1.35;overflow:hidden;word-wrap:break-word}
 .s-obj .s-text.editing{outline:2px dashed var(--present);background:rgba(255,255,255,.5);user-select:text;cursor:text}
+.s-obj .s-text ul,.s-obj .s-text ol{margin:0;padding-left:1.4em}
+.s-obj .s-text li{margin:.08em 0}
+.s-obj .s-text p{margin:0}
+.shape-menu{position:absolute;top:30px;left:0;z-index:80;display:grid;grid-template-columns:repeat(7,30px);gap:2px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(23,18,15,.2);padding:6px}
+.shape-menu button{width:30px;height:30px;border:0;background:transparent;font-size:15px;cursor:pointer;border-radius:5px;color:#26221F}
+.shape-menu button:hover{background:var(--soft,#F4F1EE)}
+.conn-end{position:absolute;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--present);cursor:crosshair;z-index:20}
 .s-table{width:100%;height:100%;border-collapse:collapse;font-size:14px}
 .s-table td{border:1px solid #D8D2CC;padding:5px 8px}
 .s-table tr:first-child td{font-weight:700;background:rgba(0,0,0,.04)}
@@ -592,6 +599,7 @@ textarea.inp{padding:8px 10px;height:auto}
 .rs-handle{position:absolute;background:#fff;border:1.5px solid var(--present);border-radius:2px;z-index:51;touch-action:none}
 .guide-v{position:absolute;top:0;bottom:0;width:1px;background:#E85D9E;z-index:49;pointer-events:none}
 .guide-h{position:absolute;left:0;right:0;height:1px;background:#E85D9E;z-index:49;pointer-events:none}
+.s-cropbar{position:absolute;background:#26221F;border:1.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);border-radius:2px;z-index:52;touch-action:none}
 
 .presenter-full{position:fixed;inset:0;background:#000;z-index:300;display:grid;place-items:center;cursor:pointer}
 .presenter-full .blank{position:absolute;inset:0}
@@ -645,6 +653,14 @@ textarea.inp{padding:8px 10px;height:auto}
 .s-shape-text .s-text.editing{pointer-events:auto}
 .s-table.editing td{min-width:48px;outline:none}
 .s-table.editing td:focus{background:rgba(233,106,44,.08)}
+.s-table.editing td.cellsel{outline:2px solid var(--present);outline-offset:-2px}
+.s-table-wrap{position:relative;width:100%;height:100%;overflow:auto}
+.s-table-bar{position:sticky;top:0;z-index:5;display:flex;gap:2px;background:rgba(255,255,255,.95);border-bottom:1px solid var(--line);padding:2px}
+.s-table-bar button{border:0;background:transparent;width:22px;height:20px;font-size:11px;cursor:pointer;border-radius:4px;color:#5B554F}
+.s-table-bar button:hover{background:var(--soft,#F4F1EE)}
+.s-table-bar button.on{background:var(--soft,#F4F1EE);color:var(--k-orange)}
+.s-table-bar label{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;font-size:11px;color:#5B554F;border-radius:4px}
+.s-table-bar label:hover{background:var(--soft,#F4F1EE)}
 
 .pres-slide.anim-fade{animation:t-fade .5s ease}
 .pres-slide.anim-slide{animation:t-slide .45s ease}

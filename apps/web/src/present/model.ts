@@ -2,7 +2,7 @@
 
 export interface SlideObject {
   id: string;
-  type: "text" | "shape" | "image" | "table" | "chart" | "line";
+  type: "text" | "shape" | "image" | "table" | "chart" | "line" | "connector";
   x: number; y: number; w: number; h: number;
   rotate?: number;
   z: number;
@@ -17,18 +17,29 @@ export interface SlideObject {
   align?: "left" | "center" | "right";
   fontFamily?: string;
 
-  // shape
-  shape?: "rect" | "ellipse" | "triangle" | "arrow" | "star" | "roundrect";
+  // shape — P1.3 expanded catalog (~40 presets; see SHAPE_MENU in SlideCanvas)
+  shape?: string;
   fill?: string;
   stroke?: string;
   strokeW?: number;
 
-  // image
+  // image — P1.6: crop fractions (0-1 per edge), flips, css filter
   src?: string;
   alt?: string;
+  imgCrop?: { l: number; t: number; r: number; b: number };
+  imgFlipH?: boolean;
+  imgFlipV?: boolean;
+  imgOpacity?: number;           // 0-1
+  imgFilter?: "none" | "grayscale" | "sepia" | "invert" | "blur";
 
-  // table
+  // table — P1.5: merges/styles ride in tableMeta so legacy string[][] keeps working
   table?: string[][];
+  tableMeta?: {
+    merges?: { r: number; c: number; rs: number; cs: number }[];
+    cellStyle?: Record<string, { bg?: string; align?: "left" | "center" | "right" }>;
+    headerRow?: boolean;
+    banded?: boolean;
+  };
 
   // chart — multi-series; `values` kept as the legacy single-series shortcut
   chart?: {
@@ -41,6 +52,18 @@ export interface SlideObject {
 
   // line
   x2?: number; y2?: number;
+
+  // connector (P1.4) — absolute endpoints; when `from`/`to` are set the
+  // endpoint is derived live from the target object's anchor
+  conn?: {
+    kind: "straight" | "elbow" | "curve";
+    x1: number; y1: number; x2: number; y2: number;
+    from?: { id: string; side: "t" | "r" | "b" | "l" };
+    to?: { id: string; side: "t" | "r" | "b" | "l" };
+  };
+
+  // hyperlink — P1.7: object-level URL (run-level links live inside `html`)
+  link?: string;
 
   // entrance animation (KBS-PRESENT-005)
   anim?: { type: "fade" | "slide-up" | "slide-left" | "zoom" | "wipe"; order: number };
@@ -138,4 +161,45 @@ export function applyLayout(slide: Slide, layoutId: string, theme: Theme): Slide
 
 export function blankSlide(theme: Theme): Slide {
   return { id: newId(), objects: [], layout: "blank", bg: theme.bg };
+}
+
+// ---------- P1.4 connectors ----------
+
+export type ConnSide = "t" | "r" | "b" | "l";
+
+export function anchorPoint(o: SlideObject, side: ConnSide): { x: number; y: number } {
+  switch (side) {
+    case "t": return { x: o.x + o.w / 2, y: o.y };
+    case "b": return { x: o.x + o.w / 2, y: o.y + o.h };
+    case "l": return { x: o.x, y: o.y + o.h / 2 };
+    case "r": return { x: o.x + o.w, y: o.y + o.h / 2 };
+  }
+}
+
+/** Live endpoint resolution — attached ends track their target object. */
+export function resolveConn(o: SlideObject, slide: Slide): { x1: number; y1: number; x2: number; y2: number } {
+  const c = o.conn ?? { kind: "straight" as const, x1: o.x, y1: o.y, x2: o.x + o.w, y2: o.y + o.h };
+  const from = c.from ? slide.objects.find((x) => x.id === c.from!.id) : null;
+  const to = c.to ? slide.objects.find((x) => x.id === c.to!.id) : null;
+  const p1 = from ? anchorPoint(from, c.from!.side) : { x: c.x1, y: c.y1 };
+  const p2 = to ? anchorPoint(to, c.to!.side) : { x: c.x2, y: c.y2 };
+  return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+}
+
+export function connBBox(p: { x1: number; y1: number; x2: number; y2: number }): { x: number; y: number; w: number; h: number } {
+  return { x: Math.min(p.x1, p.x2), y: Math.min(p.y1, p.y2), w: Math.abs(p.x2 - p.x1), h: Math.abs(p.y2 - p.y1) };
+}
+
+/** Nearest anchor on the object under/near a slide point (attach radius). */
+export function hitAnchor(slide: Slide, px: number, py: number, excludeId: string, radius = 24): { id: string; side: ConnSide } | null {
+  let best: { id: string; side: ConnSide; d: number } | null = null;
+  for (const o of slide.objects) {
+    if (o.id === excludeId || o.type === "connector") continue;
+    for (const side of ["t", "r", "b", "l"] as const) {
+      const p = anchorPoint(o, side);
+      const d = Math.hypot(px - p.x, py - p.y);
+      if (d <= radius && (!best || d < best.d)) best = { id: o.id, side, d };
+    }
+  }
+  return best ? { id: best.id, side: best.side } : null;
 }
