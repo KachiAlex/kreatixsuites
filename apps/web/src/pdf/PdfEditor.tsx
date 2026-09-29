@@ -54,13 +54,15 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "whiteout", ico: "▨", label: "White-out — erase content under a white block" },
   { id: "field", ico: "▣", label: "Form field — drag to place a fillable field" },
   { id: "redact", ico: "▮", label: "Redact — permanently removes the marked content on export" },
+  { id: "caret", ico: "⌃", label: "Insert text at caret — click where text should be inserted, then type it" },
+  { id: "replace", ico: "⌁", label: "Replace text — select text, then type the suggested replacement" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
   { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
 ];
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
-const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact"]);
+const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact", "caret", "replace"]);
 
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
@@ -104,6 +106,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [selField, setSelField] = useState<string | null>(null);
   // PDF-3 — view depth
   const [viewMode, setViewMode] = useState<"cont" | "single" | "two">("cont");
+  const [cover, setCover] = useState(false); // PDF-11.4 — page 1 alone in two-page mode
   const [viewRot, setViewRot] = useState(0);       // session-only rotation, degrees
   const [dark, setDark] = useState(false);
   const [selAnn, setSelAnn] = useState<string | null>(null);
@@ -661,9 +664,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if (e.key === "Escape") { setSelAnn(null); setSelField(null); }
       // PDF-3 — paged-view navigation
       else if (viewMode !== "cont" && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
-        { e.preventDefault(); setCurPage((p) => Math.min(numPages, p + (viewMode === "two" ? 2 : 1))); }
+        { e.preventDefault(); setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1))); }
       else if (viewMode !== "cont" && (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp"))
-        { e.preventDefault(); setCurPage((p) => Math.max(1, p - (viewMode === "two" ? 2 : 1))); }
+        { e.preventDefault(); setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1))); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
     };
@@ -723,7 +726,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             <option value="list">List box</option>
           </select>
         )}
-        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && (
+        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && tool !== "caret" && (
           <div className="rb-colors">
             {MARKUP_COLORS.map((c) => (
               <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
@@ -745,6 +748,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
           onClick={() => setTool(tool === "zoombox" ? "select" : "zoombox")}>🔍+</button>
         <button className="rb" title="Rotate view (session only)" onClick={() => setViewRot((r) => (r + 90) % 360)}>⟳</button>
         <button className="rb" title="Reading view: continuous / single / two-page" onClick={() => setViewMode((m) => m === "cont" ? "single" : m === "single" ? "two" : "cont")}>{viewMode === "cont" ? "📜" : viewMode === "single" ? "📄" : "📑"}</button>
+        {viewMode === "two" && (
+          <button className={`rb ${cover ? "on" : ""}`} title="Two-page cover — show page 1 alone"
+            onClick={() => setCover((c) => !c)}>🅲</button>
+        )}
         <button className={`rb ${dark ? "on" : ""}`} title="Dark render" onClick={() => setDark((d) => !d)}>🌙</button>
         <button className="rb" title="Fullscreen" onClick={() => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {})}>⛶</button>
         <span className="rb-info">Page <input className="pg-in" type="number" min={1} max={numPages} value={curPage}
@@ -883,7 +890,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           {!doc && !loadErr && <div className="empty" style={{ padding: 60 }}>Loading PDF…</div>}
           {doc && (viewMode === "cont" ? Array.from({ length: numPages }, (_, i) => i + 1)
             : viewMode === "single" ? [curPage]
-            : (() => { const s = curPage % 2 === 0 ? curPage - 1 : curPage; return [s, s + 1].filter((p) => p <= numPages); })()
+            : cover && curPage === 1 ? [1]
+            : (() => { const s = cover ? (curPage % 2 === 0 ? curPage : curPage - 1) : (curPage % 2 === 0 ? curPage - 1 : curPage); return [s, s + 1].filter((p) => p <= numPages); })()
           ).map((p) => (
             <div key={`${docGen}:${p}`} data-page={p} ref={(el) => { if (el) pageRefs.current.set(p, el); }} className="pdf-page-wrap">
               <PdfPage doc={doc} pageNum={p} scale={scale}
@@ -908,9 +916,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
           {viewMode !== "cont" && doc && (
             <div className="pdf-vmnav">
               <button className="btn-ghost btn-sm" disabled={curPage <= 1}
-                onClick={() => setCurPage((p) => Math.max(1, p - (viewMode === "two" ? 2 : 1)))}>← Prev</button>
+                onClick={() => setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1)))}>← Prev</button>
               <button className="btn-ghost btn-sm" disabled={curPage >= numPages}
-                onClick={() => setCurPage((p) => Math.min(numPages, p + (viewMode === "two" ? 2 : 1)))}>Next →</button>
+                onClick={() => setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1)))}>Next →</button>
             </div>
           )}
         </div>
@@ -1002,6 +1010,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
               </p>
             )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn-ghost btn-sm" title="PDF-13.1 — export extracted text as a Word document"
+                disabled={!doc} onClick={() => {
+                  setExportDlg(false);
+                  void import("./exportDocx").then(({ exportPdfToDocx }) => exportPdfToDocx(doc!, title)).catch(() => toast("DOCX export failed"));
+                }}>Word (.docx)</button>
               <button className="btn-ghost btn-sm" onClick={() => setExportDlg(false)}>Cancel</button>
               <button className="btn-primary btn-sm" onClick={() => {
                 setExportDlg(false);
@@ -1338,6 +1351,10 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onAdd({ type: "sign", rects: [[px - 80, py - 20, 160, 40]], img: sigImg });
       return;
     }
+    if (tool === "caret") {
+      onAdd({ type: "caret", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
+      return;
+    }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };
     if (tool === "freehand") setPenPts([[x, y]]);
     else setPreview({ x, y, w: 0, h: 0 }); // zoombox/measure preview via the same rect
@@ -1383,7 +1400,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       return;
     }
     // text-markup tools: let onMouseUp handle a real text selection instead
-    if (tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly") {
+    if (tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly" || tool === "replace") {
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed) return;
     }
@@ -1445,7 +1462,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
 
   // text-selection → highlight/underline/strikeout
   const onMouseUp = () => {
-    if (!canEdit || (tool !== "highlight" && tool !== "underline" && tool !== "strikeout" && tool !== "squiggly")) return;
+    if (!canEdit || (tool !== "highlight" && tool !== "underline" && tool !== "strikeout" && tool !== "squiggly" && tool !== "replace")) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     const b = boxRef.current!.getBoundingClientRect();
@@ -1459,7 +1476,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       }
     }
     if (rects.length) {
-      onAdd({ type: tool, rects, color: toolColor });
+      onAdd({ type: tool, rects, color: toolColor, text: tool === "replace" ? "" : undefined });
       sel.removeAllRanges();
     }
   };
@@ -1535,8 +1552,42 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       )}
       {readout && <div className="pdf-measure">📏 {readout}</div>}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image").map((a) => {
+      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace").map((a) => {
         const sel = selAnn === a.id;
+        if (a.type === "caret") {
+          const [x, y] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
+          return (
+            <div key={a.id} className={`ann-caret ${sel ? "sel" : ""}`}
+              style={{ left: x - 5, top: y - 8 }}
+              onPointerDown={(e) => startMove(e, a)}
+              onClick={() => { if (!movedFlag.current) setEditText(a.id); }}>⌃
+              {editText === a.id && (
+                <div className="ann-pop" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                  <textarea autoFocus value={a.text ?? ""} placeholder="Text to insert here…"
+                    onChange={(e) => onPatch(a.id, { text: e.target.value }, `caret:${a.id}`)} />
+                  <button className="btn-ghost btn-sm" onClick={() => setEditText(null)}>Done</button>
+                </div>
+              )}
+            </div>
+          );
+        }
+        if (a.type === "replace") {
+          const [x, y, w2] = vpRect(a.rects![0]);
+          return (
+            <div key={a.id} className={`ann-caret ${sel ? "sel" : ""}`}
+              style={{ left: x + w2 - 4, top: y - 8 }}
+              onPointerDown={(e) => startMove(e, a)}
+              onClick={() => { if (!movedFlag.current) setEditText(a.id); }}>⇒
+              {editText === a.id && (
+                <div className="ann-pop" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                  <textarea autoFocus value={a.text ?? ""} placeholder="Replacement text…"
+                    onChange={(e) => onPatch(a.id, { text: e.target.value }, `rep:${a.id}`)} />
+                  <button className="btn-ghost btn-sm" onClick={() => setEditText(null)}>Done</button>
+                </div>
+              )}
+            </div>
+          );
+        }
         if (a.type === "callout") {
           const [x, y, w2, h2] = vpRect(a.rects![0]);
           return (
@@ -1695,6 +1746,7 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
       })}</g>;
     case "underline":
     case "strikeout":
+    case "replace": // proofing mark — strikethrough means "replace this"
       return <g style={selOutline} onPointerDown={onDown}>{(a.rects ?? []).map((r, i) => {
         const [x, y, w, h] = vpRect(r);
         const ly = a.type === "underline" ? y + h - 1 : y + h / 2;
@@ -1814,6 +1866,38 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
             el.setAttribute("x1", `${x}`); el.setAttribute("y1", `${ly}`); el.setAttribute("x2", `${x + w}`); el.setAttribute("y2", `${ly}`);
             el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
             svg.appendChild(el);
+          } else if (a.type === "replace") {
+            for (const r of a.rects ?? []) {
+              const [x, y, w, h] = vpR(r);
+              const el = document.createElementNS(svgNS, "line");
+              el.setAttribute("x1", `${x}`); el.setAttribute("y1", `${y + h / 2}`);
+              el.setAttribute("x2", `${x + w}`); el.setAttribute("y2", `${y + h / 2}`);
+              el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
+              svg.appendChild(el);
+            }
+            if (a.text && a.rects?.length) {
+              const last = a.rects[a.rects.length - 1];
+              const [x, y, w, h] = vpR(last);
+              const t = document.createElementNS(svgNS, "text");
+              t.setAttribute("x", `${x + w + 3}`); t.setAttribute("y", `${y + h / 2 + 3}`);
+              t.setAttribute("fill", c); t.setAttribute("font-size", "9");
+              t.textContent = `→ ${a.text.slice(0, 40)}`;
+              svg.appendChild(t);
+            }
+          } else if (a.type === "caret") {
+            const [x, y] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
+            const t = document.createElementNS(svgNS, "text");
+            t.setAttribute("x", `${x - 3}`); t.setAttribute("y", `${y + 8}`);
+            t.setAttribute("fill", c); t.setAttribute("font-size", "12"); t.setAttribute("font-weight", "700");
+            t.textContent = "⌃";
+            svg.appendChild(t);
+            if (a.text) {
+              const n = document.createElementNS(svgNS, "text");
+              n.setAttribute("x", `${x + 6}`); n.setAttribute("y", `${y + 8}`);
+              n.setAttribute("fill", "#595550"); n.setAttribute("font-size", "8");
+              n.textContent = `insert: ${a.text.slice(0, 50)}`;
+              svg.appendChild(n);
+            }
           } else if (a.type === "squiggly") for (const r of a.rects ?? []) {
             const [x, y, w, h] = vpR(r);
             const ly = y + h - 1, step = 4, amp = 1.8;
@@ -1942,7 +2026,8 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
 const ANN_ICON: Record<string, string> = {
   highlight: "🖍", underline: "U̲", strikeout: "S̶", squiggly: "≋", freehand: "✏", polyline: "⛓",
   rect: "▭", ellipse: "◯", line: "╱", arrow: "↗", callout: "🗨", cloud: "☁",
-  note: "💬", textbox: "T", stamp: "◈", sign: "✍",
+  note: "💬", textbox: "T", stamp: "◈", sign: "✍", image: "🖼", whiteout: "▨",
+  redact: "▮", caret: "⌃", replace: "⌁",
 };
 const ANN_STATUS = ["none", "accepted", "rejected", "completed"] as const;
 

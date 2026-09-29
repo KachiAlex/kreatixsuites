@@ -7,7 +7,8 @@ export type AnnType =
   | "rect" | "ellipse" | "line" | "arrow" | "callout" | "cloud"
   | "note" | "textbox" | "stamp"
   | "sign" | "image" | "whiteout"
-  | "redact"; // PDF-7 — page content under the mark is physically removed on export
+  | "redact" // PDF-7 — page content under the mark is physically removed on export
+  | "caret" | "replace"; // PDF-12.1 — proofing marks (insert-at-caret / replace-text)
 
 export interface PdfAnn {
   id: string;

@@ -261,6 +261,24 @@ export async function buildFlattenedPdf(
           page.drawImage(img, { x, y, width: w, height: h });
           break;
         }
+        case "caret": {
+          // proofing mark — caret at the insertion point + note text beside it
+          const [nx, ny] = a.points?.[0] ?? [0, 0];
+          page.drawText("^", { x: nx - 2, y: ny - 2, size: 10, font: helvB, color: col });
+          const t = safe(a.text ?? "");
+          if (t) page.drawText(`insert: ${t.slice(0, 60)}`, { x: nx + 8, y: ny - 3, size: 8, font: helv, color: rgb(0.35, 0.33, 0.31) });
+          break;
+        }
+        case "replace": {
+          for (const [x, y, w, h] of a.rects ?? []) {
+            const ly = y + h * 0.42;
+            page.drawLine({ start: { x, y: ly }, end: { x: x + w, y: ly }, thickness: 1.2, color: col });
+          }
+          const t = safe(a.text ?? "");
+          const last = a.rects?.[a.rects.length - 1];
+          if (t && last) page.drawText(`-> ${t.slice(0, 60)}`, { x: last[0] + last[2] + 4, y: last[1] + last[3] * 0.4, size: 8, font: helv, color: col });
+          break;
+        }
         case "note": {
           const [nx, ny] = a.points?.[0] ?? [0, 0];
           page.drawRectangle({ x: nx - 6, y: ny - 6, width: 13, height: 13, color: col, borderColor: rgb(0.6, 0.5, 0), borderWidth: 0.8 });
