@@ -1,13 +1,29 @@
 // Kreatix Sheets — workbook data model (stored as file content JSON)
 
+export interface BorderEdge {
+  /** px width: 1 hairline, 2 medium, 3 thick */
+  w?: 1 | 2 | 3;
+  style?: "solid" | "dashed" | "dotted" | "double";
+  color?: string;
+}
+
 export interface CellStyle {
   b?: boolean;
   i?: boolean;
   u?: boolean;
+  st?: boolean;          // strikethrough
+  font?: string;         // font family
+  size?: number;         // pt
   color?: string;
   bg?: string;
   align?: "left" | "center" | "right";
-  fmt?: string;
+  valign?: "top" | "middle" | "bottom";
+  wrap?: boolean;
+  indent?: number;       // 0-15 (each ≈ 1ch * 2)
+  shrink?: boolean;      // shrink to fit
+  rotate?: number;       // degrees, -90..90 (or 90 vertical-stack handled as 90)
+  fmt?: string;          // preset id or custom format code (S4.5)
+  borders?: { top?: BorderEdge; right?: BorderEdge; bottom?: BorderEdge; left?: BorderEdge };
 }
 
 /** v = literal value, f = formula (without '='), s = style */

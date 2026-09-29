@@ -4,6 +4,7 @@ import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cyc
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
 import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems } from "./src/sheets/io";
+import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
 const check = (name: string, cond: boolean) => {
@@ -425,6 +426,26 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   adjustForRowsCols(s2, "row", 0, 1);
   check("validation range shifts on insert", s2.validations![0].range === "A4:A5");
   check("note follows cell on insert", s2.notes?.["B3"] === "hi");
+}
+
+// ---------- S4.5 custom number-format codes ----------
+{
+  check("fmt thousands", formatValue(1234.5, "#,##0.00") === "1,234.50");
+  check("fmt int", formatValue(1234.5, "0") === "1235");
+  check("fmt percent", formatValue(0.456, "0%") === "46%");
+  check("fmt currency", formatValue(1234.5, "$#,##0.00") === "$1,234.50");
+  check("fmt accounting neg", formatValue(-1234.5, '"$"#,##0.00_);("$"#,##0.00)') === "($1,234.50)");
+  check("fmt accounting pos", formatValue(1234.5, '"$"#,##0.00_);("$"#,##0.00)') === "$1,234.50 ");
+  check("fmt scientific", formatValue(12345, "0.00E+00") === "1.23E+04");
+  check("fmt fraction", formatValue(1.25, "# ?/?") === "1 1/4");
+  check("fmt fraction third", formatValue(0.3333, "?/?") === "1/3");
+  check("fmt text @", formatValue("hello", "@") === "hello");
+  check("fmt date iso", formatValue("2024-02-29", "yyyy-mm-dd") === "2024-02-29");
+  check("fmt date slash", formatValue("2024-02-29", "dd/mm/yyyy") === "29/02/2024");
+  check("fmt date long", formatValue("2024-02-29", "mmm d, yyyy") === "Feb 29, 2024");
+  check("fmt date serial", formatValue(45351, "yyyy-mm-dd") === "2024-02-29");
+  check("fmt time", formatValue(0.625, "h:mm AM/PM") === "3:00 PM");
+  check("fmt literal in code", formatValue(5, '"Qty: "0') === "Qty: 5");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

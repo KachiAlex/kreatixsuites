@@ -371,27 +371,39 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const sel = head
       ? head.c1 >= selection.c1 && head.c2 <= selection.c2 && head.r1 >= selection.r1 && head.r2 <= selection.r2
       : inSel(c, r);
+    const deco = [s.u ? "underline" : "", s.st ? "line-through" : ""].filter(Boolean).join(" ");
+    const borderCss = (e?: { w?: number; style?: string; color?: string }) =>
+      e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "#26221F"}` : undefined;
+    const content = editing?.ref.col === c && editing.ref.row === r ? null
+      : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
     return (
       <td key={c} data-c={c} data-r={r}
         colSpan={head ? head.c2 - head.c1 + 1 : 1}
         rowSpan={head ? head.r2 - head.r1 + 1 : 1}
-        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""}`}
+        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""} ${s.wrap ? "wrap" : ""}`}
         style={{
           ...sticky, zIndex: z,
           fontWeight: s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
-          textDecoration: s.u ? "underline" : "none",
+          fontFamily: s.font, fontSize: s.size ? `${s.size}px` : undefined,
+          textDecoration: deco || "none",
           color: s.color ?? "#26221F",
           background: cfBg.get(ref) ?? s.bg ?? "#fff",
           textAlign: s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
-          verticalAlign: head ? "middle" : undefined,
+          verticalAlign: s.valign ?? (head ? "middle" : undefined),
+          paddingLeft: s.indent ? 5 + s.indent * 8 : undefined,
+          borderTop: borderCss(s.borders?.top), borderRight: borderCss(s.borders?.right),
+          borderBottom: borderCss(s.borders?.bottom), borderLeft: borderCss(s.borders?.left),
         }}
         onMouseDown={(e) => cellMouse(c, r, e)}
         onMouseEnter={(e) => cellMouse(c, r, e)}
         onDoubleClick={(e) => cellMouse(c, r, e)}
         title={sheet.notes?.[ref] ? `${sheet.notes[ref]}` : undefined}
         onContextMenu={(e) => { if (onCellMenu) { e.preventDefault(); if (!inSel(c, r)) setSelection({ c1: c, r1: r, c2: c, r2: r }); onCellMenu(ref, e.clientX, e.clientY); } }}>
-        {editing?.ref.col === c && editing.ref.row === r ? null
-          : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt)}
+        {s.rotate ? (
+          <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
+        ) : s.shrink ? (
+          <span className="cell-shrink">{content}</span>
+        ) : content}
         {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
         {noted?.has(ref) && <span className="cell-flag note" />}
       </td>

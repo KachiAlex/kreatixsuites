@@ -435,6 +435,13 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .grid-table .col-h.sel,.grid-table .row-h.sel{background:#D9EFE4;color:#14714A}
 .grid-table .row-h{width:42px;min-width:42px;background:#F4F1ED;font-size:10px;color:#8B8480;text-align:center;user-select:none;cursor:pointer;border-right:1px solid #D8D2CC}
 .grid-table .cell{background:#fff;font-size:12px;padding:0 5px;white-space:nowrap;overflow:hidden;cursor:cell;user-select:none;position:relative}
+.grid-table .cell.wrap{white-space:normal;word-break:break-word}
+.cell-rot{display:inline-block;transform-origin:left bottom;white-space:nowrap}
+.cell-shrink{display:inline-block;transform:scale(.85);transform-origin:left center;white-space:nowrap}
+.border-menu{position:absolute;top:100%;left:0;z-index:80;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(23,18,15,.2);padding:10px;min-width:230px;margin-top:4px}
+.border-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:4px}
+.border-opt{border:1px solid var(--line);background:#fff;border-radius:7px;padding:6px 8px;font:inherit;font-size:12px;cursor:pointer;text-align:left;color:#26221F}
+.border-opt:hover{border-color:var(--k-orange);background:rgba(242,120,46,.07)}
 .grid-table .cell.in-sel{background:rgba(31,157,102,.08) !important}
 .grid-table .cell.err{color:#C12E42 !important;font-weight:600}
 .sel-frame{position:absolute;border:2px solid var(--sheets);pointer-events:none;z-index:18;box-sizing:border-box}

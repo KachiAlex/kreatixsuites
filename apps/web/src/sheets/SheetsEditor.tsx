@@ -22,6 +22,18 @@ import { FxInput } from "./FxInput";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
 const CF_COLORS = ["#D4F5E2", "#FFE1DA", "#FFF3C4", "#DCE9FF"];
+const FONTS = ["Inter", "Arial", "Calibri", "Cambria", "Consolas", "Courier New", "Georgia", "Roboto", "Segoe UI", "Times New Roman", "Verdana"];
+const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36];
+const CELL_STYLES: [string, string, CellStyle][] = [
+  ["normal", "Normal", {}],
+  ["good", "Good", { bg: "#D4F5E2", color: "#14532D" }],
+  ["bad", "Bad", { bg: "#FFE1DA", color: "#7F1D1D" }],
+  ["neutral", "Neutral", { bg: "#FFF3C4", color: "#713F12" }],
+  ["warning", "Warning", { bg: "#FCE4D6", color: "#9C3D0F" }],
+  ["input", "Input", { bg: "#DCE9FF", color: "#1E3A8A" }],
+  ["heading1", "Heading 1", { b: true, size: 16, borders: { bottom: { w: 2, style: "solid", color: "#26221F" } } }],
+  ["accent", "Accent", { bg: "#F2782E", color: "#FFFFFF", b: true }],
+];
 const fmtStat = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 
 export function SheetsEditor({ item, initialDoc, permission }: {
@@ -48,6 +60,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [noteEdit, setNoteEdit] = useState<{ ref: string; text: string } | null>(null);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [borderMenu, setBorderMenu] = useState(false);
+  const [borderStyle, setBorderStyle] = useState<{ w: 1 | 2 | 3; style: "solid" | "dashed" | "dotted" | "double"; color: string }>({ w: 1, style: "solid", color: "#26221F" });
+  const [painter, setPainter] = useState<{ s: CellStyle } | null>(null);
   const csvRef = useRef<HTMLInputElement>(null);
   const xlsxRef = useRef<HTMLInputElement>(null);
   const nameBoxRef = useRef<HTMLInputElement>(null);
@@ -65,6 +80,29 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const setSelection = useCallback((r: Range) => setSelections([r]), []);
   const addSelection = useCallback((r: Range) => setSelections((p) => [...p, r]), []);
   const extendSelection = useCallback((r: Range) => setSelections((p) => [...p.slice(0, -1), r]), []);
+  // format painter hooks into every selection path (mousedown + drag-extend);
+  // refs bridge the TDZ gap since mutateSheet is declared below
+  const mutateRef = useRef<(fn: (s: SheetData) => void) => void>(() => {});
+  const painterRef = useRef(painter);
+  painterRef.current = painter;
+  const selWithPaint = useCallback((r: Range) => {
+    const p = painterRef.current;
+    if (p) {
+      mutateRef.current((s) => Array.from(rangeRefs(r)).forEach((ref) => {
+        s.cells[ref] = { ...s.cells[ref], s: { ...p.s } };
+      }));
+    }
+    setSelections([r]);
+  }, []);
+  const extWithPaint = useCallback((r: Range) => {
+    const p = painterRef.current;
+    if (p) {
+      mutateRef.current((s) => Array.from(rangeRefs(r)).forEach((ref) => {
+        s.cells[ref] = { ...s.cells[ref], s: { ...p.s } };
+      }));
+      setSelections((prev) => [...prev.slice(0, -1), r]);
+    } else extendSelection(r);
+  }, [extendSelection]);
   const [renamingTab, setRenamingTab] = useState<number | null>(null);
   const [tabMenu, setTabMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   const dragTab = useRef<number | null>(null);
@@ -212,6 +250,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const mutateSheet = useCallback((fn: (s: SheetData) => void) => {
     mutate((w) => fn(w.sheets[active]), true);
   }, [mutate, active]);
+  mutateRef.current = mutateSheet;
 
   // ---- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----
   const aiSerialize = useCallback(() => wb.sheets.map((s) => {
@@ -334,9 +373,40 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     }));
   }, [mutateSheet, selRefs]);
 
-  const toggleStyle = useCallback((key: "b" | "i" | "u") => {
+  const toggleStyle = useCallback((key: "b" | "i" | "u" | "st") => {
     setStyle({ [key]: !anchorStyle[key] });
   }, [setStyle, anchorStyle]);
+
+  // borders — presets apply to selection edges (S4.3)
+  const applyBorder = useCallback((preset: "all" | "outside" | "top" | "bottom" | "left" | "right" | "none") => {
+    const e = { ...borderStyle };
+    mutateSheet((s) => {
+      const edge = (ref: string, side: "top" | "right" | "bottom" | "left", on: boolean) => {
+        const cell = s.cells[ref] ?? {};
+        const borders = { ...(cell.s?.borders ?? {}) } as Record<string, unknown>;
+        if (on) borders[side] = { ...e }; else delete borders[side];
+        s.cells[ref] = { ...cell, s: { ...(cell.s ?? {}), borders: Object.keys(borders).length ? borders as CellStyle["borders"] : undefined } };
+      };
+      for (let r = selection.r1; r <= selection.r2; r++) for (let c = selection.c1; c <= selection.c2; c++) {
+        const ref = toA1(c, r);
+        if (preset === "none") { (["top", "right", "bottom", "left"] as const).forEach((sd) => edge(ref, sd, false)); continue; }
+        if (preset === "all") { (["top", "right", "bottom", "left"] as const).forEach((sd) => edge(ref, sd, true)); continue; }
+        if ((preset === "outside" || preset === "top") && r === selection.r1) edge(ref, "top", true);
+        if ((preset === "outside" || preset === "bottom") && r === selection.r2) edge(ref, "bottom", true);
+        if ((preset === "outside" || preset === "left") && c === selection.c1) edge(ref, "left", true);
+        if ((preset === "outside" || preset === "right") && c === selection.c2) edge(ref, "right", true);
+      }
+    });
+    setBorderMenu(false);
+  }, [mutateSheet, selection, borderStyle]);
+
+  // format painter — next click/drag paints captured style, mouseup disarms (S4.4)
+  useEffect(() => {
+    if (!painter) return;
+    const up = () => setPainter(null);
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, [painter]);
 
   const undo = useCallback(() => {
     const prev = undoStack.current.pop();
@@ -497,6 +567,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         if (ref !== toA1(selection.c1, selection.r1)) delete s.cells[ref];
       }
       s.merges.push({ ...selection });
+      // merge & center (Excel's Merge & Center button semantics)
+      const head = toA1(selection.c1, selection.r1);
+      s.cells[head] = { ...s.cells[head], s: { ...(s.cells[head]?.s ?? {}), align: "center", valign: "middle" } };
     });
     return undefined;
   }, [mutateSheet, selection, toast]);
@@ -699,14 +772,32 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Undo" disabled={!undoStack.current.length} onClick={undo}>↶</button>
           <button className="rb" title="Redo" disabled={!redoStack.current.length} onClick={redo}>↷</button>
           <div className="rb-sep" />
-          <select className="rb-sel" value={anchorStyle.fmt ?? "auto"} title="Number format"
-            onChange={(e) => setStyle({ fmt: e.target.value === "auto" ? undefined : e.target.value })}>
+          <select className="rb-sel" value={anchorStyle.font ?? "Inter"} title="Font family" style={{ width: 96 }}
+            onChange={(e) => setStyle({ font: e.target.value === "Inter" ? undefined : e.target.value })}>
+            {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <select className="rb-sel" value={String(anchorStyle.size ?? 12)} title="Font size" style={{ width: 52 }}
+            onChange={(e) => setStyle({ size: Number(e.target.value) === 12 ? undefined : Number(e.target.value) })}>
+            {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <select className="rb-sel" value={!anchorStyle.fmt ? "auto" : NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "custom"} title="Number format"
+            onChange={(e) => {
+              if (e.target.value === "auto") return setStyle({ fmt: undefined });
+              if (e.target.value === "custom") {
+                const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):", anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
+                if (code) setStyle({ fmt: code });
+                return;
+              }
+              setStyle({ fmt: e.target.value });
+            }}>
             {NUM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+            <option value="custom">Custom code…</option>
           </select>
           <div className="rb-sep" />
-          <button className={`rb ${anchorStyle.b ? "on" : ""}`} title="Bold" onClick={() => toggleStyle("b")}><b>B</b></button>
-          <button className={`rb ${anchorStyle.i ? "on" : ""}`} title="Italic" onClick={() => toggleStyle("i")}><i>I</i></button>
-          <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline" onClick={() => toggleStyle("u")}><u>U</u></button>
+          <button className={`rb ${anchorStyle.b ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => toggleStyle("b")}><b>B</b></button>
+          <button className={`rb ${anchorStyle.i ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => toggleStyle("i")}><i>I</i></button>
+          <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => toggleStyle("u")}><u>U</u></button>
+          <button className={`rb ${anchorStyle.st ? "on" : ""}`} title="Strikethrough" onClick={() => toggleStyle("st")}><s>S</s></button>
           <label className="rb" title="Text color" style={{ padding: 4, cursor: "pointer" }}>
             A<input type="color" value={anchorStyle.color ?? "#171717"} style={{ position: "absolute", opacity: 0, width: 0 }}
               onChange={(e) => setStyle({ color: e.target.value })} />
@@ -722,6 +813,64 @@ export function SheetsEditor({ item, initialDoc, permission }: {
               {a === "left" ? "⇤" : a === "center" ? "≡" : "⇥"}
             </button>
           ))}
+          {(["top", "middle", "bottom"] as const).map((v) => (
+            <button key={v} className={`rb ${anchorStyle.valign === v ? "on" : ""}`} title={`Align ${v}`}
+              onClick={() => setStyle({ valign: anchorStyle.valign === v ? undefined : v })}>
+              {v === "top" ? "⤒" : v === "middle" ? "⬍" : "⤓"}
+            </button>
+          ))}
+          <button className={`rb ${anchorStyle.wrap ? "on" : ""}`} title="Wrap text"
+            onClick={() => setStyle({ wrap: !anchorStyle.wrap || undefined })}>↩</button>
+          <button className={`rb ${anchorStyle.shrink ? "on" : ""}`} title="Shrink to fit"
+            onClick={() => setStyle({ shrink: !anchorStyle.shrink || undefined })}>⇲</button>
+          <button className="rb" title="Decrease indent"
+            onClick={() => setStyle({ indent: Math.max(0, (anchorStyle.indent ?? 0) - 1) || undefined })}>◁</button>
+          <button className="rb" title="Increase indent"
+            onClick={() => setStyle({ indent: Math.min(15, (anchorStyle.indent ?? 0) + 1) })}>▷</button>
+          <select className="rb-sel" value={String(anchorStyle.rotate ?? 0)} title="Text orientation" style={{ width: 56 }}
+            onChange={(e) => setStyle({ rotate: Number(e.target.value) || undefined })}>
+            {[0, 45, 90, -45, -90].map((d) => <option key={d} value={d}>{d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`}</option>)}
+          </select>
+          <div className="rb-sep" />
+          <div style={{ position: "relative" }}>
+            <button className={`rb ${borderMenu ? "on" : ""}`} title="Borders" onClick={() => setBorderMenu((v) => !v)}>▩</button>
+            {borderMenu && (
+              <div className="border-menu" onMouseLeave={() => setBorderMenu(false)}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <select className="rb-sel" style={{ flex: 1 }} value={borderStyle.style}
+                    onChange={(e) => setBorderStyle({ ...borderStyle, style: e.target.value as typeof borderStyle.style })}>
+                    <option value="solid">Solid</option><option value="dashed">Dashed</option>
+                    <option value="dotted">Dotted</option><option value="double">Double</option>
+                  </select>
+                  <select className="rb-sel" value={borderStyle.w}
+                    onChange={(e) => setBorderStyle({ ...borderStyle, w: Number(e.target.value) as 1 | 2 | 3 })}>
+                    <option value={1}>Thin</option><option value={2}>Medium</option><option value={3}>Thick</option>
+                  </select>
+                  <input type="color" value={borderStyle.color} style={{ width: 28, height: 28, padding: 0, border: "none", background: "none" }}
+                    onChange={(e) => setBorderStyle({ ...borderStyle, color: e.target.value })} />
+                </div>
+                <div className="border-grid">
+                  {([["all", "▦ All"], ["outside", "◻ Outside"], ["top", "⬒ Top"], ["bottom", "⬓ Bottom"], ["left", "◨ Left"], ["right", "◧ Right"], ["none", "✕ None"]] as const).map(([p, label]) => (
+                    <button key={p} className="border-opt" onClick={() => applyBorder(p)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <button className={`rb ${painter ? "on" : ""}`} title="Format Painter — click to copy this cell's format, then drag over targets"
+            onClick={() => setPainter(painter ? null : { s: { ...anchorStyle } })}>🖌</button>
+          <select className="rb-sel" value="" title="Cell style preset (replaces formatting)" style={{ width: 84 }}
+            onChange={(e) => {
+              const p = CELL_STYLES.find(([id]) => id === e.target.value);
+              if (!p) return;
+              const st = p[2];
+              mutateSheet((s) => selRefs.forEach((r) => {
+                s.cells[r] = { ...s.cells[r], s: p[0] === "normal" ? undefined : { ...st } };
+              }));
+            }}>
+            <option value="" disabled>Style…</option>
+            {CELL_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
           <div className="rb-sep" />
           <button className="rb" title="Freeze rows above" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
             onClick={() => mutateSheet((s) => { s.freeze = { rows: selection.r1, cols: s.freeze?.cols ?? 0 }; })}>
@@ -789,8 +938,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
         <Grid sheet={sheet} evals={evals} canEdit={canEdit} wb={wb}
           audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
-          selections={selections} selection={selection} setSelection={setSelection}
-          addSelection={addSelection} extendSelection={extendSelection}
+          selections={selections} selection={selection} setSelection={selWithPaint}
+          addSelection={addSelection} extendSelection={extWithPaint}
           invalid={invalidCells}
           noted={notedCells}
           onCellMenu={(ref, x, y) => setCellMenu({ ref, x, y })}
