@@ -13,9 +13,9 @@ import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, type Validation, type FilterCrit, type TableSpec } from "./model";
-import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue } from "./engine";
+import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, solveGoalSeek } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, solveGoalSeek, errorCheck } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -67,6 +67,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [chartEdit, setChartEdit] = useState<ChartSpec | null>(null);
   const [sparkDlg, setSparkDlg] = useState(false);
   const [pivotDlg, setPivotDlg] = useState(false);
+  const [calcDlg, setCalcDlg] = useState(false);
+  const [inspDlg, setInspDlg] = useState(false);
   const [seekDlg, setSeekDlg] = useState(false);
   const [printDlg, setPrintDlg] = useState(false);
   const [propsDlg, setPropsDlg] = useState(false);
@@ -83,6 +85,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const pendingJson = useRef<unknown>(null);
 
+  const wbRef = useRef<Workbook | undefined>(undefined);
   const [wb, setWb] = useState<Workbook>(() => {
     const d = initialDoc as { workbook?: Workbook } | null;
     return d?.workbook?.sheets?.length ? d.workbook : { sheets: [{ name: "Sheet1", cells: {} }] };
@@ -125,7 +128,15 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [, forceUi] = useState(0);
 
   const sheet = wb.sheets[Math.min(active, wb.sheets.length - 1)];
-  const evaluator = useMemo(() => createSheetEvaluator(wb, sheet.name), [wb, sheet.name]);
+  wbRef.current = wb;
+  // S11.5 calc modes — manual freezes the evaluated snapshot until F9/Calc Now
+  const manualCalc = wb.calc?.mode === "manual";
+  const [calcWb, setCalcWb] = useState(wb);
+  useEffect(() => { if (!manualCalc) setCalcWb(wb); }, [wb, manualCalc]);
+  const recalc = useCallback(() => setCalcWb(wb), [wb]);
+  const evaluator = useMemo(
+    () => createSheetEvaluator(manualCalc ? calcWb : wb, sheet.name),
+    [wb, calcWb, manualCalc, sheet.name]);
   const evals = evaluator.values;
   const selRefs = useMemo(() => selections.flatMap((r) => [...rangeRefs(r)]), [selections]);
   const anchorRef = toA1(selection.c1, selection.r1);
@@ -943,6 +954,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   // Ctrl+G → Go To (focus the name box); Ctrl+Alt+V / Ctrl+Shift+V → Paste Special
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (e.key === "F9") { e.preventDefault(); if (wbRef.current) setCalcWb(wbRef.current); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "g") {
@@ -1146,6 +1158,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setPivotDlg(true)}>⊞</button>
           <button className="rb" title="Goal Seek — find input that makes a formula hit a target"
             onClick={() => setSeekDlg(true)}>🎯</button>
+          <button className={`rb ${manualCalc ? "on" : ""}`} title="Calculation options — manual/auto, iterative calc"
+            onClick={() => setCalcDlg(true)}>∑</button>
+          {manualCalc && <button className="rb" title="Calculate now (F9)" onClick={recalc}>⟳</button>}
+          <button className="rb" title="Formula inspector — step through evaluation / error check"
+            onClick={() => setInspDlg(true)}>ƒx</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
@@ -1432,6 +1449,16 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             setSeekDlg(false);
           }}
           onClose={() => setSeekDlg(false)} />
+      )}
+      {calcDlg && (
+        <CalcDialog wb={wb}
+          onApply={(calc) => { setWb({ ...wb, calc }); setCalcWb(wb); setCalcDlg(false); }}
+          onClose={() => setCalcDlg(false)} />
+      )}
+      {inspDlg && (
+        <InspectDialog sheet={sheet} wb={wb} evals={evals}
+          onJump={(ref) => { const p = parseA1(ref); if (p) { setSelection({ c1: p.col, r1: p.row, c2: p.col, r2: p.row }); setInspDlg(false); } }}
+          onClose={() => setInspDlg(false)} />
       )}
       {sheet.pivots?.length ? (
         <div className="sheet-tables-bar">
@@ -2637,6 +2664,111 @@ function GoalSeekDialog({ sheet, wb, anchor, onApply, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" disabled={!ok} onClick={run}>Solve</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- S11.5/S11.6: calc options + formula inspector ----------
+
+function CalcDialog({ wb, onApply, onClose }: {
+  wb: Workbook;
+  onApply: (calc: NonNullable<Workbook["calc"]>) => void;
+  onClose: () => void;
+}) {
+  const c = wb.calc ?? {};
+  const [mode, setMode] = useState<string>(c.mode ?? "auto");
+  const [iter, setIter] = useState(!!c.iterative);
+  const [maxIter, setMaxIter] = useState(String(c.maxIterations ?? 100));
+  const [maxChange, setMaxChange] = useState(String(c.maxChange ?? 0.001));
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 340 }}>
+        <h3>Calculation options</h3>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <label>Workbook calculation
+            <select className="inp" value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="auto">Automatic</option>
+              <option value="autoNoTables">Automatic except tables</option>
+              <option value="manual">Manual — recalc with F9</option>
+            </select>
+          </label>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={iter} onChange={(e) => setIter(e.target.checked)} />
+            Enable iterative calculation (allow circular references)
+          </label>
+          {iter && <>
+            <label>Max iterations <input className="inp" type="number" value={maxIter} onChange={(e) => setMaxIter(e.target.value)} /></label>
+            <label>Max change <input className="inp" type="number" step="0.0001" value={maxChange} onChange={(e) => setMaxChange(e.target.value)} /></label>
+          </>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => onApply({
+            mode: mode as "auto" | "manual" | "autoNoTables",
+            iterative: iter,
+            maxIterations: Number(maxIter) || 100,
+            maxChange: Number(maxChange) || 0.001,
+          })}>Apply</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InspectDialog({ sheet, wb, evals, onJump, onClose }: {
+  sheet: SheetData; wb: Workbook;
+  evals: Map<string, EvalResult>;
+  onJump: (ref: string) => void;
+  onClose: () => void;
+}) {
+  const [ref, setRef] = useState("");
+  const [cell, setCell] = useState<CellData | null>(null);
+  const findings = useMemo(() => errorCheck(sheet, evals, !!sheet.protected), [sheet, evals]);
+  const explain = useMemo(() => {
+    const c = cell?.f ? cell.f : null;
+    if (!c || !ref) return null;
+    return explainFormula(wb, sheet.name, c);
+  }, [cell, ref, wb, sheet.name]);
+  const pick = (r: string) => { setRef(r); setCell(sheet.cells[r] ?? null); };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 480 }}>
+        <h3>Formula inspector</h3>
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <input className="inp" placeholder="Cell ref (e.g. B5)" value={ref}
+            onChange={(e) => pick(e.target.value.toUpperCase())} style={{ width: 120 }} />
+          {cell?.f && <code style={{ fontSize: 12, alignSelf: "center" }}>={cell.f}</code>}
+        </div>
+        {explain && (
+          <div style={{ marginTop: 12, maxHeight: 220, overflow: "auto" }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              Result: {explain.final.error ?? JSON.stringify(explain.final.value)}
+            </div>
+            {explain.parts.map((pt, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--line)" }}>
+                <code style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{pt.expr}</code>
+                <span style={{ color: pt.result.error ? "#D84B57" : "var(--mut)" }}>
+                  {pt.result.error ?? JSON.stringify(pt.result.value)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <h4 style={{ margin: "14px 0 6px" }}>Error checking ({findings.length})</h4>
+        <div style={{ maxHeight: 200, overflow: "auto" }}>
+          {findings.length === 0 && <p style={{ fontSize: 12, color: "var(--mut)" }}>No issues found on this sheet.</p>}
+          {findings.map((f, i) => (
+            <div key={i} className="errcheck-row" onClick={() => onJump(f.ref)}
+              style={{ display: "flex", gap: 10, fontSize: 12, padding: "5px 4px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
+              <b style={{ width: 40 }}>{f.ref}</b>
+              <span style={{ flex: 1 }}>{f.msg}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

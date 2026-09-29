@@ -394,8 +394,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const tot = tableInfo.totals.get(r);
     const cfx = cfFx.get(ref);
     const spark = sheet.sparklines?.[ref];
+    // spill targets have no cell entry — their value comes from evals;
+    // the anchor keeps the whole matrix so flatten to its top-left
+    const rawV = cell?.f || (!cell && res) ? res?.value : cell?.v;
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
-      : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
+      : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt);
     if (spark) content = null;
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
       if (c === tot.range.c1) content = "Totals";

@@ -7,7 +7,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
 };
 import type { CellData, SheetData, Workbook, Validation } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill } from "./model";
-import { evaluateSheet, evaluateSheetIn, type EvalResult } from "./engine";
+import { evaluateSheet, evaluateSheetIn, toR1C1, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -27,7 +27,8 @@ export function sheetToCSV(sheet: SheetData, wb?: Workbook): string {
     for (let c = 0; c <= maxC; c++) {
       const cell = sheet.cells[toA1(c, r)];
       const res = evals.get(toA1(c, r));
-      const v = cell?.f ? res?.value : cell?.v;
+      const raw = cell?.f ? res?.value : cell ? cell.v : res?.value;
+      const v = Array.isArray(raw) ? (raw as unknown[][])[0]?.[0] : raw;
       const s = v === null || v === undefined ? "" : String(v);
       row.push(/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
     }
@@ -871,4 +872,57 @@ export function solveGoalSeek(evalTarget: (x: number) => number | null, goal: nu
     if (Math.abs(x1 - x0) < 1e-10 && f1 !== null && Math.abs(f1) < 1e-6) return x1;
   }
   return f1 !== null && Math.abs(f1) < 1e-4 ? x1 : null;
+}
+
+// ---------- S11.6 error-checking rules ----------
+
+export interface ErrorFinding {
+  ref: string;
+  rule: "error" | "inconsistent" | "numAsText" | "unprotectedFormula";
+  msg: string;
+}
+
+/** Scan a sheet for Excel-style green-triangle conditions. Needs the sheet's
+ *  evaluated results to spot error values; structural rules work on cells. */
+export function errorCheck(
+  sheet: SheetData, evals: Map<string, EvalResult>, protectedSheet = false,
+): ErrorFinding[] {
+  const out: ErrorFinding[] = [];
+  const cells = sheet.cells;
+  for (const [ref, cell] of Object.entries(cells)) {
+    const res = evals.get(ref);
+    if (res?.error) {
+      out.push({ ref, rule: "error", msg: `Cell evaluates to ${res.error}` });
+      continue;
+    }
+    // number stored as text
+    if (!cell.f && typeof cell.v === "string" && /^-?\d+(\.\d+)?$/.test(cell.v.trim()))
+      out.push({ ref, rule: "numAsText", msg: "Number stored as text" });
+    // formula on protected sheet that isn't in an allow-range
+    if (protectedSheet && cell.f)
+      out.push({ ref, rule: "unprotectedFormula", msg: "Formula cell is locked on a protected sheet" });
+  }
+  // inconsistent formula: same column, formula cell whose R1C1 form differs
+  // from both vertical neighbors (when both neighbors agree with each other)
+  const byCol = new Map<number, { row: number; ref: string; r1c1: string }[]>();
+  for (const [ref, cell] of Object.entries(cells)) {
+    if (!cell.f) continue;
+    const p = parseA1(ref); if (!p) continue;
+    const list = byCol.get(p.col) ?? [];
+    list.push({ row: p.row, ref, r1c1: toR1C1(cell.f, ref) });
+    byCol.set(p.col, list);
+  }
+  for (const list of byCol.values()) {
+    list.sort((a, b) => a.row - b.row);
+    for (let i = 1; i < list.length - 1; i++) {
+      const [prev, cur, next] = [list[i - 1], list[i], list[i + 1]];
+      if (prev.row === cur.row - 1 && next.row === cur.row + 1
+        && prev.r1c1 === next.r1c1 && cur.r1c1 !== prev.r1c1)
+        out.push({ ref: cur.ref, rule: "inconsistent", msg: "Inconsistent formula — differs from cells above and below" });
+    }
+  }
+  return out.sort((a, b) => {
+    const pa = parseA1(a.ref)!, pb = parseA1(b.ref)!;
+    return pa.row - pb.row || pa.col - pb.col;
+  });
 }

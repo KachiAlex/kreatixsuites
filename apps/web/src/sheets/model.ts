@@ -177,6 +177,14 @@ export interface Workbook {
   props?: { title?: string; subject?: string; author?: string; company?: string; keywords?: string };
   /** Print/page setup (S8.3) */
   print?: { orientation?: "portrait" | "landscape"; area?: string; gridlines?: boolean; fitWidth?: boolean };
+  /** Calculation options (S11.5): manual mode defers recompute until F9/Calc-Now;
+   *  iterative allows intentional circular references to converge. */
+  calc?: {
+    mode?: "auto" | "manual" | "autoNoTables";
+    iterative?: boolean;
+    maxIterations?: number;
+    maxChange?: number;
+  };
 }
 
 export interface Ref { col: number; row: number }

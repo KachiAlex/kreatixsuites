@@ -1,10 +1,20 @@
 import { Parser } from "hot-formula-parser";
 import type { CellData, Workbook } from "./model";
-import { toA1, parseRange } from "./model";
+import { toA1, parseA1, parseRange, colIndex } from "./model";
 
 export interface EvalResult {
   value: unknown;
   error: string | null;
+  /** set on spill-target results — the anchor ref whose formula spilled here */
+  spillFrom?: string;
+}
+
+/** Dynamic-array spill bookkeeping (S11.1): targets maps each covered ref to
+ *  its anchor + offset; blocked marks anchors whose extent hits occupied
+ *  cells or another spill. */
+interface SpillMaps {
+  targets: Map<string, { anchor: string; dr: number; dc: number }>;
+  blocked: Set<string>;
 }
 
 const MAX_DEPTH = 64;
@@ -105,8 +115,13 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
   pre = rewriteLazyIf(pre, "IFNA");
   // OFFSET first — its ref arg must stay a ref, not a KXREF call
   const withOffset = rewriteOffset(pre);
+  const withFxt = rewriteFormulatext(withOffset);
+  // name-binding / lambda forms — whole arglist stashed for lazy eval
+  let lazy = withFxt;
+  for (const nm of ["LET", "MAP", "BYROW", "BYCOL", "MAKEARRAY", "REDUCE", "SCAN", "LAMBDA"])
+    lazy = rewriteCallLazy(lazy, nm);
   // split on "..." literals; rewrite only the plain segments
-  const out = withOffset.split(/("[^"]*")/).map((seg, i) => {
+  const out = lazy.split(/("[^"]*")/).map((seg, i) => {
     if (i % 2 === 1) return seg;
     let s = seg;
     // named ranges first — the substituted ref may itself be sheet-qualified
@@ -117,6 +132,30 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
         s = s.replace(re, `(${ref})`);
       }
     }
+    // spill refs — Sheet!A1# → KXSPILLQ, A1# → KXSPILL. Must precede the
+    // qualified-ref rewrite so the trailing # isn't orphaned.
+    s = s.replace(
+      /(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+)#|(?<![A-Za-z0-9_$!.])(\$?[A-Za-z]{1,3}\$?\d+)#/g,
+      (_m, qs: string | undefined, ps: string | undefined, qref: string, uref: string) =>
+        qs !== undefined || ps !== undefined
+          ? `KXSPILLQ("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}")`
+          : `KXSPILL("${uref.replace(/\$/g, "")}")`,
+    );
+    // implicit intersection: @[Sheet!]A1[:B2] → KXAT — resolves to the cell
+    // sharing the formula's row/column at eval time
+    s = s.replace(
+      /@(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)|@(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)/g,
+      (_m, qs: string | undefined, ps: string | undefined, qref: string, uref: string) =>
+        qref !== undefined
+          ? `KXAT("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}")`
+          : `KXAT("","${uref.replace(/\$/g, "")}")`,
+    );
+    // range comparisons broadcast elementwise — B1:B3>10 → KXCMP(...) so
+    // FILTER masks and array predicates work like Excel's
+    const cmpRe = /((?:'([^']+)'|([A-Za-z_][\w.]*))!)?(\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+)\s*(>=|<=|<>|>|<|=)\s*("[^"]*"|'[^']*'|[^\s,;()]+)/g;
+    s = s.replace(cmpRe, (_m, _q: string | undefined, qs: string | undefined, ps: string | undefined, rng: string, op: string, rhs: string) =>
+      `KXCMP("${(qs ?? ps ?? "").replace(/"/g, '""')}","${rng.replace(/\$/g, "")}","${op}","${b64(rhs)}")`,
+    );
     s = s.replace(
       /(?:'([^']+)'|([A-Za-z_][\w.]*))!\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?/g,
       (_m, qs: string | undefined, ps: string | undefined, c1: string, r1: string, c2?: string, r2?: string) => {
@@ -134,6 +173,75 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
     );
     return s;
   }).join("");
+  return out;
+}
+
+/** Split a top-level comma-separated arg list (paren/quote aware). */
+function splitTopArgs(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0, inQ = false, cur = "";
+  for (const ch of s) {
+    if (inQ) { cur += ch; if (ch === '"') inQ = false; continue; }
+    if (ch === '"') { inQ = true; cur += ch; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (ch === "," && depth === 0) { out.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  if (cur.trim() !== "" || out.length) out.push(cur);
+  return out;
+}
+
+/** Rewrite CALL(...) → KXNAME("base64(arglist)") — the whole arg list is
+ *  stashed as text so the handler can eval args lazily / treat identifiers
+ *  as bound names (LET, LAMBDA-helpers). */
+function rewriteCallLazy(f: string, name: string): string {
+  const tag = `${name}(`;
+  let out = "", i = 0;
+  const lc = f.toUpperCase();
+  while (true) {
+    let at = -1;
+    for (let k = i; ; ) {
+      const hit = lc.indexOf(tag, k);
+      if (hit < 0) break;
+      const prev = hit > 0 ? f[hit - 1] : "";
+      if (!/[A-Za-z0-9_.]/.test(prev)) { at = hit; break; }
+      k = hit + 1;
+    }
+    if (at < 0) { out += f.slice(i); break; }
+    const argStart = at + tag.length;
+    let depth = 0, inQ = false, j = argStart;
+    for (; j < f.length; j++) {
+      const ch = f[j];
+      if (inQ) { if (ch === '"') inQ = false; continue; }
+      if (ch === '"') { inQ = true; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") { if (!depth) break; depth--; }
+    }
+    if (j >= f.length) { out += f.slice(i); break; }
+    out += f.slice(i, at) + `KX${name}("${b64(f.slice(argStart, j))}")`;
+    i = j + 1;
+  }
+  return out;
+}
+
+/** FORMULATEXT(ref) needs the formula text, not the value — rewrite to
+ *  KXFORMULATEXT("sheet","ref") like OFFSET. */
+function rewriteFormulatext(f: string): string {
+  let out = "";
+  let i = 0;
+  const lc = f.toUpperCase();
+  while (true) {
+    const at = lc.indexOf("FORMULATEXT(", i);
+    if (at < 0) { out += f.slice(i); break; }
+    const j = firstArgEnd(f, at + 12);
+    const first = f.slice(at + 12, j).trim();
+    const m = first.match(/^(?:(?:'([^']+)'|([A-Za-z_][\w.]*))!)?\$?([A-Za-z]{1,3})\$?(\d+)$/);
+    if (!m) { out += f.slice(i, j); i = j; continue; }
+    const sheet = (m[1] ?? m[2] ?? "").replace(/"/g, '""');
+    out += f.slice(i, at) + `KXFORMULATEXT("${sheet}","${m[3]}${m[4]}")`;
+    i = j + 1;
+  }
   return out;
 }
 
@@ -225,11 +333,89 @@ const sameKey = (a: unknown, b: unknown): boolean => {
   return String(a).toLowerCase() === String(b).toLowerCase();
 };
 
+/** Coerce a scalar/flat-array/matrix to a 2-D matrix. */
+const asMat = (a: unknown): unknown[][] =>
+  Array.isArray(a) ? (Array.isArray(a[0]) ? (a as unknown[][]) : [(a as unknown[][])]) : [[a]];
+
+const transpose = (m: unknown[][]): unknown[][] =>
+  m[0]?.map((_, c) => m.map((r) => r[c])) ?? [];
+
+/** Excel ordering for sort: numbers < text (ci) < booleans < blanks/errors. */
+const cmpVals = (a: unknown, b: unknown): number => {
+  const rank = (v: unknown) =>
+    typeof v === "number" ? 0 : typeof v === "string" && v !== "" ? 1
+    : typeof v === "boolean" ? 2 : 3;
+  const ra = rank(a), rb = rank(b);
+  if (ra !== rb) return ra - rb;
+  if (typeof a === "number") return a - (b as number);
+  if (typeof a === "string") return a.localeCompare(b as string, undefined, { sensitivity: "base" });
+  return 0;
+};
+
+/** Excel D-function core: aggregate `field` over db rows matching criteria
+ *  headers+rows. Criteria values support ">5", "<>x", plain equality. */
+const dbAgg = (p: unknown[], op: string): unknown => {
+  const db = asMat(p[0]);
+  const headers = db[0] ?? [];
+  const rows = db.slice(1);
+  let ci: number;
+  if (typeof p[1] === "number") ci = p[1] - 1;
+  else ci = headers.findIndex((h) => sameKey(h, p[1]));
+  if (ci < 0) return "#VALUE!";
+  const crit = asMat(p[2]);
+  const ch = crit[0] ?? [];
+  const critIdx = ch.map((h) => headers.findIndex((x) => sameKey(x, h)));
+  const match = (cell: unknown, cond: unknown): boolean => {
+    const s = String(cond ?? "");
+    const m = s.match(/^(>=|<=|<>|>|<|=)?(.*)$/);
+    if (!m || s === "") return true;
+    const rhs = m[2], na = Number(cell), nb = Number(rhs);
+    const numy = !isNaN(na) && !isNaN(nb) && rhs !== "" && cell !== null && cell !== "";
+    switch (m[1] ?? "=") {
+      case ">": return numy && na > nb;
+      case "<": return numy && na < nb;
+      case ">=": return numy && na >= nb;
+      case "<=": return numy && na <= nb;
+      case "<>": return !sameKey(cell, rhs);
+      default: return sameKey(cell, rhs);
+    }
+  };
+  const hits = rows.filter((row) =>
+    crit.slice(1).some((cr) =>
+      cr.every((cond, k) => critIdx[k] < 0 || match(row[critIdx[k]], cond))));
+  const vals = hits.map((r) => r[ci]);
+  switch (op) {
+    case "sum": return vals.reduce<number>((a, v) => a + (typeof num(v) === "number" ? num(v) as number : 0), 0);
+    case "count": return vals.filter((v) => typeof v === "number").length;
+    case "counta": return vals.filter((v) => v !== null && v !== "" && v !== undefined).length;
+    case "avg": { const ns = vals.map(Number).filter((n) => !isNaN(n)); return ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : "#DIV/0!"; }
+    case "min": return vals.length ? Math.min(...vals.map(Number)) : 0;
+    case "max": return vals.length ? Math.max(...vals.map(Number)) : 0;
+    case "get": return hits.length === 1 ? hits[0][ci] : hits.length > 1 ? "#NUM!" : "#VALUE!";
+    case "product": return vals.reduce<number>((a, v) => a * Number(v), 1);
+    default: return "#VALUE!";
+  }
+};
+
+/** Least-squares forecast: FORECAST.LINEAR(x, ys, xs). */
+const forecastLinear = (p: unknown[]): unknown => {
+  const x = Number(p[0]);
+  const ys = flat(asMat(p[1])).map(Number), xs = flat(asMat(p[2])).map(Number);
+  const n = Math.min(ys.length, xs.length);
+  if (!n) return "#DIV/0!";
+  const mx = xs.slice(0, n).reduce((a, b) => a + b, 0) / n;
+  const my = ys.slice(0, n).reduce((a, b) => a + b, 0) / n;
+  let sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (ys[i] - my); }
+  if (!sxx) return "#DIV/0!";
+  return my + (sxy / sxx) * (x - mx);
+};
+
 /** Build the function pack bound to this workbook's resolvers. */
 export function extraFunctions(
   evalRef: Resolver,
   evalRange: RangeResolver,
-  ctx: { sheet: string },
+  ctx: { sheet: string; sheetCount?: number },
 ): Record<string, (p: unknown[]) => unknown> {
   const lookupArr = (a: unknown): unknown[] => Array.isArray(a) ? flat(a as unknown[]) : [a];
 
@@ -338,6 +524,90 @@ export function extraFunctions(
       return flat(rest).filter((v) => !(ignoreEmpty && (v === "" || v === null || v === undefined))).join(String(delim));
     },
     CONCAT: (p) => flat(p).join(""),
+    // ---- S11.4 function-library gap-fills ----
+    // TEXTBEFORE / TEXTAFTER(text, delim [,instance=-?]) — nth occurrence
+    TEXTBEFORE: (p) => {
+      const t = String(p[0] ?? ""), d = String(p[1] ?? "");
+      if (!d) return "#N/A";
+      const n = Number(p[2] ?? 1);
+      const idxs: number[] = [];
+      for (let i = t.indexOf(d); i >= 0; i = t.indexOf(d, i + 1)) idxs.push(i);
+      const at = n >= 0 ? idxs[n - 1] : idxs[idxs.length + n];
+      return at === undefined ? "#N/A" : t.slice(0, at);
+    },
+    TEXTAFTER: (p) => {
+      const t = String(p[0] ?? ""), d = String(p[1] ?? "");
+      if (!d) return "#N/A";
+      const n = Number(p[2] ?? 1);
+      const idxs: number[] = [];
+      for (let i = t.indexOf(d); i >= 0; i = t.indexOf(d, i + 1)) idxs.push(i);
+      const at = n >= 0 ? idxs[n - 1] : idxs[idxs.length + n];
+      return at === undefined ? "#N/A" : t.slice(at + d.length);
+    },
+    VALUETOTEXT: (p) => {
+      const v = p[0];
+      if (v === null || v === undefined) return "";
+      if (Array.isArray(v)) return flat(v).map((x) => String(x ?? "")).join(", ");
+      return String(v);
+    },
+    ISOMITTED: () => false,
+    SHEET: () => 1,
+    SHEETS: () => ctx.sheetCount ?? 1,
+    // date math on serials — EDATE/EOMONTH/YEARFRAC/WORKDAY/NETWORKDAYS
+    EDATE: (p) => {
+      const a = dnum(p[0]); if (typeof a !== "number") return a.error;
+      const m = Number(p[1]) || 0;
+      const d = new Date((a - 25569) * 86400000);
+      const day = d.getUTCDate();
+      d.setUTCMonth(d.getUTCMonth() + Math.trunc(m));
+      if (d.getUTCDate() !== day) d.setUTCDate(0); // clamp to month end
+      return Math.round(d.getTime() / 86400000 + 25569);
+    },
+    EOMONTH: (p) => {
+      const a = dnum(p[0]); if (typeof a !== "number") return a.error;
+      const d = new Date((a - 25569) * 86400000);
+      d.setUTCMonth(d.getUTCMonth() + Math.trunc(Number(p[1]) || 0) + 1, 1);
+      d.setUTCDate(0);
+      return Math.round(d.getTime() / 86400000 + 25569);
+    },
+    YEARFRAC: (p) => {
+      const a = dnum(p[0]); if (typeof a !== "number") return a.error;
+      const b = dnum(p[1]); if (typeof b !== "number") return b.error;
+      return Math.abs(b - a) / (Number(p[2]) === 4 ? 360 : 365);
+    },
+    WORKDAY: (p) => {
+      const a = dnum(p[0]); if (typeof a !== "number") return a.error;
+      let n = Math.trunc(Number(p[1]) || 0);
+      const hol = new Set(flat(asMat(p[2])).map((v) => dnum(v)).filter((x) => typeof x === "number"));
+      const d = new Date((a - 25569) * 86400000);
+      while (n) {
+        d.setUTCDate(d.getUTCDate() + Math.sign(n));
+        const dow = d.getUTCDay();
+        const ser = Math.round(d.getTime() / 86400000 + 25569);
+        if (dow !== 0 && dow !== 6 && !hol.has(ser)) n -= Math.sign(n);
+      }
+      return Math.round(d.getTime() / 86400000 + 25569);
+    },
+    NETWORKDAYS: (p) => {
+      const a = dnum(p[0]); if (typeof a !== "number") return a.error;
+      const b = dnum(p[1]); if (typeof b !== "number") return b.error;
+      const hol = new Set(flat(asMat(p[2])).map((v) => dnum(v)).filter((x) => typeof x === "number"));
+      let n = 0;
+      const dir = b >= a ? 1 : -1;
+      for (let d = a; dir > 0 ? d <= b : d >= b; d += dir) {
+        const dow = new Date((d - 25569) * 86400000).getUTCDay();
+        if (dow !== 0 && dow !== 6 && !hol.has(d)) n += dir;
+      }
+      return n;
+    },
+    // database functions — DSUM(database, field, criteria)
+    DSUM: (p) => dbAgg(p, "sum"), DCOUNT: (p) => dbAgg(p, "count"),
+    DCOUNTA: (p) => dbAgg(p, "counta"), DAVERAGE: (p) => dbAgg(p, "avg"),
+    DMIN: (p) => dbAgg(p, "min"), DMAX: (p) => dbAgg(p, "max"),
+    DGET: (p) => dbAgg(p, "get"), DPRODUCT: (p) => dbAgg(p, "product"),
+    // FORECAST.LINEAR(x, ys, xs) — least-squares; plain FORECAST aliases it
+    "FORECAST.LINEAR": (p) => forecastLinear(p),
+    FORECAST: (p) => forecastLinear(p),
     DATEDIF: (p) => {
       const a = dnum(p[0]); if (typeof a !== "number") return a.error;
       const b = dnum(p[1]); if (typeof b !== "number") return b.error;
@@ -361,6 +631,163 @@ export function extraFunctions(
       const [rows, cols] = p.map(Number);
       return Array.from({ length: rows || 1 }, () => Array.from({ length: cols || 1 }, () => Math.random()));
     },
+
+    // ---- dynamic-array functions (S11.2) — all return matrices that spill ----
+    UNIQUE: (p) => {
+      const byCol = !!p[1], once = !!p[2];
+      const rows = byCol ? transpose(asMat(p[0])) : asMat(p[0]);
+      const counts = new Map<string, number>();
+      const keep: unknown[][] = [];
+      for (const row of rows) {
+        const k = JSON.stringify(row);
+        const n = counts.get(k) ?? 0;
+        counts.set(k, n + 1);
+        if (!n) keep.push(row);
+      }
+      const out = once ? keep.filter((r) => counts.get(JSON.stringify(r)) === 1) : keep;
+      return byCol ? transpose(out) : out;
+    },
+    // SORT(arr [,colIdx=1][,asc=1][,byCol])
+    SORT: (p) => {
+      const byCol = !!p[3];
+      const rows = byCol ? transpose(asMat(p[0])) : asMat(p[0]);
+      const idx = (Number(p[1]) || 1) - 1;
+      const asc = (Number(p[2] ?? 1) >= 0) ? 1 : -1;
+      const out = [...rows].sort((a, b) => cmpVals(a[idx], b[idx]) * asc);
+      return byCol ? transpose(out) : out;
+    },
+    // SORTBY(arr, by1, asc1, by2, asc2, …)
+    SORTBY: (p) => {
+      const m = asMat(p[0]);
+      const keys: { v: unknown[]; asc: number }[] = [];
+      for (let i = 1; i < p.length; i += 2)
+        keys.push({ v: flat(asMat(p[i])), asc: (Number(p[i + 1] ?? 1) >= 0) ? 1 : -1 });
+      const order = m.map((_, i) => i).sort((ia, ib) => {
+        for (const k of keys) {
+          const d = cmpVals(k.v[ia], k.v[ib]);
+          if (d) return d * k.asc;
+        }
+        return 0;
+      });
+      return order.map((i) => m[i]);
+    },
+    // FILTER(arr, include [,ifEmpty]) — rows or cols whose flag is truthy
+    FILTER: (p) => {
+      const m = asMat(p[0]);
+      const inc = flat(asMat(p[1]));
+      const truthy = (v: unknown) => !!v && v !== 0;
+      if (inc.length === m.length) {
+        const out = m.filter((_, i) => truthy(inc[i]));
+        return out.length ? out : (p[2] ?? "#CALC!");
+      }
+      const keep = [...Array(m[0]?.length ?? 0).keys()].filter((i) => truthy(inc[i]));
+      const out = m.map((row) => keep.map((i) => row[i]));
+      return out.length && keep.length ? out : (p[2] ?? "#CALC!");
+    },
+    TRANSPOSE: (p) => transpose(asMat(p[0])),
+    // TAKE/DROP(arr, rows [, cols]) — negative counts from the end
+    TAKE: (p) => {
+      const m = asMat(p[0]);
+      const r = Number(p[1]), c = p[2] === undefined ? m[0]?.length ?? 0 : Number(p[2]);
+      const rows = r >= 0 ? m.slice(0, r) : m.slice(r);
+      return rows.map((row) => (c >= 0 ? row.slice(0, c) : row.slice(c)));
+    },
+    DROP: (p) => {
+      const m = asMat(p[0]);
+      const r = Number(p[1]), c = p[2] === undefined ? 0 : Number(p[2]);
+      const rows = r >= 0 ? m.slice(r) : m.slice(0, r);
+      return rows.map((row) => (c === 0 ? row : c > 0 ? row.slice(c) : row.slice(0, c)));
+    },
+    // CHOOSEROWS/CHOOSECOLS(arr, n1 [,n2…]) — 1-based, negatives from end
+    CHOOSEROWS: (p) => {
+      const m = asMat(p[0]);
+      const pick = (n: number) => (n < 0 ? m[m.length + n] : m[n - 1]);
+      return (p.slice(1).map(Number)).map((n) => pick(n) ?? ["#REF!"]);
+    },
+    CHOOSECOLS: (p) => {
+      const m = asMat(p[0]);
+      const pick = (n: number, row: unknown[]) => (n < 0 ? row[row.length + n] : row[n - 1]);
+      const idxs = p.slice(1).map(Number);
+      return m.map((row) => idxs.map((n) => pick(n, row) ?? "#REF!"));
+    },
+    HSTACK: (p) => {
+      const mats = p.map(asMat);
+      const rows = Math.max(...mats.map((m) => m.length));
+      const out: unknown[][] = [];
+      for (let r = 0; r < rows; r++) {
+        const row: unknown[] = [];
+        for (const m of mats) row.push(...(r < m.length ? m[r] : Array(m[0]?.length ?? 0).fill("#N/A")));
+        out.push(row);
+      }
+      return out;
+    },
+    VSTACK: (p) => {
+      const mats = p.map(asMat);
+      const cols = Math.max(...mats.map((m) => m[0]?.length ?? 0));
+      const out: unknown[][] = [];
+      for (const m of mats)
+        for (const row of m)
+          out.push([...row, ...Array(Math.max(0, cols - row.length)).fill("#N/A")]);
+      return out;
+    },
+    // TOCOL/TOROW(arr [,ignore]) — 1 = skip blanks, 2 = skip errors, 3 = both
+    TOCOL: (p) => {
+      const skip = Number(p[1]) || 0;
+      const keep = (v: unknown) =>
+        !((skip & 1) && (v === null || v === undefined || v === "")) &&
+        !((skip & 2) && typeof v === "string" && v.startsWith("#"));
+      return flat(asMat(p[0])).filter(keep).map((v) => [v]);
+    },
+    TOROW: (p) => {
+      const skip = Number(p[1]) || 0;
+      const keep = (v: unknown) =>
+        !((skip & 1) && (v === null || v === undefined || v === "")) &&
+        !((skip & 2) && typeof v === "string" && v.startsWith("#"));
+      return [flat(asMat(p[0])).filter(keep)];
+    },
+    WRAPROWS: (p) => {
+      const vec = flat(asMat(p[0])), len = Number(p[1]) || 1;
+      const pad = p[2];
+      const out: unknown[][] = [];
+      for (let i = 0; i < vec.length; i += len) {
+        const row = vec.slice(i, i + len);
+        while (row.length < len) row.push(pad ?? "#N/A");
+        out.push(row);
+      }
+      return out;
+    },
+    WRAPCOLS: (p) => {
+      const vec = flat(asMat(p[0])), len = Number(p[1]) || 1;
+      const pad = p[2];
+      const ncol = Math.ceil(vec.length / len);
+      const out: unknown[][] = Array.from({ length: len }, () => []);
+      for (let i = 0; i < vec.length; i++) out[i % len].push(vec[i]);
+      for (const row of out) while (row.length < ncol) row.push(pad ?? "#N/A");
+      return out;
+    },
+    // EXPAND(arr, rows [,cols] [,pad])
+    EXPAND: (p) => {
+      const m = asMat(p[0]);
+      const rows = Math.max(Number(p[1]) || 0, m.length);
+      const cols = Math.max(Number(p[2]) || m[0]?.length || 0, m[0]?.length ?? 0);
+      const pad = p[3] !== undefined ? p[3] : "#N/A";
+      return Array.from({ length: rows }, (_, r) =>
+        Array.from({ length: cols }, (_, c) => (r < m.length && c < (m[r]?.length ?? 0) ? m[r][c] : pad)));
+    },
+    // TEXTSPLIT(text, colDelim [,rowDelim]) — matrix result
+    TEXTSPLIT: (p) => {
+      const text = String(p[0] ?? "");
+      const cd = p[1] !== undefined ? String(p[1]) : null;
+      const rd = p[2] !== undefined ? String(p[2]) : null;
+      const rows = rd ? text.split(rd) : [text];
+      return rows.map((r) => (cd ? r.split(cd) : [r]));
+    },
+    ARRAYTOTEXT: (p) => flat(asMat(p[0])).map((v) => String(v ?? "")).join(", "),
+    FORMULATEXT: (p) => {
+      // arg arrives as a value via callCellValue — ref text not recoverable
+      // through hfp; handled by KXFORMULATEXT rewrite if needed. Fallback:
+      return typeof p[0] === "string" ? p[0] : "#N/A";
+    },
   };
 }
 
@@ -375,11 +802,11 @@ export interface SheetEval {
  * Evaluate the whole workbook (all sheets, cross-sheet refs resolved,
  * named ranges substituted). Returns sheetName → ref → result.
  */
-function makeEvaluator(wb: Workbook) {
+function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, EvalResult>) {
   const caches = new Map<string, Map<string, EvalResult>>();
   const visiting = new Set<string>();
-  /** current-sheet context for INDIRECT-style functions */
-  const ctx = { sheet: "" };
+  /** current-sheet + current-cell context for INDIRECT/KXAT-style functions */
+  const ctx = { sheet: "", selfRef: "", sheetCount: 0 };
   const sheetOf = (name: string | null): Record<string, CellData> =>
     (name ? wb.sheets.find((s) => s.name.toLowerCase() === name.toLowerCase()) : null)?.cells ?? {};
   const evalRangeOf = (sheet: string | null, a: string, b?: string): unknown[][] => {
@@ -395,6 +822,7 @@ function makeEvaluator(wb: Workbook) {
     }
     return m;
   };
+  ctx.sheetCount = wb.sheets.length; // shared mutable ctx — fns read ctx.sheet live
   const fns = extraFunctions((sheet, ref) => evalIn(sheet, ref, 0), evalRangeOf, ctx);
 
   function evalIn(sheetName: string | null, ref: string, depth: number): EvalResult {
@@ -407,13 +835,28 @@ function makeEvaluator(wb: Workbook) {
     if (cached) return cached;
     const cell = cells[ref];
     let out: EvalResult;
-    if (!cell) out = { value: null, error: null };
+    if (!cell) {
+      // spill target? resolve through the anchor's matrix
+      const sp = spills?.targets.get(`${shName}\x01${ref}`);
+      if (sp) {
+        const [ash, aref] = sp.anchor.split("\x01");
+        const ar = evalIn(ash, aref, depth + 1);
+        const m = ar.value as unknown[][];
+        out = ar.error ? err(ar.error)
+          : { value: Array.isArray(m) && Array.isArray(m[sp.dr]) ? m[sp.dr][sp.dc] ?? null : null, error: null, spillFrom: aref };
+      } else out = { value: null, error: null };
+    }
     else if (!cell.f) out = { value: cell.v ?? null, error: null };
-    else if (visiting.has(key) || depth > MAX_DEPTH) out = err("#CYCLE!");
+    else if (visiting.has(key) || depth > MAX_DEPTH) {
+      // iterative calc: cycles feed back the previous pass's value
+      out = wb.calc?.iterative ? (prior?.get(key) ?? { value: 0, error: null }) : err("#CYCLE!");
+    }
     else {
       visiting.add(key);
+      ctx.selfRef = ref;
       out = runFormula(cell.f, shName, depth);
       visiting.delete(key);
+      if (spills?.blocked.has(`${shName}\x01${ref}`)) out = err("#SPILL!");
     }
     cache.set(ref, out);
     return out;
@@ -510,6 +953,180 @@ function makeEvaluator(wb: Workbook) {
       }
       return m;
     });
+    // spill refs — A1# / Sheet!A1# → the anchor's whole spilled matrix
+    const spillOf = (sn: string, ref: string) => {
+      if (!hasSheet(sn)) return "#REF!";
+      const res = evalIn(sn, ref.replace(/\$/g, "").toUpperCase(), depth + 1);
+      if (res.error) return res.error;
+      return Array.isArray(res.value) ? res.value : res.value ?? "#REF!";
+    };
+    parser.setFunction("KXSPILL", (p) => spillOf(ctx.sheet, String(p[0])));
+    parser.setFunction("KXSPILLQ", (p) => spillOf(String(p[0]), String(p[1])));
+    // FORMULATEXT — rewritten to carry sheet+ref; returns the formula text
+    parser.setFunction("KXFORMULATEXT", (p) => {
+      const sn = String(p[0]) || ctx.sheet;
+      const ref = String(p[1]).replace(/\$/g, "").toUpperCase();
+      const sh = wb.sheets.find((s) => s.name.toLowerCase() === sn.toLowerCase());
+      const f = sh?.cells[ref]?.f;
+      return f ? `=${f}` : "#N/A";
+    });
+    // broadcast comparison — KXCMP("sheet","A1:B3",">","b64(rhs)") evaluates
+    // the range elementwise against the (scalar or matrix) rhs
+    parser.setFunction("KXCMP", (p) => {
+      const sn = String(p[0] ?? "") || ctx.sheet;
+      const r = parseRange(String(p[1]).replace(/\$/g, ""));
+      if (!r) return "#REF!";
+      const rhsRes = runFormula(unb64(String(p[3])), ctx.sheet, depth + 1);
+      const rhs = rhsRes.error ?? rhsRes.value;
+      const rm = Array.isArray(rhs) && Array.isArray(rhs[0]) ? rhs as unknown[][] : null;
+      const cmp = (a: unknown, b: unknown, op: string): unknown => {
+        if (typeof b === "string" && b.startsWith("#")) return b;
+        const na = Number(a), nb = Number(b);
+        const numy = a !== null && b !== null && a !== "" && b !== "" && !isNaN(na) && !isNaN(nb);
+        const sa = String(a ?? ""), sb = String(b ?? "");
+        switch (op) {
+          case ">": return numy ? na > nb : sa > sb;
+          case "<": return numy ? na < nb : sa < sb;
+          case ">=": return numy ? na >= nb : sa >= sb;
+          case "<=": return numy ? na <= nb : sa <= sb;
+          case "=": return sameKey(a, b);
+          case "<>": return !sameKey(a, b);
+          default: return "#VALUE!";
+        }
+      };
+      const out: unknown[][] = [];
+      for (let row = r.r1; row <= r.r2; row++) {
+        out.push([]);
+        for (let c = r.c1; c <= r.c2; c++) {
+          const res = evalIn(sn, toA1(c, row), depth + 1);
+          const rv = rm ? rm[row - r.r1]?.[c - r.c1] ?? "#N/A" : rhs;
+          out[out.length - 1].push(res.error ? res.error : cmp(res.value, rv, String(p[2])));
+        }
+      }
+      return out.length === 1 && out[0].length === 1 ? out[0][0] : out;
+    });
+    // ---- name-binding + lambda forms (S11.3) — arglists arrive as base64 ----
+    const litOf = (v: unknown): string => {
+      if (v === null || v === undefined || v === "") return "0"; // Excel blank→0
+      if (typeof v === "number") return String(v);
+      if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+      if (Array.isArray(v)) return `HSTACK(${flat(v).map(litOf).join(",")})`;
+      return `"${String(v).replace(/"/g, '""')}"`;
+    };
+    const substNames = (body: string, vals: Record<string, string>): string => {
+      let out = body;
+      for (const [nm, lit] of Object.entries(vals)) {
+        const re = new RegExp(`(?<![A-Za-z0-9_.$!"'])${nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w.$(!])`, "gi");
+        out = out.split(/("[^"]*")/).map((seg, i) => i % 2 ? seg : seg.replace(re, `(${lit})`)).join("");
+      }
+      return out;
+    };
+    const evalSub = (expr: string): unknown => {
+      const r = runFormula(expr, ctx.sheet, depth + 1);
+      return r.error ?? r.value;
+    };
+    const stripParens = (s: string): string => {
+      s = s.trim();
+      while (s.startsWith("(") && s.endsWith(")")) {
+        let d = 0, ok = true;
+        for (let i = 0; i < s.length; i++) {
+          if (s[i] === "(") d++;
+          else if (s[i] === ")") { d--; if (!d && i < s.length - 1) { ok = false; break; } }
+        }
+        if (ok) s = s.slice(1, -1).trim(); else break;
+      }
+      return s;
+    };
+    // invoke a LAMBDA(param…, body) text with concrete values
+    const lambdaCall = (lambdaExpr: string, vals: unknown[]): unknown => {
+      const le = stripParens(lambdaExpr);
+      if (!/^lambda\s*\(/i.test(le)) return "#CALC!";
+      const inner = le.replace(/^lambda\s*\(/i, "").replace(/\)\s*$/, "");
+      const args = splitTopArgs(inner);
+      const names = args.slice(0, -1).map((a) => a.trim().toLowerCase());
+      const body = args[args.length - 1];
+      const binds: Record<string, string> = {};
+      names.forEach((n, i) => { binds[n] = litOf(vals[i]); });
+      return evalSub(substNames(body, binds));
+    };
+    // LET(n1, e1, n2, e2, …, body) — earlier names visible to later exprs
+    parser.setFunction("KXLET", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      if (args.length < 3) return "#VALUE!";
+      const vals: Record<string, string> = {};
+      for (let i = 0; i + 1 < args.length; i += 2) {
+        const nm = args[i].trim().toLowerCase();
+        const expr = args[i + 1].trim();
+        // LAMBDA binds as raw text so the name can be used as a function
+        if (/^lambda\s*\(/i.test(stripParens(expr))) vals[nm] = stripParens(expr);
+        else {
+          const r = runFormula(substNames(expr, vals), ctx.sheet, depth + 1);
+          if (r.error) return r.error;
+          const v = r.value;
+          // bare refs re-inject as live references (blank/type fidelity)
+          vals[nm] = /^\$?[A-Za-z]{1,3}\$?\d+$/.test(expr) ? expr : litOf(v);
+        }
+      }
+      const body = args[args.length - 1];
+      const r = runFormula(substNames(body, vals), ctx.sheet, depth + 1);
+      return r.error ?? r.value;
+    });
+    parser.setFunction("KXLAMBDA", () => "#CALC!"); // bare lambda isn't a value
+    // MAP(arr1 [,arr2…], LAMBDA(…)) — elementwise over the first array's dims
+    parser.setFunction("KXMAP", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      if (args.length < 2) return "#VALUE!";
+      const lambda = args[args.length - 1];
+      const mats = args.slice(0, -1).map((a) => asMat(evalSub(a)));
+      return mats[0].map((row, r) =>
+        row.map((_, c) => lambdaCall(lambda, mats.map((m) => m[r]?.[c] ?? null))));
+    });
+    // BYROW(arr, LAMBDA(row,…)) — lambda sees the row as a vector
+    parser.setFunction("KXBYROW", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      const m = asMat(evalSub(args[0]));
+      return m.map((row) => [lambdaCall(args[1], [row])]);
+    });
+    parser.setFunction("KXBYCOL", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      const m = asMat(evalSub(args[0]));
+      const cols = m[0]?.length ?? 0;
+      return [Array.from({ length: cols }, (_, c) => lambdaCall(args[1], [m.map((row) => row[c])]))];
+    });
+    // MAKEARRAY(rows, cols, LAMBDA(r,c,…)) — 1-based indexes
+    parser.setFunction("KXMAKEARRAY", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      const nr = Number(evalSub(args[0])) || 0, nc = Number(evalSub(args[1])) || 0;
+      return Array.from({ length: nr }, (_, r) =>
+        Array.from({ length: nc }, (_, c) => lambdaCall(args[2], [r + 1, c + 1])));
+    });
+    // REDUCE(init, arr, LAMBDA(acc,v,…)) / SCAN — fold / running accumulation
+    parser.setFunction("KXREDUCE", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      let acc = evalSub(args[0]);
+      for (const v of flat(asMat(evalSub(args[1])))) acc = lambdaCall(args[2], [acc, v]);
+      return acc;
+    });
+    parser.setFunction("KXSCAN", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      let acc = evalSub(args[0]);
+      return [flat(asMat(evalSub(args[1]))).map((v) => (acc = lambdaCall(args[2], [acc, v])))];
+    });
+    // implicit intersection — @range resolves to the cell sharing the
+    // formula's row (column ranges) or column (row ranges)
+    parser.setFunction("KXAT", (p) => {
+      const sheet = String(p[0] ?? "") || ctx.sheet;
+      const r = parseRange(String(p[1]).replace(/\$/g, ""));
+      const self = ctx.selfRef ? parseA1(ctx.selfRef) : null;
+      if (!r || !self) return "#VALUE!";
+      const col = r.c1 === r.c2 ? r.c1
+        : self.col >= r.c1 && self.col <= r.c2 ? self.col : null;
+      const row = r.r1 === r.r2 ? r.r1
+        : self.row >= r.r1 && self.row <= r.r2 ? self.row : null;
+      if (col === null || row === null) return "#VALUE!";
+      const res = evalIn(sheet, toA1(col, row), depth + 1);
+      return res.error ?? res.value;
+    });
     for (const [name, fn] of Object.entries(fns)) parser.setFunction(name, fn);
     try {
       const { error, result } = parser.parse(preprocessFormula(formula, wb.names));
@@ -522,17 +1139,103 @@ function makeEvaluator(wb: Workbook) {
   return { caches, evalIn, runFormula };
 }
 
+/** Detect dynamic-array spills: any formula whose result is a >1×1 matrix
+ *  spills into the cells down/right of its anchor. Occupied targets (any
+ *  cell content) or overlap with an earlier spill mark the anchor #SPILL!. */
+function computeSpills(wb: Workbook, e: ReturnType<typeof makeEvaluator>): SpillMaps {
+  const targets = new Map<string, { anchor: string; dr: number; dc: number }>();
+  const blocked = new Set<string>();
+  for (const sheet of wb.sheets) {
+    const refs = Object.keys(sheet.cells)
+      .map((r) => ({ ref: r, p: parseA1(r)! }))
+      .sort((a, b) => a.p.row - b.p.row || a.p.col - b.p.col);
+    for (const { ref } of refs) {
+      const cell = sheet.cells[ref];
+      if (!cell?.f) continue;
+      const key = `${sheet.name}\x01${ref}`;
+      const res = e.evalIn(sheet.name, ref, 0);
+      const v = res?.value;
+      if (res?.error || !Array.isArray(v) || !Array.isArray(v[0])) continue;
+      const m = v as unknown[][];
+      if (m.length <= 1 && (m[0]?.length ?? 0) <= 1) continue;
+      const at = parseA1(ref)!;
+      const mine: [string, number, number][] = [];
+      let bad = false;
+      for (let dr = 0; dr < m.length && !bad; dr++)
+        for (let dc = 0; dc < (m[dr]?.length ?? 0) && !bad; dc++) {
+          if (!dr && !dc) continue;
+          const t = toA1(at.col + dc, at.row + dr);
+          const tc = sheet.cells[t];
+          const tk = `${sheet.name}\x01${t}`;
+          if ((tc && (tc.f || (tc.v !== null && tc.v !== undefined && tc.v !== ""))) || targets.has(tk)) bad = true;
+          else mine.push([tk, dr, dc]);
+        }
+      if (bad) blocked.add(key);
+      else for (const [tk, dr, dc] of mine) targets.set(tk, { anchor: key, dr, dc });
+    }
+  }
+  return { targets, blocked };
+}
+
+/** Full workbook eval with spill support — pass 1 discovers matrices and
+ *  computes spill extents, pass 2 re-evaluates so dependents can read
+ *  spill targets through the spill map. */
+function evaluateAll(wb: Workbook): { caches: Map<string, Map<string, EvalResult>>; runFormula: ReturnType<typeof makeEvaluator>["runFormula"] } {
+  // S11.5 iterative calc: re-run passes until convergence (or maxIterations)
+  if (wb.calc?.iterative) {
+    const maxIter = wb.calc.maxIterations ?? 100;
+    const maxChange = wb.calc.maxChange ?? 0.001;
+    let prior = new Map<string, EvalResult>();
+    let e = makeEvaluator(wb, undefined, prior);
+    let next = prior;
+    for (let i = 0; i < maxIter; i++) {
+      for (const s of wb.sheets) for (const ref of Object.keys(s.cells)) e.evalIn(s.name, ref, 0);
+      let maxD = 0;
+      next = new Map<string, EvalResult>();
+      for (const [sn, cache] of e.caches) for (const [ref, res] of cache) {
+        const k = `${sn}!${ref}`;
+        next.set(k, res);
+        const pv = prior.get(k)?.value;
+        if (typeof res.value === "number" && typeof pv === "number")
+          maxD = Math.max(maxD, Math.abs(res.value - pv));
+        else if (res.value !== pv) maxD = Infinity; // non-numeric change
+      }
+      if (maxD <= maxChange) break;
+      prior = next;
+      e = makeEvaluator(wb, undefined, prior);
+    }
+    const spills = computeSpills(wb, e);
+    if (!spills.targets.size && !spills.blocked.size) return e;
+    const p2 = makeEvaluator(wb, spills, next);
+    for (const s of wb.sheets) for (const ref of Object.keys(s.cells)) p2.evalIn(s.name, ref, 0);
+    for (const tk of spills.targets.keys()) {
+      const [sn, ref] = tk.split("\x01");
+      p2.evalIn(sn, ref, 0);
+    }
+    return p2;
+  }
+  const p1 = makeEvaluator(wb);
+  for (const s of wb.sheets) for (const ref of Object.keys(s.cells)) p1.evalIn(s.name, ref, 0);
+  const spills = computeSpills(wb, p1);
+  if (!spills.targets.size && !spills.blocked.size) return p1;
+  const p2 = makeEvaluator(wb, spills);
+  for (const s of wb.sheets) for (const ref of Object.keys(s.cells)) p2.evalIn(s.name, ref, 0);
+  // materialize spill-target entries so renders/exports see them
+  for (const tk of spills.targets.keys()) {
+    const [sn, ref] = tk.split("\x01");
+    p2.evalIn(sn, ref, 0);
+  }
+  return p2;
+}
+
 export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResult>> {
-  const e = makeEvaluator(wb);
-  for (const sheet of wb.sheets) for (const ref of Object.keys(sheet.cells)) e.evalIn(sheet.name, ref, 0);
-  return e.caches;
+  return evaluateAll(wb).caches;
 }
 
 /** Prime the workbook once, then allow ad-hoc formula evaluation in a sheet's
  *  context — used by conditional-format formula rules and future features. */
 export function createSheetEvaluator(wb: Workbook, sheetName: string) {
-  const e = makeEvaluator(wb);
-  for (const sheet of wb.sheets) for (const ref of Object.keys(sheet.cells)) e.evalIn(sheet.name, ref, 0);
+  const e = evaluateAll(wb);
   return {
     values: e.caches.get(sheetName) ?? new Map<string, EvalResult>(),
     evalFormula: (f: string) => e.runFormula(f, sheetName, 0),
@@ -550,8 +1253,51 @@ export function evaluateSheetIn(wb: Workbook, sheetName: string): Map<string, Ev
   return evaluateWorkbook(wb).get(sheetName) ?? new Map();
 }
 
+/** S11.6 — explain a formula: evaluate the whole expression plus each
+ *  top-level argument of the outermost call, so the inspector can step
+ *  through inputs → outputs like Excel's Evaluate Formula. */
+export function explainFormula(
+  wb: Workbook, sheetName: string, formula: string,
+): { final: EvalResult; parts: { expr: string; result: EvalResult }[] } {
+  const e = evaluateAll(wb);
+  const final = e.runFormula(formula, sheetName, 0);
+  const parts: { expr: string; result: EvalResult }[] = [];
+  const f = formula.trim();
+  const m = f.match(/^[A-Za-z_][\w.]*\(/);
+  if (m) {
+    const inner = f.slice(m[0].length, f.endsWith(")") ? -1 : undefined);
+    for (const arg of splitTopArgs(inner)) {
+      if (!arg.trim()) continue;
+      parts.push({ expr: arg.trim(), result: e.runFormula(arg.trim(), sheetName, 0) });
+    }
+  }
+  return { final, parts };
+}
+
+/** Normalize an A1 formula to R1C1-relative form (host ref = R0C0) so two
+ *  cells' formulas can be compared structurally — used by the inconsistent-
+ *  formula error rule. */
+export function toR1C1(formula: string, host: string): string {
+  const hp = parseA1(host.replace(/\$/g, ""));
+  if (!hp) return formula;
+  return formula.split(/("[^"]*")/).map((seg, i) => {
+    if (i % 2) return seg;
+    return seg.replace(/(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g, (_m, ca, cs, ra, rs) => {
+      const col = colIndex(cs.toUpperCase()), row = parseInt(rs, 10) - 1;
+      const c = ca ? `C${col}` : `C[${col - hp.col}]`;
+      const r = ra ? `R${row + 1}` : `R[${row - hp.row}]`;
+      return r + c;
+    });
+  }).join("");
+}
+
 export function displayValue(res: EvalResult | undefined, cell: CellData | undefined): string {
-  if (!cell) return "";
+  if (!cell) {
+    if (res?.error) return res.error;
+    const v = res?.value;
+    if (Array.isArray(v)) return String((v as unknown[][])[0]?.[0] ?? "");
+    return v === null || v === undefined ? "" : String(v);
+  }
   if (res?.error) return res.error;
   const v = cell.f ? res?.value : (res?.value ?? cell.v);
   if (v === null || v === undefined) return "";

@@ -1,10 +1,10 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
-import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator } from "./src/sheets/engine";
+import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator, explainFormula, toR1C1 } from "./src/sheets/engine";
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek, errorCheck } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -723,6 +723,274 @@ t("S10: goal seek no-solution returns null", () => {
 });
 
 // ============ results ============
+
+
+// ============ S11: dynamic arrays + spill ============
+
+t("S11: SEQUENCE spills a matrix", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "SEQUENCE(3,2)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  // anchor shows top-left; spill targets materialize in the results map
+  assertEq(ev.get("A1")?.value, [[1,2],[3,4],[5,6]]);
+  assertEq(ev.get("B1")?.value, 2);   // spill target
+  assertEq(ev.get("A3")?.value, 5);
+  assertEq(ev.get("B3")?.value, 6);
+  assertEq(ev.get("B1")?.spillFrom, "A1");
+});
+
+t("S11: spill collision -> #SPILL!", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "SEQUENCE(2,2)" }, B1: { v: "blocked" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("A1")?.error, "#SPILL!");
+});
+
+t("S11: dependent reads a spilled cell", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "SEQUENCE(2,2)" },   // A1=1 B1=2 A2=3 B2=4
+    D1: { f: "B2*10" },           // reads spill target B2 → 40
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("D1")?.value, 40);
+});
+
+t("S11: spill-range ref A1# feeds dependents", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "SEQUENCE(3)" },     // 1,2,3 down
+    C1: { f: "SUM(A1#)" },        // =6
+  } } ] };
+  assertEq(evaluateSheetIn(wb, "S").get("C1")?.value, 6);
+});
+
+t("S11: cross-sheet spill ref", () => {
+  const wb: Workbook = { sheets: [
+    { name: "S", cells: { A1: { f: "SEQUENCE(2)" } } },
+    { name: "T", cells: { A1: { f: "SUM(S!A1#)" } } },
+  ] };
+  assertEq(evaluateSheetIn(wb, "T").get("A1")?.value, 3);
+});
+
+t("S11: @ implicit intersection picks formula's row", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 10 }, A2: { v: 20 }, A3: { v: 30 },
+    B2: { f: "@A1:A3" },   // row 2 → 20
+    B5: { f: "@A1:A3" },   // row 5 outside → #VALUE!
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("B2")?.value, 20);
+  assertEq(ev.get("B5")?.value, "#VALUE!");
+});
+
+t("S11: UNIQUE spills distinct rows", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: "a" }, A2: { v: "b" }, A3: { v: "a" }, A4: { v: "c" },
+    C1: { f: "UNIQUE(A1:A4)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("C1")?.value, [["a"],["b"],["c"]]);
+  assertEq(ev.get("C3")?.value, "c");
+});
+
+t("S11: SORT spills sorted rows", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 3 }, A2: { v: 1 }, A3: { v: 2 },
+    B1: { f: "SORT(A1:A3)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("B1")?.value, [[1],[2],[3]]);
+  assertEq(ev.get("B3")?.value, 3);
+});
+
+t("S11: SORTBY with two keys", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: "x" }, B1: { v: 2 },
+    A2: { v: "y" }, B2: { v: 1 },
+    A3: { v: "x" }, B3: { v: 0 },
+    D1: { f: "SORTBY(A1:B3, A1:A3, 1, B1:B3, -1)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "D1");
+  const evv = evaluateSheetIn(wb, "S");
+  // sorted: (x,2),(x,0),(y,1)
+  assertEq(evv.get("D1")?.value, [["x",2],["x",0],["y",1]]);
+  void ev;
+});
+
+t("S11: FILTER rows by mask", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: "a" }, B1: { v: 5 },
+    A2: { v: "b" }, B2: { v: 15 },
+    A3: { v: "c" }, B3: { v: 25 },
+    D1: { f: "FILTER(A1:B3, B1:B3>10)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("D1")?.value, [["b",15],["c",25]]);
+  assertEq(ev.get("E2")?.value, 25);
+});
+
+t("S11: TRANSPOSE flips a range", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 1 }, A2: { v: 2 },
+    C1: { f: "TRANSPOSE(A1:A2)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("C1")?.value, [[1,2]]);
+  assertEq(ev.get("D1")?.value, 2);
+});
+
+t("S11: TAKE/DROP/CHOOSEROWS/HSTACK/VSTACK/WRAPROWS", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 },
+    B1: { f: "TAKE(A1:A3, 2)" },
+    D1: { f: "DROP(A1:A3, 1)" },
+    F1: { f: "CHOOSEROWS(A1:A3, 3, 1)" },
+    H1: { f: "HSTACK(A1:A3, B1#)" },
+    K1: { f: "VSTACK(A1:A2, A3)" },
+    N1: { f: "WRAPROWS(A1:A3, 2, 0)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("B1")?.value, [[1],[2]]);
+  assertEq(ev.get("D1")?.value, [[2],[3]]);
+  assertEq(ev.get("F1")?.value, [[3],[1]]);
+  assertEq(ev.get("H1")?.value, [[1,1],[2,2],[3,"#N/A"]]); // B1# spills 2 rows → pad
+  assertEq(ev.get("K1")?.value, [[1],[2],[3]]);
+  assertEq(ev.get("N1")?.value, [[1,2],[3,0]]);
+});
+
+t("S11: TOCOL/TOROW/EXPAND", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 1 }, B1: { v: 2 }, A2: { v: 3 }, B2: { v: 4 },
+    D1: { f: "TOCOL(A1:B2)" },
+    F1: { f: "TOROW(A1:B2)" },
+    K1: { f: "EXPAND(A1, 2, 3, \"x\")" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("D1")?.value, [[1],[2],[3],[4]]);
+  assertEq(ev.get("F1")?.value, [[1,2,3,4]]);
+  assertEq(ev.get("K1")?.value, [[1,"x","x"],["x","x","x"]]);
+});
+
+t("S11: TEXTSPLIT + ARRAYTOTEXT", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: 'TEXTSPLIT("a,b;c,d", ",", ";")' },
+    C1: { f: 'ARRAYTOTEXT(B2:B4)' },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("A1")?.value, [["a","b"],["c","d"]]);
+  assertEq(ev.get("B2")?.value, "d");   // spill target
+});
+
+t("S11: FORMULATEXT returns the formula text", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "SUM(1,2)" },
+    B1: { f: "FORMULATEXT(A1)" },
+    B2: { f: "FORMULATEXT(A9)" },
+  } } ] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("B1")?.value, "=SUM(1,2)");
+  assertEq(ev.get("B2")?.value, "#N/A");
+});
+
+t("S11.3 LET + LAMBDA helpers", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 },
+    C1: { f: "LET(x, 5, y, x*3, x+y)" },
+    C2: { f: "LET(n, A1+A2, n*10)" },
+    D1: { f: "MAP(A1:A3, LAMBDA(x, x*2))" },
+    D5: { f: "BYROW(A1:B1, LAMBDA(r, SUM(r)))" },
+    D7: { f: "BYCOL(A1:B1, LAMBDA(c, SUM(c)))" },
+    F1: { f: "MAKEARRAY(2, 2, LAMBDA(r, c, r*10+c))" },
+    F5: { f: "REDUCE(0, A1:A3, LAMBDA(a, v, a+v))" },
+    F7: { f: "SCAN(0, A1:A3, LAMBDA(a, v, a+v))" },
+    F9: { f: "LET(dbl, LAMBDA(x, x*2), MAP(A1:A2, dbl))" },
+  } }] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("C1")?.value, 20);
+  assertEq(ev.get("C2")?.value, 30);
+  assertEq(ev.get("D1")?.value, [[2],[4],[6]]);
+  assertEq(ev.get("D2")?.value, 4);
+  assertEq(ev.get("D2")?.spillFrom, "D1");
+  assertEq(ev.get("D5")?.value, [[1]]);
+  assertEq(ev.get("D7")?.value, [[1,0]]);
+  assertEq(ev.get("F1")?.value, [[11,12],[21,22]]);
+  assertEq(ev.get("F5")?.value, 6);
+  assertEq(ev.get("F7")?.value, [[1,3,6]]);
+  assertEq(ev.get("F9")?.value, [[2],[4]]);
+});
+
+t("S11.4 function-library gaps", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: "a-b-c" },
+    B1: { f: 'TEXTBEFORE(A1, "-", 2)' }, B2: { f: 'TEXTAFTER(A1, "-", -1)' },
+    B3: { f: "SHEETS()" },
+    D1: { v: 44927 },  // 2023-01-31
+    E1: { f: "EDATE(D1, 1)" }, E2: { f: "EOMONTH(D1, 0)" }, E3: { f: "YEARFRAC(D1, D1+365)" },
+    E4: { f: "WORKDAY(45292, 3)" },   // 45292 = 2023-12-22 Friday
+    E5: { f: "NETWORKDAYS(45292, 45296)" },
+    H1: { v: "Name" }, I1: { v: "Qty" },
+    H2: { v: "a" }, I2: { v: 5 }, H3: { v: "b" }, I3: { v: 8 },
+    K1: { v: "Name" }, K2: { v: "a" },
+    L1: { f: "DSUM(H1:I3, \"Qty\", K1:K2)" }, L2: { f: "DCOUNT(H1:I3, 2, K1:K2)" },
+    L3: { f: "DAVERAGE(H1:I3, \"Qty\", K1:K2)" }, L4: { f: "DGET(H1:I3, 2, K1:K2)" },
+    N1: { v: 1 }, N2: { v: 2 }, N3: { v: 3 },
+    O1: { v: 2 }, O2: { v: 4 }, O3: { v: 6 },
+    P1: { f: "FORECAST.LINEAR(4, O1:O3, N1:N3)" },
+  } }] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("B1")?.value, "a-b");
+  assertEq(ev.get("B2")?.value, "c");
+  assertEq(ev.get("B3")?.value, 1);
+  assertEq(ev.get("E1")?.value, 44958);   // 2023-02-28
+  assertEq(ev.get("E2")?.value, 44957);
+  assertEq(ev.get("E3")?.value, 1);
+  assertEq(ev.get("E4")?.value, 45295);   // Mon 2024-01-01 + 3 workdays = Thu
+  assertEq(ev.get("E5")?.value, 5);
+  assertEq(ev.get("L1")?.value, 5);
+  assertEq(ev.get("L2")?.value, 1);
+  assertEq(ev.get("L3")?.value, 5);
+  assertEq(ev.get("L4")?.value, 5);
+  assertEq(ev.get("P1")?.value, 8);
+});
+
+t("S11.5 iterative calc converges circular refs", () => {
+  // A1 = B1/2, B1 = A1 → fixed point A1=0; use converging system:
+  // A1 = B1/2 + 8, B1 = A1/2 → A1 → 8+..., converges to ~10.67
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "B1/2 + 8" }, B1: { f: "A1/2" },
+    C1: { f: "D1+1" }, D1: { f: "C1+1" },  // divergent — bounded by maxIter
+  } }], calc: { iterative: true, maxIterations: 100, maxChange: 0.0001 } };
+  const ev = evaluateSheetIn(wb, "S");
+  const a = ev.get("A1")?.value as number;
+  assert(Math.abs(a - 10.6667) < 0.01, `A1 converged near 10.67 (got ${a})`);
+  assert(typeof ev.get("C1")?.value === "number", "divergent cycle returns a number, not error");
+  // without iterative, the same cells error as before
+  const wb2: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "B1/2 + 8" }, B1: { f: "A1/2" },
+  } }] };
+  assert(["#CYCLE!","#VALUE!"].includes(evaluateSheetIn(wb2, "S").get("A1")?.error ?? ""), "cycle errors without iterative");
+});
+
+t("S11.6 error-check rules + formula explanation", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 },
+    B1: { f: "A1*2" }, B2: { f: "A2*3" }, B3: { f: "A3*2" },  // B2 inconsistent
+    C1: { v: "42" },                                        // number as text
+    D1: { f: "1/0" },                                       // error value
+  } }] };
+  const ev = evaluateSheetIn(wb, "S");
+  const findings = errorCheck(wb.sheets[0], ev, false);
+  const byRule = (r: string) => findings.filter((f) => f.rule === r).map((f) => f.ref);
+  assert(byRule("error").includes("D1"), "error cell flagged");
+  assert(byRule("inconsistent").includes("B2"), "inconsistent formula flagged");
+  assert(byRule("numAsText").includes("C1"), "number-as-text flagged");
+  const ex = explainFormula(wb, "S", "SUM(A1:A3, 10)");
+  assertEq(ex.final.value, 16);
+  assertEq(ex.parts.length, 2);
+  assertEq(ex.parts[0].result.value, [[1],[2],[3]]);
+  assertEq(toR1C1("A1+B$2", "B3"), "R[-2]C[-1]+R2C[0]");
+});
 
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
