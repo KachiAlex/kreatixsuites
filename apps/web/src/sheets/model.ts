@@ -62,7 +62,8 @@ export interface CondFormat {
 
 export interface ChartSpec {
   id: string;
-  type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut";
+  type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut"
+    | "waterfall" | "funnel" | "histogram" | "treemap" | "radar" | "stock" | "boxwhisker";
   range: string;
   /** S13.4 — index into sheet.pivots; the chart's data range follows the
    *  pivot's materialized span (header + data cells, totals excluded) */
@@ -72,6 +73,15 @@ export interface ChartSpec {
   yTitle?: string;
   legend?: "bottom" | "right" | "none";
   dataLabels?: boolean;
+  /** S14.2 — overlays */
+  trendline?: "linear" | "exponential" | null;
+  /** per-point error bars: "stddev" (series SD) or a fixed ± amount */
+  errorBars?: "stddev" | number;
+  /** series index rendered against a secondary (right) axis */
+  axis2?: number;
+  /** y-axis bounds override */
+  yMin?: number;
+  yMax?: number;
   x: number;
   y: number;
 }

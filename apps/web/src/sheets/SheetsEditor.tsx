@@ -1670,9 +1670,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             <h3>Chart from {rangeToA1(selection)}</h3>
             <p style={{ fontSize: 12, color: "#8B8480" }}>First column = labels (or X for scatter), other columns = series. Combo = bars + last series as line.</p>
             <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-              {(["bar", "line", "area", "pie", "doughnut", "scatter", "stacked", "combo"] as const).map((t) => (
-                <button key={t} className="btn-ghost btn-sm" style={{ textTransform: "capitalize" }}
-                  onClick={() => addChart(t)}>{t}</button>
+              {CHART_TYPES.map(([t, l]) => (
+                <button key={t} className="btn-ghost btn-sm"
+                  onClick={() => addChart(t)}>{l}</button>
               ))}
             </div>
           </div>
@@ -2472,6 +2472,8 @@ function TableDialog({ range, onApply, onClose }: {
 const CHART_TYPES: [ChartSpec["type"], string][] = [
   ["bar", "Bar"], ["line", "Line"], ["area", "Area"], ["pie", "Pie"],
   ["doughnut", "Doughnut"], ["scatter", "Scatter"], ["stacked", "Stacked"], ["combo", "Combo"],
+  ["waterfall", "Waterfall"], ["funnel", "Funnel"], ["histogram", "Histogram"],
+  ["treemap", "Treemap"], ["radar", "Radar"], ["stock", "Stock (OHLC)"], ["boxwhisker", "Box & Whisker"],
 ];
 
 /** Chart settings dialog (S7.2): type, titles, legend, data labels, range. */
@@ -2484,6 +2486,8 @@ function ChartEditDialog({ spec, onSave, onClose }: {
   const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1, minWidth: 0 };
   const sel: CSSProperties = { ...inp, flex: "none" };
   const row: CSSProperties = { display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 12 };
+  // series count for the secondary-axis picker (columns minus the label col)
+  const seriesN = (() => { const r = parseRange(s.range); return r ? Math.max(0, r.c2 - r.c1) : 0; })();
   return (
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
@@ -2510,6 +2514,34 @@ function ChartEditDialog({ spec, onSave, onClose }: {
             <input type="checkbox" checked={!!s.dataLabels} onChange={(e) => setS({ ...s, dataLabels: e.target.checked })} />
             Data labels
           </label>
+        </div>
+        <div style={row}>
+          <span style={{ width: 70 }}>Trendline</span>
+          <select style={sel} value={s.trendline ?? ""}
+            onChange={(e) => setS({ ...s, trendline: (e.target.value || null) as ChartSpec["trendline"] })}>
+            <option value="">None</option><option value="linear">Linear</option><option value="exponential">Exponential</option>
+          </select>
+          <span>Error ±</span>
+          <input style={{ ...inp, width: 70 }} value={s.errorBars === "stddev" ? "stddev" : s.errorBars ?? ""}
+            placeholder="off" onChange={(e) => {
+              const v = e.target.value.trim();
+              setS({ ...s, errorBars: v === "stddev" ? "stddev" : v === "" ? undefined : Number(v) || undefined });
+            }} />
+        </div>
+        <div style={row}>
+          <span style={{ width: 70 }}>Axis min/max</span>
+          <input style={{ ...inp, width: 60 }} placeholder="auto" value={s.yMin ?? ""}
+            onChange={(e) => setS({ ...s, yMin: e.target.value === "" ? undefined : Number(e.target.value) })} />
+          <input style={{ ...inp, width: 60 }} placeholder="auto" value={s.yMax ?? ""}
+            onChange={(e) => setS({ ...s, yMax: e.target.value === "" ? undefined : Number(e.target.value) })} />
+          <span>2nd axis</span>
+          <select style={sel} value={s.axis2 ?? ""}
+            onChange={(e) => setS({ ...s, axis2: e.target.value === "" ? undefined : Number(e.target.value) })}>
+            <option value="">off</option>
+            {Array.from({ length: seriesN }, (_, i) => (
+              <option key={i} value={i}>series {i + 1}</option>
+            ))}
+          </select>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>

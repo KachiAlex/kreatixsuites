@@ -5,6 +5,7 @@ import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRef
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
 import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
+import { pivotChartRange } from "./src/sheets/Chart";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -836,6 +837,29 @@ t("S13: drill-down respects report filters", () => {
   assertEq(drill.A2.v, "S"); assertEq(drill.B2.v, "A");
   assertEq(drill.A3.v, "S"); assertEq(drill.B3.v, "A");
   assert(!drill.A4, "Product=B rows filtered out");
+});
+
+// ============ S14: chart catalog + depth ============
+
+t("S14: pivotChartRange excludes total row/col", () => {
+  const wb = pivotWb();
+  const spec = { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" as const }] };
+  const built = buildPivotCells(wb, wb.sheets[0], spec)!;
+  spec.span = { r: built.rows, c: built.cols }; // 4 rows (hdr, N, S, GT) × 3 cols
+  wb.sheets[0].pivots = [spec];
+  assertEq(pivotChartRange(wb.sheets[0], 0), "F1:G3"); // F=labels, G=data; GT row/col excluded
+  assertEq(pivotChartRange(wb.sheets[0], 5), null);
+});
+
+t("S14: new chart types + overlay fields typecheck on spec", () => {
+  const spec: import("./src/sheets/model").ChartSpec = {
+    id: "c1", type: "waterfall", range: "A1:B5",
+    trendline: "linear", errorBars: "stddev", axis2: 1, yMin: 0, yMax: 100, x: 0, y: 0,
+  };
+  assertEq(spec.trendline, "linear");
+  assertEq(spec.errorBars, "stddev");
+  const spec2: import("./src/sheets/model").ChartSpec = { id: "c2", type: "boxwhisker", range: "A1:E5", x: 0, y: 0 };
+  assertEq(spec2.type, "boxwhisker");
 });
 
 // ============ results ============
