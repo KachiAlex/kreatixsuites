@@ -82,6 +82,36 @@ export interface SheetData {
   validations?: Validation[];
   /** non-threaded cell notes (S3.5): ref → text */
   notes?: Record<string, string>;
+  /** AutoFilter: dropdown criteria per column in `range` (header row = range.r1) */
+  filter?: {
+    range: string;
+    /** col index → criterion */
+    cols: Record<number, FilterCrit>;
+  };
+  /** rows currently hidden by the active filter (recomputed on apply/data change) */
+  filteredRows?: number[];
+  /** Table objects (S5.4) */
+  tables?: TableSpec[];
+}
+
+export interface FilterCrit {
+  type: "values" | "cond";
+  /** values mode: set of shown display values */
+  values?: string[];
+  /** cond mode: comparison ops */
+  op1?: string;
+  v1?: string;
+  op2?: string;
+  v2?: string;
+  and?: boolean;
+}
+
+export interface TableSpec {
+  name: string;
+  range: string;
+  style?: "plain" | "banded" | "accent" | "dark";
+  /** render a totals row below the range; per-col aggregation */
+  totals?: Record<number, "sum" | "avg" | "count" | "min" | "max" | "none">;
 }
 
 export interface Workbook {
@@ -458,6 +488,38 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
       return nr ? { ...v, range: nr } : null;
     })
     .filter((v): v is Validation => !!v);
+
+  // autofilter: range shifts; col-keyed criteria shift on col edits; drop if range breaks
+  if (sheet.filter) {
+    const nr = shiftRangeA1(sheet.filter.range, map);
+    if (!nr) sheet.filter = undefined;
+    else {
+      sheet.filter = { ...sheet.filter, range: nr, cols: { ...sheet.filter.cols } };
+      if (axis === "col") {
+        const cols: Record<number, FilterCrit> = {};
+        for (const [k, v] of Object.entries(sheet.filter.cols)) {
+          const p = map({ col: Number(k), row: 0 });
+          if (p) cols[p.col] = v;
+        }
+        sheet.filter.cols = cols;
+      }
+    }
+  }
+  sheet.filteredRows = axis === "row" ? remapList(sheet.filteredRows, "row") : sheet.filteredRows;
+
+  // table ranges shift too
+  for (const t of sheet.tables ?? []) {
+    const nr = shiftRangeA1(t.range, map);
+    if (nr) t.range = nr;
+    if (axis === "col" && t.totals) {
+      const totals: NonNullable<TableSpec["totals"]> = {};
+      for (const [k, v] of Object.entries(t.totals)) {
+        const p = map({ col: Number(k), row: 0 });
+        if (p) totals[p.col] = v;
+      }
+      t.totals = totals;
+    }
+  }
 }
 
 // ---------- fill series detection (S3.3) ----------

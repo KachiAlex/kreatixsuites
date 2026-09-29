@@ -40,11 +40,13 @@ interface GridProps {
   noted?: Set<string>;
   /** right-click a body cell → context menu (notes etc.) */
   onCellMenu?: (ref: string, x: number, y: number) => void;
+  /** click a filter ▾ on the header row (S5.1) */
+  onFilterClick?: (col: number, x: number, y: number) => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -69,8 +71,32 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   }, [sheet.cells, sheet.merges]);
 
   // geometry — variable col widths + row heights, live resize preview,
-  // hidden = 0 size
-  const hiddenR = useMemo(() => new Set(sheet.hiddenRows ?? []), [sheet.hiddenRows]);
+  // hidden = 0 size (manual hidden + autofilter-hidden rows)
+  const hiddenR = useMemo(() => new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? [])]), [sheet.hiddenRows, sheet.filteredRows]);
+
+  // autofilter chrome — ▾ on header-row cells, active columns highlighted
+  const fRange = useMemo(() => (sheet.filter ? parseRange(sheet.filter.range) : null), [sheet.filter]);
+  const fActive = useMemo(() => new Set(Object.keys(sheet.filter?.cols ?? {}).map(Number)), [sheet.filter]);
+
+  // table banding + totals rows (S5.4)
+  const tableInfo = useMemo(() => {
+    const bands = new Map<string, { bg: string; header: boolean; light: boolean }>();
+    const totals = new Map<number, { spec: NonNullable<SheetData["tables"]>[number]; range: { c1: number; r1: number; c2: number; r2: number } }>();
+    for (const t of sheet.tables ?? []) {
+      const r = parseRange(t.range);
+      if (!r) continue;
+      for (let row = r.r1; row <= r.r2; row++) for (let c = r.c1; c <= r.c2; c++) {
+        const i = row - r.r1;
+        let bg: string | undefined;
+        if (t.style === "banded") bg = i === 0 ? "#F3E2D3" : i % 2 ? "#FBF4EE" : undefined;
+        else if (t.style === "accent") bg = i === 0 ? "#F2782E" : i % 2 ? "#FBE3D5" : "#FDF3EC";
+        else if (t.style === "dark") bg = i === 0 ? "#26221F" : i % 2 ? "#F4F1EE" : "#FFFFFF";
+        if (bg) bands.set(toA1(c, row), { bg, header: i === 0, light: i === 0 && (t.style === "accent" || t.style === "dark") });
+      }
+      if (t.totals) totals.set(r.r2 + 1, { spec: t, range: r });
+    }
+    return { bands, totals };
+  }, [sheet.tables]);
   const hiddenC = useMemo(() => new Set(sheet.hiddenCols ?? []), [sheet.hiddenCols]);
   const colW = useCallback((c: number) =>
     resizePrev?.axis === "col" && resizePrev.i === c ? resizePrev.size
@@ -374,8 +400,33 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const deco = [s.u ? "underline" : "", s.st ? "line-through" : ""].filter(Boolean).join(" ");
     const borderCss = (e?: { w?: number; style?: string; color?: string }) =>
       e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "#26221F"}` : undefined;
-    const content = editing?.ref.col === c && editing.ref.row === r ? null
+    // table banding (falls back under direct bg/cf) + totals row (S5.4)
+    const band = tableInfo.bands.get(ref);
+    const tot = tableInfo.totals.get(r);
+    let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
+    if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
+      if (c === tot.range.c1) content = "Totals";
+      else {
+        const fn = tot.spec.totals?.[c] ?? "none";
+        if (fn !== "none") {
+          const nums: number[] = [];
+          let cnt = 0;
+          for (let rr = tot.range.r1 + 1; rr <= tot.range.r2; rr++) {
+            const v = evals.get(toA1(c, rr))?.value;
+            if (v !== null && v !== undefined && v !== "") cnt++;
+            const nn = typeof v === "number" ? v : Number(v);
+            if (!isNaN(nn)) nums.push(nn);
+          }
+          content = fn === "count" ? cnt
+            : fn === "sum" ? nums.reduce((a, b) => a + b, 0)
+            : fn === "avg" ? (nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : "")
+            : fn === "min" ? (nums.length ? Math.min(...nums) : "")
+            : fn === "max" ? (nums.length ? Math.max(...nums) : "") : "";
+          if (typeof content === "number") content = formatValue(content, s.fmt);
+        }
+      }
+    }
     return (
       <td key={c} data-c={c} data-r={r}
         colSpan={head ? head.c2 - head.c1 + 1 : 1}
@@ -383,11 +434,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""} ${s.wrap ? "wrap" : ""}`}
         style={{
           ...sticky, zIndex: z,
-          fontWeight: s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
+          fontWeight: band?.header || tot ? 600 : s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
           fontFamily: s.font, fontSize: s.size ? `${s.size}px` : undefined,
           textDecoration: deco || "none",
-          color: s.color ?? "#26221F",
-          background: cfBg.get(ref) ?? s.bg ?? "#fff",
+          color: s.color ?? (band?.light ? "#fff" : "#26221F"),
+          background: cfBg.get(ref) ?? s.bg ?? band?.bg ?? (tot ? "#F4F1EE" : "#fff"),
           textAlign: s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
           verticalAlign: s.valign ?? (head ? "middle" : undefined),
           paddingLeft: s.indent ? 5 + s.indent * 8 : undefined,
@@ -406,6 +457,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         ) : content}
         {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
         {noted?.has(ref) && <span className="cell-flag note" />}
+        {fRange && r === fRange.r1 && c >= fRange.c1 && c <= fRange.c2 && canEdit && (
+          <span className={`fbtn ${fActive.has(c) ? "on" : ""}`}
+            onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onFilterClick?.(c, e.clientX, e.clientY); }}>▾</span>
+        )}
       </td>
     );
   };

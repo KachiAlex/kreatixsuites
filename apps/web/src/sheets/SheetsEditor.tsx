@@ -11,10 +11,10 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation } from "./model";
+import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation, type FilterCrit, type TableSpec } from "./model";
 import { evaluateSheetIn, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -58,6 +58,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [valDlg, setValDlg] = useState(false);
   const [cellMenu, setCellMenu] = useState<{ ref: string; x: number; y: number } | null>(null);
   const [noteEdit, setNoteEdit] = useState<{ ref: string; text: string } | null>(null);
+  const [filterMenu, setFilterMenu] = useState<{ col: number; x: number; y: number } | null>(null);
+  const [sortDlg, setSortDlg] = useState(false);
+  const [dedupeDlg, setDedupeDlg] = useState(false);
+  const [t2cDlg, setT2cDlg] = useState(false);
+  const [tableDlg, setTableDlg] = useState(false);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const [borderMenu, setBorderMenu] = useState(false);
@@ -474,32 +479,104 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     });
   }, [mutateSheet, wb]);
 
-  // sort selected rows by anchor column; formula refs pointing into the
-  // sorted block are remapped to the rows' new positions (Excel semantics)
-  const sortSel = useCallback((asc: boolean) => {
+  // sort selected rows by one or more key columns; formula refs pointing
+  // into the sorted block are remapped to the rows' new positions.
+  // `range` defaults to selection; the filter menu sorts data rows only.
+  const sortBy = useCallback((keys: { col: number; asc: boolean }[], range?: Range) => {
+    const rng = range ?? selection;
     mutateSheet((s) => {
       const ev = evaluateSheetIn(wb, s.name);
       const rows: number[] = [];
-      for (let r = selection.r1; r <= selection.r2; r++) rows.push(r);
-      const val = (r: number) => {
-        const ref = toA1(selection.c1, r);
+      for (let r = rng.r1; r <= rng.r2; r++) rows.push(r);
+      const val = (r: number, c: number) => {
+        const ref = toA1(c, r);
         const cell = s.cells[ref];
         const res = ev.get(ref);
         return cell?.f ? res?.value : cell?.v;
       };
       rows.sort((a, b) => {
-        const va = val(a), vb = val(b);
-        const na = Number(va), nb = Number(vb);
-        const cmp = !isNaN(na) && !isNaN(nb) ? na - nb : String(va ?? "").localeCompare(String(vb ?? ""));
-        return asc ? cmp : -cmp;
+        for (const k of keys) {
+          const va = val(a, k.col), vb = val(b, k.col);
+          const na = Number(va), nb = Number(vb);
+          const cmp = !isNaN(na) && !isNaN(nb) ? na - nb : String(va ?? "").localeCompare(String(vb ?? ""));
+          if (cmp) return k.asc ? cmp : -cmp;
+        }
+        return a - b; // stable
       });
       const rowMap = new Map<number, number>();
-      rows.forEach((srcRow, i) => rowMap.set(srcRow, selection.r1 + i));
+      rows.forEach((srcRow, i) => rowMap.set(srcRow, rng.r1 + i));
       const next: Record<string, (typeof s.cells)[string] | undefined> = {};
       rows.forEach((srcRow, i) => {
-        for (let c = selection.c1; c <= selection.c2; c++) {
-          next[toA1(c, selection.r1 + i)] = s.cells[toA1(c, srcRow)];
+        for (let c = rng.c1; c <= rng.c2; c++) {
+          next[toA1(c, rng.r1 + i)] = s.cells[toA1(c, srcRow)];
         }
+      });
+      for (let r = rng.r1; r <= rng.r2; r++)
+        for (let c = rng.c1; c <= rng.c2; c++) {
+          const ref = toA1(c, r);
+          if (next[ref]) s.cells[ref] = next[ref]!; else delete s.cells[ref];
+        }
+      for (const cell of Object.values(s.cells)) {
+        if (cell.f) cell.f = translateFormula(cell.f, (r) =>
+          r.col >= rng.c1 && r.col <= rng.c2 && rowMap.has(r.row)
+            ? { col: r.col, row: rowMap.get(r.row)! }
+            : { col: r.col, row: r.row });
+      }
+    });
+  }, [mutateSheet, selection, wb]);
+
+  const sortSel = useCallback((asc: boolean) => sortBy([{ col: selection.c1, asc }]), [sortBy, selection.c1]);
+
+  // ---- S5: filter / dedupe / text-to-columns / tables ----
+  const dispSheet = useMemo<SheetData>(() =>
+    sheet.filter ? { ...sheet, filteredRows: computeFilteredRows(sheet, wb) } : sheet,
+  [sheet, wb]);
+
+  const toggleFilter = useCallback(() => {
+    if (sheet.filter) { mutateSheet((s) => { s.filter = undefined; }); return; }
+    // single-cell selection → auto-range from used range rows, selection cols
+    let rng = { ...selection };
+    if (rng.r1 === rng.r2 && rng.c1 === rng.c2) {
+      const m = /^([A-Z]+\d+):([A-Z]+\d+)$/.exec(usedRangeA1(sheet.cells));
+      if (m) { const a = parseA1(m[1])!, b = parseA1(m[2])!; rng = { c1: a.col, r1: a.row, c2: b.col, r2: b.row }; }
+    }
+    mutateSheet((s) => { s.filter = { range: rangeToA1(rng), cols: {} }; });
+  }, [mutateSheet, sheet, selection]);
+
+  const setFilterCol = useCallback((col: number, crit: FilterCrit | null) => {
+    mutateSheet((s) => {
+      if (!s.filter) return;
+      const cols = { ...s.filter.cols };
+      if (crit) cols[col] = crit; else delete cols[col];
+      s.filter = { ...s.filter, cols };
+    });
+  }, [mutateSheet]);
+
+  const sortFilterCol = useCallback((col: number, asc: boolean) => {
+    const r = sheet.filter ? parseRange(sheet.filter.range) : null;
+    if (!r) return;
+    sortBy([{ col, asc }], { ...r, r1: r.r1 + 1 }); // skip header row
+  }, [sheet.filter, sortBy]);
+
+  const dedupe = useCallback((cols: number[]) => {
+    mutateSheet((s) => {
+      const ev = evaluateSheetIn(wb, s.name);
+      const seen = new Set<string>();
+      const keep: number[] = [];
+      for (let r = selection.r1; r <= selection.r2; r++) {
+        const key = cols.map((c) => {
+          const ref = toA1(c, r);
+          const cell = s.cells[ref];
+          return String(cell?.f ? ev.get(ref)?.value : cell?.v ?? "");
+        }).join("\x01");
+        if (!seen.has(key)) { seen.add(key); keep.push(r); }
+      }
+      const rowMap = new Map<number, number>();
+      keep.forEach((srcRow, i) => rowMap.set(srcRow, selection.r1 + i));
+      const next: Record<string, (typeof s.cells)[string] | undefined> = {};
+      keep.forEach((srcRow, i) => {
+        for (let c = selection.c1; c <= selection.c2; c++)
+          next[toA1(c, selection.r1 + i)] = s.cells[toA1(c, srcRow)];
       });
       for (let r = selection.r1; r <= selection.r2; r++)
         for (let c = selection.c1; c <= selection.c2; c++) {
@@ -512,8 +589,31 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             ? { col: r.col, row: rowMap.get(r.row)! }
             : { col: r.col, row: r.row });
       }
+      toast(`${selection.r2 - selection.r1 + 1 - keep.length} duplicate row(s) removed`);
     });
-  }, [mutateSheet, selection, wb]);
+  }, [mutateSheet, wb, selection]);
+
+  const textToCols = useCallback((delim: string) => {
+    mutateSheet((s) => {
+      for (let r = selection.r1; r <= selection.r2; r++)
+        for (let c = selection.c1; c <= selection.c2; c++) {
+          const cell = s.cells[toA1(c, r)];
+          if (!cell || cell.f) continue;
+          const parts = String(cell.v ?? "").split(delim);
+          parts.forEach((p, i) => { s.cells[toA1(c + i, r)] = { ...cell, ...parseInput(p.trim()) }; });
+        }
+    });
+  }, [mutateSheet, selection]);
+
+  const createTable = useCallback((name: string, style: TableSpec["style"], totals: NonNullable<TableSpec["totals"]>) => {
+    mutateSheet((s) => {
+      s.tables = [...(s.tables ?? []), { name: name || `Table${(s.tables?.length ?? 0) + 1}`, range: rangeToA1(selection), style, totals }];
+    });
+  }, [mutateSheet, selection]);
+
+  const removeTable = useCallback((name: string) => {
+    mutateSheet((s) => { s.tables = s.tables?.filter((t) => t.name !== name); });
+  }, [mutateSheet]);
 
   // insert / delete rows & cols (formulas incl. cross-sheet refs, merges,
   // cf, charts all shift)
@@ -890,6 +990,12 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
           <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
           <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
+          <button className="rb" title="Sort — multiple columns/levels" onClick={() => setSortDlg(true)}>⇅…</button>
+          <button className={`rb ${sheet.filter ? "on" : ""}`} title="AutoFilter — dropdown filters on selection/range"
+            onClick={toggleFilter}>⧩</button>
+          <button className="rb" title="Remove duplicates in selection" onClick={() => setDedupeDlg(true)}>⊟</button>
+          <button className="rb" title="Text to Columns — split selection by delimiter" onClick={() => setT2cDlg(true)}>⇶</button>
+          <button className="rb" title="Format as Table — banded rows + totals" onClick={() => setTableDlg(true)}>▤</button>
           <button className="rb" title="Data validation — lists, ranges, rules" onClick={() => setValDlg(true)}>✓⃞</button>
           <button className="rb" title="Paste Special — values/formats/formulas/transpose/operations (Ctrl+Alt+V)"
             onClick={() => getCopyBuffer() ? setPasteSpec(true) : toast("Nothing copied yet")}>⧉</button>
@@ -936,13 +1042,14 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       </div>
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
-        <Grid sheet={sheet} evals={evals} canEdit={canEdit} wb={wb}
+        <Grid sheet={dispSheet} evals={evals} canEdit={canEdit} wb={wb}
           audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
           selections={selections} selection={selection} setSelection={selWithPaint}
           addSelection={addSelection} extendSelection={extWithPaint}
           invalid={invalidCells}
           noted={notedCells}
           onCellMenu={(ref, x, y) => setCellMenu({ ref, x, y })}
+          onFilterClick={(col, x, y) => setFilterMenu({ col, x, y })}
           listDrop={canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined}
           onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle}
           onGeom={onGeom} onHeader={onHeader} />
@@ -1105,6 +1212,36 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <NameManager wb={wb} sheetName={sheet.name} selection={rangeToA1(selection)}
           onMutate={mutate} onClose={() => setNameMgr(false)} toast={toast} />
       )}
+      {filterMenu && sheet.filter && (
+        <div className="ctx-back" onMouseDown={() => setFilterMenu(null)} onContextMenu={(e) => e.preventDefault()}>
+          <FilterMenu wb={wb} sheet={sheet} col={filterMenu.col} x={filterMenu.x} y={filterMenu.y}
+            onSet={setFilterCol} onSort={sortFilterCol} onClose={() => setFilterMenu(null)} />
+        </div>
+      )}
+      {sortDlg && (
+        <SortDialog range={selection} onSort={(keys) => { sortBy(keys); setSortDlg(false); }}
+          onClose={() => setSortDlg(false)} />
+      )}
+      {dedupeDlg && (
+        <DedupeDialog range={selection} onApply={(cols) => { dedupe(cols); setDedupeDlg(false); }}
+          onClose={() => setDedupeDlg(false)} />
+      )}
+      {t2cDlg && (
+        <T2CDialog onApply={(d) => { textToCols(d); setT2cDlg(false); }} onClose={() => setT2cDlg(false)} />
+      )}
+      {tableDlg && (
+        <TableDialog range={selection} onApply={createTable} onClose={() => setTableDlg(false)} />
+      )}
+      {sheet.tables?.length ? (
+        <div className="sheet-tables-bar">
+          {sheet.tables.map((t) => (
+            <span key={t.name} className="sheet-table-chip" title={t.range}>
+              {t.name}
+              {canEdit && <button className="chip-x" title="Convert back to range" onClick={() => removeTable(t.name)}>×</button>}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {chartOpen && (
         <div className="dlg-back" onClick={() => setChartOpen(false)}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
@@ -1494,6 +1631,269 @@ function NameManager({ wb, sheetName, selection, onMutate, onClose, toast }: {
         {err && <p style={{ fontSize: 12, color: "#D84B57", marginTop: 4 }}>{err}</p>}
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- S5 data tools ----------
+
+const COND_OPS: [string, string][] = [
+  ["=", "equals"], ["!=", "does not equal"], [">", "greater than"], [">=", "≥"],
+  ["<", "less than"], ["<=", "≤"], ["contains", "contains"], ["notcontains", "doesn't contain"],
+  ["starts", "begins with"], ["ends", "ends with"], ["blank", "is blank"], ["notblank", "is not blank"],
+];
+
+/** AutoFilter dropdown menu for one column (S5.1). */
+function FilterMenu({ wb, sheet, col, x, y, onSet, onSort, onClose }: {
+  wb: Workbook; sheet: SheetData; col: number;
+  x: number; y: number;
+  onSet: (col: number, crit: FilterCrit | null) => void;
+  onSort: (col: number, asc: boolean) => void;
+  onClose: () => void;
+}) {
+  const range = parseRange(sheet.filter!.range)!;
+  const crit = sheet.filter!.cols[col];
+  const all = useMemo(() => filterValues(sheet, wb, range, col), [sheet, wb, range, col]);
+  const [tab, setTab] = useState<"values" | "cond">(crit?.type === "cond" ? "cond" : "values");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState<Set<string>>(() =>
+    new Set(crit?.type === "values" && crit.values ? crit.values : all));
+  const [op1, setOp1] = useState(crit?.op1 ?? "=");
+  const [v1, setV1] = useState(crit?.v1 ?? "");
+  const [op2, setOp2] = useState(crit?.op2 ?? "");
+  const [v2, setV2] = useState(crit?.v2 ?? "");
+  const [and, setAnd] = useState(crit?.and ?? true);
+
+  const shown = q ? all.filter((v) => v.toLowerCase().includes(q.toLowerCase())) : all;
+  const applyValues = () => { onSet(col, { type: "values", values: [...sel] }); onClose(); };
+  const applyCond = () => {
+    onSet(col, { type: "cond", op1, v1, op2: op2 || undefined, v2, and });
+    onClose();
+  };
+
+  return (
+    <div className="hmenu filter-menu" style={{ left: Math.min(x, window.innerWidth - 280), top: y, position: "fixed" }}
+      onMouseDown={(e) => e.stopPropagation()}>
+      <div className="hmenu-item" onClick={() => { onSort(col, true); onClose(); }}>Sort A → Z</div>
+      <div className="hmenu-item" onClick={() => { onSort(col, false); onClose(); }}>Sort Z → A</div>
+      {crit && <div className="hmenu-item" onClick={() => { onSet(col, null); onClose(); }}>Clear filter from {colLabel(col)}</div>}
+      <div className="hmenu-sep" />
+      <div className="ftabs">
+        <button className={tab === "values" ? "on" : ""} onClick={() => setTab("values")}>Values</button>
+        <button className={tab === "cond" ? "on" : ""} onClick={() => setTab("cond")}>Conditions</button>
+      </div>
+      {tab === "values" ? (
+        <>
+          <input className="fsearch" placeholder="Search…" value={q} autoFocus
+            onChange={(e) => setQ(e.target.value)} />
+          <label className="frow">
+            <input type="checkbox" checked={sel.size === all.length}
+              onChange={(e) => setSel(e.target.checked ? new Set(all) : new Set())} />
+            <i>(Select all)</i>
+          </label>
+          <div className="flist">
+            {shown.map((v) => (
+              <label key={v} className="frow">
+                <input type="checkbox" checked={sel.has(v)}
+                  onChange={(e) => {
+                    const n = new Set(sel);
+                    e.target.checked ? n.add(v) : n.delete(v);
+                    setSel(n);
+                  }} />
+                {v === "" ? <i>(Blanks)</i> : v}
+              </label>
+            ))}
+            {!shown.length && <div className="frow"><i>No matches</i></div>}
+          </div>
+          <div className="factions">
+            <button className="btn-primary btn-sm" onClick={applyValues}>OK</button>
+            <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="fcond">
+            <select value={op1} onChange={(e) => setOp1(e.target.value)}>
+              {COND_OPS.map(([o, l]) => <option key={o} value={o}>{l}</option>)}
+            </select>
+            <input value={v1} onChange={(e) => setV1(e.target.value)} placeholder="value" />
+            <select value={op2} onChange={(e) => setOp2(e.target.value)}>
+              <option value="">— and/or —</option>
+              {COND_OPS.map(([o, l]) => <option key={o} value={o}>{l}</option>)}
+            </select>
+            {op2 && <input value={v2} onChange={(e) => setV2(e.target.value)} placeholder="value" />}
+            {op2 && (
+              <div className="frow" style={{ gap: 12 }}>
+                <label><input type="radio" checked={and} onChange={() => setAnd(true)} /> And</label>
+                <label><input type="radio" checked={!and} onChange={() => setAnd(false)} /> Or</label>
+              </div>
+            )}
+          </div>
+          <div className="factions">
+            <button className="btn-primary btn-sm" onClick={applyCond}>OK</button>
+            <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Multi-key sort dialog (S5.2). */
+function SortDialog({ range, onSort, onClose }: {
+  range: Range;
+  onSort: (keys: { col: number; asc: boolean }[]) => void;
+  onClose: () => void;
+}) {
+  const [keys, setKeys] = useState<{ col: number; asc: boolean }[]>([{ col: range.c1, asc: true }]);
+  const colSel = (i: number) => (
+    <select value={keys[i].col}
+      onChange={(e) => setKeys(keys.map((k, j) => j === i ? { ...k, col: Number(e.target.value) } : k))}>
+      {Array.from({ length: range.c2 - range.c1 + 1 }, (_, k) => range.c1 + k)
+        .map((c) => <option key={c} value={c}>{colLabel(c)}</option>)}
+    </select>
+  );
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Sort {rangeToA1(range)}</h3>
+        {keys.map((k, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+            <span style={{ fontSize: 12, width: 60 }}>{i === 0 ? "Sort by" : "Then by"}</span>
+            {colSel(i)}
+            <select value={k.asc ? "a" : "d"}
+              onChange={(e) => setKeys(keys.map((kk, j) => j === i ? { ...kk, asc: e.target.value === "a" } : kk))}>
+              <option value="a">A → Z</option>
+              <option value="d">Z → A</option>
+            </select>
+            {keys.length > 1 && (
+              <button className="btn-ghost btn-sm" onClick={() => setKeys(keys.filter((_, j) => j !== i))}>✕</button>
+            )}
+          </div>
+        ))}
+        <button className="btn-ghost btn-sm" style={{ marginTop: 10 }}
+          onClick={() => setKeys([...keys, { col: range.c1, asc: true }])}>＋ Add level</button>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => onSort(keys)}>Sort</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Remove duplicates — pick key columns (S5.3a). */
+function DedupeDialog({ range, onApply, onClose }: {
+  range: Range;
+  onApply: (cols: number[]) => void;
+  onClose: () => void;
+}) {
+  const allCols = Array.from({ length: range.c2 - range.c1 + 1 }, (_, i) => range.c1 + i);
+  const [cols, setCols] = useState<Set<number>>(new Set(allCols));
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Remove duplicates — {rangeToA1(range)}</h3>
+        <p style={{ fontSize: 12, color: "#8B8480" }}>Rows are compared on the checked columns; later duplicates are removed.</p>
+        <div style={{ marginTop: 8 }}>
+          {allCols.map((c) => (
+            <label key={c} className="frow">
+              <input type="checkbox" checked={cols.has(c)}
+                onChange={(e) => { const n = new Set(cols); e.target.checked ? n.add(c) : n.delete(c); setCols(n); }} />
+              Column {colLabel(c)}
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!cols.size}
+            onClick={() => onApply([...cols].sort((a, b) => a - b))}>Remove</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Text to Columns (S5.3b). */
+function T2CDialog({ onApply, onClose }: { onApply: (delim: string) => void; onClose: () => void }) {
+  const [d, setD] = useState(",");
+  const [custom, setCustom] = useState("");
+  const opts: [string, string][] = [[",", "Comma"], ["\t", "Tab"], [";", "Semicolon"], [" ", "Space"], ["|", "Pipe"]];
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Text to Columns</h3>
+        <p style={{ fontSize: 12, color: "#8B8480" }}>Split each selected cell into columns at the delimiter.</p>
+        <div style={{ marginTop: 8 }}>
+          {opts.map(([v, l]) => (
+            <label key={l} className="frow">
+              <input type="radio" checked={d === v} onChange={() => setD(v)} /> {l}
+            </label>
+          ))}
+          <label className="frow">
+            <input type="radio" checked={d === ""} onChange={() => setD("")} /> Other:
+            <input style={{ width: 50, height: 24, border: "1px solid var(--line)", borderRadius: 6, padding: "0 6px" }}
+              value={custom} onChange={(e) => { setCustom(e.target.value); setD(""); }} />
+          </label>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm"
+            onClick={() => onApply(d === "" ? (custom || ",") : d)}>Split</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Format-as-Table dialog (S5.4). */
+function TableDialog({ range, onApply, onClose }: {
+  range: Range;
+  onApply: (name: string, style: TableSpec["style"], totals: NonNullable<TableSpec["totals"]>) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [style, setStyle] = useState<NonNullable<TableSpec["style"]>>("banded");
+  const [totals, setTotals] = useState<Record<number, string>>({});
+  const cols = Array.from({ length: range.c2 - range.c1 + 1 }, (_, i) => range.c1 + i);
+  const AGGS: [string, string][] = [["none", "—"], ["sum", "Sum"], ["avg", "Average"], ["count", "Count"], ["min", "Min"], ["max", "Max"]];
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Create table — {rangeToA1(range)}</h3>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <span style={{ fontSize: 12 }}>Name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Table1"
+            style={{ height: 30, flex: 1, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px" }} />
+          <select value={style} onChange={(e) => setStyle(e.target.value as NonNullable<TableSpec["style"]>)}
+            style={{ height: 30, border: "1px solid var(--line)", borderRadius: 8 }}>
+            <option value="banded">Banded</option>
+            <option value="accent">Accent</option>
+            <option value="dark">Dark</option>
+            <option value="plain">Plain</option>
+          </select>
+        </div>
+        <p style={{ fontSize: 12, color: "#8B8480", marginTop: 12 }}>Totals row — pick an aggregation per column (optional):</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginTop: 6 }}>
+          {cols.map((c) => (
+            <label key={c} style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12 }}>
+              {colLabel(c)}:
+              <select value={totals[c] ?? "none"}
+                onChange={(e) => setTotals({ ...totals, [c]: e.target.value })}
+                style={{ height: 26, border: "1px solid var(--line)", borderRadius: 6, flex: 1 }}>
+                {AGGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm"
+            onClick={() => onApply(name, style, Object.fromEntries(
+              Object.entries(totals).filter(([, v]) => v !== "none").map(([k, v]) => [Number(k), v])
+            ) as NonNullable<TableSpec["totals"]>)}>Create</button>
         </div>
       </div>
     </div>

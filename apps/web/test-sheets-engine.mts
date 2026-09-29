@@ -3,7 +3,7 @@
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula } from "./src/sheets/engine";
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -446,6 +446,63 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("fmt date serial", formatValue(45351, "yyyy-mm-dd") === "2024-02-29");
   check("fmt time", formatValue(0.625, "h:mm AM/PM") === "3:00 PM");
   check("fmt literal in code", formatValue(5, '"Qty: "0') === "Qty: 5");
+}
+
+// ---------- S5.1 AutoFilter ----------
+{
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: "Name" }, B1: { v: "Qty" },
+    A2: { v: "apple" }, B2: { v: 10 },
+    A3: { v: "banana" }, B3: { v: 25 },
+    A4: { v: "apple" }, B4: { v: 30 },
+    A5: { v: "cherry" }, B5: { v: 5 },
+    A6: { f: "UPPER(A2)" }, B6: { f: "B2*2" },
+  } }] };
+  const rng = { c1: 0, r1: 0, c2: 1, r2: 5 };
+  check("filterValues unique+sorted", JSON.stringify(filterValues(wb.sheets[0], wb, rng, 0)) === '["apple","APPLE","banana","cherry"]');
+  check("filterValues numeric sort", JSON.stringify(filterValues(wb.sheets[0], wb, rng, 1)) === '["5","10","20","25","30"]');
+  // value filter: only "apple"
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 0: { type: "values", values: ["apple", "APPLE"] } } };
+  check("filter hides non-apple rows", JSON.stringify(computeFilteredRows(wb.sheets[0], wb)) === JSON.stringify([2, 4]));
+  // condition filter: qty > 15 (formula B6 evaluates to 20)
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 1: { type: "cond", op1: ">", v1: "15" } } };
+  check("cond filter keeps >15", JSON.stringify(computeFilteredRows(wb.sheets[0], wb)) === JSON.stringify([1, 4]));
+  // two-condition AND: qty >= 10 AND qty <= 25
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 1: { type: "cond", op1: ">=", v1: "10", op2: "<=", v2: "25", and: true } } };
+  check("cond AND", JSON.stringify(computeFilteredRows(wb.sheets[0], wb)) === JSON.stringify([3, 4]));
+  // OR variant
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 1: { type: "cond", op1: "<", v1: "10", op2: ">", v2: "25", and: false } } };
+  check("cond OR", JSON.stringify(computeFilteredRows(wb.sheets[0], wb)) === JSON.stringify([1, 2, 5]));
+  // text contains
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 0: { type: "cond", op1: "contains", v1: "APP" } } };
+  check("cond contains", JSON.stringify(computeFilteredRows(wb.sheets[0], wb)) === JSON.stringify([2, 4]));
+  // blanks criterion
+  wb.sheets[0].filter = { range: "A1:B6", cols: { 0: { type: "cond", op1: "blank" } } };
+  check("cond blank hides all nonblank", computeFilteredRows(wb.sheets[0], wb).length === 5);
+  // no criteria → nothing hidden
+  wb.sheets[0].filter = { range: "A1:B6", cols: {} };
+  check("no crit → none hidden", computeFilteredRows(wb.sheets[0], wb).length === 0);
+  // evalCond direct
+  check("evalCond num >", evalCond(">", 10, "5") && !evalCond(">", 3, "5"));
+  check("evalCond str =", evalCond("=", "Apple", "apple"));
+  check("evalCond starts", evalCond("starts", "banana", "ban"));
+  check("evalCond notblank", evalCond("notblank", "x", ""));
+  // filter state survives structural edits (row insert above range shifts it)
+  const s: SheetData = { name: "S", cells: { A1: { v: 1 } }, filter: { range: "A2:B5", cols: { 1: { type: "cond", op1: ">", v1: "0" } } } };
+  adjustForRowsCols(s, "row", 0, 1);
+  check("filter range shifts on insert", s.filter!.range === "A3:B6");
+  adjustForRowsCols(s, "col", 0, 1);
+  check("filter col keys shift on col insert", !!s.filter!.cols[2]);
+}
+
+// ---------- S5.4 tables ----------
+{
+  const s: SheetData = { name: "S", cells: { A1: { v: 1 } },
+    tables: [{ name: "T1", range: "A1:C10", style: "banded", totals: { 1: "sum" } }] };
+  adjustForRowsCols(s, "row", 0, 1);
+  check("table range shifts", s.tables![0].range === "A2:C11");
+  adjustForRowsCols(s, "col", 0, 1);
+  check("table totals col shifts", s.tables![0].totals?.[2] === "sum");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

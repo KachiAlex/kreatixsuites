@@ -91,6 +91,27 @@ function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
       if (cell.f && x.t !== "z") x.f = cell.f;
       ws[ref] = x;
     }
+    // grid chrome → xlsx: col widths, freeze, merges, autofilter, hidden rows/cols
+    if (sheet.colWidths && Object.keys(sheet.colWidths).length)
+      ws["!cols"] = Array.from({ length: maxC + 1 }, (_, c) => {
+        const w = sheet.colWidths![c];
+        const hidden = sheet.hiddenCols?.includes(c);
+        return w || hidden ? { wch: Math.max(1, Math.round((w ?? 100) / 9)), hidden } : {};
+      });
+    if (sheet.rowHeights || sheet.hiddenRows?.length)
+      ws["!rows"] = Array.from({ length: maxR + 1 }, (_, r) => {
+        const h = sheet.rowHeights?.[r];
+        const hidden = sheet.hiddenRows?.includes(r);
+        return h || hidden ? { hpt: Math.round((h ?? 26) * 0.75), hidden } : {};
+      });
+    if (sheet.merges?.length)
+      ws["!merges"] = sheet.merges.map((m) => ({ s: { c: m.c1, r: m.r1 }, e: { c: m.c2, r: m.r2 } }));
+    if (sheet.freeze && (sheet.freeze.rows || sheet.freeze.cols))
+      ws["!freeze"] = { xSplit: sheet.freeze.cols, ySplit: sheet.freeze.rows } as never;
+    if (sheet.filter) {
+      const fr = parseRange(sheet.filter.range);
+      if (fr) ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { c: fr.c1, r: fr.r1 }, e: { c: fr.c2, r: fr.r2 } }) };
+    }
     XLSX.utils.book_append_sheet(out, ws, sheet.name.slice(0, 31));
   }
   return out;
@@ -111,7 +132,30 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       if (x.v !== undefined) cell.v = x.v as string | number | boolean;
       if (cell.f || cell.v !== undefined) cells[ref] = cell;
     }
-    return { name, cells };
+    const sheet: SheetData = { name, cells };
+    if (ws["!merges"]?.length)
+      sheet.merges = ws["!merges"].map((m) => ({ c1: m.s.c, r1: m.s.r, c2: m.e.c, r2: m.e.r }));
+    if (ws["!cols"]) {
+      sheet.colWidths = {};
+      sheet.hiddenCols = [];
+      ws["!cols"].forEach((c, i) => {
+        if (c?.wch) sheet.colWidths![i] = Math.round(c.wch * 9);
+        if (c?.hidden) sheet.hiddenCols!.push(i);
+      });
+      if (!sheet.hiddenCols.length) delete sheet.hiddenCols;
+    }
+    if (ws["!rows"]) {
+      sheet.rowHeights = {};
+      sheet.hiddenRows = [];
+      ws["!rows"].forEach((r, i) => {
+        if (r?.hpt) sheet.rowHeights![i] = Math.round(r.hpt / 0.75);
+        if (r?.hidden) sheet.hiddenRows!.push(i);
+      });
+      if (!sheet.hiddenRows.length) delete sheet.hiddenRows;
+      if (!Object.keys(sheet.rowHeights).length) delete sheet.rowHeights;
+    }
+    if (ws["!autofilter"]?.ref) sheet.filter = { range: ws["!autofilter"].ref, cols: {} };
+    return sheet;
   });
   return { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
 }
@@ -211,6 +255,82 @@ export function listItems(val: Validation, wb: Workbook, sheetName: string): str
   };
   const items = resolveRange(spec.replace(/^=/, ""), 0);
   return items ?? spec.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// ---------- autofilter (S5.1) ----------
+
+const OPS: Record<string, (a: number, b: number) => boolean> = {
+  "=": (a, b) => a === b, "!=": (a, b) => a !== b, ">": (a, b) => a > b,
+  "<": (a, b) => a < b, ">=": (a, b) => a >= b, "<=": (a, b) => a <= b,
+};
+
+/** Evaluate one condition against a cell value (numeric if both parse, else string ops). */
+export function evalCond(op: string, cell: unknown, target: string): boolean {
+  const s = cell === null || cell === undefined ? "" : String(cell);
+  if (op === "contains") return s.toLowerCase().includes(target.toLowerCase());
+  if (op === "notcontains") return !s.toLowerCase().includes(target.toLowerCase());
+  if (op === "starts") return s.toLowerCase().startsWith(target.toLowerCase());
+  if (op === "ends") return s.toLowerCase().endsWith(target.toLowerCase());
+  if (op === "blank") return s === "";
+  if (op === "notblank") return s !== "";
+  const cn = s.trim() === "" ? NaN : Number(s), tn = Number(target);
+  if (!isNaN(cn) && !isNaN(tn)) return (OPS[op] ?? OPS["="])(cn, tn);
+  const cmp = s.toLowerCase().localeCompare(target.toLowerCase());
+  switch (op) {
+    case "=": return cmp === 0;
+    case "!=": return cmp !== 0;
+    case ">": return cmp > 0;
+    case "<": return cmp < 0;
+    case ">=": return cmp >= 0;
+    case "<=": return cmp <= 0;
+    default: return true;
+  }
+}
+
+/** Display string used for filter value lists (raw value text). */
+const disp = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+
+/** Unique display values in `col` within the filter range (excl. header). */
+export function filterValues(sheet: SheetData, wb: Workbook, range: { c1: number; r1: number; c2: number; r2: number }, col: number): string[] {
+  const ev = evalsFor(sheet, wb);
+  const seen = new Set<string>();
+  for (let r = range.r1 + 1; r <= range.r2; r++) {
+    const ref = toA1(col, r);
+    seen.add(disp(sheet.cells[ref]?.f ? ev.get(ref)?.value : sheet.cells[ref]?.v ?? ""));
+  }
+  return [...seen].sort((a, b) => {
+    const na = Number(a), nb = Number(b);
+    return !isNaN(na) && !isNaN(nb) ? na - nb : a.localeCompare(b);
+  });
+}
+
+/** Rows inside the filter range (excl. header) hidden by current criteria. */
+export function computeFilteredRows(sheet: SheetData, wb: Workbook): number[] {
+  const f = sheet.filter;
+  if (!f) return [];
+  const range = parseRange(f.range);
+  if (!range) return [];
+  const cols = Object.entries(f.cols ?? {}).filter(([, c]) => c);
+  if (!cols.length) return [];
+  const ev = evalsFor(sheet, wb);
+  const hidden = new Set<number>();
+  for (let r = range.r1 + 1; r <= range.r2; r++) {
+    for (const [cs, crit] of cols) {
+      const c = Number(cs);
+      const ref = toA1(c, r);
+      const val = sheet.cells[ref]?.f ? ev.get(ref)?.value : sheet.cells[ref]?.v;
+      let pass = true;
+      if (crit.type === "values") pass = !!crit.values?.includes(disp(val));
+      else {
+        const ok1 = crit.op1 ? evalCond(crit.op1, val, crit.v1 ?? "") : true;
+        const has2 = !!crit.op2;
+        const ok2 = has2 ? evalCond(crit.op2!, val, crit.v2 ?? "") : true;
+        pass = has2 ? (crit.and ? ok1 && ok2 : ok1 || ok2) : ok1;
+      }
+      if (!pass) hidden.add(r);
+    }
+  }
+  return [...hidden];
 }
 
 // ---------- find & replace (S3.2) ----------
