@@ -66,7 +66,7 @@ const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: strin
     { id: "stamp", ico: "✅", label: "Stamp (APPROVED / DRAFT / …)" },
   ]},
   { label: "Edit content", tools: [
-    { id: "edittext", ico: "✎T", label: "Edit text — drag over a block to retype it" },
+    { id: "edittext", ico: "✎T", label: "Edit text — click a line to retype it, or drag a block" },
     { id: "image", ico: "🖼", label: "Insert image" },
     { id: "whiteout", ico: "▨", label: "White-out — erase content" },
     { id: "redact", ico: "▮", label: "Redact — permanently remove on export" },
@@ -140,6 +140,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [viewRot, setViewRot] = useState(0);       // session-only rotation, degrees
   const [dark, setDark] = useState(false);
   const [selAnn, setSelAnn] = useState<string | null>(null);
+  const [focusAnn, setFocusAnn] = useState<string | null>(null); // newly placed textbox → focus for typing
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
   const [exportDlg, setExportDlg] = useState(false);
@@ -655,9 +656,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
     scheduleSave();
   }, [annDoc, reloadPdf, persistBytes]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const addAnn = (page: number, a: Omit<PdfAnn, "id" | "page" | "createdAt">) => {
-    mutate((d) => d.annotations.push({ ...a, id: crypto.randomUUID().slice(0, 8), page,
+  const addAnn = (page: number, a: Omit<PdfAnn, "id" | "page" | "createdAt">): string => {
+    const id = crypto.randomUUID().slice(0, 8);
+    mutate((d) => d.annotations.push({ ...a, id, page,
       author: user?.displayName, createdAt: new Date().toISOString() }));
+    return id;
   };
   const delAnn = (id: string) => mutate((d) => { d.annotations = d.annotations.filter((a) => a.id !== id); });
   const patchAnn = (id: string, patch: Partial<PdfAnn>, actionKey?: string) =>
@@ -1550,6 +1553,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onAdd={(a) => addAnn(p, a)}
                 onMove={moveAnn}
                 onPatch={patchAnn}
+                focusAnn={focusAnn} setFocusAnn={setFocusAnn}
+                onDelAnn={delAnn}
                 onZoomTo={zoomToRect}
                 ocgCfg={ocgCfgRef.current} ocgRev={ocgRev}
                 onPickImage={(r) => { imgPending.current = { page: p, rect: r }; imgFileRef.current?.click(); }}
@@ -1857,7 +1862,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -1870,9 +1875,12 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   viewRot?: number; dark?: boolean;
   ocrWords?: OcrWord[];
   searchRects: Rect4[];
-  onAdd: (a: Omit<PdfAnn, "id" | "page" | "createdAt">) => void;
+  onAdd: (a: Omit<PdfAnn, "id" | "page" | "createdAt">) => string;
   onMove: (id: string, dx: number, dy: number) => void;
   onPatch: (id: string, p: Partial<PdfAnn>, key?: string) => void;
+  focusAnn?: string | null;
+  setFocusAnn?: (id: string | null) => void;
+  onDelAnn?: (id: string) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
   ocgCfg?: { getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null;
@@ -2131,7 +2139,22 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     if (!preview) return;
     const { x, y, w, h } = preview;
     setPreview(null);
-    if (w < 4 && h < 4) return;
+    if (w < 4 && h < 4) {
+      // click, not drag — typewriter drops an insertion box, edit-text
+      // targets the text line under the point
+      const [px, py] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
+      if (tool === "textbox") {
+        const sz = tbSize ?? 9;
+        const bh = sz * 1.9;
+        const pw = vp()!.width / scale;
+        const id = onAdd({ type: "textbox", rects: [[px, py - bh, Math.max(30, Math.min(200, pw - px - 6)), bh]],
+          color: toolColor, text: "", font: tbFont ?? "helv", fontSize: sz });
+        setSelAnn(id); setFocusAnn?.(id);
+      } else if (tool === "edittext") {
+        void editLineAt(px, py);
+      }
+      return;
+    }
     if (tool === "zoombox") { onZoomTo?.(preview, boxRef.current!); return; }
     if (tool === "measure") {
       const pt = Math.hypot(d.x - d.sx, d.y - d.sy) / scale;
@@ -2161,9 +2184,10 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       const [bx, by] = vp()!.convertToPdfPoint(d.x, d.y) as [number, number];
       onAdd({ type: tool, points: [[ax, ay], [bx, by]], color: toolColor });
     } else {
-      onAdd({ type: tool as AnnType, rects: [rect], color: toolColor,
+      const id = onAdd({ type: tool as AnnType, rects: [rect], color: toolColor,
         text: tool === "textbox" ? "" : undefined,
         font: tool === "textbox" ? (tbFont ?? "helv") : undefined, fontSize: tool === "textbox" ? (tbSize ?? 9) : undefined });
+      if (tool === "textbox") { setSelAnn(id); setFocusAnn?.(id); }
     }
   };
 
@@ -2198,7 +2222,35 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       text = lines.join("\n");
     } catch { /* extraction is best-effort */ }
     onAdd({ type: "whiteout", rects: [rect] });
-    onAdd({ type: "textbox", rects: [rect], color: "#171717", text });
+    const id = onAdd({ type: "textbox", rects: [rect], color: "#171717", text });
+    setSelAnn(id); setFocusAnn?.(id);
+  };
+
+  // edit-text on a bare click: find the text item under the point, expand to
+  // its line, then run the same whiteout+retype flow as a dragged rectangle
+  const editLineAt = async (px: number, py: number) => {
+    const pg = pageRef.current;
+    if (!pg) return;
+    try {
+      const tc = await pg.getTextContent();
+      const vp1 = pg.getViewport({ scale: 1 });
+      const items: { x: number; y: number; w: number; h: number }[] = [];
+      for (const it of tc.items) {
+        if (!("str" in it) || !it.str.trim() || !("transform" in it)) continue;
+        const tx = pdfjs.Util.transform(vp1.transform, it.transform);
+        const fh = Math.max(2, Math.hypot(tx[2], tx[3]));
+        const [ix, iy] = vp1.convertToPdfPoint(tx[4], tx[5]); // baseline origin
+        items.push({ x: ix, y: iy, w: it.width, h: fh });
+      }
+      const hit = items.find((i) => px >= i.x - 1 && px <= i.x + i.w + 1 && py >= i.y - i.h * 0.3 && py <= i.y + i.h);
+      if (!hit) return;
+      const row = items.filter((i) => Math.abs(i.y - hit.y) < Math.max(2, hit.h * 0.35));
+      const x0 = Math.min(...row.map((i) => i.x));
+      const x1 = Math.max(...row.map((i) => i.x + i.w));
+      const y0 = Math.min(...row.map((i) => i.y - i.h * 0.3));
+      const y1 = Math.max(...row.map((i) => i.y + i.h));
+      await editTextAt([x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2]);
+    } catch { /* no text under point */ }
   };
 
   // text-selection → highlight/underline/strikeout
@@ -2406,11 +2458,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         const fontCss = { helv: "Helvetica,Arial,sans-serif", times: "Georgia,'Times New Roman',serif", courier: "'Courier New',monospace" }[a.font ?? "helv"];
         return (
           <div key={a.id} className={`ann-textbox ${sel ? "sel" : ""}`}
+            ref={(el) => { if (el && a.id === focusAnn && !el.dataset.focused) { el.dataset.focused = "1"; el.focus(); setFocusAnn?.(null); } }}
             style={{ left: x, top: y, width: w2, minHeight: h2, color: a.color === "#FFD23F" ? "#171717" : a.color,
               fontFamily: fontCss, fontSize: (a.fontSize ?? 9) * scale }}
-            contentEditable={canEdit && tool === "select" && sel} suppressContentEditableWarning
-            onPointerDown={(e) => { if (tool === "select" && !sel) startMove(e, a); }}
-            onBlur={(e) => onPatch(a.id, { text: (e.target as HTMLElement).innerText }, `tb:${a.id}`)}>{a.text}</div>
+            contentEditable={canEdit && (tool === "textbox" || (tool === "select" && sel))} suppressContentEditableWarning
+            onPointerDown={(e) => {
+              if (tool === "textbox") { e.stopPropagation(); setSelAnn(a.id); return; } // edit this box, don't stack a new one
+              if (tool === "select" && !sel) startMove(e, a);
+            }}
+            onBlur={(e) => { const t = (e.target as HTMLElement).innerText; if (!t.trim()) { onDelAnn?.(a.id); if (selAnn === a.id) setSelAnn(null); } else onPatch(a.id, { text: t }, `tb:${a.id}`); }}>{a.text}</div>
         );
       })}
       {/* PDF-6 — authored form fields */}
