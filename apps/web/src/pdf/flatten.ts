@@ -16,6 +16,8 @@ export interface FlattenOpts {
   watermark?: string;        // diagonal text, e.g. "DRAFT" / "CONFIDENTIAL"
   header?: string;           // centered top-of-page line
   footer?: string;           // centered bottom-of-page line (drawn above page number)
+  sanitize?: boolean;        // strip metadata (title/author/creator/dates)
+  optimize?: boolean;        // object streams = smaller output
 }
 
 /**
@@ -29,6 +31,9 @@ export async function buildFlattenedPdf(
   pdfDoc: PDFDocumentProxy | null,
   opts: FlattenOpts = {},
   fields: PdfField[] = [],
+  /** PDF-7 — pages that must be content-replaced by a raster (true redaction):
+   * 1-based page → PNG data URL of the rendered page */
+  rasters?: Record<number, string>,
 ): Promise<Uint8Array> {
   const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -98,6 +103,24 @@ export async function buildFlattenedPdf(
     if (fields.length) form.updateFieldAppearances(helv);
     form.flatten();
   } catch { /* no fields or unsupported — annotations still bake */ }
+
+  // ---- PDF-7: true redaction — replace redacted pages with a flat image ----
+  // Removing the page object drops its original content stream entirely, so the
+  // underlying text/vectors can no longer be selected, copied, or extracted.
+  if (rasters && Object.keys(rasters).length) {
+    for (const [pn, dataUrl] of Object.entries(rasters)) {
+      const i = Number(pn) - 1;
+      const orig = src.getPages()[i];
+      if (!orig) continue;
+      try {
+        const { width, height } = orig.getSize();
+        const img = await src.embedPng(dataUrl.split(",")[1]);
+        src.removePage(i);
+        const np = src.insertPage(i, [width, height]);
+        np.drawImage(img, { x: 0, y: 0, width, height });
+      } catch { /* rasterization failed — leave page as-is */ }
+    }
+  }
 
   // ---- draw annotations into content streams ----
   const pages = src.getPages();
@@ -180,6 +203,11 @@ export async function buildFlattenedPdf(
         case "whiteout": {
           const [x, y, w, h] = a.rects![0];
           page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1) });
+          break;
+        }
+        case "redact": {
+          const [x, y, w, h] = a.rects![0];
+          page.drawRectangle({ x, y, width: w, height: h, color: rgb(0.09, 0.09, 0.09) });
           break;
         }
         case "rect": {
@@ -269,7 +297,15 @@ export async function buildFlattenedPdf(
     } catch { /* chrome draw failed — skip */ }
   });
 
-  return src.save();
+  // ---- PDF-7: sanitize metadata + optimize ----
+  if (opts.sanitize) {
+    try {
+      src.setTitle(""); src.setAuthor(""); src.setSubject(""); src.setKeywords([]);
+      src.setCreator(""); src.setProducer("");
+      src.setCreationDate(new Date(0)); src.setModificationDate(new Date(0));
+    } catch { /* metadata APIs are best-effort */ }
+  }
+  return src.save({ useObjectStreams: !!opts.optimize });
 }
 
 /** Build the flattened PDF and trigger a browser download. */
@@ -281,8 +317,9 @@ export async function exportFlattenedPdf(
   fileName: string,
   opts: FlattenOpts = {},
   fields: PdfField[] = [],
+  rasters?: Record<number, string>,
 ): Promise<void> {
-  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields);
+  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields, rasters);
   const url = URL.createObjectURL(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");
   a.href = url;

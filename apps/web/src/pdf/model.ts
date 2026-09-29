@@ -6,7 +6,8 @@ export type AnnType =
   | "freehand" | "polyline"
   | "rect" | "ellipse" | "line" | "arrow" | "callout" | "cloud"
   | "note" | "textbox" | "stamp"
-  | "sign" | "image" | "whiteout";
+  | "sign" | "image" | "whiteout"
+  | "redact"; // PDF-7 — page content under the mark is physically removed on export
 
 export interface PdfAnn {
   id: string;

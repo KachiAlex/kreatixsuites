@@ -31,7 +31,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field";
 const SIG_KEY = "kx.signature";
-type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize";
+type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize" | "compare";
 type Rect4 = [number, number, number, number];
 
 const TOOLS: { id: Tool; ico: string; label: string }[] = [
@@ -53,13 +53,14 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "image", ico: "🖼", label: "Insert image — drag a box, then pick a file" },
   { id: "whiteout", ico: "▨", label: "White-out — erase content under a white block" },
   { id: "field", ico: "▣", label: "Form field — drag to place a fillable field" },
+  { id: "redact", ico: "▮", label: "Redact — permanently removes the marked content on export" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
   { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
 ];
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
-const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout"]);
+const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact"]);
 
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
@@ -109,8 +110,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
   const [exportDlg, setExportDlg] = useState(false);
-  const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string }>
-    ({ pageNumbers: false, watermark: "", header: "", footer: "" });
+  const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string; sanitize: boolean; optimize: boolean }>
+    ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false });
+  const [speaking, setSpeaking] = useState(false);
+  const [cmp, setCmp] = useState<{ page: number; st: string }[] | null>(null);
+  const cmpRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
@@ -581,6 +585,60 @@ export function PdfEditor({ item, initialDoc, permission }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
 
+  // ---------- PDF-7: read aloud / compare / redaction rasterize ----------
+  const speakPage = async () => {
+    if (speaking) { speechSynthesis.cancel(); setSpeaking(false); return; }
+    if (!doc) return;
+    try {
+      const tc = await doc.getPage(curPage).then((pg) => pg.getTextContent());
+      const t = tc.items.map((i) => ("str" in i ? i.str : "")).join(" ").replace(/\s+/g, " ").trim();
+      if (!t) { toast("No text on this page to read"); return; }
+      const u = new SpeechSynthesisUtterance(t);
+      u.onend = () => setSpeaking(false);
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+      setSpeaking(true);
+    } catch { toast("Read-aloud failed"); }
+  };
+  useEffect(() => () => speechSynthesis.cancel(), []);
+
+  const runCompare = async (f: File) => {
+    if (!doc) return;
+    try {
+      const other = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
+      const pageText = async (d: typeof doc, p: number) =>
+        p <= d.numPages
+          ? (await d.getPage(p)).getTextContent().then((t) => t.items.map((i) => ("str" in i ? i.str : "")).join("").replace(/\s+/g, " ").trim())
+          : null;
+      const out: { page: number; st: string }[] = [];
+      for (let p = 1; p <= Math.max(doc.numPages, other.numPages); p++) {
+        const [a, b] = await Promise.all([pageText(doc, p), pageText(other, p)]);
+        out.push({ page: p, st: a === b ? "identical" : a == null ? "only in other" : b == null ? "missing in other" : "changed" });
+      }
+      setCmp(out);
+      setPanel("compare");
+    } catch { toast("Compare failed — is that a valid PDF?"); }
+  };
+
+  // true redaction: render each marked page to PNG so export can drop its stream
+  const rasterizeRedacted = async (): Promise<Record<number, string> | undefined> => {
+    if (!doc) return undefined;
+    const set = new Set(annDoc.annotations.filter((a) => a.type === "redact").map((a) => a.page));
+    if (!set.size) return undefined;
+    const out: Record<number, string> = {};
+    for (const p of set) {
+      const pg = await doc.getPage(p);
+      const v = pg.getViewport({ scale: 2 });
+      const c = document.createElement("canvas");
+      c.width = v.width; c.height = v.height;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvas: c, viewport: v }).promise;
+      out[p] = c.toDataURL("image/png");
+    }
+    return out;
+  };
+
   const resolveDest = async (dest: unknown): Promise<number | null> => {
     if (!doc || !dest) return null;
     try {
@@ -665,7 +723,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             <option value="list">List box</option>
           </select>
         )}
-        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && (
+        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && (
           <div className="rb-colors">
             {MARKUP_COLORS.map((c) => (
               <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
@@ -692,6 +750,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <span className="rb-info">Page <input className="pg-in" type="number" min={1} max={numPages} value={curPage}
           onChange={(e) => scrollToPage(Math.max(1, Math.min(numPages, Number(e.target.value) || 1)))} /> / {numPages}</span>
         <div className="rb-sep" />
+        <button className={`rb ${speaking ? "on" : ""}`} title="Read page aloud (text-to-speech)" onClick={() => void speakPage()}>{speaking ? "⏸" : "🔊"}</button>
+        <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
+        <input ref={cmpRef} type="file" accept=".pdf" hidden
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void runCompare(f); e.target.value = ""; }} />
         <button className="rb" title="Add comment" onClick={() => { setPanel("comments"); }}>💬+</button>
         {panel === "organize" && (
           <>
@@ -753,6 +815,23 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   ))}
                   {query && !matches.length && <div className="empty">No matches</div>}
                 </div>
+              </div>
+            )}
+            {panel === "compare" && (
+              <div className="pdf-annlist">
+                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Text comparison vs the other PDF</div>
+                {!cmp?.length && <div className="empty">Pick another PDF to compare</div>}
+                {cmp?.map((r) => (
+                  <div key={r.page} className="pdf-annrow" onClick={() => scrollToPage(r.page)}>
+                    <div className="pdf-annrow-top">
+                      <span className="pdf-annrow-ico" style={{ borderColor: r.st === "identical" ? "#4a4" : r.st === "changed" ? "#e9a13b" : "#d33" }}>
+                        {r.st === "identical" ? "✓" : r.st === "changed" ? "Δ" : "✗"}
+                      </span>
+                      <div style={{ flex: 1 }}><div className="pdf-annrow-label">Page {r.page}</div>
+                        <div className="pdf-annrow-meta">{r.st}</div></div>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             {panel === "anns" && (
@@ -907,16 +986,38 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onChange={(e) => setPdfOpts({ ...pdfOpts, [k]: e.target.value })}
                 style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
             ))}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, marginBottom: 6 }}>
+              <input type="checkbox" checked={pdfOpts.sanitize}
+                onChange={(e) => setPdfOpts({ ...pdfOpts, sanitize: e.target.checked })} />
+              Sanitize — strip title, author, creator, dates
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, marginBottom: 10 }}>
+              <input type="checkbox" checked={pdfOpts.optimize}
+                onChange={(e) => setPdfOpts({ ...pdfOpts, optimize: e.target.checked })} />
+              Optimize for smaller file size
+            </label>
+            {annDoc.annotations.some((a) => a.type === "redact") && (
+              <p style={{ fontSize: 11, color: "#b23", margin: "0 0 8px" }}>
+                Pages with redaction marks will be permanently rasterized — the underlying content is removed, not just covered.
+              </p>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button className="btn-ghost btn-sm" onClick={() => setExportDlg(false)}>Cancel</button>
               <button className="btn-primary btn-sm" onClick={() => {
                 setExportDlg(false);
                 if (!pdfDataRef.current) return;
-                flattenMod()
-                  .then(({ exportFlattenedPdf }) => exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title,
-                    { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined, header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined },
-                    annDoc.fields ?? []))
-                  .catch(() => toast("PDF export failed"));
+                void (async () => {
+                  try {
+                    const rasters = await rasterizeRedacted();
+                    const { exportFlattenedPdf } = await flattenMod();
+                    await exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title,
+                      { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined,
+                        header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined,
+                        sanitize: pdfOpts.sanitize, optimize: pdfOpts.optimize },
+                      annDoc.fields ?? [], rasters);
+                    if (rasters) toast("Redacted pages permanently removed");
+                  } catch { toast("PDF export failed"); }
+                })();
               }}>Export</button>
             </div>
           </div>
@@ -1637,6 +1738,11 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
     case "whiteout": {
       const [x, y, w, h] = vpRect(a.rects![0]);
       return <rect x={x} y={y} width={w} height={h} fill="#fff" stroke="#ddd" strokeWidth={0.6} style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+    }
+    case "redact": {
+      const [x, y, w, h] = vpRect(a.rects![0]);
+      return <rect x={x} y={y} width={w} height={h} fill="#171717" stroke="#d33" strokeWidth={1} strokeDasharray="4 3"
+        style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
     }
     case "rect": {
       const [x, y, w, h] = vpRect(a.rects![0]);
