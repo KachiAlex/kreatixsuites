@@ -808,11 +808,11 @@ textarea.inp{padding:8px 10px;height:auto}
 @keyframes m-color{0%,100%{filter:none}50%{filter:hue-rotate(120deg) saturate(1.6)}}
 
 /* ===================== Kreatix PDF ===================== */
-.pdf-rail{width:190px;min-width:190px;background:var(--sidebar,#FBF9F7);border-right:1px solid var(--line);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
-.pdf-thumb{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px;border:1.5px solid transparent;border-radius:10px;cursor:pointer}
+.pdf-rail{width:152px;min-width:152px;flex-shrink:0;background:var(--sidebar,#FBF9F7);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden;padding:10px 8px;display:flex;flex-direction:column;gap:8px}
+.pdf-thumb{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border:1.5px solid transparent;border-radius:10px;cursor:pointer}
 .pdf-thumb:hover{background:#F3EFEB}
 .pdf-thumb.active{border-color:#D84B57;background:#FFF1E8}
-.pdf-thumb canvas{max-width:150px;height:auto;box-shadow:0 2px 8px rgba(0,0,0,.15);border-radius:3px}
+.pdf-thumb canvas{max-width:112px;height:auto;box-shadow:0 2px 8px rgba(0,0,0,.15);border-radius:3px}
 .pdf-thumb span{font-size:10px;color:#8B8480}
 .pdf-ol-item{padding:7px 10px;font-size:12px;color:#5B554F;cursor:pointer;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pdf-ol-item:hover{background:#F3EFEB;color:#171717}
@@ -823,8 +823,16 @@ textarea.inp{padding:8px 10px;height:auto}
 .pdf-match.on{border-color:#D84B57;background:#FFF1E8}
 .pdf-match b{color:#D84B57;font-weight:600}
 
+/* PDF editor shell — the rail is a real left sidebar, pages scroll beside it */
+.editor{display:flex;flex-direction:column;height:100vh;min-height:0;overflow:hidden}
+.editor .work{flex:1;display:flex;min-height:0;overflow:hidden}
+.editor .work>.pages{flex:1;min-width:0}
 .pdf-pages{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:22px;padding:26px;background:#E9E4DE}
 .pdf-page-wrap{flex:none}
+/* paged view modes — page(s) centered as a spread; margin-block:auto keeps
+   oversized pages scrollable from the top instead of clipping */
+.pdf-pages.paged{flex-direction:row;flex-wrap:wrap;justify-content:center;align-content:center;gap:26px}
+.pdf-pages.paged>.pdf-page-wrap{margin-block:auto}
 .pdf-page{position:relative;background:#fff;box-shadow:0 10px 34px rgba(23,18,15,.22)}
 .pdf-page.draw{cursor:crosshair}
 .pdf-canvas{display:block}
@@ -1369,7 +1377,7 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .obj-alt:focus{border-color:var(--k-orange)}
 
 /* PDF-1 — organize pages */
-.pdf-org{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:14px;padding:24px;align-content:start}
+.pdf-org{flex:1;min-width:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:14px;padding:24px;align-content:start;overflow-y:auto;background:#E9E4DE}
 .pdf-org-cell{position:relative;border:2px solid transparent;border-radius:8px;padding:6px;cursor:grab;transition:border-color .12s,background .12s}
 .pdf-org-cell:hover{border-color:var(--line)}
 .pdf-org-cell.sel{border-color:var(--k-orange);background:#FFF3EB}

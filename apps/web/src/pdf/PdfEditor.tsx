@@ -1247,7 +1247,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             ))}
           </div>
         ) : (
-        <div className="pages pdf-pages" ref={scrollRef}
+        <div className={`pages pdf-pages ${viewMode === "single" || viewMode === "two" ? "paged" : ""}`} ref={scrollRef}
           onScroll={(e) => {
             const el = e.currentTarget;
             const kids = [...el.querySelectorAll<HTMLElement>("[data-page]")];
