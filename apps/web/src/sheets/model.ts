@@ -259,6 +259,30 @@ export interface Workbook {
       zoom?: number;
     };
   }[];
+  /** S18.2 — saved Office Scripts-style automation scripts */
+  scripts?: { name: string; code: string }[];
+  /** S18.3 — Get & Transform queries (connect → transform → load) */
+  queries?: QuerySpec[];
+}
+
+export type QueryStep =
+  | { op: "filter"; col: number; cmp: "=" | "!=" | ">" | "<" | ">=" | "<=" | "contains" | "starts"; value: string }
+  | { op: "keepCols"; cols: number[] }
+  | { op: "dropCols"; cols: number[] }
+  | { op: "rename"; col: number; name: string }
+  | { op: "sort"; col: number; dir: 1 | -1 }
+  | { op: "skip"; n: number }
+  | { op: "take"; n: number }
+  | { op: "distinct" }
+  | { op: "groupBy"; col: number; agg: "sum" | "count" | "avg" | "min" | "max"; valCol: number }
+  | { op: "cast"; col: number; to: "number" | "text" | "bool" };
+
+export interface QuerySpec {
+  name: string;
+  source: { kind: "csv" | "tsv" | "json"; text?: string; url?: string; jsonPath?: string };
+  steps: QueryStep[];
+  /** sheet name to load results into (created/replaced) */
+  destSheet?: string;
 }
 
 export interface Ref { col: number; row: number }

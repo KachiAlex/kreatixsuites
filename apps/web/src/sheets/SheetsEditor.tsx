@@ -11,11 +11,13 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
+import { runScript } from "./script";
+import { runQuery, queryToSheet, type QueryResult } from "./query";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -108,6 +110,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [pbPreview, setPbPreview] = useState(false);        // S16.1 page-break preview
   const [paneRatio, setPaneRatio] = useState(0.5);        // S16.1 split divider position
   const [viewsDlg, setViewsDlg] = useState(false);        // S16.1 custom views
+  const [scriptDlg, setScriptDlg] = useState(false);      // S18.2 automation
+  const [queryDlg, setQueryDlg] = useState(false);        // S18.3 get & transform
   const [active, setActive] = useState(0);
   // multi-range: last entry is the active range (Ctrl+click/drag adds more)
   const [selections, setSelections] = useState<Range[]>([{ c1: 0, r1: 0, c2: 0, r2: 0 }]);
@@ -1391,6 +1395,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setSlicerDlg(true)}>⊟</button>
           <button className="rb" title="Insert data-type entity — fields usable as A1.Prop in formulas"
             disabled={!canEdit} onClick={insertEntity}>▣</button>
+          <button className="rb" title="Scripts — JS automation against the workbook (Office Scripts-style)"
+            onClick={() => setScriptDlg(true)}>📜</button>
+          <button className="rb" title="Get & Transform — load external data through a query pipeline"
+            onClick={() => setQueryDlg(true)}>⚡</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
@@ -1823,6 +1831,41 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             setGtsDlg(false);
           }}
           onClose={() => setGtsDlg(false)} />
+      )}
+      {scriptDlg && (
+        <ScriptDialog wb={wb}
+          onRun={(code) => {
+            let out: string[] = [];
+            mutate((w) => { out = runScript(w, code, sheet.name); });
+            return out;
+          }}
+          onSave={(name, code) => mutate((w) => {
+            const list = (w.scripts ??= []);
+            const i = list.findIndex((s) => s.name === name);
+            if (i >= 0) list[i].code = code; else list.push({ name, code });
+          })}
+          onDelete={(name) => mutate((w) => { w.scripts = (w.scripts ?? []).filter((s) => s.name !== name); })}
+          onClose={() => setScriptDlg(false)} />
+      )}
+      {queryDlg && (
+        <QueryDialog wb={wb}
+          onPreview={(spec) => runQuery(spec)}
+          onLoad={(spec, res) => {
+            mutate((w) => {
+              const name = spec.destSheet || spec.name;
+              const fresh = queryToSheet(name, res);
+              const i = w.sheets.findIndex((s) => s.name === name);
+              if (i >= 0) w.sheets[i] = fresh; else w.sheets.push(fresh);
+            });
+            toast(`Loaded ${res.rows.length} rows → ${spec.destSheet || spec.name}`);
+          }}
+          onSave={(spec) => mutate((w) => {
+            const list = (w.queries ??= []);
+            const i = list.findIndex((q) => q.name === spec.name);
+            if (i >= 0) list[i] = spec; else list.push(spec);
+          })}
+          onDelete={(name) => mutate((w) => { w.queries = (w.queries ?? []).filter((q) => q.name !== name); })}
+          onClose={() => setQueryDlg(false)} />
       )}
       {sheet.pivots?.length ? (
         <div className="sheet-tables-bar">
@@ -3666,6 +3709,185 @@ function SlicerPanel({ sheet, wb, slicer, index, onChange, onRemove }: {
           <button key={v} className={`slicer-item ${sel.has(v) ? "on" : ""} ${slicer.sel.length && !sel.has(v) ? "dim" : ""}`}
             onClick={() => toggle(v as string)}>{v === "" ? "(blank)" : v}</button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- S18.2: automation — script editor/runner ----------
+
+function ScriptDialog({ wb, onRun, onSave, onDelete, onClose }: {
+  wb: Workbook;
+  onRun: (code: string) => string[];
+  onSave: (name: string, code: string) => void;
+  onDelete: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [sel, setSel] = useState(wb.scripts?.[0]?.name ?? "");
+  const [name, setName] = useState(wb.scripts?.[0]?.name ?? "script1");
+  const [code, setCode] = useState(wb.scripts?.[0]?.code ??
+`// Office Scripts-style API — mutates the workbook directly
+const sheet = workbook.getActiveSheet();
+const rng = sheet.getUsedRange();
+if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
+`);
+  const [out, setOut] = useState<string[] | null>(null);
+  const [err, setErr] = useState("");
+  const pick = (n: string) => {
+    setSel(n);
+    const s = wb.scripts?.find((x) => x.name === n);
+    if (s) { setName(s.name); setCode(s.code); }
+  };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ minWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Scripts</h3>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <div style={{ width: 140, display: "flex", flexDirection: "column", gap: 4 }}>
+            {(wb.scripts ?? []).map((s) => (
+              <button key={s.name} className={`btn-ghost btn-sm ${sel === s.name ? "on" : ""}`}
+                style={{ textAlign: "left" }} onClick={() => pick(s.name)}>📜 {s.name}</button>
+            ))}
+            <button className="btn-ghost btn-sm" onClick={() => { setSel(""); setName(`script${(wb.scripts?.length ?? 0) + 1}`); setCode("// new script\n"); }}>
+              + New
+            </button>
+          </div>
+          <div style={{ flex: 1, display: "grid", gap: 8 }}>
+            <input className="inp" value={name} onChange={(e) => setName(e.target.value)} placeholder="Script name" />
+            <textarea className="inp" value={code} onChange={(e) => setCode(e.target.value)}
+              spellCheck={false}
+              style={{ fontFamily: "monospace", fontSize: 12, minHeight: 200, resize: "vertical" }} />
+            {err && <div style={{ color: "#D64545", fontSize: 12 }}>{err}</div>}
+            {out !== null && (
+              <pre style={{ background: "#F4F1EE", padding: 8, borderRadius: 6, fontSize: 11, maxHeight: 120, overflow: "auto", margin: 0 }}>
+                {out.length ? out.join("\n") : "(no output)"}
+              </pre>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 14 }}>
+          <div>
+            {sel && <button className="btn-ghost btn-sm" onClick={() => { onDelete(sel); setSel(""); }}>Delete</button>}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+            <button className="btn-ghost btn-sm" disabled={!name.trim()}
+              onClick={() => { onSave(name.trim(), code); setSel(name.trim()); }}>Save</button>
+            <button className="btn-primary btn-sm" onClick={() => {
+              setErr(""); setOut(null);
+              try { onSave(name.trim(), code); setOut(onRun(code)); }
+              catch (e) { setErr((e as Error).message); }
+            }}>▶ Run</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- S18.3: Get & Transform — query builder ----------
+
+const STEP_HELP = `Steps JSON, e.g.:
+[
+  {"op":"filter","col":1,"cmp":">","value":"100"},
+  {"op":"sort","col":0,"dir":1},
+  {"op":"groupBy","col":0,"agg":"sum","valCol":2}
+]
+ops: filter keepCols dropCols rename sort skip take distinct groupBy cast`;
+
+function QueryDialog({ wb, onPreview, onLoad, onSave, onDelete, onClose }: {
+  wb: Workbook;
+  onPreview: (spec: QuerySpec) => Promise<QueryResult>;
+  onLoad: (spec: QuerySpec, res: QueryResult) => void;
+  onSave: (spec: QuerySpec) => void;
+  onDelete: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [sel, setSel] = useState(wb.queries?.[0]?.name ?? "");
+  const cur = wb.queries?.find((q) => q.name === sel);
+  const [name, setName] = useState(cur?.name ?? "query1");
+  const [kind, setKind] = useState<QuerySpec["source"]["kind"]>(cur?.source.kind ?? "csv");
+  const [url, setUrl] = useState(cur?.source.url ?? "");
+  const [text, setText] = useState(cur?.source.text ?? "");
+  const [jsonPath, setJsonPath] = useState(cur?.source.jsonPath ?? "");
+  const [steps, setSteps] = useState(JSON.stringify(cur?.steps ?? [], null, 2));
+  const [dest, setDest] = useState(cur?.destSheet ?? "");
+  const [preview, setPreview] = useState<QueryResult | null>(null);
+  const [err, setErr] = useState("");
+  const spec = (): QuerySpec => ({
+    name: name.trim() || "query1",
+    source: { kind, url: url || undefined, text: text || undefined, jsonPath: jsonPath || undefined },
+    steps: JSON.parse(steps || "[]"),
+    destSheet: dest.trim() || undefined,
+  });
+  const pick = (n: string) => {
+    setSel(n);
+    const q = wb.queries?.find((x) => x.name === n);
+    if (!q) return;
+    setName(q.name); setKind(q.source.kind); setUrl(q.source.url ?? "");
+    setText(q.source.text ?? ""); setJsonPath(q.source.jsonPath ?? "");
+    setSteps(JSON.stringify(q.steps, null, 2)); setDest(q.destSheet ?? "");
+  };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ minWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Get &amp; Transform</h3>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <div style={{ width: 130, display: "flex", flexDirection: "column", gap: 4 }}>
+            {(wb.queries ?? []).map((q) => (
+              <button key={q.name} className={`btn-ghost btn-sm ${sel === q.name ? "on" : ""}`}
+                style={{ textAlign: "left" }} onClick={() => pick(q.name)}>⚡ {q.name}</button>
+            ))}
+            <button className="btn-ghost btn-sm" onClick={() => { setSel(""); setName(`query${(wb.queries?.length ?? 0) + 1}`); setSteps("[]"); }}>
+              + New
+            </button>
+          </div>
+          <div style={{ flex: 1, display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input className="inp" style={{ width: 120 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="Query name" />
+              <select className="inp" style={{ width: 90 }} value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+                <option value="csv">CSV</option><option value="tsv">TSV</option><option value="json">JSON</option>
+              </select>
+              <input className="inp" style={{ flex: 1 }} value={dest} onChange={(e) => setDest(e.target.value)} placeholder="Load into sheet (default: query name)" />
+            </div>
+            <input className="inp" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Source URL (or paste data below)" />
+            {kind === "json" && <input className="inp" value={jsonPath} onChange={(e) => setJsonPath(e.target.value)} placeholder="JSON path to array, e.g. data.items" />}
+            {!url && <textarea className="inp" value={text} onChange={(e) => setText(e.target.value)}
+              placeholder={`Paste ${kind.toUpperCase()} data here…`} style={{ minHeight: 70, fontFamily: "monospace", fontSize: 11 }} />}
+            <textarea className="inp" value={steps} onChange={(e) => setSteps(e.target.value)} spellCheck={false}
+              placeholder={STEP_HELP} title={STEP_HELP}
+              style={{ fontFamily: "monospace", fontSize: 11, minHeight: 90, resize: "vertical" }} />
+            {err && <div style={{ color: "#D64545", fontSize: 12 }}>{err}</div>}
+            {preview && (
+              <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+                <table style={{ fontSize: 11, borderCollapse: "collapse", width: "100%" }}>
+                  <thead><tr>{preview.headers.map((h, i) => <th key={i} style={{ padding: "3px 8px", borderBottom: "1px solid var(--line)", textAlign: "left" }}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {preview.rows.slice(0, 12).map((r, i) => (
+                      <tr key={i}>{r.map((v, j) => <td key={j} style={{ padding: "2px 8px" }}>{String(v ?? "")}</td>)}</tr>
+                    ))}
+                  </tbody>
+                </table>
+                {preview.rows.length > 12 && <div style={{ fontSize: 10, color: "#A19A95", padding: 4 }}>…{preview.rows.length - 12} more rows</div>}
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 14 }}>
+          <div>{sel && <button className="btn-ghost btn-sm" onClick={() => { onDelete(sel); setSel(""); }}>Delete</button>}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+            <button className="btn-ghost btn-sm" onClick={async () => {
+              setErr(""); setPreview(null);
+              try { const s = spec(); onSave(s); setPreview(await onPreview(s)); }
+              catch (e) { setErr((e as Error).message); }
+            }}>Preview</button>
+            <button className="btn-primary btn-sm" disabled={!preview} onClick={() => {
+              try { const s = spec(); onSave(s); onLoad(s, preview!); onClose(); }
+              catch (e) { setErr((e as Error).message); }
+            }}>Load to sheet</button>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -1406,5 +1406,78 @@ t("S18.1 decimal literals unaffected by prop rewrite", () => {
   assertEq(evaluateWorkbook(wb).get("S")!.get("A1")?.value, 3.75);
 });
 
+// ---------- S18.2 automation (Office Scripts-equivalent) ----------
+{
+  const { runScript } = await import("./src/sheets/script");
+  t("S18.2 script writes values and formulas", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: { A1: { v: 1 }, A2: { v: 2 } } }] };
+    const log = runScript(wb, `
+      const s = workbook.getActiveSheet();
+      s.getRange("A3").setValue(42);
+      s.getRange("B1:B2").setFormulas([["=A1*10"], ["=A2*10"]]);
+      console.log("done", s.getRange("A3").getValue());
+    `, "S");
+    assertEq(wb.sheets[0].cells.A3.v, 42);
+    assertEq(wb.sheets[0].cells.B1.f, "A1*10");
+    assertEq(log[0], "done 42");
+    assertEq(evaluateWorkbook(wb).get("S")!.get("B2")?.value, 20);
+  });
+  t("S18.2 script sheets + named items + sort", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: { A1: { v: 3 }, A2: { v: 1 }, A3: { v: 2 } } }] };
+    runScript(wb, `
+      const s = workbook.getSheet("S");
+      s.getRange("A1:A3").sort(0, true);
+      workbook.addSheet("Out").getCell(0, 0).setValue("hi");
+      workbook.addNamedItem("Top", "S!A1");
+      console.log(workbook.getNamedItem("Top").getValue());
+    `, "S");
+    assertEq(wb.sheets[0].cells.A1.v, 1);
+    assertEq(wb.sheets[1].cells.A1.v, "hi");
+    assertEq(wb.names?.Top, "S!A1");
+  });
+}
+
+// ---------- S18.3 Get & Transform ----------
+{
+  const { parseDelimited, jsonToTable, applySteps, runQuery, queryToSheet } = await import("./src/sheets/query");
+  t("S18.3 parseDelimited quoting", () => {
+    assertEq(parseDelimited('a,"b,c"\n1,"2\n2"', ","), [["a", "b,c"], ["1", "2\n2"]]);
+  });
+  t("S18.3 jsonToTable objects + path", () => {
+    const t = jsonToTable({ data: { items: [{ a: 1, b: "x" }, { a: 2, b: "y" }] } }, "data.items");
+    assertEq(t.headers, ["a", "b"]);
+    assertEq(t.rows[1], [2, "y"]);
+  });
+  t("S18.3 query pipeline filter+groupBy", async () => {
+    const spec = {
+      name: "q", source: { kind: "csv" as const, text: "cat,qty\na,5\nb,8\na,3\nc,1" },
+      steps: [
+        { op: "filter" as const, col: 1, cmp: ">" as const, value: "2" },
+        { op: "groupBy" as const, col: 0, agg: "sum" as const, valCol: 1 },
+        { op: "sort" as const, col: 1, dir: -1 as const },
+      ],
+    };
+    const res = await runQuery(spec);
+    assertEq(res.headers[0], "cat");
+    assertEq(res.rows, [["a", 8], ["b", 8]]);
+  });
+  t("S18.3 queryToSheet headers + autofilter", async () => {
+    const res = await runQuery({ name: "q", source: { kind: "csv", text: "x,y\n1,2" }, steps: [] });
+    const s = queryToSheet("Q", res);
+    assertEq(s.cells.A1.v, "x");
+    assertEq(s.cells.A2.v, 1);
+    assert(s.cells.A1.s?.b === true, "header bold");
+    assertEq(s.filter?.range, "A1:B1");
+  });
+  t("S18.3 cast + distinct + keepCols", () => {
+    const res = applySteps(
+      { headers: ["a", "b", "c"], rows: [["$1", "x", 9], ["$1", "x", 9], ["$2", "y", 8]] },
+      [{ op: "cast", col: 0, to: "number" }, { op: "distinct" }, { op: "keepCols", cols: [0, 1] }],
+    );
+    assertEq(res.headers, ["a", "b"]);
+    assertEq(res.rows, [[1, "x"], [2, "y"]]);
+  });
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
