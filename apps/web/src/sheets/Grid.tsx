@@ -192,7 +192,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
       const out: Run[] = [];
       let prev = -1;
       for (const n of [...set].sort((a, b) => a - b)) {
-        if (n !== prev + 1) out.push({ start: n, end: n, gapBefore: n - (prev + 1) });
+        if (!out.length || n !== prev + 1) out.push({ start: n, end: n, gapBefore: n - (prev + 1) });
         else out[out.length - 1].end = n;
         prev = n;
       }
