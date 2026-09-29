@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
@@ -44,6 +44,9 @@ export function PresentEditor({ item, initialDoc, permission }: {
   // P2.1 — "off" | "master" | `layout:${key}` (live-linked layout editing)
   const [masterView, setMasterView] = useState<string>("off");
   const [bgMenu, setBgMenu] = useState(false); // P2.5 — background panel
+  const [railView, setRailView] = useState<"slides" | "outline" | "sorter">("slides"); // P4.1/P4.2
+  const [sorterSel, setSorterSel] = useState<Set<number>>(new Set()); // P4.2 — sorter multi-select
+  const dragSlide = useRef<number | null>(null); // P4.2 — sorter drag source
   const [grad, setGrad] = useState({ c1: "#FFFFFF", c2: "#F2782E", angle: 135 });
   const bgImageRef = useRef<HTMLInputElement>(null);
   const [chartDlg, setChartDlg] = useState<{ id: string | null } | null>(null);
@@ -602,6 +605,85 @@ export function PresentEditor({ item, initialDoc, permission }: {
   };
   // P2.4 — slide size presets + custom
   const setSlideSize = (w: number, h: number) => mutate((d) => { d.slideW = w; d.slideH = h; });
+  // ---- P4.1 outline helpers — title = first text object; bullets = the rest
+  const stripHtml = (h?: string) => (h ?? "").replace(/<br\s*\/?\s*>/gi, "\n").replace(/<li[^>]*>/gi, "• ").replace(/<\/li>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim();
+  const outlineTitle = (s: Slide) => s.objects.find((o) => o.type === "text");
+  const outlineBodies = (s: Slide) => s.objects.filter((o) => o.type === "text").slice(1);
+  const commitOutlineTitle = (i: number, v: string) => {
+    mutate((d) => {
+      const s = d.slides[i];
+      const t = s.objects.find((o) => o.type === "text");
+      if (t) t.html = v;
+      else if (v.trim()) {
+        const maxZ = Math.max(0, ...s.objects.map((o) => o.z));
+        s.objects.push({ id: newId(), type: "text", x: 48, y: 32, w: dims.w - 96, h: 64, z: maxZ + 1, html: v, fontSize: 34, bold: true, color: theme.ink });
+      }
+    });
+  };
+  const commitOutlineBody = (i: number, objId: string, v: string) => {
+    mutate((d) => { const o = d.slides[i].objects.find((x) => x.id === objId); if (o) o.html = v.replace(/\n/g, "<br/>"); });
+  };
+  // P4.2 — sorter reorder/multi ops
+  const sorterMove = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0 || from >= deck.slides.length || to >= deck.slides.length) return;
+    mutate((d) => { const [s] = d.slides.splice(from, 1); d.slides.splice(to, 0, s); });
+    setSlideIdx(to);
+  };
+  const sorterDelete = () => {
+    if (deck.slides.length - sorterSel.size < 1) return toast("Deck needs at least one slide");
+    mutate((d) => { d.slides = d.slides.filter((_, i) => !sorterSel.has(i)); });
+    setSorterSel(new Set());
+    setSlideIdx(0);
+  };
+  const sorterDup = () => {
+    mutate((d) => {
+      const copies = [...sorterSel].sort((a, b) => a - b).map((i) => {
+        const c = structuredClone(d.slides[i]); c.id = newId(); c.objects.forEach((o) => { o.id = newId(); }); return c;
+      });
+      d.slides.push(...copies);
+    });
+    setSorterSel(new Set());
+  };
+  const sorterSetTransition = (type: string) => {
+    mutate((d) => { sorterSel.forEach((i) => { d.slides[i].transition = type === "none" ? undefined : { type: type as TransitionType, duration: 500 }; }); });
+  };
+
+  // P4.3 — find & replace across the deck (text objects + notes)
+  const [findQ, setFindQ] = useState("");
+  const [replaceQ, setReplaceQ] = useState("");
+  const [findOpen, setFindOpen] = useState(false);
+  const [printLayout, setPrintLayout] = useState<"slides" | "handout2" | "handout4" | "handout6" | "notes">("slides");
+  const findBarRef = useRef<HTMLDivElement>(null);
+  const findMatches = useMemo(() => {
+    const q = findQ.trim().toLowerCase();
+    if (!q) return [] as { slide: number; objId: string | null; where: string; snippet: string }[];
+    const out: { slide: number; objId: string | null; where: string; snippet: string }[] = [];
+    deck.slides.forEach((s, i) => {
+      for (const o of s.objects) {
+        const txt = stripHtml(o.html);
+        const k = txt.toLowerCase().indexOf(q);
+        if (k >= 0) out.push({ slide: i, objId: o.id, where: o.type, snippet: txt.slice(Math.max(0, k - 18), k + q.length + 22) });
+      }
+      const nk = (s.notes ?? "").toLowerCase().indexOf(q);
+      if (nk >= 0) out.push({ slide: i, objId: null, where: "notes", snippet: s.notes!.slice(Math.max(0, nk - 18), nk + q.length + 22) });
+    });
+    return out.slice(0, 60);
+  }, [deck, findQ]);
+  const replaceAll = () => {
+    const q = findQ.trim();
+    if (!q) return;
+    mutate((d) => {
+      for (const s of d.slides) {
+        for (const o of s.objects) if (o.html) o.html = replaceInHtml(o.html, q, replaceQ);
+        if (s.notes) s.notes = s.notes.split(q).join(replaceQ);
+      }
+    });
+    toast(`Replaced ${findMatches.length} match${findMatches.length === 1 ? "" : "es"}`);
+  };
+  /** Case-insensitive replace limited to text nodes (never inside tags). */
+  const replaceInHtml = (html: string, from: string, to: string) =>
+    html.split(/(<[^>]+>)/g).map((seg) => seg.startsWith("<") ? seg : seg.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), to)).join("");
+
   // P2.5 — slide background: flat color, gradient string, or picture layer
   const setBg = (v?: string) => mutate((d) => { d.slides[slideIdx].bg = v; });
   const applyBgToAll = () => mutate((d) => {
@@ -738,6 +820,14 @@ export function PresentEditor({ item, initialDoc, permission }: {
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" onClick={() => pptxRef.current?.click()}>Import</button>
         <input ref={pptxRef} type="file" accept=".pptx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
+        <select className="rb-sel" value={printLayout} title="Print layout (P4.5)"
+          onChange={(e) => setPrintLayout(e.target.value as typeof printLayout)}>
+          <option value="slides">Full-page slides</option>
+          <option value="handout2">Handouts · 2/page</option>
+          <option value="handout4">Handouts · 4/page</option>
+          <option value="handout6">Handouts · 6/page</option>
+          <option value="notes">Notes pages</option>
+        </select>
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Export PDF</button>
         <button className="btn-ghost btn-sm" onClick={() => void exportPptx(deck, title).catch(() => toast("Export failed"))}>Export .pptx</button>
         <button className="btn-primary btn-sm" onClick={() => setPresenting("present")}>▶ Present</button>
@@ -753,6 +843,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
             <option value="">＋ Slide…</option>
             {LAYOUTS.filter((l) => l.id !== "blank").map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
+          <button className="rb" title="Slideshow from this slide (reading view)" onClick={() => setPresenting("present")}>▶</button>
           <button className="rb" title="Presenter view" style={{ fontSize: 11 }} onClick={() => setPresenting("presenter")}>🖥</button>
           <select className="rb-sel" value={masterView !== "off" ? "__mv" : slide.layout ?? "blank"} onChange={(e) => setLayout(e.target.value)} title="Layout (built-ins replace objects; custom layouts render live-linked)" disabled={masterView !== "off"}>
             {LAYOUTS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -881,6 +972,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
           <button className="rb" title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
+          <button className={`rb ${findOpen ? "on" : ""}`} title="Find & replace (P4.3)" onClick={() => setFindOpen((v) => !v)}>🔍</button>
           <select className="rb-sel" value={slide.transition?.type ?? "none"} title="Slide transition (P3.4)"
             onChange={(e) => setTransition(e.target.value as TransitionType)}>
             <option value="none">No transition</option>
@@ -1086,10 +1178,66 @@ export function PresentEditor({ item, initialDoc, permission }: {
         </div>
       )}
 
+      {/* P4.3 — find & replace across the deck */}
+      {findOpen && (
+        <div className="find-bar" ref={findBarRef}>
+          <input className="fb-in" placeholder="Find in deck…" value={findQ} autoFocus
+            onChange={(e) => setFindQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setFindOpen(false); }} />
+          <input className="fb-in" placeholder="Replace with…" value={replaceQ}
+            onChange={(e) => setReplaceQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setFindOpen(false); }} />
+          <button className="rb" disabled={!findMatches.length} onClick={replaceAll}>Replace all ({findMatches.length})</button>
+          <button className="rb" onClick={() => setFindOpen(false)}>✕</button>
+          {findQ && (
+            <div className="fb-results">
+              {findMatches.map((m, i) => (
+                <div key={i} className="fb-match" title={`Slide ${m.slide + 1} · ${m.where}`}
+                  onClick={() => { setSlideIdx(m.slide); if (m.objId) setSelection(new Set([m.objId])); setRailView("slides"); }}>
+                  <b>S{m.slide + 1}</b> <span className="fb-where">{m.where}</span> …{m.snippet}…
+                </div>
+              ))}
+              {findQ && !findMatches.length && <div className="fb-match" style={{ cursor: "default" }}>No matches</div>}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="present-body" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
-        {/* slide rail — P2.2 section headers group contiguous slides; P2.3 hidden slides dim */}
+        {/* slide rail — P2.2 section headers group contiguous slides; P2.3 hidden slides dim; P4.1/4.2 view modes */}
         <div className="slide-rail">
-          {(() => {
+          <div className="rail-view-sw">
+            {([["slides", "▤", "Slides"], ["outline", "¶", "Outline view"], ["sorter", "⊞", "Slide sorter"]] as const).map(([v, g, t]) => (
+              <button key={v} className={railView === v ? "on" : ""} title={t}
+                onClick={() => { setRailView(v); if (v === "sorter") setSorterSel(new Set([slideIdx])); }}>{g}</button>
+            ))}
+          </div>
+          {railView === "outline" && (
+            <div className="outline">
+              {deck.slides.map((s, i) => (
+                <div key={s.id} className={`ol-card ${i === slideIdx ? "active" : ""}`}>
+                  <div className="ol-title-row">
+                    <span className="rail-num">{i + 1}</span>
+                    <input className="ol-title" placeholder="Slide title" defaultValue={stripHtml(outlineTitle(s)?.html)}
+                      key={`t${s.id}:${(outlineTitle(s)?.html ?? "").length}`}
+                      onFocus={() => setSlideIdx(i)}
+                      onBlur={(e) => commitOutlineTitle(i, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); commitOutlineTitle(i, (e.target as HTMLInputElement).value); if (i === deck.slides.length - 1) addSlide("title-content"); else setSlideIdx(i + 1); }
+                        if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+                      }} />
+                  </div>
+                  {outlineBodies(s).map((o) => (
+                    <textarea key={`b${o.id}:${(o.html ?? "").length}`} className="ol-body" placeholder="Bullets…"
+                      defaultValue={stripHtml(o.html)} rows={Math.min(6, Math.max(1, stripHtml(o.html).split("\n").length))}
+                      onFocus={() => setSlideIdx(i)}
+                      onBlur={(e) => commitOutlineBody(i, o.id, e.target.value)} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+          {railView !== "outline" && (() => {
             const thumb = (s: Slide, i: number) => (
               <div key={s.id} className={`rail-slide ${i === slideIdx ? "active" : ""} ${s.hidden ? "hidden" : ""}`}
                 onClick={() => { setSlideIdx(i); setSelection(new Set()); setEditingObj(null); setCropId(null); }}>
@@ -1140,7 +1288,52 @@ export function PresentEditor({ item, initialDoc, permission }: {
           )}
         </div>
 
-        {/* canvas + notes */}
+        {/* P4.2 — slide sorter replaces the canvas; otherwise canvas + notes */}
+        {railView === "sorter" ? (
+          <div className="sorter">
+            <div className="sorter-bar">
+              <span>{sorterSel.size ? `${sorterSel.size} selected` : "Slide sorter"}</span>
+              <button className="rb" disabled={!sorterSel.size} onClick={sorterDup} title="Duplicate selected">⧉</button>
+              <button className="rb" disabled={!sorterSel.size} title="Hide/unhide selected"
+                onClick={() => mutate((d) => { sorterSel.forEach((i) => { const s = d.slides[i]; s.hidden = !s.hidden; }); })}>👁</button>
+              <select className="rb-sel" value="" title="Transition for selected"
+                onChange={(e) => { if (e.target.value) sorterSetTransition(e.target.value); e.target.value = ""; }}>
+                <option value="">Transition…</option>
+                <option value="none">None</option>
+                <option value="fade">Fade</option><option value="slide">Slide</option><option value="push">Push</option>
+                <option value="cover">Cover</option><option value="wipe">Wipe</option><option value="split">Split</option>
+                <option value="blinds">Blinds</option><option value="zoom">Zoom</option><option value="dissolve">Dissolve</option>
+                <option value="morph">Morph</option><option value="flip">Flip</option>
+              </select>
+              <button className="rb" disabled={!sorterSel.size || deck.slides.length - sorterSel.size < 1} onClick={sorterDelete} title="Delete selected">🗑</button>
+              <button className="rb" style={{ marginLeft: "auto" }} onClick={() => setRailView("slides")}>Done</button>
+            </div>
+            <div className="sorter-grid">
+              {deck.slides.map((s, i) => (
+                <div key={s.id} className={`sorter-cell ${sorterSel.has(i) ? "sel" : ""} ${s.hidden ? "hidden" : ""}`}
+                  draggable
+                  onDragStart={() => { dragSlide.current = i; }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => { if (dragSlide.current != null) sorterMove(dragSlide.current, i); dragSlide.current = null; }}
+                  onClick={(e) => {
+                    if (e.ctrlKey || e.metaKey) { const n = new Set(sorterSel); n.has(i) ? n.delete(i) : n.add(i); setSorterSel(n); }
+                    else if (e.shiftKey && sorterSel.size) { const a = Math.min(...sorterSel); const n = new Set<number>(); for (let k = Math.min(a, i); k <= Math.max(a, i); k++) n.add(k); setSorterSel(n); }
+                    else { setSorterSel(new Set([i])); setSlideIdx(i); }
+                  }}
+                  onDoubleClick={() => { setSlideIdx(i); setRailView("slides"); }}>
+                  <div className="sorter-thumb" style={{ width: dims.w * 0.19, height: dims.h * 0.19 }}>
+                    <SlideCanvas slide={s} theme={theme} scale={0.19} selection={new Set()} under={underObjs(s)} size={dims} />
+                  </div>
+                  <div className="sorter-meta">
+                    <span>{i + 1}</span>
+                    {s.transition && s.transition.type !== "none" && <span className="sorter-t" title={`Transition: ${s.transition.type}`}>⚡{s.transition.type}</span>}
+                    {s.hidden && <span title="Hidden">∅</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
         <div className="canvas-col">
           <div className="canvas-wrap" ref={canvasWrap}>
             <div style={{ width: dims.w * zoom, height: dims.h * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
@@ -1157,16 +1350,47 @@ export function PresentEditor({ item, initialDoc, permission }: {
             value={slide.notes ?? ""}
             onChange={(e) => mutateSlide((s) => { s.notes = e.target.value; }, `notes:${slide.id}`)} />
         </div>
+        )}
       </div>
 
-      {/* print overlay for PDF export (portal so print CSS can hide the app) */}
+      {/* print overlay for PDF export (portal so print CSS can hide the app) — P4.5 layouts */}
       {printing && createPortal(
         <div className="print-deck">
-          {deck.slides.map((s) => (
+          {printLayout === "slides" && deck.slides.map((s) => (
             <div key={s.id} className="print-slide" style={{ width: dims.w, height: dims.h, position: "relative", overflow: "hidden" }}>
               <SlideCanvas slide={s} theme={theme} scale={1} selection={new Set()} under={underObjs(s)} size={dims} />
             </div>
           ))}
+          {printLayout === "notes" && deck.slides.map((s, i) => (
+            <div key={s.id} className="print-notes-page">
+              <div className="pn-slide" style={{ width: dims.w * 0.55, height: dims.h * 0.55, position: "relative", overflow: "hidden" }}>
+                <SlideCanvas slide={s} theme={theme} scale={0.55} selection={new Set()} under={underObjs(s)} size={dims} />
+              </div>
+              <div className="pn-num">Slide {i + 1}</div>
+              <div className="pn-notes">{s.notes || <i style={{ color: "#A19A95" }}>No speaker notes</i>}</div>
+            </div>
+          ))}
+          {printLayout.startsWith("handout") && (() => {
+            const per = printLayout === "handout2" ? 2 : printLayout === "handout4" ? 4 : 6;
+            const pages: Slide[][] = [];
+            for (let i = 0; i < deck.slides.length; i += per) pages.push(deck.slides.slice(i, i + per));
+            const tw = per === 2 ? 620 : per === 4 ? 360 : 240;
+            return pages.map((pg, pi) => (
+              <div key={pi} className="print-handout-page" style={{ gridTemplateColumns: `repeat(${per === 2 ? 1 : per === 4 ? 2 : 3}, ${tw}px)` }}>
+                {pg.map((s, si) => {
+                  const gi = pi * per + si;
+                  return (
+                    <div key={s.id} className="ph-cell">
+                      <div className="ph-slide" style={{ width: tw, height: Math.round(tw * dims.h / dims.w), position: "relative", overflow: "hidden" }}>
+                        <SlideCanvas slide={s} theme={theme} scale={tw / dims.w} selection={new Set()} under={underObjs(s)} size={dims} />
+                      </div>
+                      <span className="ph-num">{gi + 1}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ));
+          })()}
         </div>,
         document.body,
       )}
