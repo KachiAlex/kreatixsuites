@@ -41,6 +41,10 @@ export interface PdfField {
   group?: string;       // radio group name (defaults to name)
   required?: boolean;
   value?: string | boolean;
+  /** "sum:a,b,c" — recompute as the sum of the named sibling fields */
+  calc?: string;
+  /** regex pattern the text value must match (HTML pattern validation) */
+  pattern?: string;
 }
 
 export interface PdfDoc {

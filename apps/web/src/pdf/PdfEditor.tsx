@@ -29,7 +29,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe";
 const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize" | "compare";
 type Rect4 = [number, number, number, number];
@@ -56,6 +56,7 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "redact", ico: "▮", label: "Redact — permanently removes the marked content on export" },
   { id: "caret", ico: "⌃", label: "Insert text at caret — click where text should be inserted, then type it" },
   { id: "replace", ico: "⌁", label: "Replace text — select text, then type the suggested replacement" },
+  { id: "loupe", ico: "🔎", label: "Loupe — hover to magnify (viewing tool)" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
@@ -116,7 +117,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string; sanitize: boolean; optimize: boolean }>
     ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false });
   const [speaking, setSpeaking] = useState(false);
-  const [cmp, setCmp] = useState<{ page: number; st: string }[] | null>(null);
+  const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
   const cmpRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState("");
@@ -140,6 +141,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const loadTaskRef = useRef<{ destroy: () => void } | null>(null);
   const mergeRef = useRef<HTMLInputElement>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
+  const fdfRef = useRef<HTMLInputElement>(null);
   const imgPending = useRef<{ page: number; rect: Rect4 } | null>(null);
   const session = useCollabSession(item.id);
 
@@ -412,7 +414,16 @@ export function PdfEditor({ item, initialDoc, permission }: {
         options: fieldKind === "dropdown" || fieldKind === "list" ? ["Option 1", "Option 2"] : undefined });
     });
   const patchField = (id: string, p: Partial<PdfField>, key?: string) =>
-    mutate((d) => { const f = d.fields?.find((x) => x.id === id); if (f) Object.assign(f, p); }, key);
+    mutate((d) => {
+      const f = d.fields?.find((x) => x.id === id);
+      if (f) Object.assign(f, p);
+      // PDF-10.1 — recompute calc fields whenever a value changes
+      for (const cf of d.fields ?? []) {
+        if (!cf.calc?.startsWith("sum:")) continue;
+        const names = cf.calc.slice(4).split(",").map((s) => s.trim()).filter(Boolean);
+        cf.value = names.reduce((s, n) => s + (parseFloat(String(d.fields?.find((x) => x.name === n)?.value ?? "")) || 0), 0).toString();
+      }
+    }, key);
   const delField = (id: string) => mutate((d) => { d.fields = (d.fields ?? []).filter((f) => f.id !== id); });
   const moveField = (id: string, dx: number, dy: number) =>
     mutate((d) => { const f = d.fields?.find((x) => x.id === id); if (f) { f.rect[0] += dx; f.rect[1] += dy; } }, `fmove:${id}`);
@@ -613,10 +624,19 @@ export function PdfEditor({ item, initialDoc, permission }: {
         p <= d.numPages
           ? (await d.getPage(p)).getTextContent().then((t) => t.items.map((i) => ("str" in i ? i.str : "")).join("").replace(/\s+/g, " ").trim())
           : null;
-      const out: { page: number; st: string }[] = [];
+      const out: { page: number; st: string; a?: string; b?: string }[] = [];
       for (let p = 1; p <= Math.max(doc.numPages, other.numPages); p++) {
         const [a, b] = await Promise.all([pageText(doc, p), pageText(other, p)]);
-        out.push({ page: p, st: a === b ? "identical" : a == null ? "only in other" : b == null ? "missing in other" : "changed" });
+        const row: { page: number; st: string; a?: string; b?: string } =
+          { page: p, st: a === b ? "identical" : a == null ? "only in other" : b == null ? "missing in other" : "changed" };
+        if (row.st === "changed") {
+          // first divergence — longest common prefix, then show context
+          let i = 0;
+          while (i < a!.length && i < b!.length && a![i] === b![i]) i++;
+          row.a = a!.slice(Math.max(0, i - 15), i + 45);
+          row.b = b!.slice(Math.max(0, i - 15), i + 45);
+        }
+        out.push(row);
       }
       setCmp(out);
       setPanel("compare");
@@ -786,6 +806,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
             fr.readAsDataURL(f);
             imgPending.current = null;
           }} />
+        <input ref={fdfRef} type="file" accept=".fdf,.xfdf" hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]; e.target.value = "";
+            if (!f) return;
+            void f.text().then((t) => import("./fdf").then(({ parseFdf }) => {
+              const imported = parseFdf(t);
+              if (!imported.length) { toast("No annotations found in that FDF"); return; }
+              mutate((d) => { d.annotations.push(...imported); });
+              toast(`Imported ${imported.length} annotation${imported.length === 1 ? "" : "s"}`);
+            }));
+          }} />
       </div>
 
       <div className="work">
@@ -837,12 +868,25 @@ export function PdfEditor({ item, initialDoc, permission }: {
                       <div style={{ flex: 1 }}><div className="pdf-annrow-label">Page {r.page}</div>
                         <div className="pdf-annrow-meta">{r.st}</div></div>
                     </div>
+                    {r.st === "changed" && (
+                      <div className="pdf-annrow-detail" onClick={(e) => e.stopPropagation()}>
+                        <div className="pdf-annreply"><b>this doc</b> …{r.a}…</div>
+                        <div className="pdf-annreply"><b>other</b> …{r.b}…</div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
             {panel === "anns" && (
               <div className="pdf-annlist">
+                <div style={{ display: "flex", gap: 6, padding: "0 2px" }}>
+                  <button className="btn-ghost btn-sm" style={{ flex: 1 }}
+                    disabled={!annDoc.annotations.length}
+                    onClick={() => import("./fdf").then(({ exportFdf }) => exportFdf(annDoc.annotations, title))}>⇪ Export .fdf</button>
+                  <button className="btn-ghost btn-sm" style={{ flex: 1 }} disabled={!canEdit}
+                    onClick={() => fdfRef.current?.click()}>⇩ Import .fdf</button>
+                </div>
                 {!annDoc.annotations.length && <div className="empty">No annotations yet — draw one with the markup tools</div>}
                 {[...annDoc.annotations].sort((x, y) => x.page - y.page || (x.createdAt ?? "").localeCompare(y.createdAt ?? "")).map((a) => (
                   <AnnRow key={a.id} a={a} sel={selAnn === a.id} canEdit={canEdit} userName={user?.displayName ?? "You"}
@@ -1218,6 +1262,9 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   const [plPts, setPlPts] = useState<[number, number][]>([]);   // in-progress polyline vertices (viewport px)
   const [plCur, setPlCur] = useState<[number, number] | null>(null);
   const [readout, setReadout] = useState<string | null>(null); // measure result badge
+  const [loupe, setLoupe] = useState<[number, number] | null>(null); // PDF-11.2
+  const loupeRef = useRef<HTMLCanvasElement>(null);
+  const loupeBusy = useRef(false);
   const [editText, setEditText] = useState<string | null>(null);
   const dragRef = useRef<{ kind: "draw"; sx: number; sy: number; x: number; y: number } | { kind: "move"; id: string; sx: number; sy: number; field?: boolean } | null>(null);
   const movedFlag = useRef(false);
@@ -1317,6 +1364,24 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   }, [plPts]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setPlPts([]); setPlCur(null); setReadout(null); }, [tool]);
 
+  // PDF-11.2 — loupe: render the page magnified, translated so the cursor
+  // point lands in the loupe's center. Drops frames while a render is running.
+  const LOUPE = 200, MAG = 2.4;
+  const renderLoupe = (x: number, y: number) => {
+    const pg = pageRef.current, c = loupeRef.current;
+    if (!pg || !c || loupeBusy.current) return;
+    loupeBusy.current = true;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = LOUPE * dpr; c.height = LOUPE * dpr;
+    c.style.width = `${LOUPE}px`; c.style.height = `${LOUPE}px`;
+    const vp2 = pg.getViewport({ scale: scale * MAG, rotation: (pg.rotate + (viewRot ?? 0)) % 360 });
+    const k = (LOUPE * dpr) / vp2.width;
+    void pg.render({
+      canvas: c, viewport: vp2,
+      transform: [1, 0, 0, 1, (LOUPE * dpr) / 2 - x * MAG * k, (LOUPE * dpr) / 2 - y * MAG * k],
+    }).promise.finally(() => { loupeBusy.current = false; });
+  };
+
   const finishPolyline = (pts: [number, number][]) => {
     if (pts.length > 1 && vp())
       onAdd({ type: "polyline", points: pts.map(([x, y]) => vp()!.convertToPdfPoint(x, y) as [number, number]), color: toolColor });
@@ -1328,6 +1393,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     if (tool === "select" || tool === "pan") return;
     const b = boxRef.current!.getBoundingClientRect();
     const x = e.clientX - b.left, y = e.clientY - b.top;
+    if (tool === "loupe") return; // viewing tool — moves only
     if (tool === "polyline") {
       // two consecutive clicks on the same spot (≤6px) finish the path
       const last = plPts[plPts.length - 1];
@@ -1360,10 +1426,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     else setPreview({ x, y, w: 0, h: 0 }); // zoombox/measure preview via the same rect
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
     const b = boxRef.current!.getBoundingClientRect();
     const x = e.clientX - b.left, y = e.clientY - b.top;
+    if (tool === "loupe") { setLoupe([x, y]); renderLoupe(x, y); }
+    const d = dragRef.current;
+    if (!d) return;
     if (d.kind === "move") {
       if (Math.abs(x - d.sx) + Math.abs(y - d.sy) > 1) movedFlag.current = true;
       (d.field ? fieldApi?.move : onMove)?.(d.id, (x - d.sx) / scale, (y - d.sy) / scale); d.sx = x; d.sy = y;
@@ -1506,6 +1573,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     <div ref={boxRef} className={`pdf-page ${tool !== "select" ? "draw" : ""}`}
       style={{ width: size.w || undefined, height: size.h || undefined }}
       onPointerDown={onPointerDown} onPointerMove={(e) => { onPointerMove(e); onPolylineHover(e); }} onPointerUp={onPointerUp} onMouseUp={onMouseUp}
+      onPointerLeave={() => setLoupe(null)}
       onDoubleClick={() => { if (tool === "polyline" && plPts.length > 1) finishPolyline(plPts.slice(0, -1)); }}>
       <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
       <div ref={textRef} />
@@ -1551,6 +1619,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         </svg>
       )}
       {readout && <div className="pdf-measure">📏 {readout}</div>}
+      {loupe && tool === "loupe" && (
+        <div className="pdf-loupe" style={{ left: loupe[0] + 16, top: loupe[1] + 16, width: LOUPE, height: LOUPE }}>
+          <canvas ref={loupeRef} />
+        </div>
+      )}
       {/* html-rendered anns: notes, textboxes, stamps */}
       {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace").map((a) => {
         const sel = selAnn === a.id;
@@ -1666,6 +1739,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         switch (f.kind) {
           case "text":
             return shell(<input className="pdf-field-in" value={String(f.value ?? "")}
+              pattern={f.pattern} title={f.pattern ? `Must match: ${f.pattern}` : undefined}
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
               onChange={(e) => fieldApi?.patch(f.id, { value: e.target.value }, `fv:${f.id}`)} />);
           case "checkbox":
@@ -1710,6 +1784,14 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
             {f.kind === "radio" && (
               <input value={f.group ?? ""} title="Radio group" placeholder="group"
                 onChange={(e) => fieldApi.patch(f.id, { group: e.target.value }, `fg:${f.id}`)} />
+            )}
+            {f.kind === "text" && (
+              <>
+                <input value={f.pattern ?? ""} title="Validation regex (e.g. ^\\d+$)" placeholder="regex"
+                  onChange={(e) => fieldApi.patch(f.id, { pattern: e.target.value || undefined }, `fp:${f.id}`)} />
+                <input value={f.calc ?? ""} title="Calculation (sum:name1,name2)" placeholder="sum:a,b"
+                  onChange={(e) => fieldApi.patch(f.id, { calc: e.target.value || undefined }, `fc:${f.id}`)} />
+              </>
             )}
             <label title="Required"><input type="checkbox" checked={!!f.required}
               onChange={(e) => fieldApi.patch(f.id, { required: e.target.checked })} />req</label>
