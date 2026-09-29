@@ -21,6 +21,8 @@ export interface PdfAnn {
   points?: [number, number][];
   text?: string;
   img?: string; // PDF-2 — signature image (PNG data URL)
+  font?: "helv" | "times" | "courier"; // PDF-8.4 — textbox font family
+  fontSize?: number;                   // PDF-8.4 — textbox size (pt)
   // PDF-5 — review metadata
   author?: string;
   status?: "accepted" | "rejected" | "completed" | "none";
@@ -30,7 +32,7 @@ export interface PdfAnn {
 
 // PDF-6 — form fields authored on top of the page (become real AcroForm
 // fields on export via pdf-lib)
-export type FieldKind = "text" | "checkbox" | "radio" | "dropdown" | "list";
+export type FieldKind = "text" | "checkbox" | "radio" | "dropdown" | "list" | "signature" | "barcode";
 export interface PdfField {
   id: string;
   page: number; // 1-based
@@ -45,6 +47,10 @@ export interface PdfField {
   calc?: string;
   /** regex pattern the text value must match (HTML pattern validation) */
   pattern?: string;
+  /** prefill when no value is set */
+  defaultValue?: string;
+  /** comb field — max chars, rendered as evenly-spaced boxes */
+  comb?: number;
 }
 
 export interface PdfDoc {

@@ -41,6 +41,12 @@ export async function buildFlattenedPdf(
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const helv = await src.embedFont(StandardFonts.Helvetica);
   const helvB = await src.embedFont(StandardFonts.HelveticaBold);
+  // PDF-8.4 — textbox font selection
+  const annFonts = {
+    helv, helvB,
+    times: await src.embedFont(StandardFonts.TimesRoman),
+    courier: await src.embedFont(StandardFonts.Courier),
+  };
 
   // ---- fill + flatten AcroForm fields ----
   try {
@@ -82,7 +88,9 @@ export async function buildFlattenedPdf(
           const tf = form.createTextField(f.name);
           tf.addToPage(pg, { x, y, width: w, height: h, borderWidth: 1 });
           if (f.required) tf.enableRequired();
-          if (f.value) tf.setText(String(f.value));
+          if (f.comb) { try { tf.setMaxLength(f.comb); tf.enableCombing(); } catch { /* comb unsupported */ } }
+          const v = String(f.value ?? "") || f.defaultValue;
+          if (v) tf.setText(v);
         } else if (f.kind === "checkbox") {
           const cb = form.createCheckBox(f.name);
           cb.addToPage(pg, { x, y, width: w, height: h });
@@ -92,6 +100,24 @@ export async function buildFlattenedPdf(
           const rg = (() => { try { return form.getRadioGroup(f.group ?? f.name); } catch { return form.createRadioGroup(f.group ?? f.name); } })();
           rg.addOptionToPage(f.name, pg, { x, y, width: w, height: h });
           if (f.value) try { rg.select(f.name); } catch { /* option missing */ }
+        } else if (f.kind === "signature") {
+          // drawn signature baked as an image (not a cryptographic /Sig field)
+          if (f.value) {
+            const sig = await src.embedPng(String(f.value).split(",")[1]);
+            pg.drawImage(sig, { x, y, width: w, height: h });
+          }
+          pg.drawRectangle({ x, y, width: w, height: h, borderWidth: 1, borderColor: rgb(0.5, 0.5, 0.5) });
+        } else if (f.kind === "barcode") {
+          // pseudo-barcode — bars derived from character codes (not a real symbology)
+          pg.drawRectangle({ x, y, width: w, height: h, borderWidth: 1, borderColor: rgb(0.5, 0.5, 0.5) });
+          let bx = x + 2;
+          for (const c of String(f.value ?? "")) {
+            const bw = (c.charCodeAt(0) % 3) + 1;
+            if (bx + bw > x + w - 2) break;
+            pg.drawRectangle({ x: bx, y: y + 2, width: bw, height: h - 8, color: rgb(0, 0, 0) });
+            bx += bw + 1.5;
+          }
+          if (f.value) pg.drawText(String(f.value), { x: x + 2, y: y + 2, size: Math.min(6, h / 4), font: helv, color: rgb(0, 0, 0) });
         } else {
           const opts = f.options?.length ? f.options : [" "];
           const dd = f.kind === "list" ? form.createOptionList(f.name) : form.createDropdown(f.name);
@@ -245,11 +271,14 @@ export async function buildFlattenedPdf(
         }
         case "textbox": {
           const [x, y, w, h] = a.rects![0];
-          let ty = y + h - 11;
+          const f = annFonts[a.font ?? "helv"] ?? helv;
+          const sz = a.fontSize ?? 9;
+          const adv = sz * 1.25;
+          let ty = y + h - adv;
           for (const line of safe(a.text ?? "").split("\n")) {
-            if (ty < y + 4) break;
-            page.drawText(line.slice(0, Math.floor(w / 4.6)), { x: x + 3, y: ty, size: 9, font: helv, color: rgb(0.09, 0.09, 0.09) });
-            ty -= 11;
+            if (ty < y + 3) break;
+            page.drawText(line.slice(0, Math.max(4, Math.floor(w / (sz * 0.52)))), { x: x + 3, y: ty, size: sz, font: f, color: rgb(0.09, 0.09, 0.09) });
+            ty -= adv;
           }
           break;
         }
