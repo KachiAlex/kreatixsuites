@@ -11,7 +11,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef } from "./model";
+import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef } from "./model";
 import { evaluateSheetIn, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1 } from "./io";
@@ -22,6 +22,7 @@ import { FxInput } from "./FxInput";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
 const CF_COLORS = ["#D4F5E2", "#FFE1DA", "#FFF3C4", "#DCE9FF"];
+const fmtStat = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 
 export function SheetsEditor({ item, initialDoc, permission }: {
   item: DriveItem;
@@ -41,8 +42,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [chartOpen, setChartOpen] = useState(false);
   const [nameMgr, setNameMgr] = useState(false);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
+  const [zoom, setZoom] = useState(1);
   const csvRef = useRef<HTMLInputElement>(null);
   const xlsxRef = useRef<HTMLInputElement>(null);
+  const nameBoxRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const pendingJson = useRef<unknown>(null);
 
@@ -51,15 +54,22 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     return d?.workbook?.sheets?.length ? d.workbook : { sheets: [{ name: "Sheet1", cells: {} }] };
   });
   const [active, setActive] = useState(0);
-  const [selection, setSelection] = useState<Range>({ c1: 0, r1: 0, c2: 0, r2: 0 });
+  // multi-range: last entry is the active range (Ctrl+click/drag adds more)
+  const [selections, setSelections] = useState<Range[]>([{ c1: 0, r1: 0, c2: 0, r2: 0 }]);
+  const selection = selections[selections.length - 1];
+  const setSelection = useCallback((r: Range) => setSelections([r]), []);
+  const addSelection = useCallback((r: Range) => setSelections((p) => [...p, r]), []);
+  const extendSelection = useCallback((r: Range) => setSelections((p) => [...p.slice(0, -1), r]), []);
   const [renamingTab, setRenamingTab] = useState<number | null>(null);
+  const [tabMenu, setTabMenu] = useState<{ i: number; x: number; y: number } | null>(null);
+  const dragTab = useRef<number | null>(null);
   const undoStack = useRef<Workbook[]>([]);
   const redoStack = useRef<Workbook[]>([]);
   const [, forceUi] = useState(0);
 
   const sheet = wb.sheets[Math.min(active, wb.sheets.length - 1)];
   const evals = useMemo(() => evaluateSheetIn(wb, sheet.name), [wb, sheet.name]);
-  const selRefs = useMemo(() => [...rangeRefs(selection)], [selection]);
+  const selRefs = useMemo(() => selections.flatMap((r) => [...rangeRefs(r)]), [selections]);
   const anchorRef = toA1(selection.c1, selection.r1);
 
   // ---- collab: per-sheet keys in a shared Y.Map; remote applies merge in ----
@@ -125,6 +135,27 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     }
     return set;
   }, [audit, anchorRef, sheet, wb]);
+
+  // status-bar quick stats over the whole multi-range selection
+  const selStats = useMemo(() => {
+    const vals: number[] = [];
+    let count = 0;
+    for (const ref of selRefs) {
+      const cell = sheet.cells[ref];
+      if (!cell || (cell.v === undefined && !cell.f)) continue;
+      count++;
+      const v = cell.f ? evals.get(ref)?.value : cell.v;
+      if (typeof v === "number" && !isNaN(v)) vals.push(v);
+    }
+    if (!count) return null;
+    const sum = vals.reduce((a, b) => a + b, 0);
+    return {
+      count, nums: vals.length, sum,
+      avg: vals.length ? sum / vals.length : null,
+      min: vals.length ? Math.min(...vals) : null,
+      max: vals.length ? Math.max(...vals) : null,
+    };
+  }, [selRefs, sheet.cells, evals]);
 
   // ---- mutation helpers ----
   const mutate = useCallback((fn: (wb: Workbook) => void, save = true) => {
@@ -356,6 +387,33 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     mutate((w) => adjustForRowsCols(w.sheets[active], "col", selection.c1, -(selection.c2 - selection.c1 + 1), w));
   }, [mutate, active, selection]);
 
+  // ---- geometry: col widths / row heights / hide / header ops ----
+  const onGeom = useCallback((axis: "col" | "row", i: number, size: number) => {
+    mutateSheet((s) => {
+      const key = axis === "col" ? "colWidths" : "rowHeights";
+      s[key] = { ...s[key], [i]: Math.round(size) };
+    });
+  }, [mutateSheet]);
+
+  const onHeader = useCallback((action: "ins" | "del" | "hide" | "unhide", axis: "col" | "row", index: number) => {
+    const lo = axis === "row" ? selection.r1 : selection.c1;
+    const hi = axis === "row" ? selection.r2 : selection.c2;
+    const inSel = index >= lo && index <= hi;
+    const at = inSel ? lo : index;
+    const count = inSel ? hi - lo + 1 : 1;
+    if (action === "ins" || action === "del") {
+      mutate((w) => adjustForRowsCols(w.sheets[active], axis, at, action === "ins" ? count : -count, w));
+    } else {
+      mutateSheet((s) => {
+        const key = axis === "row" ? "hiddenRows" : "hiddenCols";
+        const cur = new Set(s[key] ?? []);
+        if (action === "hide") { for (let i = at; i < at + count; i++) cur.add(i); }
+        else { for (let i = lo; i <= hi; i++) cur.delete(i); cur.delete(index); }
+        s[key] = cur.size ? [...cur].sort((a, b) => a - b) : undefined;
+      });
+    }
+  }, [mutate, mutateSheet, selection, active]);
+
   // merge / unmerge
   const mergeSel = useCallback(() => {
     if (selection.c1 === selection.c2 && selection.r1 === selection.r2) return toast("Select a range to merge");
@@ -398,6 +456,20 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     });
     setActive(i + 1);
   };
+  const hideSheet = (i: number) => {
+    if (wb.sheets.filter((s) => !s.hidden).length <= 1) return toast("Cannot hide the only visible sheet");
+    mutate((w) => { w.sheets[i].hidden = true; });
+    if (i === active) {
+      const next = wb.sheets.findIndex((s, j) => j !== i && !s.hidden);
+      if (next >= 0) setActive(next);
+    }
+  };
+  useEffect(() => {
+    if (!tabMenu) return;
+    const close = () => setTabMenu(null);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [tabMenu]);
 
   // ---- conditional formatting ----
   const addCF = (op: string, value: number, bg: string) => {
@@ -463,6 +535,37 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     const p = parseA1(ref ?? "");
     if (p) setSelection({ c1: p.col, r1: p.row, c2: p.col, r2: p.row });
   };
+
+  // ---- Go To / name-box navigation: B5, A1:C9, Sheet2!A1, or a defined name ----
+  const goTo = useCallback((raw: string) => {
+    const t = raw.trim();
+    if (!t) return;
+    // defined name → its refers-to
+    const named = Object.entries(wb.names ?? {}).find(([k]) => k.toLowerCase() === t.toLowerCase());
+    let target = named ? named[1] : t;
+    // optional sheet qualifier
+    const q = target.match(/^(?:'([^']+)'|([A-Za-z_][\w.]*))!(.+)$/);
+    const ref = (q ? q[3] : target).replace(/\$/g, "");
+    const range = parseRange(ref);
+    if (!range) { toast(`"${t}" isn't a cell, range, or defined name`); return; }
+    const sheetName = q ? (q[1] ?? q[2]) : sheet.name;
+    const si = wb.sheets.findIndex((s) => s.name.toLowerCase() === sheetName.toLowerCase());
+    if (si < 0) { toast(`No sheet named ${sheetName}`); return; }
+    setActive(si);
+    setSelection(range);
+  }, [wb, sheet.name, setSelection, toast]);
+
+  // Ctrl+G → Go To (focus the name box)
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        nameBoxRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   const rename = useCallback(async (name: string) => {
     await api.patch(`/api/drive/${item.id}`, { name });
@@ -561,7 +664,15 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
       {/* formula bar */}
       <div className="formula-bar">
-        <div className="name-box">{anchorRef}{selection.c2 - selection.c1 || selection.r2 - selection.r1 ? ` : ${rangeToA1(selection)}` : ""}</div>
+        <input ref={nameBoxRef} className="name-box" key={`${anchorRef}-${selections.length}`}
+          defaultValue={anchorRef + (selection.c2 - selection.c1 || selection.r2 - selection.r1 ? ` : ${rangeToA1(selection)}` : "")}
+          title="Name box — type a ref (B5), range (A1:C9), Sheet!ref, or defined name, then Enter"
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { goTo((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); }
+            else if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+          }}
+          onBlur={(e) => { e.target.value = anchorRef; }} />
         <span className="fx">fx</span>
         <FxInput wb={wb} className="fx-input" wrapStyle={{ flex: 1 }}
           disabled={!canEdit}
@@ -576,11 +687,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt)}` : ""}</span>
       </div>
 
-      <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
+      <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
         <Grid sheet={sheet} evals={evals} canEdit={canEdit} wb={wb}
           audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
-          selection={selection} setSelection={setSelection}
-          onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle} />
+          selections={selections} selection={selection} setSelection={setSelection}
+          addSelection={addSelection} extendSelection={extendSelection}
+          onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle}
+          onGeom={onGeom} onHeader={onHeader} />
         {(sheet.charts ?? []).map((c) => (
           <ChartCard key={c.id} spec={c} sheet={sheet} wb={wb}
             onMove={canEdit ? (id, x, y) => mutateSheet((s) => { const ch = s.charts?.find((k) => k.id === id); if (ch) { ch.x = x; ch.y = y; } }) : undefined}
@@ -591,10 +704,22 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       {/* sheet tabs */}
       <div className="sheet-tabs" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
         {canEdit && <button className="tab-add" title="Add sheet" onClick={addSheet}>＋</button>}
-        {wb.sheets.map((s, i) => (
+        {wb.sheets.map((s, i) => ({ s, i })).filter(({ s }) => !s.hidden).map(({ s, i }) => (
           <div key={i} className={`sheet-tab ${i === active ? "active" : ""}`}
+            draggable={canEdit}
+            style={s.tabColor ? { boxShadow: `inset 0 -3px 0 ${s.tabColor}` } : undefined}
+            onDragStart={() => { dragTab.current = i; }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => {
+              const from = dragTab.current;
+              dragTab.current = null;
+              if (from === null || from === i) return;
+              mutate((w) => { const [moved] = w.sheets.splice(from, 1); w.sheets.splice(i, 0, moved); });
+              setActive(i);
+            }}
             onClick={() => setActive(i)}
-            onDoubleClick={() => canEdit && setRenamingTab(i)}>
+            onDoubleClick={() => canEdit && setRenamingTab(i)}
+            onContextMenu={(e) => { e.preventDefault(); if (canEdit) setTabMenu({ i, x: e.clientX, y: e.clientY }); }}>
             {renamingTab === i ? (
               <input autoFocus defaultValue={s.name}
                 onBlur={(e) => {
@@ -613,7 +738,63 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             )}
           </div>
         ))}
+        {wb.sheets.some((s) => s.hidden) && (
+          <button className="tab-add" title="Unhide sheets"
+            onClick={(e) => setTabMenu({ i: -1, x: e.clientX, y: e.clientY })}>👁</button>
+        )}
       </div>
+
+      {/* status bar — quick stats + zoom (Excel-style) */}
+      <div className="sheet-status" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
+        {selStats && (
+          <span className="ss-stats">
+            {selStats.nums > 0 && <>Avg {fmtStat(selStats.avg!)} · Sum {fmtStat(selStats.sum)} · Min {fmtStat(selStats.min!)} · Max {fmtStat(selStats.max!)} · </>}
+            Count {selStats.count}
+          </span>
+        )}
+        <div className="spacer" />
+        <button className="ss-zoom" onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))}>−</button>
+        <input type="range" min={50} max={200} step={10} value={zoom * 100}
+          onChange={(e) => setZoom(Number(e.target.value) / 100)} style={{ width: 90 }} />
+        <button className="ss-zoom" onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10))}>＋</button>
+        <span className="ss-pct">{Math.round(zoom * 100)}%</span>
+      </div>
+
+      {/* sheet-tab context menu */}
+      {tabMenu && (
+        <div className="hmenu" style={{ left: tabMenu.x, top: tabMenu.y }} onMouseDown={(e) => e.stopPropagation()}>
+          {tabMenu.i >= 0 ? (
+            <>
+              <div className="hmenu-item" onMouseDown={() => { setRenamingTab(tabMenu.i); setTabMenu(null); }}>Rename</div>
+              <div className="hmenu-item" onMouseDown={() => { dupSheet(tabMenu.i); setTabMenu(null); }}>Duplicate</div>
+              <div className="hmenu-item" onMouseDown={() => { hideSheet(tabMenu.i); setTabMenu(null); }}>Hide sheet</div>
+              {wb.sheets.length > 1 && (
+                <div className="hmenu-item" style={{ color: "#D84B57" }}
+                  onMouseDown={() => { delSheet(tabMenu.i); setTabMenu(null); }}>Delete</div>
+              )}
+              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "#A19A95" }}>Tab color</div>
+              <div style={{ display: "flex", gap: 6, padding: "0 10px 8px" }}>
+                {["#F2782E", "#3578E5", "#1F9D66", "#D84B57", "#8E6BC8", "#E9B44C"].map((c) => (
+                  <button key={c} onMouseDown={() => { mutate((w) => { w.sheets[tabMenu.i].tabColor = c; }); setTabMenu(null); }}
+                    style={{ width: 16, height: 16, borderRadius: 4, background: c, border: "none", cursor: "pointer" }} />
+                ))}
+                <button title="No color" onMouseDown={() => { mutate((w) => { w.sheets[tabMenu.i].tabColor = undefined; }); setTabMenu(null); }}
+                  style={{ width: 16, height: 16, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 9 }}>✕</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "#A19A95" }}>Hidden sheets</div>
+              {wb.sheets.map((s, i) => s.hidden && (
+                <div key={i} className="hmenu-item"
+                  onMouseDown={() => { mutate((w) => { w.sheets[i].hidden = undefined; }); setActive(i); setTabMenu(null); }}>
+                  ▤ {s.name}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
 
       {/* conditional format dialog */}
       {cfOpen && <CfDialog selection={rangeToA1(selection)} onAdd={addCF} onClose={() => setCfOpen(false)} />}

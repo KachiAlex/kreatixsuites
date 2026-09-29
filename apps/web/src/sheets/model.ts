@@ -41,6 +41,11 @@ export interface SheetData {
   merges?: Range[];
   freeze?: { rows: number; cols: number };
   colWidths?: Record<number, number>;
+  rowHeights?: Record<number, number>;
+  hiddenRows?: number[];
+  hiddenCols?: number[];
+  hidden?: boolean;
+  tabColor?: string;
 }
 
 export interface Workbook {
@@ -326,4 +331,29 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
     const nr = shiftRangeA1(ch.range, map);
     if (nr) ch.range = nr;
   }
+
+  // width/height/hidden indexes shift along the changed axis
+  const remap = <T,>(rec: Record<number, T> | undefined, ax: "row" | "col"): Record<number, T> | undefined => {
+    if (!rec || ax !== axis) return rec;
+    const out: Record<number, T> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      const i = Number(k);
+      const p = map(axis === "row" ? { col: 0, row: i } : { col: i, row: 0 });
+      if (p) out[axis === "row" ? p.row : p.col] = v;
+    }
+    return out;
+  };
+  sheet.colWidths = remap(sheet.colWidths, "col");
+  sheet.rowHeights = remap(sheet.rowHeights, "row");
+  const remapList = (list: number[] | undefined, ax: "row" | "col"): number[] | undefined => {
+    if (!list || ax !== axis) return list;
+    const out: number[] = [];
+    for (const i of list) {
+      const p = map(axis === "row" ? { col: 0, row: i } : { col: i, row: 0 });
+      if (p) out.push(axis === "row" ? p.row : p.col);
+    }
+    return out.length ? out : undefined;
+  };
+  sheet.hiddenRows = remapList(sheet.hiddenRows, "row");
+  sheet.hiddenCols = remapList(sheet.hiddenCols, "col");
 }

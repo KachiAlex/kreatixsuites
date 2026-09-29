@@ -16,20 +16,33 @@ interface GridProps {
   canEdit: boolean;
   wb?: Workbook;
   audit?: { refs: Set<string>; kind: "pre" | "dep" };
+  /** all selected ranges — last = active */
+  selections?: Range[];
   selection: Range;
   setSelection: (r: Range) => void;
+  /** Ctrl+click — append a new range */
+  addSelection?: (r: Range) => void;
+  /** drag-extend the most recently added range */
+  extendSelection?: (r: Range) => void;
   onCommit: (ref: string, raw: string) => void;
   onClear: (refs: string[]) => void;
   onPaste: (anchor: Ref, tsv: string) => void;
   onFillHandle: (src: Range, dst: Range) => void;
+  /** set column width / row height (px) */
+  onGeom?: (axis: "col" | "row", index: number, size: number) => void;
+  /** insert/delete/hide/unhide from the header context menu */
+  onHeader?: (action: "ins" | "del" | "hide" | "unhide", axis: "col" | "row", index: number) => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection, onCommit, onClear, onPaste, onFillHandle }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader }: GridProps) {
+  const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState({ r0: 0, r1: 80, c0: 0, c1: 26 });
+  const [resizePrev, setResizePrev] = useState<{ axis: "col" | "row"; i: number; size: number } | null>(null);
+  const [hMenu, setHMenu] = useState<{ x: number; y: number; axis: "col" | "row"; index: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -44,15 +57,30 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
     return { cols: Math.max(26, mc + 10), rows: Math.max(100, mr + 60) };
   }, [sheet.cells, sheet.merges]);
 
-  const colW = useCallback((c: number) => sheet.colWidths?.[c] ?? COL_W, [sheet.colWidths]);
+  // geometry — variable col widths + row heights, live resize preview,
+  // hidden = 0 size
+  const hiddenR = useMemo(() => new Set(sheet.hiddenRows ?? []), [sheet.hiddenRows]);
+  const hiddenC = useMemo(() => new Set(sheet.hiddenCols ?? []), [sheet.hiddenCols]);
+  const colW = useCallback((c: number) =>
+    resizePrev?.axis === "col" && resizePrev.i === c ? resizePrev.size
+    : hiddenC.has(c) ? 0 : (sheet.colWidths?.[c] ?? COL_W), [sheet.colWidths, hiddenC, resizePrev]);
+  const rowH = useCallback((r: number) =>
+    resizePrev?.axis === "row" && resizePrev.i === r ? resizePrev.size
+    : hiddenR.has(r) ? 0 : (sheet.rowHeights?.[r] ?? ROW_H), [sheet.rowHeights, hiddenR, resizePrev]);
   const colX = useMemo(() => {
     const xs: number[] = [];
     let x = 0;
     for (let c = 0; c < cols; c++) { xs.push(x); x += colW(c); }
     return xs;
   }, [cols, colW]);
+  const rowY = useMemo(() => {
+    const ys: number[] = [];
+    let y = 0;
+    for (let r = 0; r < rows; r++) { ys.push(y); y += rowH(r); }
+    return ys;
+  }, [rows, rowH]);
   const totalW = colX[cols - 1] + colW(cols - 1);
-  const totalH = rows * ROW_H;
+  const totalH = rowY[rows - 1] + rowH(rows - 1);
 
   const colAtX = useCallback((x: number) => {
     let lo = 0, hi = cols - 1;
@@ -62,17 +90,25 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
     }
     return lo;
   }, [cols, colX, colW]);
+  const rowAtY = useCallback((y: number) => {
+    let lo = 0, hi = rows - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rowY[mid] + rowH(mid) > y) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+  }, [rows, rowY, rowH]);
 
   const onScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    const r0 = Math.max(0, Math.floor(el.scrollTop / ROW_H) - OVERSCAN_ROWS);
-    const r1 = Math.min(rows, Math.ceil((el.scrollTop + el.clientHeight) / ROW_H) + OVERSCAN_ROWS);
+    const r0 = Math.max(0, rowAtY(Math.max(0, el.scrollTop - HEADER_H)) - OVERSCAN_ROWS);
+    const r1 = Math.min(rows, rowAtY(el.scrollTop - HEADER_H + el.clientHeight) + OVERSCAN_ROWS);
     const x = Math.max(0, el.scrollLeft - HEADER_W);
     const c0 = Math.max(0, colAtX(x) - OVERSCAN_COLS);
     const c1 = Math.min(cols, colAtX(x + el.clientWidth) + OVERSCAN_COLS);
     setView((v) => (v.r0 === r0 && v.r1 === r1 && v.c0 === c0 && v.c1 === c1) ? v : { r0, r1, c0, c1 });
-  }, [rows, cols, colAtX]);
+  }, [rows, cols, colAtX, rowAtY]);
 
   useEffect(() => { onScroll(); }, [onScroll]);
 
@@ -161,14 +197,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
   const ensureVisible = (c: number, r: number) => {
     const el = containerRef.current;
     if (!el) return;
-    const top = HEADER_H + r * ROW_H, left = HEADER_W + colX[c];
+    const top = HEADER_H + rowY[r], left = HEADER_W + colX[c];
+    const h = Math.max(rowH(r), 1), w = Math.max(colW(c), 1);
     if (top < el.scrollTop + HEADER_H) el.scrollTop = top - HEADER_H;
-    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight;
+    else if (top + h > el.scrollTop + el.clientHeight) el.scrollTop = top + h - el.clientHeight;
     if (left < el.scrollLeft + HEADER_W) el.scrollLeft = left - HEADER_W;
-    else if (left + colW(c) > el.scrollLeft + el.clientWidth) el.scrollLeft = left + colW(c) - el.clientWidth;
+    else if (left + w > el.scrollLeft + el.clientWidth) el.scrollLeft = left + w - el.clientWidth;
   };
 
-  const inSel = (c: number, r: number) => c >= selection.c1 && c <= selection.c2 && r >= selection.r1 && r <= selection.r2;
+  const inSel = (c: number, r: number) => allSels.some((s) => c >= s.c1 && c <= s.c2 && r >= s.r1 && r <= s.r2);
 
   const moveSel = (c: number, r: number, extend: boolean) => {
     const nc = Math.max(0, Math.min(cols - 1, c));
@@ -227,14 +264,20 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
     const box: Range = merge ?? { c1: c, r1: r, c2: c, r2: r };
     if (e.type === "mousedown") {
       if (e.shiftKey) {
-        setSelection({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
+        extendSelection?.({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
+        if (!extendSelection) setSelection({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
+      } else if ((e.ctrlKey || e.metaKey) && addSelection) {
+        addSelection(box);
+        setDragging(true);
       } else {
         setSelection(box);
         setDragging(true);
       }
       containerRef.current?.focus();
     } else if (e.type === "mouseenter" && dragging) {
-      setSelection({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
+      const next = { c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) };
+      if (extendSelection && allSels.length > 1) extendSelection(next);
+      else setSelection(next);
     } else if (e.type === "dblclick") {
       startEdit({ col: box.c1, row: box.r1 });
     }
@@ -244,15 +287,59 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
     window.addEventListener("mouseup", up);
     return () => window.removeEventListener("mouseup", up);
   }, []);
+  useEffect(() => {
+    if (!hMenu) return;
+    const close = () => setHMenu(null);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("blur", close);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("blur", close); };
+  }, [hMenu]);
 
   const selRef = useRef(selection);
   selRef.current = selection;
 
-  const selX = HEADER_W + colX[selection.c1];
-  const selY = HEADER_H + selection.r1 * ROW_H;
-  const selW = colX[selection.c2] + colW(selection.c2) - colX[selection.c1];
-  const selH = (selection.r2 - selection.r1 + 1) * ROW_H;
   const frozenLeft = HEADER_W + (fz.cols ? colX[fz.cols - 1] + colW(fz.cols - 1) : 0);
+  const frozenTop = HEADER_H + (fz.rows ? rowY[fz.rows - 1] + rowH(fz.rows - 1) : 0);
+
+  // ---- resize grips ----
+  const startResize = (axis: "col" | "row", i: number, e: MouseEvent) => {
+    if (!onGeom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = axis === "col" ? e.clientX : e.clientY;
+    const size0 = axis === "col" ? colW(i) : rowH(i);
+    const move = (ev: globalThis.MouseEvent) => {
+      const delta = (axis === "col" ? ev.clientX : ev.clientY) - start;
+      setResizePrev({ axis, i, size: Math.max(axis === "col" ? 24 : 12, size0 + delta) });
+    };
+    const up = (ev: globalThis.MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      const delta = (axis === "col" ? ev.clientX : ev.clientY) - start;
+      onGeom(axis, i, Math.max(axis === "col" ? 24 : 12, size0 + delta));
+      setResizePrev(null);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  /** Double-click grip → autofit: widest rendered text in the column. */
+  const autofitCol = (c: number) => {
+    if (!onGeom) return;
+    let w = 50;
+    for (const ref of Object.keys(sheet.cells)) {
+      const p = parseA1(ref)!;
+      if (p.col !== c) continue;
+      const cell = sheet.cells[ref];
+      const res = evals.get(ref);
+      const text = String(cell?.f ? res?.value ?? "" : cell?.v ?? "");
+      w = Math.max(w, Math.min(400, text.length * 7.2 + 16));
+    }
+    onGeom("col", c, Math.round(w));
+  };
+  const autofitRow = (r: number) => {
+    if (onGeom) onGeom("row", r, ROW_H);
+  };
 
   const renderCell = (c: number, r: number) => {
     const ref = toA1(c, r);
@@ -263,7 +350,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
     const s = cell?.s ?? {};
     const sticky: CSSProperties = {};
     let z = 1;
-    if (r < fz.rows) { sticky.position = "sticky"; sticky.top = HEADER_H + r * ROW_H; z = 10; }
+    if (r < fz.rows) { sticky.position = "sticky"; sticky.top = HEADER_H + rowY[r]; z = 10; }
     if (c < fz.cols) { sticky.position = "sticky"; sticky.left = HEADER_W + colX[c]; z = Math.max(z, 10); }
     if (r < fz.rows && c < fz.cols) z = 11;
     const sel = head
@@ -309,11 +396,18 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
                   )}
                   {Array.from({ length: run.end - run.start + 1 }).map((_, i) => {
                     const c = run.start + i;
+                    const w = colW(c);
                     return (
-                      <th key={c} className={`col-h ${c >= selection.c1 && c <= selection.c2 ? "sel" : ""}`}
-                        style={{ position: "sticky", top: 0, zIndex: 20, width: colW(c), minWidth: colW(c) }}
-                        onMouseDown={() => setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 })}>
-                        {colLabel(c)}
+                      <th key={c} className={`col-h ${allSels.some((s) => c >= s.c1 && c <= s.c2) ? "sel" : ""} ${w === 0 ? "hid" : ""}`}
+                        style={{ position: "sticky", top: 0, zIndex: 20, width: w, minWidth: w, padding: 0 }}
+                        onMouseDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-c")) setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 }); }}
+                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ x: e.clientX, y: e.clientY, axis: "col", index: c }); }}>
+                        {w > 0 ? colLabel(c) : ""}
+                        {canEdit && onGeom && w > 0 && (
+                          <span className="grip-c" title="Drag to resize — double-click to autofit"
+                            onMouseDown={(e) => startResize("col", c, e)}
+                            onDoubleClick={(e) => { e.stopPropagation(); autofitCol(c); }} />
+                        )}
                       </th>
                     );
                   })}
@@ -325,19 +419,26 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
             {rowRuns.map((run) => (
               <Fragment key={run.start}>
                 {run.gapBefore > 0 && (
-                  <tr style={{ height: run.gapBefore * ROW_H }}>
+                  <tr style={{ height: rowY[run.start] - rowY[run.start - run.gapBefore] }}>
                     <td className="row-h" style={{ position: "sticky", left: 0, zIndex: 15 }} />
                     <td colSpan={cols} style={{ background: "#fff", border: 0 }} />
                   </tr>
                 )}
                 {Array.from({ length: run.end - run.start + 1 }).map((_, i) => {
                   const r = run.start + i;
+                  const h = rowH(r);
                   return (
-                    <tr key={r} style={{ height: ROW_H }}>
-                      <td className={`row-h ${r >= selection.r1 && r <= selection.r2 ? "sel" : ""}`}
-                        style={{ position: "sticky", left: 0, zIndex: 15, ...(r < fz.rows ? { top: HEADER_H + r * ROW_H } : {}) }}
-                        onMouseDown={() => setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r })}>
-                        {r + 1}
+                    <tr key={r} style={{ height: h }}>
+                      <td className={`row-h ${allSels.some((s) => r >= s.r1 && r <= s.r2) ? "sel" : ""} ${h === 0 ? "hid" : ""}`}
+                        style={{ position: "sticky", left: 0, zIndex: 15, padding: 0, ...(r < fz.rows ? { top: HEADER_H + rowY[r] } : {}) }}
+                        onMouseDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-r")) setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r }); }}
+                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ x: e.clientX, y: e.clientY, axis: "row", index: r }); }}>
+                        {h > 0 ? r + 1 : ""}
+                        {canEdit && onGeom && h > 0 && (
+                          <span className="grip-r" title="Drag to resize — double-click to reset"
+                            onMouseDown={(e) => startResize("row", r, e)}
+                            onDoubleClick={(e) => { e.stopPropagation(); autofitRow(r); }} />
+                        )}
                       </td>
                       {colRuns.map((cr) => (
                         <Fragment key={cr.start}>
@@ -355,9 +456,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
           </tbody>
         </table>
 
-        {/* selection frame */}
-        <div className="sel-frame" style={{ left: selX, top: selY, width: selW, height: selH }}>
-          {canEdit && <div className="fill-handle"
+        {/* selection frames — one per range; fill handle on the active (last) */}
+        {allSels.map((sr, si) => (
+          <div key={si} className={`sel-frame ${si === allSels.length - 1 ? "" : "aux"}`}
+            style={{
+              left: HEADER_W + colX[sr.c1], top: HEADER_H + rowY[sr.r1],
+              width: colX[sr.c2] + colW(sr.c2) - colX[sr.c1],
+              height: rowY[sr.r2] + rowH(sr.r2) - rowY[sr.r1],
+            }}>
+            {si === allSels.length - 1 && canEdit && <div className="fill-handle"
             onMouseDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
@@ -378,12 +485,13 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
               window.addEventListener("mousemove", move as never);
               window.addEventListener("mouseup", up);
             }} />}
-        </div>
+          </div>
+        ))}
 
         {/* cell editor — formula-aware (autocomplete, hints, F4) */}
         {editing && (
           <FxInput wb={wb} inputRef={inputRef} className="cell-editor"
-            wrapStyle={{ position: "absolute", left: HEADER_W + colX[editing.ref.col], top: HEADER_H + editing.ref.row * ROW_H, width: colW(editing.ref.col) + 60, zIndex: 40 }}
+            wrapStyle={{ position: "absolute", left: HEADER_W + colX[editing.ref.col], top: HEADER_H + rowY[editing.ref.row], width: colW(editing.ref.col) + 60, zIndex: 40 }}
             inputStyle={{ position: "relative" }}
             value={editing.value}
             onValue={(v) => setEditing({ ...editing, value: v })}
@@ -396,7 +504,24 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection
         )}
         {/* freeze split indicators */}
         {fz.cols > 0 && <div className="freeze-v" style={{ left: frozenLeft }} />}
-        {fz.rows > 0 && <div className="freeze-h" style={{ top: HEADER_H + fz.rows * ROW_H }} />}
+        {fz.rows > 0 && <div className="freeze-h" style={{ top: frozenTop }} />}
+
+        {/* header context menu — insert/delete/hide/unhide */}
+        {hMenu && (
+          <div className="hmenu" style={{ left: hMenu.x, top: hMenu.y }}>
+            {([
+              ["ins", hMenu.axis === "row" ? `Insert row above ${hMenu.index + 1}` : `Insert column left of ${colLabel(hMenu.index)}`],
+              ["del", hMenu.axis === "row" ? "Delete row(s)" : "Delete column(s)"],
+              ["hide", hMenu.axis === "row" ? "Hide row(s)" : "Hide column(s)"],
+              ["unhide", hMenu.axis === "row" ? "Unhide rows in selection" : "Unhide cols in selection"],
+            ] as const).map(([act, label]) => (
+              <div key={act} className="hmenu-item"
+                onMouseDown={(e) => { e.preventDefault(); onHeader?.(act, hMenu.axis, hMenu.index); setHMenu(null); }}>
+                {label}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
