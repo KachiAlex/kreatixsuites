@@ -149,6 +149,9 @@ export interface SheetData {
   collapsedCols?: number[];
   /** pivot tables (S10.1) — output materialized into cells */
   pivots?: PivotSpec[];
+  /** S16.1 — row index where a horizontal split begins; grid renders two
+   *  independently-scrolled panes above/below this row */
+  splitRow?: number;
   /** sheet protection (S9.2): locked cells except `allowRanges` */
   protected?: boolean;
   /** S15.2 — entries may be plain ranges (everyone may edit) or scoped to
@@ -215,8 +218,18 @@ export interface Workbook {
   names?: Record<string, string>;
   /** Workbook properties (S8.4) — exported to XLSX/ODS docProps */
   props?: { title?: string; subject?: string; author?: string; company?: string; keywords?: string };
-  /** Print/page setup (S8.3) */
-  print?: { orientation?: "portrait" | "landscape"; area?: string; gridlines?: boolean; fitWidth?: boolean };
+  /** Print/page setup (S8.3 + S16.2) */
+  print?: {
+    orientation?: "portrait" | "landscape"; area?: string; gridlines?: boolean; fitWidth?: boolean;
+    /** rows repeated on every page, e.g. "1:2" (1-based row numbers) */
+    titleRows?: string;
+    /** cols repeated on every page, e.g. "A:A" */
+    titleCols?: string;
+    /** header/footer text — &P = page, &N = pages, &D = date, &T = title */
+    header?: string; footer?: string;
+    /** print scale percent (10–400); overrides fitWidth when set */
+    scale?: number;
+  };
   /** Calculation options (S11.5): manual mode defers recompute until F9/Calc-Now;
    *  iterative allows intentional circular references to converge. */
   calc?: {
@@ -229,6 +242,16 @@ export interface Workbook {
   protectStructure?: boolean;
   /** S15.1 — SHA-256 hex of the open password; gate the editor until unlocked */
   passwordHash?: string;
+  /** S16.1 — named custom views: per-sheet display snapshots */
+  views?: {
+    name: string;
+    sheet: string;
+    state: {
+      hiddenRows?: number[]; hiddenCols?: number[];
+      freeze?: { rows: number; cols: number }; splitRow?: number;
+      zoom?: number;
+    };
+  }[];
 }
 
 export interface Ref { col: number; row: number }

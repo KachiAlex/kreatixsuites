@@ -105,6 +105,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [pwTry, setPwTry] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [reviewDlg, setReviewDlg] = useState(false);
+  const [pbPreview, setPbPreview] = useState(false);        // S16.1 page-break preview
+  const [paneRatio, setPaneRatio] = useState(0.5);        // S16.1 split divider position
+  const [viewsDlg, setViewsDlg] = useState(false);        // S16.1 custom views
   const [active, setActive] = useState(0);
   // multi-range: last entry is the active range (Ctrl+click/drag adds more)
   const [selections, setSelections] = useState<Range[]>([{ c1: 0, r1: 0, c2: 0, r2: 0 }]);
@@ -650,6 +653,16 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       }
     });
   }, [mutateSheet, wb, anyLocked]);
+
+  // S16.3 — Ctrl+D fills down from the top row, Ctrl+R right from the left col
+  const fillDir = useCallback((dir: "down" | "right") => {
+    if (dir === "down" && selection.r2 > selection.r1)
+      fillHandle({ c1: selection.c1, r1: selection.r1, c2: selection.c2, r2: selection.r1 },
+        { c1: selection.c1, r1: selection.r1 + 1, c2: selection.c2, r2: selection.r2 });
+    if (dir === "right" && selection.c2 > selection.c1)
+      fillHandle({ c1: selection.c1, r1: selection.r1, c2: selection.c1, r2: selection.r2 },
+        { c1: selection.c1 + 1, r1: selection.r1, c2: selection.c2, r2: selection.r2 });
+  }, [fillHandle, selection]);
 
   // sort selected rows by one or more key columns; formula refs pointing
   // into the sorted block are remapped to the rows' new positions.
@@ -1280,6 +1293,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => mutateSheet((s) => { s.freeze = { rows: s.freeze?.rows ?? 0, cols: selection.c1 }; })}>
             ❄ {selection.c1 || "No"} cols
           </button>
+          <button className={`rb ${sheet.splitRow ? "on" : ""}`} title="Split at selection row — two scrollable panes (dbl-click divider to unsplit)"
+            onClick={() => mutateSheet((s) => { s.splitRow = s.splitRow ? undefined : Math.max(1, selection.r1); })}>⇹</button>
+          <button className={`rb ${pbPreview ? "on" : ""}`} title="Page-break preview — dashed page boundaries"
+            onClick={() => setPbPreview(!pbPreview)}>▦⃞</button>
+          <button className="rb" title="Custom views — save/apply named view states" onClick={() => setViewsDlg(true)}>👁</button>
           <button className="rb" title="Conditional formatting" onClick={() => setCfOpen(true)}>◐</button>
           <button className="rb" title="Merge selection" onClick={mergeSel}>▦</button>
           <button className="rb" title="Unmerge" onClick={unmergeSel}>▢</button>
@@ -1372,20 +1390,52 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       </div>
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
-        <Grid sheet={dispSheet} evals={evals} canEdit={canEdit} wb={wb}
-          evalFormula={evaluator.evalFormula}
-          audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
-          selections={selections} selection={selection} setSelection={selWithPaint}
-          addSelection={addSelection} extendSelection={extWithPaint}
-          invalid={invalidCells}
-          noted={notedCells}
-          showChanges={showChanges}
-          onCellMenu={(ref, x, y) => setCellMenu({ ref, x, y })}
-          onFilterClick={(col, x, y) => setFilterMenu({ col, x, y })}
-          onOutlineToggle={(axis, end) => mutateSheet((s) => toggleOutline(s, axis, end))}
-          listDrop={canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined}
-          onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle}
-          onGeom={onGeom} onHeader={onHeader} />
+        {(() => {
+          const gridProps = {
+            sheet: dispSheet, evals, canEdit, wb,
+            evalFormula: evaluator.evalFormula,
+            audit: auditRefs ? { refs: auditRefs, kind: audit! } : undefined,
+            selections, selection, setSelection: selWithPaint,
+            addSelection, extendSelection: extWithPaint,
+            invalid: invalidCells,
+            noted: notedCells,
+            showChanges,
+            pageBreaks: pbPreview,
+            onCellMenu: (ref: string, x: number, y: number) => setCellMenu({ ref, x, y }),
+            onFilterClick: (col: number, x: number, y: number) => setFilterMenu({ col, x, y }),
+            onOutlineToggle: (axis: "row" | "col", end: number) => mutateSheet((s) => toggleOutline(s, axis, end)),
+            listDrop: canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined,
+            onCommit: commitCell, onClear: clearCells, onPaste: pasteTsv, onFillHandle: fillHandle,
+            onFillDir: fillDir,
+            onGeom, onHeader,
+          };
+          // S16.1 split panes — two independently-scrolled windows at splitRow
+          if (sheet.splitRow != null && sheet.splitRow > 0) {
+            return (
+              <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+                <div style={{ flex: `0 0 ${paneRatio * 100}%`, minHeight: 60, overflow: "hidden" }}>
+                  <Grid {...gridProps} paneRows={[0, sheet.splitRow - 1]} />
+                </div>
+                <div className="split-divider" title="Drag to resize panes — double-click to unsplit"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const wrap = (e.currentTarget.parentElement as HTMLElement);
+                    const move = (ev: globalThis.MouseEvent) => {
+                      const r = wrap.getBoundingClientRect();
+                      setPaneRatio(Math.min(0.85, Math.max(0.15, (ev.clientY - r.top) / r.height)));
+                    };
+                    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+                    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+                  }}
+                  onDoubleClick={() => mutateSheet((s) => { s.splitRow = undefined; })} />
+                <div style={{ flex: 1, minHeight: 60, overflow: "hidden" }}>
+                  <Grid {...gridProps} paneRows={[sheet.splitRow, 1e9]} />
+                </div>
+              </div>
+            );
+          }
+          return <Grid {...gridProps} />;
+        })()}
         {(sheet.slicers ?? []).map((sl, si) => (
           <SlicerPanel key={si} sheet={sheet} wb={wb} slicer={sl} index={si}
             onChange={(sel) => mutateSheet((s) => { if (s.slicers) s.slicers[si].sel = sel; })}
@@ -1607,6 +1657,33 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             setProtectDlg(false);
           }}
           onClose={() => setProtectDlg(false)} />
+      )}
+      {viewsDlg && (
+        <ViewsDialog wb={wb} sheet={sheet}
+          onSaveView={(name) => mutate((w) => {
+            w.views = (w.views ?? []).filter((v) => v.name !== name);
+            w.views.push({
+              name, sheet: sheet.name,
+              state: {
+                hiddenRows: sheet.hiddenRows, hiddenCols: sheet.hiddenCols,
+                freeze: sheet.freeze, splitRow: sheet.splitRow, zoom,
+              },
+            });
+          })}
+          onApply={(v) => {
+            mutate((w) => {
+              const s = w.sheets.find((x) => x.name === v.sheet);
+              if (!s) return;
+              s.hiddenRows = v.state.hiddenRows; s.hiddenCols = v.state.hiddenCols;
+              s.freeze = v.state.freeze; s.splitRow = v.state.splitRow;
+            });
+            const idx = wb.sheets.findIndex((x) => x.name === v.sheet);
+            if (idx >= 0) setActive(idx);
+            if (v.state.zoom) setZoom(v.state.zoom);
+            setViewsDlg(false);
+          }}
+          onDelete={(name) => mutate((w) => { w.views = w.views?.filter((v) => v.name !== name); })}
+          onClose={() => setViewsDlg(false)} />
       )}
       {reviewDlg && (
         <ReviewDialog sheet={sheet}
@@ -2703,7 +2780,13 @@ function PrintDialog({ sheet, wb, defaultArea, onPrint, onClose }: {
   const [area, setArea] = useState(saved.area ?? defaultArea);
   const [gridlines, setGridlines] = useState(saved.gridlines ?? false);
   const [fitWidth, setFitWidth] = useState(saved.fitWidth ?? true);
+  const [titleRows, setTitleRows] = useState(saved.titleRows ?? "");
+  const [titleCols, setTitleCols] = useState(saved.titleCols ?? "");
+  const [header, setHeader] = useState(saved.header ?? "");
+  const [footer, setFooter] = useState(saved.footer ?? "");
+  const [scale, setScale] = useState(saved.scale ? String(saved.scale) : "");
   const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1 };
+  const lab: CSSProperties = { fontSize: 12, width: 80 };
   return (
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()}>
@@ -2719,16 +2802,41 @@ function PrintDialog({ sheet, wb, defaultArea, onPrint, onClose }: {
           <span style={{ fontSize: 12, width: 80 }}>Print area</span>
           <input style={inp} value={area} onChange={(e) => setArea(e.target.value)} placeholder={defaultArea} />
         </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <span style={lab}>Title rows</span>
+          <input style={inp} value={titleRows} onChange={(e) => setTitleRows(e.target.value)} placeholder="e.g. 1:2 — repeat per page" />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <span style={lab}>Title cols</span>
+          <input style={inp} value={titleCols} onChange={(e) => setTitleCols(e.target.value)} placeholder="e.g. A:A" />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <span style={lab}>Header</span>
+          <input style={inp} value={header} onChange={(e) => setHeader(e.target.value)} placeholder="&T — &D   (&P/&N = page/of)" />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <span style={lab}>Footer</span>
+          <input style={inp} value={footer} onChange={(e) => setFooter(e.target.value)} placeholder="Page &P of &N" />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <span style={lab}>Scale %</span>
+          <input style={{ ...inp, width: 70, flex: "none" }} value={scale} onChange={(e) => setScale(e.target.value)} placeholder="100" />
+        </div>
         <label className="frow" style={{ marginTop: 10 }}>
           <input type="checkbox" checked={gridlines} onChange={(e) => setGridlines(e.target.checked)} /> Print gridlines
         </label>
         <label className="frow">
-          <input type="checkbox" checked={fitWidth} onChange={(e) => setFitWidth(e.target.checked)} /> Fit to page width
+          <input type="checkbox" checked={fitWidth} disabled={!!scale} onChange={(e) => setFitWidth(e.target.checked)} /> Fit to page width
         </label>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" disabled={!!area && !parseRange(area)}
-            onClick={() => onPrint({ orientation, area: area || undefined, gridlines, fitWidth })}>Print / PDF</button>
+            onClick={() => onPrint({
+              orientation, area: area || undefined, gridlines, fitWidth,
+              titleRows: titleRows || undefined, titleCols: titleCols || undefined,
+              header: header || undefined, footer: footer || undefined,
+              scale: scale ? Math.min(400, Math.max(10, Number(scale) || 100)) : undefined,
+            })}>Print / PDF</button>
         </div>
       </div>
     </div>
@@ -2841,6 +2949,44 @@ function ProtectDialog({ sheet, wb, onSave, onClose }: {
             }}>
             Save
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Custom views (S16.1) — named snapshots of view state (hidden rows/cols,
+ *  freeze, split, zoom) applied on demand. */
+function ViewsDialog({ wb, sheet, onSaveView, onApply, onDelete, onClose }: {
+  wb: Workbook; sheet: SheetData;
+  onSaveView: (name: string) => void;
+  onApply: (v: NonNullable<Workbook["views"]>[number]) => void;
+  onDelete: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const views = wb.views ?? [];
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Custom views</h3>
+        <p style={{ fontSize: 12, color: "#8B8480" }}>Captures hidden rows/cols, freeze, split and zoom for <b>{sheet.name}</b>.</p>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <input className="inp" style={{ flex: 1 }} placeholder="View name" value={name} onChange={(e) => setName(e.target.value)} />
+          <button className="btn-ghost btn-sm" disabled={!name.trim()} onClick={() => { onSaveView(name.trim()); setName(""); }}>Save current</button>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          {views.map((v) => (
+            <div key={v.name} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F0ECE8" }}>
+              <span style={{ flex: 1, fontSize: 12 }}>{v.name} <span style={{ color: "#A19A95" }}>({v.sheet})</span></span>
+              <button className="btn-ghost btn-sm" onClick={() => onApply(v)}>Apply</button>
+              <button className="chip-x" onClick={() => onDelete(v.name)}>×</button>
+            </div>
+          ))}
+          {!views.length && <p style={{ fontSize: 12, color: "#B8B2AA" }}>No saved views.</p>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+          <button className="btn-primary btn-sm" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

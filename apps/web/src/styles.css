@@ -1196,3 +1196,17 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .slicer-item:hover { background: var(--bg2, #f0ece8); }
 .slicer-item.on { background: var(--k-orange, #F2782E); color: #fff; }
 .slicer-item.dim { opacity: .45; }
+.split-divider{height:6px;background:#D8D2CC;cursor:row-resize;flex:0 0 6px;border-top:1px solid #B0A79E}
+.split-divider:hover{background:var(--sheets,#1F9D66)}
+.page-break-v{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed #3578E5;opacity:.5;z-index:16;pointer-events:none}
+.page-break-h{position:absolute;left:0;right:0;height:0;border-top:2px dashed #3578E5;opacity:.5;z-index:16;pointer-events:none}
+/* S16.3 — forced-colors (Windows high-contrast) support for the sheet grid */
+@media (forced-colors: active) {
+  .sheet-grid .cell{border-color:GrayText!important}
+  .sheet-grid .cell.in-sel{outline:2px solid Highlight;outline-offset:-2px}
+  .cell .in-sel::after{border-color:Highlight!important}
+  .freeze-v,.freeze-h{background:Highlight;opacity:1}
+  .page-break-v,.page-break-h{border-color:Highlight}
+  .split-divider{background:GrayText}
+  .sheet-tab.active{border-color:Highlight}
+}

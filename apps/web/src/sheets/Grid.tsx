@@ -49,11 +49,17 @@ interface GridProps {
   showChanges?: boolean;
   /** toggle an outline group's collapsed state (S12.3) — `end` = last member index */
   onOutlineToggle?: (axis: "row" | "col", end: number) => void;
+  /** S16.1 split panes — restrict this pane to rows [r0, r1]; others collapse */
+  paneRows?: [number, number];
+  /** S16.1 — overlay dashed page-break lines (page ~7.5×10in content) */
+  pageBreaks?: boolean;
+  /** S16.3 — Ctrl+D / Ctrl+R directional fill */
+  onFillDir?: (dir: "down" | "right") => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -79,7 +85,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
 
   // geometry — variable col widths + row heights, live resize preview,
   // hidden = 0 size (manual hidden + autofilter-hidden rows)
-  const hiddenR = useMemo(() => new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...outlineHidden(sheet, "row")]), [sheet.hiddenRows, sheet.filteredRows, sheet.outlineRows, sheet.collapsedRows]);
+  const hiddenR = useMemo(() => {
+    const s = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...outlineHidden(sheet, "row")]);
+    if (paneRows) for (let r = 0; r < rows; r++) if (r < paneRows[0] || r > paneRows[1]) s.add(r);
+    return s;
+  }, [sheet.hiddenRows, sheet.filteredRows, sheet.outlineRows, sheet.collapsedRows, paneRows, rows]);
 
   // autofilter chrome — ▾ on header-row cells, active columns highlighted
   const fRange = useMemo(() => (sheet.filter ? parseRange(sheet.filter.range) : null), [sheet.filter]);
@@ -247,23 +257,75 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     ensureVisible(nc, nr);
   };
 
+  // S16.3 — data-edge jump for Ctrl+Arrows / Ctrl+End
+  const lastUsed = useMemo(() => {
+    let mc = 0, mr = 0;
+    for (const ref of Object.keys(sheet.cells)) {
+      const p = parseA1(ref)!;
+      if (p.col > mc) mc = p.col;
+      if (p.row > mr) mr = p.row;
+    }
+    return { c: mc, r: mr };
+  }, [sheet.cells]);
+  const edgeOf = (c: number, r: number, dc: number, dr: number): [number, number] => {
+    // walk until the next cell is empty (or hit bounds); if starting on empty,
+    // walk until the next cell is non-empty — Excel's Ctrl+Arrow semantics
+    const filled = (cc: number, rr: number) => !!sheet.cells[toA1(cc, rr)];
+    let nc = c, nr = r;
+    const onData = filled(c, r);
+    while (true) {
+      const tc = nc + dc, tr = nr + dr;
+      if (tc < 0 || tr < 0 || tc >= cols || tr >= rows) break;
+      if (onData ? !filled(tc, tr) : filled(tc, tr)) break;
+      nc = tc; nr = tr;
+    }
+    // on data: stop at last filled before the gap
+    if (onData) return [nc, nr];
+    return [nc, nr];
+  };
+
   const onKey = (e: KeyboardEvent) => {
     if (editing) return;
     const anchor = { col: selection.c1, row: selection.r1 };
+    const ctrl = e.ctrlKey || e.metaKey;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       const d = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key]!;
-      moveSel(anchor.col + d[0], anchor.row + d[1], e.shiftKey);
+      if (ctrl) {
+        const [ec, er] = edgeOf(anchor.col, anchor.row, d[0], d[1]);
+        if (e.shiftKey) setSelection({ c1: Math.min(selection.c1, ec), r1: Math.min(selection.r1, er), c2: Math.max(selection.c2, ec), r2: Math.max(selection.r2, er) });
+        else moveSel(ec, er, false);
+      } else moveSel(anchor.col + d[0], anchor.row + d[1], e.shiftKey);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      moveSel(ctrl ? 0 : selection.c1, ctrl ? 0 : anchor.row, e.shiftKey);
+    } else if (e.key === "End" && ctrl) {
+      e.preventDefault();
+      moveSel(lastUsed.c, lastUsed.r, e.shiftKey);
+    } else if (e.key === "PageDown" || e.key === "PageUp") {
+      e.preventDefault();
+      const h = containerRef.current?.clientHeight ?? 600;
+      const step = Math.max(1, Math.floor(h / ROW_H) - 1) * (e.key === "PageDown" ? 1 : -1);
+      moveSel(anchor.col, anchor.row + step, e.shiftKey);
+    } else if (e.key === " " && ctrl) {
+      e.preventDefault(); // Ctrl+Space — whole column
+      setSelection({ c1: selection.c1, r1: 0, c2: selection.c2, r2: rows - 1 });
+    } else if (e.key === " " && e.shiftKey) {
+      e.preventDefault(); // Shift+Space — whole row
+      setSelection({ c1: 0, r1: selection.r1, c2: cols - 1, r2: selection.r2 });
+    } else if ((e.key === "d" || e.key === "r") && ctrl && canEdit) {
+      e.preventDefault();
+      onFillDir?.(e.key === "d" ? "down" : "right");
     } else if (e.key === "Enter") { e.preventDefault(); moveSel(anchor.col, anchor.row + (e.shiftKey ? -1 : 1), false); }
     else if (e.key === "Tab") { e.preventDefault(); moveSel(anchor.col + (e.shiftKey ? -1 : 1), anchor.row, false); }
     else if (e.key === "F2") { e.preventDefault(); startEdit(anchor); }
     else if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       if (canEdit) onClear([...rangeRefs(selection)]);
-    } else if (e.key === "a" && (e.ctrlKey || e.metaKey)) {
+    } else if (e.key === "a" && ctrl) {
       e.preventDefault();
       setSelection({ c1: 0, r1: 0, c2: cols - 1, r2: rows - 1 });
-    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && canEdit) {
+    } else if (e.key.length === 1 && !ctrl && canEdit) {
       startEdit(anchor, e.key);
     }
   };
@@ -442,6 +504,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           borderTop: borderCss(s.borders?.top), borderRight: borderCss(s.borders?.right),
           borderBottom: borderCss(s.borders?.bottom), borderLeft: borderCss(s.borders?.left),
         }}
+        role="gridcell" aria-selected={sel || undefined} aria-colindex={c + 1}
         onMouseDown={(e) => cellMouse(c, r, e)}
         onMouseEnter={(e) => cellMouse(c, r, e)}
         onDoubleClick={(e) => cellMouse(c, r, e)}
@@ -474,12 +537,14 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   return (
     <div ref={containerRef} className="sheet-grid" tabIndex={0} onKeyDown={onKey} onScroll={onScroll}
       onCopy={onCopy} onCut={onCut} onPaste={onPasteCb}
+      role="grid" aria-label={sheet.name} aria-rowcount={rows} aria-colcount={cols}
       style={{ outline: "none" }}>
       <div className="grid-inner" style={{ position: "relative", width: HEADER_W + totalW, height: HEADER_H + totalH }}>
         <table className="grid-table" cellSpacing={0}>
           <thead>
-            <tr>
+            <tr role="row">
               <th className="corner" style={{ position: "sticky", left: 0, top: 0, zIndex: 30 }}
+                aria-label="Select all"
                 onMouseDown={() => setSelection({ c1: 0, r1: 0, c2: cols - 1, r2: rows - 1 })} />
               {colRuns.map((run) => (
                 <Fragment key={run.start}>
@@ -639,6 +704,34 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         {/* freeze split indicators */}
         {fz.cols > 0 && <div className="freeze-v" style={{ left: frozenLeft }} />}
         {fz.rows > 0 && <div className="freeze-h" style={{ top: frozenTop }} />}
+
+        {/* S16.1 page-break preview — dashed lines at each page boundary
+            (portrait ≈ 7.5×10in / landscape ≈ 10×7.5in content at 96dpi) */}
+        {pageBreaks && (() => {
+          const land = wb?.print?.orientation === "landscape";
+          const pw = land ? 960 : 720, ph = land ? 720 : 960;
+          const vlines: number[] = [], hlines: number[] = [];
+          let acc = 0;
+          for (let c = 0; c < cols; c++) {
+            acc += colW(c);
+            if (acc > pw) { vlines.push(HEADER_W + acc - colW(c)); acc = colW(c); }
+          }
+          acc = 0;
+          for (let r = 0; r < rows; r++) {
+            acc += rowH(r);
+            if (acc > ph) { hlines.push(HEADER_H + acc - rowH(r)); acc = rowH(r); }
+          }
+          return (
+            <>
+              {vlines.map((x, i) => (
+                <div key={`pv${i}`} className="page-break-v" style={{ left: x }} />
+              ))}
+              {hlines.map((y, i) => (
+                <div key={`ph${i}`} className="page-break-h" style={{ top: y }} />
+              ))}
+            </>
+          );
+        })()}
 
         {/* list-validation dropdown on the anchor cell */}
         {listDrop && canEdit && !editing && (() => {

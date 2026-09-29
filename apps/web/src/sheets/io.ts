@@ -614,6 +614,15 @@ export interface PrintOpts {
   /** print area "A1:H40" — defaults to used range */
   area?: string;
   title?: string;
+  /** S16.2 — "1:2" repeats those header rows on every printed page (thead) */
+  titleRows?: string;
+  /** S16.2 — "A:A" keeps those columns leftmost on every page column-chunk */
+  titleCols?: string;
+  /** S16.2 — page header/footer text; &P page, &N pages, &D date, &T title */
+  header?: string;
+  footer?: string;
+  /** S16.2 — print scale percent (10–400); overrides fitWidth */
+  scale?: number;
 }
 
 /** Render a sheet range to a standalone print-ready HTML document. */
@@ -631,6 +640,22 @@ export function sheetToPrintHTML(sheet: SheetData, wb: Workbook | undefined, opt
   const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const edge = (e?: { w?: number; style?: string; color?: string }) =>
     e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "#26221F"}` : "";
+  // S16.2 — title rows render as <thead> (browsers repeat them per page)
+  const titleRowSet = new Set<number>();
+  if (opts.titleRows) {
+    const m = opts.titleRows.match(/^(\d+)(?::(\d+))?$/);
+    if (m) for (let r = +m[1] - 1; r <= +(m[2] ?? m[1]) - 1; r++) titleRowSet.add(r);
+  }
+  const titleColSet = new Set<number>();
+  if (opts.titleCols) {
+    const m = opts.titleCols.match(/^([A-Za-z]+)(?::([A-Za-z]+))?$/);
+    if (m) {
+      const a = parseA1(`${m[1].toUpperCase()}1`)!.col;
+      const b = parseA1(`${(m[2] ?? m[1]).toUpperCase()}1`)!.col;
+      for (let c = a; c <= b; c++) titleColSet.add(c);
+    }
+  }
+  const headRows: string[] = [];
   const rows: string[] = [];
   for (let r = rng.r1; r <= rng.r2; r++) {
     if (hiddenR.has(r)) continue;
@@ -646,6 +671,7 @@ export function sheetToPrintHTML(sheet: SheetData, wb: Workbook | undefined, opt
       const m = sheet.merges?.find((mm) => mm.c1 === c && mm.r1 === r);
       const css = [
         opts.gridlines ? "border:1px solid #D8D2CC" : "",
+        titleColSet.has(c) ? "background:#F4F1EC;font-weight:600" : "",
         s.b ? "font-weight:700" : "", s.i ? "font-style:italic" : "",
         s.u ? "text-decoration:underline" : "", s.st ? "text-decoration:line-through" : "",
         s.u && s.st ? "text-decoration:underline line-through" : "",
@@ -662,22 +688,44 @@ export function sheetToPrintHTML(sheet: SheetData, wb: Workbook | undefined, opt
       const span = m ? ` colspan="${m.c2 - m.c1 + 1}" rowspan="${m.r2 - m.r1 + 1}"` : "";
       tds.push(`<td${span} style="${css}">${esc(text)}</td>`);
     }
-    rows.push(`<tr style="height:${(sheet.rowHeights?.[r] ?? 26) * 0.75}pt">${tds.join("")}</tr>`);
+    (titleRowSet.has(r) ? headRows : rows)
+      .push(`<tr style="height:${(sheet.rowHeights?.[r] ?? 26) * 0.75}pt">${tds.join("")}</tr>`);
   }
   const colgroup = Array.from({ length: rng.c2 - rng.c1 + 1 }, (_, i) => {
     const c = rng.c1 + i;
     return hiddenC.has(c) ? "" : `<col style="width:${Math.round((sheet.colWidths?.[c] ?? 100) * 0.75)}pt">`;
   }).join("");
+  // S16.2 — &P/&N/&D/&T tokens → CSS content parts (strings + counters)
+  const hfContent = (t?: string) => !t ? "" : (t)
+    .split(/(&[PNDT])/gi)
+    .map((p) => {
+      const k = p.toUpperCase();
+      if (k === "&P") return "counter(page)";
+      if (k === "&N") return "counter(pages)";
+      if (k === "&D") return `"${new Date().toLocaleDateString()}"`;
+      if (k === "&T") return `"${String(opts.title ?? sheet.name).replace(/"/g, "'")}"`;
+      return `"${esc(p)}"`;
+    })
+    .join(" ");
+  const pageCss = [
+    `@page { size: ${opts.orientation ?? "portrait"}; margin: 0.6in`,
+    opts.header ? ` @top-center { content: ${hfContent(opts.header)}; font-size: 8pt; color: #6E6862 }` : "",
+    opts.footer ? ` @bottom-center { content: ${hfContent(opts.footer)}; font-size: 8pt; color: #6E6862 }` : "",
+    " }",
+  ].join("");
+  const scaleCss = opts.scale && opts.scale !== 100 ? `body { zoom: ${opts.scale / 100} }` : "";
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(opts.title ?? sheet.name)}</title>
 <style>
-@page { size: ${opts.orientation ?? "portrait"}; margin: 0.6in }
+${pageCss}
 body { font-family: Inter, Calibri, Arial, sans-serif; font-size: 10pt; color: #26221F }
-table { border-collapse: collapse; ${opts.fitWidth ? "width:100%;table-layout:fixed" : ""} }
+table { border-collapse: collapse; ${!opts.scale && opts.fitWidth ? "width:100%;table-layout:fixed" : ""} }
 td { padding: 2px 6px; overflow: hidden }
 h1 { font-size: 14pt; margin: 0 0 10px }
+thead td { font-weight: 600; background: #F4F1EC }
+${scaleCss}
 </style></head><body>
 <h1>${esc(opts.title ?? sheet.name)}</h1>
-<table><colgroup>${colgroup}</colgroup>${rows.join("\n")}</table>
+<table><colgroup>${colgroup}</colgroup>${headRows.length ? `<thead>${headRows.join("\n")}</thead>` : ""}${rows.join("\n")}</table>
 <script>window.onload = () => { window.print(); }<\/script>
 </body></html>`;
 }

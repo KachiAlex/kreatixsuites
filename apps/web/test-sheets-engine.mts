@@ -4,7 +4,7 @@ import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cyc
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
 import { pivotChartRange } from "./src/sheets/Chart";
 import { formatValue } from "./src/sheets/format";
 
@@ -893,6 +893,36 @@ t("S15: cellLocked honors per-role allow ranges", () => {
 t("S15: workbook protection fields typecheck", () => {
   const wb: Workbook = { sheets: [], protectStructure: true, passwordHash: "abc" };
   assertEq(wb.protectStructure, true);
+});
+
+// ============ S16: view & print ============
+
+t("S16: print HTML repeats title rows in thead", () => {
+  const wb = pivotWb();
+  const html = sheetToPrintHTML(wb.sheets[0], wb, { titleRows: "1:1" });
+  assert(html.includes("<thead>"), "thead emitted");
+  assert(html.indexOf("<thead>") < html.indexOf("Region"), "title row in thead");
+  assert(html.includes("Region"), "header content present");
+});
+
+t("S16: print HTML header/footer tokens + scale", () => {
+  const wb = pivotWb();
+  const html = sheetToPrintHTML(wb.sheets[0], wb, {
+    header: "&T report", footer: "Page &P of &N", scale: 75, title: "MySheet",
+  });
+  assert(html.includes("@top-center"), "header rule emitted");
+  assert(html.includes("counter(page)"), "page counter in footer");
+  assert(html.includes("counter(pages)"), "pages counter in footer");
+  assert(html.includes("zoom: 0.75"), "scale applied");
+});
+
+t("S16: splitRow + view state fields typecheck", () => {
+  const wb: Workbook = {
+    sheets: [{ name: "S", cells: {}, splitRow: 5 }],
+    views: [{ name: "Compact", sheet: "S", state: { hiddenRows: [3, 4], zoom: 0.8 } }],
+  };
+  assertEq(wb.sheets[0].splitRow, 5);
+  assertEq(wb.views![0].state.zoom, 0.8);
 });
 
 // ============ results ============
