@@ -5,8 +5,8 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, SheetData, Workbook, Validation, Range } from "./model";
-import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols } from "./model";
+import type { CellData, SheetData, Workbook, Validation, Range, Ref } from "./model";
+import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols, parseInput } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
@@ -736,6 +736,83 @@ export function printSheet(sheet: SheetData, wb: Workbook | undefined, opts: Pri
   if (!w) return;
   w.document.write(sheetToPrintHTML(sheet, wb, opts));
   w.document.close();
+}
+
+// ---------- S17.2 HTML-table paste + S17.3 external links ----------
+
+/** Parse an HTML fragment (web paste) into a cell map at `anchor`.
+ *  Returns null when the HTML has no <table>. */
+export function htmlToCells(html: string, anchor: Ref): Record<string, CellData> | null {
+  if (!/<table[\s>]/i.test(html)) return null;
+  // rows/cells extracted uniformly — DOMParser in the browser, tag-splitting in Node tests
+  type CellTag = { text: string; bold: boolean; bg?: string; cs: number; rs: number };
+  const rows: CellTag[][] = [];
+  if (typeof DOMParser !== "undefined") {
+    const table = new DOMParser().parseFromString(html, "text/html").querySelector("table")!;
+    [...table.querySelectorAll("tr")].forEach((tr) => {
+      const row: CellTag[] = [];
+      tr.querySelectorAll("td,th").forEach((td) => {
+        const el = td as HTMLElement;
+        row.push({
+          text: td.textContent?.trim() ?? "",
+          bold: td.tagName === "TH" || /bold|[67]00/.test(el.style?.fontWeight ?? ""),
+          bg: el.style?.backgroundColor || undefined,
+          cs: Math.min(8, +(td.getAttribute("colspan") ?? 1) || 1),
+          rs: Math.min(200, +(td.getAttribute("rowspan") ?? 1) || 1),
+        });
+      });
+      if (row.length) rows.push(row);
+    });
+  } else {
+    const tbl = /<table[\s\S]*?<\/table>/i.exec(html)?.[0] ?? "";
+    for (const trM of tbl.matchAll(/<tr[\s\S]*?<\/tr>/gi)) {
+      const row: CellTag[] = [];
+      for (const tdM of trM[0].matchAll(/<(t[dh])([^>]*)>([\s\S]*?)<\/t[dh]>/gi)) {
+        const attrs = tdM[2], body = tdM[3];
+        row.push({
+          text: body.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim(),
+          bold: tdM[1].toLowerCase() === "th" || /font-weight\s*:\s*(?:bold|[67]00)/i.test(attrs),
+          bg: /background(?:-color)?\s*:\s*([^;"']+)/i.exec(attrs)?.[1],
+          cs: Math.min(8, +(/colspan\s*=\s*"?(\d+)/i.exec(attrs)?.[1] ?? 1)),
+          rs: Math.min(200, +(/rowspan\s*=\s*"?(\d+)/i.exec(attrs)?.[1] ?? 1)),
+        });
+      }
+      if (row.length) rows.push(row);
+    }
+  }
+  if (!rows.length) return null;
+  const out: Record<string, CellData> = {};
+  const occupied = new Set<string>(); // colspan/rowspan coverage
+  rows.forEach((row, ri) => {
+    let dc = 0;
+    for (const td of row) {
+      while (occupied.has(`${anchor.col + dc},${anchor.row + ri}`)) dc++;
+      const ref = toA1(anchor.col + dc, anchor.row + ri);
+      const cell: CellData = {};
+      if (td.text !== "") { const p = parseInput(td.text); cell.v = p.v; if (p.f) cell.f = p.f; }
+      const style: CellData["s"] = {};
+      if (td.bold) style.b = true;
+      if (td.bg) style.bg = td.bg;
+      if (Object.keys(style).length) cell.s = style;
+      out[ref] = cell;
+      for (let rr = 0; rr < td.rs; rr++) for (let cc = 0; cc < td.cs; cc++)
+        occupied.add(`${anchor.col + dc + cc},${anchor.row + ri + rr}`);
+      dc += td.cs;
+    }
+  });
+  return out;
+}
+
+/** Scan all formulas for external workbook refs `[Book.xlsx]Sheet!A1` —
+ *  returns the distinct book names referenced. */
+export function scanExternRefs(wb: Workbook): string[] {
+  const books = new Set<string>();
+  for (const s of wb.sheets)
+    for (const c of Object.values(s.cells)) {
+      if (!c.f) continue;
+      for (const m of c.f.matchAll(/\[([^\]!]+)\]/g)) books.add(m[1]);
+    }
+  return [...books];
 }
 
 // ---------- PivotTables (S10.1) ----------

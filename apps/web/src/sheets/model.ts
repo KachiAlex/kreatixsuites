@@ -33,6 +33,8 @@ export interface CellData {
   s?: CellStyle;
   /** change stamp — last writer (S9.2 change-history markup) */
   h?: { by: string; at: number };
+  /** S17.2 — pasted/inserted image (data URL) rendered inside the cell */
+  img?: string;
 }
 
 export interface CondFormat {
@@ -242,6 +244,8 @@ export interface Workbook {
   protectStructure?: boolean;
   /** S15.1 — SHA-256 hex of the open password; gate the editor until unlocked */
   passwordHash?: string;
+  /** S17.3 — external-workbook value cache: file name → last-fetched workbook */
+  externs?: Record<string, Workbook>;
   /** S16.1 — named custom views: per-sheet display snapshots */
   views?: {
     name: string;

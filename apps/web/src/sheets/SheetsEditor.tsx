@@ -15,7 +15,7 @@ import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, C
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -535,14 +535,23 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     mutateSheet((s) => refs.forEach((r) => { if (s.cells[r]) s.cells[r] = { s: s.cells[r].s, h: stamp() }; }));
   }, [mutateSheet, anyLocked, stamp]);
 
-  const pasteTsv = useCallback((anchor: Ref, tsv: string) => {
-    const cells = tsvToCells(tsv, anchor);
+  const pasteTsv = useCallback((anchor: Ref, tsv: string, html?: string) => {
+    // web paste (S17.2) — HTML tables carry spans/styles TSV can't express
+    const cells = html ? htmlToCells(html, anchor) : tsvToCells(tsv, anchor);
+    if (!cells) return;
     if (anyLocked(Object.keys(cells))) return;
     const h = stamp();
     mutateSheet((s) => Object.entries(cells).forEach(([r, c]) => { s.cells[r] = { ...c, h }; }));
-    const rows = tsv.replace(/\r/g, "").split("\n");
-    const maxC = Math.max(...rows.map((r) => r.split("\t").length));
-    setSelection({ c1: anchor.col, r1: anchor.row, c2: anchor.col + maxC - 1, r2: anchor.row + rows.length - 1 });
+    const dc = Math.max(...Object.keys(cells).map((r) => parseA1(r)!.col)) - anchor.col;
+    const dr = Math.max(...Object.keys(cells).map((r) => parseA1(r)!.row)) - anchor.row;
+    setSelection({ c1: anchor.col, r1: anchor.row, c2: anchor.col + dc, r2: anchor.row + dr });
+  }, [mutateSheet, anyLocked, stamp]);
+
+  const pasteImage = useCallback((anchor: Ref, dataUrl: string) => {
+    const ref = toA1(anchor.col, anchor.row);
+    if (anyLocked([ref])) return;
+    const h = stamp();
+    mutateSheet((s) => { s.cells[ref] = { ...s.cells[ref], img: dataUrl, h }; });
   }, [mutateSheet, anyLocked, stamp]);
 
   const setStyle = useCallback((patch: CellStyle) => {
@@ -1041,6 +1050,19 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       toast("Could not read that workbook");
     }
   };
+  // S17.3 — external workbook links: a file becomes a cached snapshot under
+  // wb.externs so formulas like [Book.xlsx]Sheet!A1 resolve locally
+  const linkRef = useRef<HTMLInputElement>(null);
+  const onLinkImport = async (f: File) => {
+    try {
+      const imported = await xlsxToWorkbook(f);
+      mutate((w) => { (w.externs ??= {})[f.name] = imported; });
+      toast(`Linked ${f.name} — [${f.name}]Sheet!A1 refs now resolve`);
+    } catch {
+      toast("Could not read that workbook");
+    }
+  };
+  const missingLinks = useMemo(() => scanExternRefs(wb).filter((b) => !wb.externs?.[b]), [wb]);
 
   // ---- comments (anchor = sheet!cell) ----
   const loadComments = useCallback(async () => {
@@ -1358,7 +1380,14 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
           <button className="rb" title="Export CSV" onClick={exportCSV}>⇩</button>
           <input ref={csvRef} type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onCsvImport(e.target.files[0])} />
-          <input ref={xlsxRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => e.target.files?.[0] && onXlsxImport(e.target.files[0])} />
+          <input ref={xlsxRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.xml" hidden onChange={(e) => e.target.files?.[0] && onXlsxImport(e.target.files[0])} />
+          <input ref={linkRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods" hidden onChange={(e) => e.target.files?.[0] && onLinkImport(e.target.files[0])} />
+          <button className="rb" title="Link external workbook — its sheets resolve as [file]Sheet!A1 refs"
+            onClick={() => linkRef.current?.click()}>🔗</button>
+          {missingLinks.length > 0 && (
+            <span className="rb warn" title={`Uncached external refs: ${missingLinks.join(", ")} — link the file to resolve`}
+              style={{ color: "#B3560E" }}>⚠ {missingLinks.length} link{missingLinks.length > 1 ? "s" : ""}</span>
+          )}
           <span style={{ marginLeft: "auto", fontSize: 10, color: "#A19A95" }}>{usedRangeA1(sheet.cells)}</span>
         </div>
       )}
@@ -1405,7 +1434,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onFilterClick: (col: number, x: number, y: number) => setFilterMenu({ col, x, y }),
             onOutlineToggle: (axis: "row" | "col", end: number) => mutateSheet((s) => toggleOutline(s, axis, end)),
             listDrop: canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined,
-            onCommit: commitCell, onClear: clearCells, onPaste: pasteTsv, onFillHandle: fillHandle,
+            onCommit: commitCell, onClear: clearCells, onPaste: pasteTsv, onPasteImage: pasteImage, onFillHandle: fillHandle,
             onFillDir: fillDir,
             onGeom, onHeader,
           };

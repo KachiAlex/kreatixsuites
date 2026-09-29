@@ -4,7 +4,7 @@ import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cyc
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./src/sheets/io";
 import { pivotChartRange } from "./src/sheets/Chart";
 import { formatValue } from "./src/sheets/format";
 
@@ -1301,6 +1301,70 @@ t("S12.2 slicer hidden rows", () => {
   }] };
   assertEq(slicerHiddenRows(wb.sheets[0], wb), [2]);
   assert(slicerValues(wb.sheets[0], wb, 0).includes("a"), "slicer values");
+});
+
+// ---------- S17.2 HTML-table paste ----------
+t("S17.2 htmlToCells basic table", () => {
+  const cells = htmlToCells("<table><tr><th>Name</th><th>Qty</th></tr><tr><td>a</td><td>5</td></tr><tr><td>b</td><td>8</td></tr></table>", { col: 0, row: 0 })!;
+  assertEq(cells.A1.v, "Name");
+  assertEq(cells.B2.v, 5);
+  assert(cells.A1.s?.b === true, "th bold");
+});
+
+t("S17.2 htmlToCells colspan/rowspan coverage", () => {
+  const cells = htmlToCells('<table><tr><td colspan="2">x</td><td>y</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>', { col: 0, row: 0 })!;
+  assertEq(cells.A1.v, "x");
+  assertEq(cells.C1.v, "y");
+  assertEq(cells.C2.v, 3);
+});
+
+t("S17.2 htmlToCells ignores non-table html", () => {
+  assert(htmlToCells("<p>hello</p>", { col: 0, row: 0 }) === null, "no table → null");
+});
+
+t("S17.2 cell img survives json + csv paths", () => {
+  const c: CellData = { img: "data:image/png;base64,AAA" };
+  const rt = JSON.parse(JSON.stringify(c)) as CellData;
+  assertEq(rt.img, "data:image/png;base64,AAA");
+});
+
+// ---------- S17.3 external links ----------
+t("S17.3 scanExternRefs finds book names", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: "[Budget.xlsx]Q1!B2" },
+    A2: { f: "SUM([Budget.xlsx]Q1!B2:B5)+[Other.xls]S!A1" },
+    A3: { f: "A1*2" },
+  } }] };
+  assertEq(scanExternRefs(wb).sort(), ["Budget.xlsx", "Other.xls"]);
+});
+
+t("S17.3 KXEXT resolves against wb.externs", () => {
+  const wb: Workbook = {
+    sheets: [{ name: "Main", cells: {
+      A1: { f: "[Ext.xlsx]Data!B2*2" },
+      A2: { f: "SUM([Ext.xlsx]Data!B1:B3)" },
+      A3: { f: "[Missing.xlsx]S!A1" },
+    } }],
+    externs: {
+      "Ext.xlsx": { sheets: [{ name: "Data", cells: {
+        B1: { v: 1 }, B2: { v: 4 }, B3: { v: 5 },
+      } }] },
+    },
+  };
+  const res = evaluateWorkbook(wb).get("Main")!;
+  assertEq(res.get("A1")?.value, 8);
+  assertEq(res.get("A2")?.value, 10);
+  assertEq(res.get("A3")?.error ?? res.get("A3")?.value, "#REF!");
+});
+
+t("S17.3 extern formulas evaluate inside the cached book", () => {
+  const wb: Workbook = {
+    sheets: [{ name: "Main", cells: { A1: { f: "[Chain.xlsx]S!C1" } } }],
+    externs: { "Chain.xlsx": { sheets: [{ name: "S", cells: {
+      A1: { v: 3 }, C1: { f: "A1*7" },
+    } }] } },
+  };
+  assertEq(evaluateWorkbook(wb).get("Main")!.get("A1")?.value, 21);
 });
 
 console.log(`${passed} passed, ${failed} failed`);

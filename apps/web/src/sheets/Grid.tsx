@@ -27,7 +27,8 @@ interface GridProps {
   extendSelection?: (r: Range) => void;
   onCommit: (ref: string, raw: string) => void;
   onClear: (refs: string[]) => void;
-  onPaste: (anchor: Ref, tsv: string) => void;
+  onPaste: (anchor: Ref, tsv: string, html?: string) => void;
+  onPasteImage?: (anchor: Ref, dataUrl: string) => void;
   onFillHandle: (src: Range, dst: Range) => void;
   /** set column width / row height (px) */
   onGeom?: (axis: "col" | "row", index: number, size: number) => void;
@@ -59,7 +60,7 @@ interface GridProps {
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onPasteImage, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -347,10 +348,23 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   };
   const onPasteCb = (e: ClipboardEvent) => {
     if (!canEdit || editing) return;
+    // image paste — prefer binary items; become in-cell image metadata
+    const imgItem = Array.from(e.clipboardData.items).find((i) => i.type.startsWith("image/"));
+    if (imgItem && onPasteImage) {
+      const file = imgItem.getAsFile();
+      if (file) {
+        e.preventDefault();
+        const rd = new FileReader();
+        rd.onload = () => onPasteImage({ col: selection.c1, row: selection.r1 }, String(rd.result));
+        rd.readAsDataURL(file);
+        return;
+      }
+    }
+    const html = e.clipboardData.getData("text/html");
     const text = e.clipboardData.getData("text/plain");
-    if (!text) return;
+    if (!text && !html) return;
     e.preventDefault();
-    onPaste({ col: selection.c1, row: selection.r1 }, text);
+    onPaste({ col: selection.c1, row: selection.r1 }, text, html.includes("<table") ? html : undefined);
   };
 
   const cellMouse = (c: number, r: number, e: MouseEvent) => {
@@ -463,7 +477,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const rawV = cell?.f || (!cell && res) ? res?.value : cell?.v;
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt);
-    if (spark) content = null;
+    if (spark || cell?.img) content = null;
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
       if (c === tot.range.c1) content = "Totals";
       else {
@@ -518,6 +532,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         )}
         {cfx?.icon && <span className="cf-icon" style={{ color: cfx.icon.split("|")[0] }}>{cfx.icon.split("|")[1]}</span>}
         {spark && <SparklineView spec={spark} sheet={sheet} wb={wb} w={colW(c) - 4} h={rowH(r) - 3} />}
+        {cell?.img && (
+          <img className="cell-img" src={cell.img} alt=""
+            style={{ maxWidth: colW(c) - 4, maxHeight: rowH(r) - 4 }} />
+        )}
         {s.rotate ? (
           <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
         ) : s.shrink ? (

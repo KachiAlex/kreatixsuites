@@ -150,6 +150,13 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
           ? `KXAT("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}")`
           : `KXAT("","${uref.replace(/\$/g, "")}")`,
     );
+    // external workbook refs (S17.3) — [Book.xlsx]Sheet!A1 → KXEXT; must run
+    // before the plain qualified-ref rewrite below
+    s = s.replace(
+      /\[([^\]!]+)\](?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)/g,
+      (_m, book: string, qs: string | undefined, ps: string | undefined, ref: string) =>
+        `KXEXT("${book.replace(/"/g, '""')}","${(qs ?? ps)!.replace(/"/g, '""')}","${ref.replace(/\$/g, "")}")`,
+    );
     // structured table refs (S12.1) — T[[#spec],[Col]], T[@C], T[C], T[#spec], [@C]
     s = s.replace(/([A-Za-z_][\w.]*)\[\[([^\[\]]+)\],\[([^\]]+)\]\]/g,
       (_m, t: string, spec: string, col: string) => `KXTBLC("${t}","${spec.trim()}","${col.trim()}")`);
@@ -834,6 +841,31 @@ function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, Eva
   ctx.sheetCount = wb.sheets.length; // shared mutable ctx — fns read ctx.sheet live
   const fns = extraFunctions((sheet, ref) => evalIn(sheet, ref, 0), evalRangeOf, ctx);
 
+  // extern workbook evaluators (S17.3) — cached snapshots evaluated lazily
+  // through a nested evaluator per linked book
+  const extEvals = new Map<string, ReturnType<typeof makeEvaluator>>();
+  const extEval = (book: string, sheetName: string, ref: string, depth: number): EvalResult => {
+    const ew = wb.externs?.[book];
+    if (!ew || depth > MAX_DEPTH || !ew.sheets.some((s) => s.name.toLowerCase() === sheetName.toLowerCase()))
+      return err("#REF!");
+    let ev = extEvals.get(book);
+    if (!ev) { ev = makeEvaluator(ew); extEvals.set(book, ev); }
+    return ev.evalIn(sheetName, ref, depth + 1);
+  };
+  const extRange = (book: string, sheetName: string, a: string, b: string, depth: number): unknown[][] => {
+    const r = parseRange(`${a}:${b}`);
+    const m: unknown[][] = [];
+    if (!r) return m;
+    for (let row = r.r1; row <= r.r2; row++) {
+      m.push([]);
+      for (let c = r.c1; c <= r.c2; c++) {
+        const res = extEval(book, sheetName, toA1(c, row), depth);
+        m[m.length - 1].push(res.error ?? res.value ?? null);
+      }
+    }
+    return m;
+  };
+
   function evalIn(sheetName: string | null, ref: string, depth: number): EvalResult {
     const cells = sheetOf(sheetName);
     const key = `${sheetName ?? ""}!${ref}`;
@@ -896,6 +928,14 @@ function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, Eva
       const sn = String(p[0]);
       if (!hasSheet(sn)) return "#REF!";
       const r = evalIn(sn, String(p[1]).replace(/\$/g, "").toUpperCase(), depth + 1);
+      return r.error ?? r.value;
+    });
+    // [Book]Sheet!A1 — resolve against wb.externs snapshot; #REF! when uncached
+    parser.setFunction("KXEXT", (p) => {
+      const book = String(p[0]), sn = String(p[1]), ref = String(p[2]);
+      const rr = ref.includes(":") ? ref.split(":") : null;
+      if (rr) return extRange(book, sn, rr[0], rr[1], depth + 1);
+      const r = extEval(book, sn, ref.toUpperCase(), depth + 1);
       return r.error ?? r.value;
     });
     // lazy error catchers — arg was stashed as base64 text by the rewriter.
