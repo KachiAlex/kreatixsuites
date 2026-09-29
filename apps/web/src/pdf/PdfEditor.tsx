@@ -5,7 +5,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import type { DriveItem, Comment } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import { saveContent } from "../lib/drafts";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
@@ -16,6 +16,7 @@ import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { PdfAnn, PdfDoc, AnnType } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
+import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf } from "./pages";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -28,7 +29,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Tool = "select" | AnnType | "pan";
-type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions" | "ai";
+type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions" | "ai" | "organize";
 type Rect4 = [number, number, number, number];
 
 const TOOLS: { id: Tool; ico: string; label: string }[] = [
@@ -86,6 +87,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [selAnn, setSelAnn] = useState<string | null>(null);
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
+  const [exportDlg, setExportDlg] = useState(false);
+  const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string }>
+    ({ pageNumbers: false, watermark: "", header: "", footer: "" });
 
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
@@ -96,14 +100,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const undoStack = useRef<PdfDoc[]>([]);
-  const redoStack = useRef<PdfDoc[]>([]);
+  // PDF-1 — undo entries pair the annotation doc with the pdf bytes of that
+  // moment, so page-organization ops are undoable too
+  const undoStack = useRef<{ d: PdfDoc; b: ArrayBuffer | null }[]>([]);
+  const redoStack = useRef<{ d: PdfDoc; b: ArrayBuffer | null }[]>([]);
   const lastAction = useRef<string | null>(null);
   const pdfDataRef = useRef<ArrayBuffer | null>(null);
   const [pwPrompt, setPwPrompt] = useState<{ wrong: boolean } | null>(null);
   const [pwValue, setPwValue] = useState("");
   const pwCbRef = useRef<((pw: string) => void) | null>(null);
   const loadTaskRef = useRef<{ destroy: () => void } | null>(null);
+  const mergeRef = useRef<HTMLInputElement>(null);
   const session = useCollabSession(item.id);
 
   // ---------- load ----------
@@ -198,7 +205,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
       const next = structuredClone(prev);
       fn(next);
       if (!actionKey || lastAction.current !== actionKey) {
-        undoStack.current.push(prev);
+        undoStack.current.push({ d: prev, b: pdfDataRef.current });
         if (undoStack.current.length > 80) undoStack.current.shift();
         lastAction.current = actionKey ?? null;
       }
@@ -209,20 +216,146 @@ export function PdfEditor({ item, initialDoc, permission }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // PDF-1 — reload pdf.js from new bytes (page ops rebuild the document)
+  const [docGen, setDocGen] = useState(0);
+  const reloadPdf = useCallback(async (bytes: ArrayBuffer) => {
+    pdfDataRef.current = bytes;
+    pageTextCache.current.clear();
+    const task = pdfjs.getDocument({ data: bytes.slice(0) });
+    loadTaskRef.current = task;
+    const d = await task.promise;
+    // restore saved form values so widgets repaint with data
+    const form = annDoc.form;
+    if (form) for (const [k, v] of Object.entries(form)) {
+      try { d.annotationStorage.setValue(k, v as Record<string, unknown>); } catch { /* skip */ }
+    }
+    setDoc(d);
+    setNumPages(d.numPages);
+    d.getOutline().then((o) => setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
+    setDocGen((g) => g + 1); // forces PdfPage remount — they cache PDFPageProxy
+  }, [annDoc.form]);
+
+  const persistBytes = useCallback(async (bytes: ArrayBuffer, label: string) => {
+    try {
+      const headers: Record<string, string> = { "content-type": "application/pdf" };
+      const t = getToken();
+      if (t) headers.authorization = `Bearer ${t}`;
+      const res = await fetch(`/api/files/${item.id}/pdf-bytes?label=${encodeURIComponent(label)}`, {
+        method: "PUT", headers, body: bytes,
+      });
+      if (!res.ok) throw new Error();
+    } catch { toast("Could not persist the edited PDF"); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id]);
+
+  // apply a page reorganization: new bytes + remapped anns, one undo entry, persist both
+  const applyOrganize = useCallback(async (
+    order: ({ src: number } | { blank: { w: number; h: number } })[],
+    rots: Map<number, number>,
+    rotDims: Map<number, { deg: number; w: number; h: number }>,
+    label: string,
+  ) => {
+    const bytes = pdfDataRef.current;
+    if (!bytes || !doc) return;
+    try {
+      const out = await reorganizePdf(bytes, order, rots);
+      const newBytes = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+      mutate((d) => { d.annotations = remapAnns(d.annotations, order.map((e) => "src" in e ? e.src : -1), rotDims); });
+      await reloadPdf(newBytes);
+      void persistBytes(newBytes, label);
+      toast(label);
+    } catch { toast("Page operation failed"); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, mutate, reloadPdf, persistBytes]);
+
+  // ---------- PDF-1: page organization ----------
+  const [orgSel, setOrgSel] = useState<Set<number>>(new Set());
+  const dragPage = useRef<number | null>(null);
+
+  const pageDims = async (p: number): Promise<{ w: number; h: number }> => {
+    const pg = await doc!.getPage(p);
+    const v = pg.getViewport({ scale: 1, rotation: 0 });
+    return { w: v.width, h: v.height };
+  };
+
+  const identOrder = (n = numPages): ({ src: number } | { blank: { w: number; h: number } })[] =>
+    Array.from({ length: n }, (_, i) => ({ src: i }));
+
+  const orgReorder = (from: number, to: number) => {
+    const order = identOrder();
+    const [m] = order.splice(from, 1);
+    order.splice(to, 0, m);
+    void applyOrganize(order, new Map(), new Map(), `Moved page ${from + 1}`);
+    setOrgSel(new Set([to + 1]));
+  };
+  const orgDelete = () => {
+    const order = identOrder().filter((e) => "src" in e && !orgSel.has(e.src + 1));
+    if (!order.length) { toast("Cannot delete every page"); return; }
+    void applyOrganize(order, new Map(), new Map(), `Deleted ${orgSel.size} page${orgSel.size === 1 ? "" : "s"}`);
+    setOrgSel(new Set());
+  };
+  const orgRotate = async (deg: number) => {
+    const rots = new Map<number, number>();
+    const rotDims = new Map<number, { deg: number; w: number; h: number }>();
+    for (const p of orgSel) {
+      const d = await pageDims(p);
+      rots.set(p - 1, deg);
+      rotDims.set(p - 1, { deg, ...d });
+    }
+    void applyOrganize(identOrder(), rots, rotDims, `Rotated ${orgSel.size} page${orgSel.size === 1 ? "" : "s"} ${deg}°`);
+  };
+  const orgInsertBlank = async () => {
+    const d = await pageDims(curPage);
+    const order = identOrder();
+    order.splice(curPage, 0, { blank: d });
+    void applyOrganize(order, new Map(), new Map(), "Inserted blank page");
+  };
+  const orgMerge = async (f: File) => {
+    const bytes = pdfDataRef.current;
+    if (!bytes) return;
+    try {
+      const { bytes: out, count } = await mergePdf(bytes, await f.arrayBuffer());
+      const newBytes = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+      mutate(() => {}); // undo entry — anns unchanged, bytes snapshot differs
+      await reloadPdf(newBytes);
+      void persistBytes(newBytes, `Merged ${f.name}`);
+      toast(`Merged ${count} page${count === 1 ? "" : "s"} from ${f.name}`);
+    } catch { toast("Merge failed — is that a valid PDF?"); }
+  };
+  const orgExtract = async () => {
+    const bytes = pdfDataRef.current;
+    if (!bytes || !orgSel.size) return;
+    const out = await extractPages(bytes, [...orgSel].sort((a, b) => a - b));
+    downloadPdf(out, `${title.replace(/\.pdf$/i, "")}-extract.pdf`);
+  };
+  const orgSplit = async () => {
+    const bytes = pdfDataRef.current;
+    if (!bytes || curPage <= 1 || curPage > numPages) return;
+    const [a, b] = await splitPdf(bytes, curPage, numPages);
+    const base = title.replace(/\.pdf$/i, "");
+    downloadPdf(a, `${base}-part1.pdf`);
+    downloadPdf(b, `${base}-part2.pdf`);
+    toast(`Split at page ${curPage}`);
+  };
+
   const undo = useCallback(() => {
-    const prev = undoStack.current.pop();
-    if (!prev) return;
+    const e = undoStack.current.pop();
+    if (!e) return;
     lastAction.current = null;
-    redoStack.current.push(annDoc);
-    setAnnDoc(prev); scheduleSave();
-  }, [annDoc]); // eslint-disable-line react-hooks/exhaustive-deps
+    redoStack.current.push({ d: annDoc, b: pdfDataRef.current });
+    setAnnDoc(e.d);
+    if (e.b && e.b !== pdfDataRef.current) { void reloadPdf(e.b); void persistBytes(e.b, "Undo page edit"); }
+    scheduleSave();
+  }, [annDoc, reloadPdf, persistBytes]); // eslint-disable-line react-hooks/exhaustive-deps
   const redo = useCallback(() => {
-    const next = redoStack.current.pop();
-    if (!next) return;
+    const e = redoStack.current.pop();
+    if (!e) return;
     lastAction.current = null;
-    undoStack.current.push(annDoc);
-    setAnnDoc(next); scheduleSave();
-  }, [annDoc]); // eslint-disable-line react-hooks/exhaustive-deps
+    undoStack.current.push({ d: annDoc, b: pdfDataRef.current });
+    setAnnDoc(e.d);
+    if (e.b && e.b !== pdfDataRef.current) { void reloadPdf(e.b); void persistBytes(e.b, "Redo page edit"); }
+    scheduleSave();
+  }, [annDoc, reloadPdf, persistBytes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addAnn = (page: number, a: Omit<PdfAnn, "id" | "page" | "createdAt">) => {
     mutate((d) => d.annotations.push({ ...a, id: crypto.randomUUID().slice(0, 8), page, createdAt: new Date().toISOString() }));
@@ -419,12 +552,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <PresenceBar session={session} />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
-          onClick={() => {
-            if (!pdfDataRef.current) return;
-            flattenMod()
-              .then(({ exportFlattenedPdf }) => exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title))
-              .catch(() => toast("PDF export failed"));
-          }}>Export PDF</button>
+          onClick={() => setExportDlg(true)}>Export PDF</button>
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print</button>
       </div>
 
@@ -432,6 +560,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "thumbs" ? "on" : ""}`} title="Page thumbnails" onClick={() => setPanel(panel === "thumbs" ? "none" : "thumbs")}>▦</button>
         <button className={`rb ${panel === "outline" ? "on" : ""}`} title="Bookmarks" onClick={() => setPanel(panel === "outline" ? "none" : "outline")}>🔖</button>
         <button className={`rb ${panel === "search" ? "on" : ""}`} title="Search" onClick={() => setPanel(panel === "search" ? "none" : "search")}>🔍</button>
+        <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
+          onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
         <div className="rb-sep" />
         {TOOLS.map((t) => (
           <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label} disabled={!canEdit && t.id !== "select"}
@@ -462,6 +592,21 @@ export function PdfEditor({ item, initialDoc, permission }: {
           onChange={(e) => scrollToPage(Math.max(1, Math.min(numPages, Number(e.target.value) || 1)))} /> / {numPages}</span>
         <div className="rb-sep" />
         <button className="rb" title="Add comment" onClick={() => { setPanel("comments"); }}>💬+</button>
+        {panel === "organize" && (
+          <>
+            <div className="rb-sep" />
+            <span className="rb-info" style={{ fontSize: 11 }}>{orgSel.size ? `${orgSel.size} selected` : "Click pages · drag to reorder"}</span>
+            <button className="rb" title="Delete selected pages" disabled={!orgSel.size} onClick={orgDelete}>🗑</button>
+            <button className="rb" title="Rotate left 90°" disabled={!orgSel.size} onClick={() => void orgRotate(270)}>↺</button>
+            <button className="rb" title="Rotate right 90°" disabled={!orgSel.size} onClick={() => void orgRotate(90)}>↻</button>
+            <button className="rb" title="Insert blank page after current" onClick={() => void orgInsertBlank()}>＋▤</button>
+            <button className="rb" title="Merge another PDF at the end" onClick={() => mergeRef.current?.click()}>⇤📄</button>
+            <button className="rb" title="Extract selected pages → new PDF" disabled={!orgSel.size} onClick={() => void orgExtract()}>⤓</button>
+            <button className="rb" title={`Split at page ${curPage} → two PDFs`} disabled={curPage <= 1} onClick={() => void orgSplit()}>✂</button>
+            <input ref={mergeRef} type="file" accept=".pdf" hidden
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
+          </>
+        )}
       </div>
 
       <div className="work">
@@ -503,6 +648,29 @@ export function PdfEditor({ item, initialDoc, permission }: {
           </div>
         )}
 
+        {panel === "organize" && doc ? (
+          <div className="pages pdf-org">
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+              <div key={`${docGen}:${p}`}
+                className={`pdf-org-cell ${orgSel.has(p) ? "sel" : ""} ${p === curPage ? "cur" : ""}`}
+                draggable
+                onDragStart={() => { dragPage.current = p - 1; }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); if (dragPage.current !== null && dragPage.current !== p - 1) orgReorder(dragPage.current, p - 1); dragPage.current = null; }}
+                onClick={(e) => {
+                  setCurPage(p);
+                  const next = new Set(e.ctrlKey || e.metaKey ? orgSel : []);
+                  if (e.shiftKey && orgSel.size) {
+                    const lo = Math.min(...orgSel, p), hi = Math.max(...orgSel, p);
+                    for (let i = lo; i <= hi; i++) next.add(i);
+                  } else next.has(p) && orgSel.size > 1 ? next.delete(p) : next.add(p);
+                  setOrgSel(next);
+                }}>
+                <Thumb doc={doc} page={p} active={p === curPage} onClick={() => scrollToPage(p)} />
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="pages pdf-pages" ref={scrollRef}
           onScroll={(e) => {
             const el = e.currentTarget;
@@ -514,7 +682,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           {loadErr && <div className="empty" style={{ padding: 60 }}>{loadErr}</div>}
           {!doc && !loadErr && <div className="empty" style={{ padding: 60 }}>Loading PDF…</div>}
           {doc && Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
-            <div key={p} data-page={p} ref={(el) => { if (el) pageRefs.current.set(p, el); }} className="pdf-page-wrap">
+            <div key={`${docGen}:${p}`} data-page={p} ref={(el) => { if (el) pageRefs.current.set(p, el); }} className="pdf-page-wrap">
               <PdfPage doc={doc} pageNum={p} scale={scale}
                 anns={annDoc.annotations.filter((a) => a.page === p)}
                 selAnn={selAnn} setSelAnn={setSelAnn}
@@ -527,6 +695,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {panel === "comments" && (
@@ -581,6 +750,37 @@ export function PdfEditor({ item, initialDoc, permission }: {
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {printing && <PrintDeck doc={doc} anns={annDoc.annotations} onDone={() => setPrinting(false)} />}
+      {exportDlg && (
+        <div className="dlg-back" onClick={() => setExportDlg(false)}>
+          <div className="dlg" onClick={(e) => e.stopPropagation()}>
+            <h3>Export PDF</h3>
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 12px" }}>
+              Annotations are baked into the page; form fields are filled and flattened.
+            </p>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, marginBottom: 10 }}>
+              <input type="checkbox" checked={pdfOpts.pageNumbers}
+                onChange={(e) => setPdfOpts({ ...pdfOpts, pageNumbers: e.target.checked })} />
+              Page numbers
+            </label>
+            {(["watermark", "header", "footer"] as const).map((k) => (
+              <input key={k} value={pdfOpts[k]} placeholder={k === "watermark" ? "Watermark text (e.g. CONFIDENTIAL)" : `${k[0].toUpperCase()}${k.slice(1)} line…`}
+                onChange={(e) => setPdfOpts({ ...pdfOpts, [k]: e.target.value })}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+            ))}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn-ghost btn-sm" onClick={() => setExportDlg(false)}>Cancel</button>
+              <button className="btn-primary btn-sm" onClick={() => {
+                setExportDlg(false);
+                if (!pdfDataRef.current) return;
+                flattenMod()
+                  .then(({ exportFlattenedPdf }) => exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title,
+                    { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined, header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined }))
+                  .catch(() => toast("PDF export failed"));
+              }}>Export</button>
+            </div>
+          </div>
+        </div>
+      )}
       {msg && <div className="toast">{msg}</div>}
     </div>
   );

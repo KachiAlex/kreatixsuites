@@ -10,6 +10,14 @@ const hexToRgb = (hex?: string): RGB => {
 // WinAnsi can't encode most non-latin glyphs — sanitize for the standard fonts
 const safe = (s: string) => s.replace(/[^\x20-\x7E\xA1-\xFF]/g, "?");
 
+/** PDF-1b — page chrome options for export (page numbers, watermark, header/footer) */
+export interface FlattenOpts {
+  pageNumbers?: boolean;
+  watermark?: string;        // diagonal text, e.g. "DRAFT" / "CONFIDENTIAL"
+  header?: string;           // centered top-of-page line
+  footer?: string;           // centered bottom-of-page line (drawn above page number)
+}
+
 /**
  * Bake Kreatix annotations into the PDF content stream and fill + flatten
  * AcroForm fields — returns the finished PDF bytes (KBS-PDF-004).
@@ -19,8 +27,9 @@ export async function buildFlattenedPdf(
   anns: PdfAnn[],
   formValues: Record<string, unknown>,
   pdfDoc: PDFDocumentProxy | null,
+  opts: FlattenOpts = {},
 ): Promise<Uint8Array> {
-  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const helv = await src.embedFont(StandardFonts.Helvetica);
   const helvB = await src.embedFont(StandardFonts.HelveticaBold);
@@ -143,6 +152,31 @@ export async function buildFlattenedPdf(
     } catch { /* skip malformed ann rather than fail the export */ }
   }
 
+  // ---- PDF-1b: page chrome — watermark, header/footer, page numbers ----
+  pages.forEach((page, i) => {
+    const { width: W, height: H } = page.getSize();
+    try {
+      if (opts.watermark?.trim()) {
+        const t = safe(opts.watermark).toUpperCase();
+        const size = Math.min(96, (W * 0.9) / Math.max(1, helvB.widthOfTextAtSize(t, 1)));
+        const tw = helvB.widthOfTextAtSize(t, size);
+        page.drawText(t, {
+          x: W / 2 - tw / 2 + H * 0.18, y: H / 2 - size * 0.35 - W * 0.18,
+          size, font: helvB, color: rgb(0.85, 0.2, 0.2), opacity: 0.18,
+          rotate: degrees(45),
+        });
+      }
+      if (opts.header?.trim())
+        page.drawText(safe(opts.header), { x: (W - helv.widthOfTextAtSize(safe(opts.header), 9)) / 2, y: H - 24, size: 9, font: helv, color: rgb(0.35, 0.35, 0.35) });
+      if (opts.footer?.trim())
+        page.drawText(safe(opts.footer), { x: (W - helv.widthOfTextAtSize(safe(opts.footer), 9)) / 2, y: 28, size: 9, font: helv, color: rgb(0.35, 0.35, 0.35) });
+      if (opts.pageNumbers) {
+        const t = `${i + 1} / ${pages.length}`;
+        page.drawText(t, { x: (W - helv.widthOfTextAtSize(t, 9)) / 2, y: 14, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      }
+    } catch { /* chrome draw failed — skip */ }
+  });
+
   return src.save();
 }
 
@@ -153,8 +187,9 @@ export async function exportFlattenedPdf(
   formValues: Record<string, unknown>,
   pdfDoc: PDFDocumentProxy | null,
   fileName: string,
+  opts: FlattenOpts = {},
 ): Promise<void> {
-  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc);
+  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts);
   const url = URL.createObjectURL(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");
   a.href = url;

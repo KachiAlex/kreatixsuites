@@ -1367,3 +1367,11 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .obj-rename{flex:1;min-width:60px;font-size:12px;padding:1px 4px;border:1px solid var(--k-orange);border-radius:4px;outline:none}
 .obj-alt{flex-basis:100%;font-size:11px;padding:3px 6px;margin-top:3px;border:1px solid var(--border);border-radius:5px;outline:none}
 .obj-alt:focus{border-color:var(--k-orange)}
+
+/* PDF-1 — organize pages */
+.pdf-org{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:14px;padding:24px;align-content:start}
+.pdf-org-cell{position:relative;border:2px solid transparent;border-radius:8px;padding:6px;cursor:grab;transition:border-color .12s,background .12s}
+.pdf-org-cell:hover{border-color:var(--line)}
+.pdf-org-cell.sel{border-color:var(--k-orange);background:#FFF3EB}
+.pdf-org-cell.cur .pdf-thumb{border-color:var(--k-orange)}
+.pdf-org-cell .pdf-thumb{pointer-events:none}

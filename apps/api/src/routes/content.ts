@@ -54,6 +54,22 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
+    // PDF files interleave two version kinds: raw %PDF bytes (uploads + page
+    // re-organizations) and {kind:"pdf"} annotation JSON. Head may be either —
+    // for pdf items return the latest JSON version (anns), not raw bytes.
+    if (item.kind === "pdf") {
+      const rows = await q<VersionRow>(
+        "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 25", [item.id]);
+      for (const row of rows) {
+        const b = getBlob(row.blob_key);
+        if (!b || b[0] !== 0x7b) continue;
+        try {
+          const parsed = JSON.parse(b.toString("utf8"));
+          if (parsed?.kind === "pdf") return { version: row.number, content: parsed };
+        } catch { /* not json — keep scanning */ }
+      }
+    }
+
     const v = await headVersion(item.id);
     if (!v) return reply.code(404).send({ error: "not_found", message: "No content" });
     const blob = getBlob(v.blob_key);
@@ -62,32 +78,53 @@ export function contentRoutes(app: FastifyInstance) {
     if (item.mime.startsWith("application/x-kreatix-")) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
     }
-    // PDF files: head blob may be our annotation wrapper JSON — detect and unwrap.
-    // (v1 is always the raw PDF upload; later versions are {kind:"pdf",…} JSON)
-    if (item.kind === "pdf" && blob[0] === 0x7b /* '{' */) {
-      try {
-        const parsed = JSON.parse(blob.toString("utf8"));
-        if (parsed?.kind === "pdf") return { version: v.number, content: parsed };
-      } catch { /* fall through to raw */ }
-    }
     return sendRawBlob(reply, item.mime, blob, itemName(item));
   });
 
-  /** GET the original uploaded binary (version 1) — used by the PDF viewer to fetch
-   *  the document bytes even when later head versions hold annotation JSON. */
+  /** GET the PDF bytes — the LATEST version whose blob is a real PDF (page
+   *  organization pushes new raw versions; annotation JSON versions are skipped). */
   app.get("/api/files/:id/raw", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
     if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const v = await one<VersionRow>(
-      "SELECT * FROM versions WHERE file_id = $1 ORDER BY number ASC LIMIT 1",
-      [item.id],
+    const rows = await q<VersionRow>(
+      "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 50", [item.id]);
+    for (const v of rows) {
+      const blob = getBlob(v.blob_key);
+      if (blob && blob.subarray(0, 5).equals(Buffer.from("%PDF-")))
+        return sendRawBlob(reply, item.mime, blob, itemName(item));
+    }
+    return reply.code(404).send({ error: "not_found", message: "No PDF bytes" });
+  });
+
+  /** PUT new PDF bytes (page-organization output) — stores an immutable raw
+   *  version that /raw will serve; the annotation JSON stays the head content. */
+  app.put("/api/files/:id/pdf-bytes", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden", message: "No edit access" });
+    }
+    let buf = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!buf) {
+      const chunks: Buffer[] = [];
+      for await (const c of req.raw) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c as ArrayBuffer));
+      buf = Buffer.concat(chunks);
+    }
+    if (!buf.length || !buf.subarray(0, 5).equals(Buffer.from("%PDF-")))
+      return reply.code(400).send({ error: "bad_request", message: "Expected PDF bytes" });
+    const label = (req.query as { label?: string }).label?.slice(0, 120);
+    const { key, size } = putBlob(buf);
+    const next = ((await headVersion(item.id))?.number ?? 0) + 1;
+    await run(
+      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [randomUUID(), item.id, next, label ?? "Edited pages", key, size, user.id, now()],
     );
-    const blob = v && getBlob(v.blob_key);
-    if (!v || !blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
-    return sendRawBlob(reply, item.mime, blob, itemName(item));
+    await run("UPDATE items SET size = $1 WHERE id = $2", [size, item.id]);
+    void touchItem(item.id);
+    return { version: next };
   });
 
   /** PUT new content — creates an immutable version (autosave calls this, debounced client-side) */
