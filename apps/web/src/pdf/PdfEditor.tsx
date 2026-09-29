@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 import type * as pdfjsTypes from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -108,6 +109,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
 }) {
   const { msg, toast } = useToast();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
@@ -150,6 +152,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
     if (t === "sign" && !sigImg) setSigPadOpen(true);
   };
   const cmpRef = useRef<HTMLInputElement>(null);
+  const openFileRef = useRef<HTMLInputElement>(null);
   // PDF-11.1 — optional content groups (layers)
   const ocgCfgRef = useRef<{ getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null>(null);
   const [ocg, setOcg] = useState<{ id: string; name: string; on: boolean }[]>([]);
@@ -266,13 +269,16 @@ export function PdfEditor({ item, initialDoc, permission }: {
     return form;
   }, [doc]);
 
+  const currentPayload = useCallback(() => {
+    const form = formValues();
+    return { ...annDoc, form: Object.keys(form).length ? form : annDoc.form };
+  }, [annDoc, formValues]);
+
   const flushSave = useCallback(async () => {
     setSaveState("saving");
-    const form = formValues();
-    const ok = await saveContent(item.id,
-      { ...annDoc, form: Object.keys(form).length ? form : annDoc.form }, !!session);
+    const ok = await saveContent(item.id, currentPayload(), !!session);
     setSaveState(ok ? "saved" : "error");
-  }, [annDoc, formValues, item.id, session]);
+  }, [currentPayload, item.id, session]);
 
   // replay pending saves when connectivity returns (annDoc holds latest edits)
   useEffect(() => {
@@ -291,6 +297,44 @@ export function PdfEditor({ item, initialDoc, permission }: {
     const t = title.trim();
     if (!t || t === item.name) return;
     try { await api.patch(`/api/drive/${item.id}`, { name: t }); } catch { toast("Rename failed"); }
+  };
+
+  // ---------- file ops (File menu) ----------
+  /** Upload a PDF from the computer as a new Drive item, then open it. */
+  const openFromComputer = async (f: File) => {
+    try {
+      const r = await api.upload<{ item: { id: string } }>(
+        `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=pdf`, f);
+      navigate(`/edit/${r.item.id}`);
+    } catch { toast("Could not open that file"); }
+  };
+
+  /** Word-style Save As — flush a labeled immutable version. */
+  const saveNamed = async () => {
+    const label = window.prompt("Name this version", "e.g. Signed copy");
+    if (label === null || !label.trim()) return;
+    const ok = await saveContent(item.id, currentPayload(), !!session, label.trim());
+    toast(ok ? `Saved version "${label.trim()}"` : "Could not save named version");
+  };
+
+  /** Duplicate this PDF (bytes + annotations) as a new Drive item. */
+  const makeCopy = async () => {
+    try {
+      const r = await api.post<{ item: { id: string } }>("/api/drive",
+        { name: `Copy of ${title}`, kind: "pdf" });
+      const nid = r.item.id;
+      if (pdfDataRef.current) {
+        const headers: Record<string, string> = { "content-type": "application/pdf" };
+        const t = getToken();
+        if (t) headers.authorization = `Bearer ${t}`;
+        const res = await fetch(`/api/files/${nid}/pdf-bytes?label=${encodeURIComponent(`Copied from ${title}`)}`,
+          { method: "PUT", headers, body: pdfDataRef.current });
+        if (!res.ok) throw new Error();
+      }
+      await api.put(`/api/files/${nid}/content`, { content: currentPayload() });
+      toast("Copy created");
+      navigate(`/edit/${nid}`);
+    } catch { toast("Could not make a copy"); }
   };
 
   // ---------- annotation mutations (undo stacks) ----------
@@ -934,6 +978,12 @@ export function PdfEditor({ item, initialDoc, permission }: {
         { e.preventDefault(); setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1))); }
       else if ((viewMode === "single" || viewMode === "two") && (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp"))
         { e.preventDefault(); setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1))); }
+      else if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        void flushSave();
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key === "o") { e.preventDefault(); openFileRef.current?.click(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
     };
@@ -946,6 +996,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   return (
     <div className="editor">
       <div className="topbar">
+        <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
+        <div className="app-ico pdf" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>P</div>
         <input className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)} onBlur={rename} />
         <span className={`save-state ${saveState}`}>{saveLabel}</span>
@@ -964,6 +1016,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
       {/* ---- menubar: every feature, grouped + labeled (Acrobat/Office-style) ---- */}
       <MenuBar items={[
         { label: "File", items: [
+          { label: "Open…", icon: "📂", shortcut: "Ctrl+O", onClick: () => navigate("/drive") },
+          { label: "Open from this computer…", icon: "💻", onClick: () => openFileRef.current?.click() },
+          { divider: true },
+          { label: "Save", icon: "💾", shortcut: "Ctrl+S", disabled: !canEdit,
+            onClick: () => { if (saveTimer.current) clearTimeout(saveTimer.current); void flushSave(); } },
+          { label: "Save named version…", icon: "🏷", onClick: () => void saveNamed(), disabled: !canEdit },
+          { label: "Make a copy", icon: "⧉", onClick: () => void makeCopy() },
+          { divider: true },
           { label: "Export PDF…", icon: "⤓", onClick: () => setExportDlg(true), disabled: !pdfDataRef.current },
           { label: "Export as", icon: "📤", submenu: [
             { label: "Word (.docx)", onClick: () => void import("./exportDocx").then(({ exportPdfToDocx }) => doc && exportPdfToDocx(doc, title)).catch(() => toast("DOCX export failed")) },
@@ -978,6 +1038,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Comments", icon: "💬", onClick: () => setPanel("comments") },
           { divider: true },
           { label: "Share…", icon: "🔗", onClick: () => setSharing(true) },
+          { divider: true },
+          { label: "Close", icon: "✕", shortcut: "Ctrl+W", onClick: () => navigate(-1) },
         ]},
         { label: "Edit", items: [
           { label: "Undo", icon: "↶", shortcut: "Ctrl+Z", onClick: undo, disabled: !canEdit },
@@ -1199,6 +1261,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
         <input ref={cmpRef} type="file" accept=".pdf" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void runCompare(f); e.target.value = ""; }} />
+        <input ref={openFileRef} type="file" accept=".pdf,application/pdf" hidden
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void openFromComputer(f); e.target.value = ""; }} />
         <button className="rb" title="OCR this page — recognize text on scans (searchable/selectable)"
           disabled={!canEdit || ocrBusy} onClick={() => void runOcr()}>{ocrBusy ? "⏳" : "OCR"}</button>
         <button className="rb" title="Add comment" onClick={() => { setPanel("comments"); }}>💬+</button>
