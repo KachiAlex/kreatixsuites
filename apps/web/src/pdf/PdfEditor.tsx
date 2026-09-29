@@ -29,6 +29,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Tool = "select" | AnnType | "pan";
+const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions" | "ai" | "organize";
 type Rect4 = [number, number, number, number];
 
@@ -45,6 +46,7 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
+  { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
 ];
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
 const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "freehand", "rect", "ellipse", "line", "arrow", "note", "textbox", "stamp"]);
@@ -84,6 +86,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [tool, setTool] = useState<Tool>("select");
   const [toolColor, setToolColor] = useState("#FFD23F");
   const [stampText, setStampText] = useState(STAMPS[0]);
+  const [sigImg, setSigImg] = useState<string | null>(() => localStorage.getItem(SIG_KEY));
+  const [sigPadOpen, setSigPadOpen] = useState(false);
   const [selAnn, setSelAnn] = useState<string | null>(null);
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
@@ -565,8 +569,13 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <div className="rb-sep" />
         {TOOLS.map((t) => (
           <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label} disabled={!canEdit && t.id !== "select"}
-            onClick={() => setTool(t.id)}>{t.ico}</button>
+            onClick={() => { setTool(t.id); if (t.id === "sign" && !sigImg) setSigPadOpen(true); }}>{t.ico}</button>
         ))}
+        {tool === "sign" && (
+          <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
+            title={sigImg ? "Change signature" : "Create signature"}
+            onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
+        )}
         {tool === "stamp" && (
           <select className="rb-sel" value={stampText} onChange={(e) => setStampText(e.target.value)} title="Stamp text">
             {STAMPS.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -686,7 +695,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
               <PdfPage doc={doc} pageNum={p} scale={scale}
                 anns={annDoc.annotations.filter((a) => a.page === p)}
                 selAnn={selAnn} setSelAnn={setSelAnn}
-                tool={canEdit ? tool : "select"} toolColor={toolColor} stampText={stampText}
+                tool={canEdit ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
                 canEdit={canEdit}
                 searchRects={matches.filter((m, i) => m.page === p && i <= matchIdx + 3).flatMap((m) => m.rects)}
                 onAdd={(a) => addAnn(p, a)}
@@ -781,7 +790,105 @@ export function PdfEditor({ item, initialDoc, permission }: {
           </div>
         </div>
       )}
+      {sigPadOpen && (
+        <SignPad initial={sigImg} onDone={(img) => {
+          if (img) { setSigImg(img); localStorage.setItem(SIG_KEY, img); }
+          else { setSigImg(null); localStorage.removeItem(SIG_KEY); }
+          setSigPadOpen(false);
+          setTool("sign");
+        }} onClose={() => setSigPadOpen(false)} />
+      )}
       {msg && <div className="toast">{msg}</div>}
+    </div>
+  );
+}
+
+// ---------- PDF-2: signature pad (draw or type → PNG data URL) ----------
+function SignPad({ initial, onDone, onClose }: { initial: string | null; onDone: (img: string | null) => void; onClose: () => void }) {
+  const [tab, setTab] = useState<"draw" | "type">("draw");
+  const [typed, setTyped] = useState("");
+  const cvRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+
+  const W = 360, H = 120;
+  useEffect(() => {
+    const cv = cvRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext("2d")!;
+    ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "#1a1a6e"; ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (initial && tab === "draw") {
+      const im = new Image();
+      im.onload = () => ctx.drawImage(im, 0, 0, W, H);
+      im.src = initial;
+    }
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pt = (e: React.PointerEvent): [number, number] => {
+    const b = cvRef.current!.getBoundingClientRect();
+    return [(e.clientX - b.left) * (W / b.width), (e.clientY - b.top) * (H / b.height)];
+  };
+  const clear = () => {
+    const ctx = cvRef.current!.getContext("2d")!;
+    ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "#1a1a6e"; ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  };
+
+  const done = () => {
+    let url: string | null = null;
+    if (tab === "draw") {
+      const ctx = cvRef.current!.getContext("2d");
+      const d = ctx?.getImageData(0, 0, W, H);
+      const blank = d && [...d.data].every((v, i) => (i + 1) % 4 === 0 ? v === 255 : v >= 245);
+      url = blank ? null : cvRef.current!.toDataURL("image/png");
+    } else {
+      if (!typed.trim()) { onDone(null); return; }
+      const cv = document.createElement("canvas");
+      cv.width = W; cv.height = H;
+      const ctx = cv.getContext("2d")!;
+      ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#1a1a6e";
+      ctx.font = `italic 54px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive`;
+      ctx.textBaseline = "middle";
+      const tw = ctx.measureText(typed).width;
+      const scale = Math.min(1, (W - 24) / Math.max(tw, 1));
+      ctx.setTransform(scale, 0, 0, scale, 12, H / 2 - 8 * scale);
+      ctx.fillText(typed, 0, 0);
+      url = cv.toDataURL("image/png");
+    }
+    onDone(url);
+  };
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Add signature</h3>
+        <div style={{ display: "flex", gap: 6, margin: "8px 0 12px" }}>
+          {(["draw", "type"] as const).map((t) => (
+            <button key={t} className={`btn-ghost btn-sm ${tab === t ? "on" : ""}`}
+              style={{ textTransform: "capitalize" }} onClick={() => setTab(t)}>{t}</button>
+          ))}
+          <span style={{ flex: 1 }} />
+          {tab === "draw" && <button className="btn-ghost btn-sm" onClick={clear}>Clear</button>}
+        </div>
+        {tab === "draw" ? (
+          <canvas ref={cvRef} width={W} height={H} className="sig-pad"
+            onPointerDown={(e) => { drawing.current = true; cvRef.current!.setPointerCapture(e.pointerId); const [x, y] = pt(e); cvRef.current!.getContext("2d")!.beginPath(); cvRef.current!.getContext("2d")!.moveTo(x, y); }}
+            onPointerMove={(e) => { if (!drawing.current) return; const [x, y] = pt(e); const c = cvRef.current!.getContext("2d")!; c.lineTo(x, y); c.stroke(); }}
+            onPointerUp={() => { drawing.current = false; }} />
+        ) : (
+          <input autoFocus value={typed} placeholder="Type your name"
+            onChange={(e) => setTyped(e.target.value)}
+            style={{ width: "100%", height: 44, border: "1px solid var(--line)", borderRadius: 10, padding: "0 12px", fontSize: 18, fontFamily: '"Segoe Script", cursive', boxSizing: "border-box" }} />
+        )}
+        <div style={{ display: "flex", gap: 8, justifyContent: "space-between", marginTop: 14 }}>
+          <button className="btn-ghost btn-sm" onClick={() => onDone(null)}>Remove signature</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+            <button className="btn-primary btn-sm" onClick={done}>Use signature</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -827,14 +934,14 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, canEdit, searchRects, onAdd, onMove, onPatch }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, onAdd, onMove, onPatch }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
   anns: PdfAnn[];
   selAnn: string | null;
   setSelAnn: (id: string | null) => void;
-  tool: Tool; toolColor: string; stampText: string;
+  tool: Tool; toolColor: string; stampText: string; sigImg?: string | null;
   canEdit: boolean;
   searchRects: Rect4[];
   onAdd: (a: Omit<PdfAnn, "id" | "page" | "createdAt">) => void;
@@ -952,6 +1059,12 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onAdd({ type: "stamp", rects: [[px - 60, py - 14, 120, 28]], text: stampText, color: toolColor });
       return;
     }
+    if (tool === "sign") {
+      if (!sigImg) return; // pad opens from the toolbar; nothing to place yet
+      const [px, py] = toPdf(e.clientX, e.clientY);
+      onAdd({ type: "sign", rects: [[px - 80, py - 20, 160, 40]], img: sigImg });
+      return;
+    }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };
     if (tool === "freehand") setPenPts([[x, y]]);
     else setPreview({ x, y, w: 0, h: 0 });
@@ -1066,7 +1179,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         </svg>
       )}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp").map((a) => {
+      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign").map((a) => {
         const sel = selAnn === a.id;
         if (a.type === "note") {
           const [x, y] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
@@ -1082,6 +1195,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
                 </div>
               )}
             </div>
+          );
+        }
+        if (a.type === "sign") {
+          const [x, y, w2, h2] = vpRect(a.rects![0]);
+          return (
+            <img key={a.id} src={a.img} alt="signature" draggable={false}
+              className={`ann-sign ${sel ? "sel" : ""}`}
+              style={{ left: x, top: y, width: w2, height: h2 }}
+              onPointerDown={(e) => startMove(e, a)} />
           );
         }
         if (a.type === "stamp") {
@@ -1225,6 +1347,13 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
             const el = document.createElementNS(svgNS, "line");
             el.setAttribute("x1", `${ax}`); el.setAttribute("y1", `${ay}`); el.setAttribute("x2", `${bx}`); el.setAttribute("y2", `${by}`);
             el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
+            svg.appendChild(el);
+          } else if (a.type === "sign" && a.img) {
+            const [x, y, w, h] = vpR(a.rects![0]);
+            const el = document.createElementNS(svgNS, "image");
+            el.setAttribute("x", `${x}`); el.setAttribute("y", `${y}`);
+            el.setAttribute("width", `${w}`); el.setAttribute("height", `${h}`);
+            el.setAttribute("href", a.img);
             svg.appendChild(el);
           } else if (a.type === "stamp" || a.type === "textbox" || a.type === "note") {
             const r = a.rects?.[0] ?? (a.points ? [a.points[0][0] - 60, a.points[0][1] - 14, 120, 28] as Rect4 : null);

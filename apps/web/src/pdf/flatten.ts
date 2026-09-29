@@ -141,6 +141,15 @@ export async function buildFlattenedPdf(
           }
           break;
         }
+        case "sign": {
+          // PDF-2 — embed the signature PNG
+          const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(a.img ?? "");
+          if (!m) break;
+          const img = m[1] === "png" ? await src.embedPng(m[2]) : await src.embedJpg(m[2]);
+          const [x, y, w, h] = a.rects![0];
+          page.drawImage(img, { x, y, width: w, height: h });
+          break;
+        }
         case "note": {
           const [nx, ny] = a.points?.[0] ?? [0, 0];
           page.drawRectangle({ x: nx - 6, y: ny - 6, width: 13, height: 13, color: col, borderColor: rgb(0.6, 0.5, 0), borderWidth: 0.8 });

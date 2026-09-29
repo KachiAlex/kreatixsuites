@@ -5,7 +5,8 @@ export type AnnType =
   | "highlight" | "underline" | "strikeout"
   | "freehand"
   | "rect" | "ellipse" | "line" | "arrow"
-  | "note" | "textbox" | "stamp";
+  | "note" | "textbox" | "stamp"
+  | "sign";
 
 export interface PdfAnn {
   id: string;
@@ -17,6 +18,7 @@ export interface PdfAnn {
   /** polyline / line endpoints in PDF user-space */
   points?: [number, number][];
   text?: string;
+  img?: string; // PDF-2 — signature image (PNG data URL)
   createdAt?: string;
 }
 

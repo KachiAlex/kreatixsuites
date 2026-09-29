@@ -1375,3 +1375,8 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .pdf-org-cell.sel{border-color:var(--k-orange);background:#FFF3EB}
 .pdf-org-cell.cur .pdf-thumb{border-color:var(--k-orange)}
 .pdf-org-cell .pdf-thumb{pointer-events:none}
+
+/* PDF-2 — signatures */
+.ann-sign{position:absolute;cursor:move;user-select:none}
+.ann-sign.sel{outline:1.5px dashed #3578E5;outline-offset:2px}
+.sig-pad{border:1px solid var(--line);border-radius:10px;background:#fff;cursor:crosshair;touch-action:none;width:100%;height:120px}
