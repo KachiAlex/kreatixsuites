@@ -552,5 +552,37 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("cf range shifts", s.cf![0].range === "A3:A5");
 }
 
+// ---------- S7 charts + sparklines ----------
+{
+  const { extractSeries } = await import("./src/sheets/Chart");
+  const wb: Workbook = { sheets: [
+    { name: "S", cells: {
+      A1: { v: "m" }, B1: { v: "s1" }, C1: { v: "s2" },
+      A2: { v: 1 }, B2: { v: 10 }, C2: { v: 5 },
+      A3: { v: 2 }, B3: { v: 20 }, C3: { v: 15 },
+      A4: { v: 3 }, B4: { v: 30 }, C4: { f: "B4/2" },
+    } },
+    { name: "T", cells: { A1: { v: "x" }, B1: { v: "y" }, A2: { v: 1 }, B2: { v: 7 } } },
+  ] };
+  const ser = extractSeries(wb.sheets[0], "A1:C4", wb);
+  check("chart 2 series", ser.length === 2);
+  check("chart labels", JSON.stringify(ser[0].labels) === '["1","2","3"]');
+  check("chart names", ser[0].name === "s1" && ser[1].name === "s2");
+  check("chart formula val", ser[1].values[2] === 15);
+  // cross-sheet range
+  const xs = extractSeries(wb.sheets[0], "T!A1:B2", wb);
+  check("chart cross-sheet", xs[0].name === "y" && xs[0].values[0] === 7);
+  // single-col range → one series with ref labels
+  const one = extractSeries(wb.sheets[0], "B1:B4", wb);
+  check("chart single col", one.length === 1 && one[0].values.join(",") === "0,10,20,30");
+  // sparkline spec survives structural remap (host ref + source range)
+  const s: SheetData = { name: "S", cells: { A1: { v: 1 } },
+    sparklines: { C3: { range: "A1:B1", type: "line", color: "#123" } } };
+  adjustForRowsCols(s, "row", 0, 1);
+  check("spark host+range shift", s.sparklines!["C4"]?.range === "A2:B2");
+  adjustForRowsCols(s, "col", 0, 1);
+  check("spark col shift", !!s.sparklines!["D4"] && s.sparklines!["D4"].range === "B2:C2");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

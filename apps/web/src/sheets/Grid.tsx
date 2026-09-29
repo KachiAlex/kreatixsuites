@@ -5,6 +5,7 @@ import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
 import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects } from "./io";
 import { FxInput } from "./FxInput";
+import { SparklineView } from "./Chart";
 
 const HEADER_H = 26;
 const OVERSCAN_ROWS = 6;
@@ -390,8 +391,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const band = tableInfo.bands.get(ref);
     const tot = tableInfo.totals.get(r);
     const cfx = cfFx.get(ref);
+    const spark = sheet.sparklines?.[ref];
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
+    if (spark) content = null;
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
       if (c === tot.range.c1) content = "Totals";
       else {
@@ -441,6 +444,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           <span className="cf-bar" style={{ width: `${cfx.bar.pct}%`, background: cfx.bar.color }} />
         )}
         {cfx?.icon && <span className="cf-icon" style={{ color: cfx.icon.split("|")[0] }}>{cfx.icon.split("|")[1]}</span>}
+        {spark && <SparklineView spec={spark} sheet={sheet} wb={wb} w={colW(c) - 4} h={rowH(r) - 3} />}
         {s.rotate ? (
           <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
         ) : s.shrink ? (

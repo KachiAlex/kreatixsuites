@@ -60,11 +60,22 @@ export interface CondFormat {
 
 export interface ChartSpec {
   id: string;
-  type: "bar" | "line" | "pie" | "area";
+  type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut";
   range: string;
   title?: string;
+  xTitle?: string;
+  yTitle?: string;
+  legend?: "bottom" | "right" | "none";
+  dataLabels?: boolean;
   x: number;
   y: number;
+}
+
+/** In-cell mini chart (S7.3): rendered inside the target cell. */
+export interface Sparkline {
+  range: string;
+  type: "line" | "bar" | "winloss";
+  color?: string;
 }
 
 /** Data validation rule applied to a range (S3.4). */
@@ -110,6 +121,8 @@ export interface SheetData {
   filteredRows?: number[];
   /** Table objects (S5.4) */
   tables?: TableSpec[];
+  /** in-cell sparklines: ref → spec (S7.3) */
+  sparklines?: Record<string, Sparkline>;
 }
 
 export interface FilterCrit {
@@ -498,6 +511,16 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
       if (np) notes[toA1(np.col, np.row)] = text;
     }
     sheet.notes = notes;
+  }
+  // sparklines follow their host cells; their source ranges shift too
+  if (sheet.sparklines) {
+    const sp: Record<string, Sparkline> = {};
+    for (const [ref, spec] of Object.entries(sheet.sparklines)) {
+      const p = parseA1(ref);
+      const np = p && map(p);
+      if (np) sp[toA1(np.col, np.row)] = { ...spec, range: shiftRangeA1(spec.range, map) ?? spec.range };
+    }
+    sheet.sparklines = sp;
   }
   // validation ranges shift too
   sheet.validations = (sheet.validations ?? [])

@@ -63,6 +63,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [dedupeDlg, setDedupeDlg] = useState(false);
   const [t2cDlg, setT2cDlg] = useState(false);
   const [tableDlg, setTableDlg] = useState(false);
+  const [chartEdit, setChartEdit] = useState<ChartSpec | null>(null);
+  const [sparkDlg, setSparkDlg] = useState(false);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const [borderMenu, setBorderMenu] = useState(false);
@@ -1016,6 +1018,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className={`rb ${audit === "dep" ? "on" : ""}`} title="Trace dependents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
             onClick={() => setAudit(audit === "dep" ? null : "dep")}>Dep⇢</button>
           <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
+          <button className="rb" title="Sparkline — in-cell mini chart (anchor cell gets it)" onClick={() => setSparkDlg(true)}>∿</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
@@ -1068,7 +1071,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         {(sheet.charts ?? []).map((c) => (
           <ChartCard key={c.id} spec={c} sheet={sheet} wb={wb}
             onMove={canEdit ? (id, x, y) => mutateSheet((s) => { const ch = s.charts?.find((k) => k.id === id); if (ch) { ch.x = x; ch.y = y; } }) : undefined}
-            onRemove={canEdit ? (id) => mutateSheet((s) => { s.charts = s.charts?.filter((k) => k.id !== id); }) : undefined} />
+            onRemove={canEdit ? (id) => mutateSheet((s) => { s.charts = s.charts?.filter((k) => k.id !== id); }) : undefined}
+            onEdit={canEdit ? (spec) => setChartEdit(spec) : undefined} />
         ))}
       </div>
 
@@ -1246,6 +1250,24 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       {tableDlg && (
         <TableDialog range={selection} onApply={createTable} onClose={() => setTableDlg(false)} />
       )}
+      {chartEdit && (
+        <ChartEditDialog spec={chartEdit} onClose={() => setChartEdit(null)}
+          onSave={(spec) => {
+            mutateSheet((s) => { s.charts = s.charts?.map((c) => c.id === spec.id ? spec : c); });
+            setChartEdit(null);
+          }} />
+      )}
+      {sparkDlg && (
+        <SparklineDialog anchor={anchorRef} sheet={sheet}
+          onApply={(ref, spec) => {
+            mutateSheet((s) => {
+              s.sparklines = { ...(s.sparklines ?? {}) };
+              if (spec) s.sparklines[ref] = spec; else delete s.sparklines[ref];
+            });
+            setSparkDlg(false);
+          }}
+          onClose={() => setSparkDlg(false)} />
+      )}
       {sheet.tables?.length ? (
         <div className="sheet-tables-bar">
           {sheet.tables.map((t) => (
@@ -1260,9 +1282,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <div className="dlg-back" onClick={() => setChartOpen(false)}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
             <h3>Chart from {rangeToA1(selection)}</h3>
-            <p style={{ fontSize: 12, color: "#8B8480" }}>First column = labels, other columns = series.</p>
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              {(["bar", "line", "area", "pie"] as const).map((t) => (
+            <p style={{ fontSize: 12, color: "#8B8480" }}>First column = labels (or X for scatter), other columns = series. Combo = bars + last series as line.</p>
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              {(["bar", "line", "area", "pie", "doughnut", "scatter", "stacked", "combo"] as const).map((t) => (
                 <button key={t} className="btn-ghost btn-sm" style={{ textTransform: "capitalize" }}
                   onClick={() => addChart(t)}>{t}</button>
               ))}
@@ -2037,3 +2059,95 @@ function TableDialog({ range, onApply, onClose }: {
 }
 
 
+// ---------- S7: chart editor + sparklines ----------
+
+const CHART_TYPES: [ChartSpec["type"], string][] = [
+  ["bar", "Bar"], ["line", "Line"], ["area", "Area"], ["pie", "Pie"],
+  ["doughnut", "Doughnut"], ["scatter", "Scatter"], ["stacked", "Stacked"], ["combo", "Combo"],
+];
+
+/** Chart settings dialog (S7.2): type, titles, legend, data labels, range. */
+function ChartEditDialog({ spec, onSave, onClose }: {
+  spec: ChartSpec;
+  onSave: (s: ChartSpec) => void;
+  onClose: () => void;
+}) {
+  const [s, setS] = useState<ChartSpec>({ ...spec, legend: spec.legend ?? "bottom" });
+  const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1, minWidth: 0 };
+  const sel: CSSProperties = { ...inp, flex: "none" };
+  const row: CSSProperties = { display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 12 };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Chart settings</h3>
+        <div style={{ ...row, flexWrap: "wrap", gap: 6 }}>
+          {CHART_TYPES.map(([v, l]) => (
+            <button key={v} className={`ps-opt ${s.type === v ? "on" : ""}`} onClick={() => setS({ ...s, type: v })}>{l}</button>
+          ))}
+        </div>
+        <div style={row}><span style={{ width: 70 }}>Title</span>
+          <input style={inp} value={s.title ?? ""} onChange={(e) => setS({ ...s, title: e.target.value })} /></div>
+        <div style={row}><span style={{ width: 70 }}>Data range</span>
+          <input style={inp} value={s.range} onChange={(e) => setS({ ...s, range: e.target.value })} /></div>
+        <div style={row}><span style={{ width: 70 }}>X axis</span>
+          <input style={inp} value={s.xTitle ?? ""} onChange={(e) => setS({ ...s, xTitle: e.target.value })} /></div>
+        <div style={row}><span style={{ width: 70 }}>Y axis</span>
+          <input style={inp} value={s.yTitle ?? ""} onChange={(e) => setS({ ...s, yTitle: e.target.value })} /></div>
+        <div style={row}>
+          <span style={{ width: 70 }}>Legend</span>
+          <select style={sel} value={s.legend} onChange={(e) => setS({ ...s, legend: e.target.value as ChartSpec["legend"] })}>
+            <option value="bottom">Bottom</option><option value="right">Right</option><option value="none">None</option>
+          </select>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 10 }}>
+            <input type="checkbox" checked={!!s.dataLabels} onChange={(e) => setS({ ...s, dataLabels: e.target.checked })} />
+            Data labels
+          </label>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => onSave(s)}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Insert a sparkline into the anchor cell (S7.3). Pass null spec to remove. */
+function SparklineDialog({ anchor, sheet, onApply, onClose }: {
+  anchor: string; sheet: SheetData;
+  onApply: (ref: string, spec: { range: string; type: "line" | "bar" | "winloss"; color?: string } | null) => void;
+  onClose: () => void;
+}) {
+  const existing = sheet.sparklines?.[anchor];
+  const [range, setRange] = useState(existing?.range ?? "");
+  const [type, setType] = useState<"line" | "bar" | "winloss">(existing?.type ?? "line");
+  const [color, setColor] = useState(existing?.color ?? "#3574E0");
+  const inp: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit", flex: 1 };
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Sparkline in {anchor}</h3>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <input style={inp} value={range} onChange={(e) => setRange(e.target.value)}
+            placeholder="Source range e.g. B2:F2" autoFocus
+            onKeyDown={(e) => e.key === "Enter" && onApply(anchor, { range, type, color })} />
+          <select value={type} onChange={(e) => setType(e.target.value as "line" | "bar" | "winloss")}
+            style={{ ...inp, flex: "none", width: 90 }}>
+            <option value="line">Line</option><option value="bar">Bar</option><option value="winloss">Win/Loss</option>
+          </select>
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)}
+            style={{ width: 32, height: 30, padding: 0, border: "none", background: "none" }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          {existing && (
+            <button className="btn-ghost btn-sm" style={{ marginRight: "auto" }}
+              onClick={() => onApply(anchor, null)}>Remove</button>
+          )}
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!parseRange(range)}
+            onClick={() => onApply(anchor, { range, type, color })}>Insert</button>
+        </div>
+      </div>
+    </div>
+  );
+}
