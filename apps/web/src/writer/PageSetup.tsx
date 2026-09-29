@@ -402,28 +402,33 @@ export function isPageThemed(s: PageSetup | undefined): boolean {
 /** Read current pagination config — prefers our stored setup (storage holds expanded text). */
 export function readPageSetup(editor: Editor): PageSetup {
   const saved = (editor.storage.KxPageSetup as { setup?: PageSetup } | undefined)?.setup;
-  const s = editor.storage.PaginationPlus;
+  // storage is absent while the editor is pre-mount/re-creating — never throw here
+  const s = (editor.storage.PaginationPlus ?? {}) as unknown as Record<string, number | string | undefined>;
   const gutter = saved?.gutter ?? 0;
+  const pw = typeof s.pageWidth === "number" ? s.pageWidth : 816;
+  const ph = typeof s.pageHeight === "number" ? s.pageHeight : 1056;
   const sizeName = (Object.keys(PAGE_SIZES) as (keyof typeof PAGE_SIZES)[]).find(
-    (k) => PAGE_SIZES[k].pageWidth === s.pageWidth && PAGE_SIZES[k].pageHeight === s.pageHeight,
+    (k) => PAGE_SIZES[k].pageWidth === pw && PAGE_SIZES[k].pageHeight === ph,
   ) ?? "CUSTOM";
   return {
     ...DEFAULT_SETUP,
     ...(saved ?? {}),
     sizeName,
-    width: s.pageWidth, height: s.pageHeight,
-    marginTop: s.marginTop, marginBottom: s.marginBottom,
-    marginLeft: s.marginLeft - gutter, marginRight: s.marginRight,
+    width: pw, height: ph,
+    marginTop: (s.marginTop as number) ?? 76, marginBottom: (s.marginBottom as number) ?? 76,
+    marginLeft: ((s.marginLeft as number) ?? 84) - gutter, marginRight: (s.marginRight as number) ?? 84,
     // only fall back to live storage when no setup was ever applied
     ...(saved ? {} : {
-      headerLeft: s.headerLeft ?? "", headerRight: s.headerRight ?? "",
-      footerLeft: s.footerLeft ?? "", footerRight: s.footerRight ?? "",
+      headerLeft: (s.headerLeft as string) ?? "", headerRight: (s.headerRight as string) ?? "",
+      footerLeft: (s.footerLeft as string) ?? "", footerRight: (s.footerRight as string) ?? "",
     }),
   };
 }
 
 /** Apply a PageSetup to the live editor. */
 export function applyPageSetup(editor: Editor, setup: PageSetup) {
+  // pre-mount editors have no view — callers defer to "create", this is a backstop
+  if (!editor.isInitialized) return;
   // orientation normalizes the paper — landscape means width > height
   let { width, height } = setup;
   if (setup.orientation === "landscape" && width < height) [width, height] = [height, width];

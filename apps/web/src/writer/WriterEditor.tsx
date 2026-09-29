@@ -295,7 +295,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   // Word "View Gridlines": hide default cell borders; explicit borders stay
   useEffect(() => {
-    if (!editor) return;
+    if (!editor?.isInitialized) return;
     editor.view.dom.classList.toggle("kx-no-gridlines", !gridlines);
     localStorage.setItem("kx.gridlines", gridlines ? "on" : "off");
   }, [editor, gridlines]);
@@ -323,9 +323,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
 
   // restore saved page setup once the editor exists (collab or solo)
   useEffect(() => {
-    const setup = (initialDoc as { pageSetup?: Parameters<typeof applyPageSetup>[1] })?.pageSetup;
-    if (editor && setup) applyPageSetup(editor, setup);
-    if (editor) loadStyleDefs(editor, (initialDoc as { styles?: Record<string, StyleDef> })?.styles);
+    if (!editor) return;
+    const apply = () => {
+      const setup = (initialDoc as { pageSetup?: Parameters<typeof applyPageSetup>[1] })?.pageSetup;
+      if (setup) applyPageSetup(editor, setup);
+      loadStyleDefs(editor, (initialDoc as { styles?: Record<string, StyleDef> })?.styles);
+    };
+    // pre-mount editor has no view — defer until tiptap creates it
+    if (editor.isInitialized) apply();
+    else editor.once("create", apply);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
