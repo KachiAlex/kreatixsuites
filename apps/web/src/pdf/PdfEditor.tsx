@@ -17,7 +17,7 @@ import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
-import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf } from "./pages";
+import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages } from "./pages";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -31,7 +31,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe";
 const SIG_KEY = "kx.signature";
-type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize" | "compare";
+type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "layers" | "comments" | "versions" | "ai" | "organize" | "compare";
 type Rect4 = [number, number, number, number];
 
 const TOOLS: { id: Tool; ico: string; label: string }[] = [
@@ -106,7 +106,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [fieldKind, setFieldKind] = useState<FieldKind>("text");
   const [selField, setSelField] = useState<string | null>(null);
   // PDF-3 — view depth
-  const [viewMode, setViewMode] = useState<"cont" | "single" | "two">("cont");
+  const [viewMode, setViewMode] = useState<"cont" | "single" | "two" | "reflow">("cont");
   const [cover, setCover] = useState(false); // PDF-11.4 — page 1 alone in two-page mode
   const [viewRot, setViewRot] = useState(0);       // session-only rotation, degrees
   const [dark, setDark] = useState(false);
@@ -114,11 +114,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
   const [exportDlg, setExportDlg] = useState(false);
-  const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string; sanitize: boolean; optimize: boolean }>
-    ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false });
+  const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string; sanitize: boolean; optimize: boolean; batesPrefix: string; batesStart: number }>
+    ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false, batesPrefix: "", batesStart: 1 });
   const [speaking, setSpeaking] = useState(false);
   const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
   const cmpRef = useRef<HTMLInputElement>(null);
+  // PDF-11.1 — optional content groups (layers)
+  const ocgCfgRef = useRef<{ getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null>(null);
+  const [ocg, setOcg] = useState<{ id: string; name: string; on: boolean }[]>([]);
+  const [ocgRev, setOcgRev] = useState(0);
 
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
@@ -142,6 +146,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const mergeRef = useRef<HTMLInputElement>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
   const fdfRef = useRef<HTMLInputElement>(null);
+  const imgPageRef = useRef<HTMLInputElement>(null);
   const imgPending = useRef<{ page: number; rect: Rect4 } | null>(null);
   const session = useCollabSession(item.id);
 
@@ -178,6 +183,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
         setNumPages(d.numPages);
         setAnnDoc(anns);
         d.getOutline().then((o) => !dead && setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
+        // PDF-11.1 — optional content groups for the layers pane
+        d.getOptionalContentConfig?.().then((cfg) => {
+          if (dead || !cfg) return;
+          ocgCfgRef.current = cfg as unknown as typeof ocgCfgRef.current;
+          // pdf.js exposes getGroup/setVisibility but no enumerator — the
+          // groups live in the internal _groups map (id → {name, intent, usage})
+          const groups = (cfg as unknown as { _groups?: Map<string, { name?: string }> })._groups ?? new Map();
+          setOcg([...groups.entries()].map(([id, g]) => ({ id, name: g.name || id, on: true })));
+        }).catch(() => {});
       } catch {
         if (!dead) setLoadErr((e) => e || "Could not open this PDF (it may be encrypted or corrupted)");
       }
@@ -359,6 +373,27 @@ export function PdfEditor({ item, initialDoc, permission }: {
     if (!bytes || !orgSel.size) return;
     const out = await extractPages(bytes, [...orgSel].sort((a, b) => a - b));
     downloadPdf(out, `${title.replace(/\.pdf$/i, "")}-extract.pdf`);
+  };
+  const orgInsertImages = async (files: FileList) => {
+    const bytes = pdfDataRef.current;
+    if (!bytes) return;
+    try {
+      const images = await Promise.all([...files].map(async (f) => {
+        const dataUrl = await new Promise<string>((res, rej) => {
+          const fr = new FileReader(); fr.onload = () => res(String(fr.result)); fr.onerror = rej; fr.readAsDataURL(f);
+        });
+        const dims = await new Promise<{ w: number; h: number }>((res) => {
+          const im = new Image(); im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight }); im.src = dataUrl;
+        });
+        return { dataUrl, ...dims };
+      }));
+      const { bytes: out } = { bytes: await appendImagePages(bytes, images) };
+      const newBytes = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+      mutate(() => {});
+      await reloadPdf(newBytes);
+      void persistBytes(newBytes, `Inserted ${images.length} image page${images.length === 1 ? "" : "s"}`);
+      toast(`Added ${images.length} image page${images.length === 1 ? "" : "s"}`);
+    } catch { toast("Could not insert those images"); }
   };
   const orgSplit = async () => {
     const bytes = pdfDataRef.current;
@@ -683,9 +718,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.key === "Delete" || e.key === "Backspace") && selField && canEdit) { e.preventDefault(); delField(selField); setSelField(null); }
       else if (e.key === "Escape") { setSelAnn(null); setSelField(null); }
       // PDF-3 — paged-view navigation
-      else if (viewMode !== "cont" && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
+      else if ((viewMode === "single" || viewMode === "two") && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
         { e.preventDefault(); setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1))); }
-      else if (viewMode !== "cont" && (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp"))
+      else if ((viewMode === "single" || viewMode === "two") && (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp"))
         { e.preventDefault(); setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1))); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
@@ -720,6 +755,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "search" ? "on" : ""}`} title="Search" onClick={() => setPanel(panel === "search" ? "none" : "search")}>🔍</button>
         <button className={`rb ${panel === "anns" ? "on" : ""}`} title="Annotations list — review status and replies"
           onClick={() => setPanel(panel === "anns" ? "none" : "anns")}>📋</button>
+        {ocg.length > 0 && (
+          <button className={`rb ${panel === "layers" ? "on" : ""}`} title="Layers — toggle optional content groups"
+            onClick={() => setPanel(panel === "layers" ? "none" : "layers")}>⧈</button>
+        )}
         <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
           onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
         <div className="rb-sep" />
@@ -772,6 +811,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           <button className={`rb ${cover ? "on" : ""}`} title="Two-page cover — show page 1 alone"
             onClick={() => setCover((c) => !c)}>🅲</button>
         )}
+        <button className={`rb ${viewMode === "reflow" ? "on" : ""}`} title="Reflow — extract text into a readable column"
+          onClick={() => setViewMode((m) => m === "reflow" ? "cont" : "reflow")}>🔤</button>
         <button className={`rb ${dark ? "on" : ""}`} title="Dark render" onClick={() => setDark((d) => !d)}>🌙</button>
         <button className="rb" title="Fullscreen" onClick={() => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {})}>⛶</button>
         <span className="rb-info">Page <input className="pg-in" type="number" min={1} max={numPages} value={curPage}
@@ -791,10 +832,13 @@ export function PdfEditor({ item, initialDoc, permission }: {
             <button className="rb" title="Rotate right 90°" disabled={!orgSel.size} onClick={() => void orgRotate(90)}>↻</button>
             <button className="rb" title="Insert blank page after current" onClick={() => void orgInsertBlank()}>＋▤</button>
             <button className="rb" title="Merge another PDF at the end" onClick={() => mergeRef.current?.click()}>⇤📄</button>
+            <button className="rb" title="Insert images as new pages at the end" onClick={() => imgPageRef.current?.click()}>＋🖼</button>
             <button className="rb" title="Extract selected pages → new PDF" disabled={!orgSel.size} onClick={() => void orgExtract()}>⤓</button>
             <button className="rb" title={`Split at page ${curPage} → two PDFs`} disabled={curPage <= 1} onClick={() => void orgSplit()}>✂</button>
             <input ref={mergeRef} type="file" accept=".pdf" hidden
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
+            <input ref={imgPageRef} type="file" accept="image/png,image/jpeg" multiple hidden
+              onChange={(e) => { if (e.target.files?.length) void orgInsertImages(e.target.files); e.target.value = ""; }} />
           </>
         )}
         <input ref={imgFileRef} type="file" accept="image/png,image/jpeg" hidden
@@ -853,6 +897,21 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   ))}
                   {query && !matches.length && <div className="empty">No matches</div>}
                 </div>
+              </div>
+            )}
+            {panel === "layers" && (
+              <div className="pdf-annlist">
+                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Optional content groups in this document</div>
+                {ocg.map((g) => (
+                  <label key={g.id} className="pdf-annrow" style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                    <input type="checkbox" checked={g.on} onChange={(e) => {
+                      ocgCfgRef.current?.setVisibility(g.id, e.target.checked);
+                      setOcg(ocg.map((x) => x.id === g.id ? { ...x, on: e.target.checked } : x));
+                      setOcgRev((r) => r + 1);
+                    }} />
+                    <span style={{ fontSize: 12 }}>{g.name}</span>
+                  </label>
+                ))}
               </div>
             )}
             {panel === "compare" && (
@@ -932,7 +991,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
           }}>
           {loadErr && <div className="empty" style={{ padding: 60 }}>{loadErr}</div>}
           {!doc && !loadErr && <div className="empty" style={{ padding: 60 }}>Loading PDF…</div>}
-          {doc && (viewMode === "cont" ? Array.from({ length: numPages }, (_, i) => i + 1)
+          {doc && viewMode === "reflow" && Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+            <ReflowPage key={`r${docGen}:${p}`} doc={doc} pageNum={p} dark={dark} />
+          ))}
+          {doc && viewMode !== "reflow" && (viewMode === "cont" ? Array.from({ length: numPages }, (_, i) => i + 1)
             : viewMode === "single" ? [curPage]
             : cover && curPage === 1 ? [1]
             : (() => { const s = cover ? (curPage % 2 === 0 ? curPage : curPage - 1) : (curPage % 2 === 0 ? curPage - 1 : curPage); return [s, s + 1].filter((p) => p <= numPages); })()
@@ -948,6 +1010,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onMove={moveAnn}
                 onPatch={patchAnn}
                 onZoomTo={zoomToRect}
+                ocgCfg={ocgCfgRef.current} ocgRev={ocgRev}
                 onPickImage={(r) => { imgPending.current = { page: p, rect: r }; imgFileRef.current?.click(); }}
                 fieldApi={{
                   fields: (annDoc.fields ?? []).filter((f) => f.page === p),
@@ -957,7 +1020,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 }} />
             </div>
           ))}
-          {viewMode !== "cont" && doc && (
+          {(viewMode === "single" || viewMode === "two") && doc && (
             <div className="pdf-vmnav">
               <button className="btn-ghost btn-sm" disabled={curPage <= 1}
                 onClick={() => setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1)))}>← Prev</button>
@@ -1048,17 +1111,44 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onChange={(e) => setPdfOpts({ ...pdfOpts, optimize: e.target.checked })} />
               Optimize for smaller file size
             </label>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              <input value={pdfOpts.batesPrefix} placeholder="Bates prefix (e.g. CASE-)" title="Bates numbering — bottom-right, sequential"
+                onChange={(e) => setPdfOpts({ ...pdfOpts, batesPrefix: e.target.value })}
+                style={{ flex: 1, height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12 }} />
+              <input type="number" min={1} value={pdfOpts.batesStart} title="Starting number" style={{ width: 70, height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12 }}
+                onChange={(e) => setPdfOpts({ ...pdfOpts, batesStart: Math.max(1, Number(e.target.value) || 1) })} />
+            </div>
             {annDoc.annotations.some((a) => a.type === "redact") && (
               <p style={{ fontSize: 11, color: "#b23", margin: "0 0 8px" }}>
                 Pages with redaction marks will be permanently rasterized — the underlying content is removed, not just covered.
               </p>
             )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="btn-ghost btn-sm" title="PDF-13.1 — export extracted text as a Word document"
-                disabled={!doc} onClick={() => {
+            <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: "#8B8480", marginBottom: 6 }}>Also export as:</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
                   setExportDlg(false);
                   void import("./exportDocx").then(({ exportPdfToDocx }) => exportPdfToDocx(doc!, title)).catch(() => toast("DOCX export failed"));
                 }}>Word (.docx)</button>
+                <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
+                  setExportDlg(false);
+                  void import("./convert").then(({ exportPdfToXlsx }) => exportPdfToXlsx(doc!, title)).catch(() => toast("XLSX export failed"));
+                }}>Excel (.xlsx)</button>
+                <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
+                  setExportDlg(false); toast("Rendering slides…");
+                  void import("./convert").then(({ exportPdfToPptx }) => exportPdfToPptx(doc!, title)).catch(() => toast("PPTX export failed"));
+                }}>Slides (.pptx)</button>
+                <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
+                  setExportDlg(false);
+                  void import("./convert").then(({ exportPdfToText }) => exportPdfToText(doc!, title, true)).catch(() => toast("HTML export failed"));
+                }}>.html</button>
+                <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
+                  setExportDlg(false);
+                  void import("./convert").then(({ exportPdfToText }) => exportPdfToText(doc!, title, false)).catch(() => toast("TXT export failed"));
+                }}>.txt</button>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button className="btn-ghost btn-sm" onClick={() => setExportDlg(false)}>Cancel</button>
               <button className="btn-primary btn-sm" onClick={() => {
                 setExportDlg(false);
@@ -1070,7 +1160,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
                     await exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title,
                       { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined,
                         header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined,
-                        sanitize: pdfOpts.sanitize, optimize: pdfOpts.optimize },
+                        sanitize: pdfOpts.sanitize, optimize: pdfOpts.optimize,
+                        bates: pdfOpts.batesPrefix ? { prefix: pdfOpts.batesPrefix, start: pdfOpts.batesStart, digits: 5 } : undefined },
                       annDoc.fields ?? [], rasters);
                     if (rasters) toast("Redacted pages permanently removed");
                   } catch { toast("PDF export failed"); }
@@ -1224,7 +1315,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -1240,6 +1331,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   onPatch: (id: string, p: Partial<PdfAnn>, key?: string) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
+  ocgCfg?: { getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null;
+  ocgRev?: number;
   fieldApi?: {
     fields: PdfField[]; sel: string | null;
     add: (rect: Rect4) => void;
@@ -1289,7 +1382,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         pageRef.current = page;
         const vp = page.getViewport({ scale, rotation: (page.rotate + (viewRot ?? 0)) % 360 });
         setSize({ w: vp.width, h: vp.height });
-        const key = `${pageNum}:${scale}:${viewRot ?? 0}`;
+        const key = `${pageNum}:${scale}:${viewRot ?? 0}:${ocgRev ?? 0}`;
         if (renderedKey.current === key) return;
         renderedKey.current = key;
         const canvas = canvasRef.current!;
@@ -1300,6 +1393,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         await page.render({
           canvas, viewport: vp,
           transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+          optionalContentConfigPromise: ocgCfg ? Promise.resolve(ocgCfg as never) : undefined,
         }).promise;
         if (dead) return;
         // selectable text layer
@@ -1333,7 +1427,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       } catch { /* page render failed */ }
     })();
     return () => { dead = true; };
-  }, [doc, pageNum, scale, near, viewRot]);
+  }, [doc, pageNum, scale, near, viewRot, ocgRev, ocgCfg]);
 
   const vp = () => pageRef.current?.getViewport({ scale }) ?? null;
   const toPdf = (cx: number, cy: number): [number, number] => {
@@ -2154,6 +2248,42 @@ function AnnRow({ a, sel, canEdit, userName, onPick, onDel, onPatch }: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- PDF-11.3: reflow page — extracted text as a readable column ----------
+function ReflowPage({ doc, pageNum, dark }: { doc: PDFDocumentProxy; pageNum: number; dark?: boolean }) {
+  const [lines, setLines] = useState<{ text: string; h: number }[] | null>(null);
+  useEffect(() => {
+    let dead = false;
+    void doc.getPage(pageNum).then(async (pg) => {
+      const tc = await pg.getTextContent();
+      const buckets = new Map<number, { x: number; s: string; h: number }[]>();
+      for (const it of tc.items as { str?: string; transform?: number[] }[]) {
+        if (!it.str?.trim() || !it.transform) continue;
+        const y = Math.round(it.transform[5]);
+        const key = [...buckets.keys()].find((k) => Math.abs(k - y) < 2.5) ?? y;
+        const arr = buckets.get(key) ?? [];
+        arr.push({ x: it.transform[4], s: it.str, h: Math.hypot(it.transform[2], it.transform[3]) });
+        buckets.set(key, arr);
+      }
+      if (dead) return;
+      setLines([...buckets.entries()].sort((a, b) => b[0] - a[0]).map(([, items]) => {
+        items.sort((a, b) => a.x - b.x);
+        return { text: items.map((i) => i.s).join(" "), h: Math.max(...items.map((i) => i.h)) };
+      }));
+    }).catch(() => setLines([]));
+    return () => { dead = true; };
+  }, [doc, pageNum]);
+  return (
+    <div className={`pdf-reflowpage ${dark ? "dark" : ""}`} data-page={pageNum}>
+      <div className="pdf-reflowpage-no">— page {pageNum} —</div>
+      {lines === null && <div className="empty">…</div>}
+      {(lines ?? []).map((l, i) => (
+        <p key={i} style={{ fontSize: Math.min(22, Math.max(11, l.h * 0.85)), fontWeight: l.h > 14 ? 700 : 400 }}>{l.text}</p>
+      ))}
+      {lines?.length === 0 && <div className="empty">No extractable text on this page</div>}
     </div>
   );
 }

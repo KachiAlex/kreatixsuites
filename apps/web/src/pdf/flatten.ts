@@ -18,6 +18,8 @@ export interface FlattenOpts {
   footer?: string;           // centered bottom-of-page line (drawn above page number)
   sanitize?: boolean;        // strip metadata (title/author/creator/dates)
   optimize?: boolean;        // object streams = smaller output
+  /** PDF-9.4 — Bates numbering: e.g. { prefix:"CASE-", start:1, digits:5 } → "CASE-00001" */
+  bates?: { prefix: string; start: number; digits: number };
 }
 
 /**
@@ -311,6 +313,10 @@ export async function buildFlattenedPdf(
       if (opts.pageNumbers) {
         const t = `${i + 1} / ${pages.length}`;
         page.drawText(t, { x: (W - helv.widthOfTextAtSize(t, 9)) / 2, y: 14, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
+      }
+      if (opts.bates) {
+        const t = safe(`${opts.bates.prefix}${String(opts.bates.start + i).padStart(opts.bates.digits, "0")}`);
+        page.drawText(t, { x: W - helv.widthOfTextAtSize(t, 9) - 24, y: 14, size: 9, font: helv, color: rgb(0.4, 0.4, 0.4) });
       }
     } catch { /* chrome draw failed — skip */ }
   });

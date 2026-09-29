@@ -1421,3 +1421,9 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 /* ---- PDF-11.2/10.1: loupe + field validation ---- */
 .pdf-loupe{position:absolute;z-index:8;border:2px solid #3578E5;border-radius:50%;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.3);pointer-events:none;background:#fff}
 .pdf-field-in:invalid{background:rgba(211,51,51,.12);color:#b23}
+
+/* ---- PDF-11.3: reflow ---- */
+.pdf-reflowpage{max-width:720px;margin:0 auto 24px;padding:28px 32px;background:#fff;border:1px solid var(--line,#e6e0da);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+.pdf-reflowpage.dark{background:#1c1b1a;border-color:#333;color:#e8e4e0}
+.pdf-reflowpage-no{font-size:11px;color:#8B8480;text-align:center;margin-bottom:14px;letter-spacing:.06em}
+.pdf-reflowpage p{margin:0 0 6px;line-height:1.55}

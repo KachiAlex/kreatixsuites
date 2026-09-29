@@ -95,6 +95,24 @@ export async function splitPdf(bytes: ArrayBuffer, at: number, total: number): P
   return [a, b];
 }
 
+/**
+ * PDF-13.3 — append image files as new pages (one image per page, sized to the
+ * image at 72dpi). Returns new pdf bytes.
+ */
+export async function appendImagePages(bytes: ArrayBuffer, images: { dataUrl: string; w: number; h: number }[]): Promise<Uint8Array> {
+  const { PDFDocument } = await import("pdf-lib");
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  for (const im of images) {
+    const m = /^data:image\/(png|jpe?g);base64,(.+)$/.exec(im.dataUrl);
+    if (!m) continue;
+    const img = m[1] === "png" ? await doc.embedPng(m[2]) : await doc.embedJpg(m[2]);
+    const w = Math.min(im.w, 1440), h = im.h * (w / im.w);
+    const page = doc.addPage([w, h]);
+    page.drawImage(img, { x: 0, y: 0, width: w, height: h });
+  }
+  return doc.save();
+}
+
 export function downloadPdf(bytes: Uint8Array, name: string) {
   const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");
