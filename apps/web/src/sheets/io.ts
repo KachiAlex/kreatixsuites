@@ -5,8 +5,8 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, SheetData, Workbook, Validation } from "./model";
-import { toA1, parseA1, rangeRefs, parseRange, shiftForFill } from "./model";
+import type { CellData, SheetData, Workbook, Validation, Range } from "./model";
+import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols } from "./model";
 import { evaluateSheet, evaluateSheetIn, toR1C1, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
@@ -925,4 +925,177 @@ export function errorCheck(
     const pa = parseA1(a.ref)!, pb = parseA1(b.ref)!;
     return pa.row - pb.row || pa.col - pb.col;
   });
+}
+
+// ---------- S12.6: flash fill + go-to-special + column autocomplete ----------
+
+/** Infer a transform from one (example → source row values) pair.
+ *  Returns a function applying the same transform to other rows, or null. */
+export function flashFillTemplate(src: string[], example: string): ((vals: string[]) => string | null) | null {
+  const ex = example.trim();
+  type T = (v: string[]) => string | null;
+  const cands: T[] = [];
+  for (let i = 0; i < src.length; i++) {
+    const s = src[i];
+    if (s === ex) cands.push((v) => v[i] ?? null);
+    if (s.toUpperCase() === ex && s !== ex) cands.push((v) => v[i]?.toUpperCase() ?? null);
+    if (s.toLowerCase() === ex && s !== ex) cands.push((v) => v[i]?.toLowerCase() ?? null);
+    if (s.split(/\s+/)[0] === ex && s.includes(" "))
+      cands.push((v) => v[i]?.split(/\s+/)[0] ?? null);
+    if (s.split(/\s+/).at(-1) === ex && s.includes(" "))
+      cands.push((v) => v[i]?.split(/\s+/).at(-1) ?? null);
+    const dm = s.match(/\d+/);
+    if (dm && dm[0] === ex && s !== ex)
+      cands.push((v) => v[i]?.match(/\d+/)?.[0] ?? null);
+    if (s.startsWith(ex) && s.length > ex.length) {
+      const n = ex.length;
+      cands.push((v) => v[i]?.length > n ? v[i].slice(0, n) : null);
+    }
+    if (s.endsWith(ex) && s.length > ex.length) {
+      const n = ex.length;
+      cands.push((v) => v[i]?.length > n ? v[i].slice(-n) : null);
+    }
+    // concat of two fields with a separator
+    for (let k = 0; k < src.length; k++) {
+      if (k === i) continue;
+      for (const sep of [" ", "_", "-", ".", ", ", ""]) {
+        if (s + sep + src[k] === ex)
+          cands.push((v) => v[i] !== undefined && v[k] !== undefined ? v[i] + sep + v[k] : null);
+        if (src[k] + sep + s === ex)
+          cands.push((v) => v[i] !== undefined && v[k] !== undefined ? v[k] + sep + v[i] : null);
+      }
+    }
+  }
+  return cands[0] ?? null;
+}
+
+/** Go To Special — return refs matching a class within `range`. */
+export function goToSpecial(
+  sheet: SheetData, evals: Map<string, EvalResult>, range: { c1: number; r1: number; c2: number; r2: number },
+  kind: "blanks" | "formulas" | "constants" | "errors" | "notes",
+): string[] {
+  const out: string[] = [];
+  for (const ref of rangeRefs(range)) {
+    const cell = sheet.cells[ref];
+    switch (kind) {
+      case "blanks": if (!cell || (cell.v === undefined && !cell.f)) out.push(ref); break;
+      case "formulas": if (cell?.f) out.push(ref); break;
+      case "constants": if (cell && !cell.f && cell.v !== undefined && cell.v !== null && cell.v !== "") out.push(ref); break;
+      case "errors": if (evals.get(ref)?.error) out.push(ref); break;
+      case "notes": if (sheet.notes?.[ref]) out.push(ref); break;
+    }
+  }
+  return out;
+}
+
+/** Distinct text values already present in a column (for autocomplete). */
+export function columnSuggestions(sheet: SheetData, col: number, limit = 8): string[] {
+  const seen = new Set<string>();
+  for (const [ref, cell] of Object.entries(sheet.cells)) {
+    const p = parseA1(ref);
+    if (!p || p.col !== col || cell.f) continue;
+    if (typeof cell.v === "string" && cell.v.trim() !== "") seen.add(cell.v);
+    if (seen.size >= 200) break;
+  }
+  return [...seen].slice(0, limit);
+}
+
+// ---------- S12.3: subtotal insertion ----------
+
+const SUBTOTAL_LABEL: Record<number, string> = {
+  1: "Average", 2: "Count", 3: "Count", 4: "Max", 5: "Min",
+  6: "Product", 9: "Sum", 10: "Var", 11: "VarP",
+};
+
+/** Insert SUBTOTAL rows at each change of the key column's value inside
+ *  `range`, and outline-group the member rows. Operates bottom-up so row
+ *  inserts don't disturb later boundaries. */
+export function applySubtotals(
+  sheet: SheetData, wb: Workbook, range: Range, keyCol: number, fnCode: number, aggCols: number[],
+): void {
+  const ev = evaluateSheetIn(wb, sheet.name);
+  const val = (r: number, c: number) => {
+    const cell = sheet.cells[toA1(c, r)];
+    return cell?.f ? ev.get(toA1(c, r))?.value : cell?.v;
+  };
+  // group boundaries: contiguous runs of equal key value
+  const groups: [number, number][] = [];
+  let start = range.r1, prev = val(range.r1, keyCol);
+  for (let r = range.r1 + 1; r <= range.r2 + 1; r++) {
+    const k = r <= range.r2 ? val(r, keyCol) : Symbol("end");
+    if (k !== prev) { groups.push([start, r - 1]); start = r; prev = k; }
+  }
+  // bottom-up so inserts don't shift earlier boundaries
+  for (let gi = groups.length - 1; gi >= 0; gi--) {
+    const [gs, ge] = groups[gi];
+    adjustForRowsCols(sheet, "row", ge + 1, 1, wb);
+    const keyText = String(val(ge, keyCol) ?? "");
+    sheet.cells[toA1(keyCol, ge + 1)] = { v: `${keyText} ${SUBTOTAL_LABEL[fnCode] ?? "Total"}`, s: { b: true } };
+    for (const c of aggCols) {
+      const rng = `${toA1(c, gs)}:${toA1(c, ge)}`;
+      sheet.cells[toA1(c, ge + 1)] = { f: `SUBTOTAL(${fnCode},${rng})`, s: { b: true } };
+    }
+    // outline-group the member rows
+    sheet.outlineRows = { ...(sheet.outlineRows ?? {}) };
+    for (let r = gs; r <= ge; r++) sheet.outlineRows[r] = 1;
+  }
+  // grand total row at the very bottom
+  const end = range.r2 + groups.length;
+  adjustForRowsCols(sheet, "row", end + 1, 1, wb);
+  sheet.cells[toA1(keyCol, end + 1)] = { v: "Grand Total", s: { b: true } };
+  for (const c of aggCols) {
+    const rng = `${toA1(c, range.r1)}:${toA1(c, end)}`;
+    sheet.cells[toA1(c, end + 1)] = { f: `SUBTOTAL(${fnCode},${rng})`, s: { b: true } };
+  }
+}
+
+// ---------- S12.2: slicers ----------
+
+/** Rows hidden by slicer selections — each slicer keeps rows whose value in
+ *  its column is in `sel`. Applies over the autofilter range (or table range,
+ *  or used range) covering the slicer's column. */
+export function slicerHiddenRows(sheet: SheetData, wb: Workbook): number[] {
+  if (!sheet.slicers?.length) return [];
+  const ev = evalsFor(sheet, wb);
+  const hidden = new Set<number>();
+  for (const sl of sheet.slicers) {
+    if (!sl.sel.length) continue; // nothing selected = show all
+    // data extent: autofilter range if it covers the col, else table, else used range
+    let r1 = 0, r2 = -1;
+    const fr = sheet.filter ? parseRange(sheet.filter.range) : null;
+    const tr = (sheet.tables ?? []).map((t) => parseRange(t.range)).find((r) => r && sl.col >= r.c1 && sl.col <= r.c2);
+    if (fr && sl.col >= fr.c1 && sl.col <= fr.c2) { r1 = fr.r1 + 1; r2 = fr.r2; }
+    else if (tr) { r1 = tr.r1 + 1; r2 = tr.r2; }
+    else {
+      for (const ref of Object.keys(sheet.cells)) {
+        const p = parseA1(ref); if (!p) continue;
+        r2 = Math.max(r2, p.row);
+      }
+    }
+    for (let r = r1; r <= r2; r++) {
+      const ref = toA1(sl.col, r);
+      const cell = sheet.cells[ref];
+      const v = cell?.f ? ev.get(ref)?.value : cell?.v;
+      if (!sl.sel.includes(String(v ?? ""))) hidden.add(r);
+    }
+  }
+  return [...hidden];
+}
+
+/** Distinct display values in a column over the data extent (for slicer lists). */
+export function slicerValues(sheet: SheetData, wb: Workbook, col: number): string[] {
+  const fr = sheet.filter ? parseRange(sheet.filter.range) : null;
+  const tr = (sheet.tables ?? []).map((t) => parseRange(t.range)).find((r) => r && col >= r.c1 && col <= r.c2);
+  let r1 = 0, r2 = 0;
+  if (fr && col >= fr.c1 && col <= fr.c2) { r1 = fr.r1 + 1; r2 = fr.r2; }
+  else if (tr) { r1 = tr.r1 + 1; r2 = tr.r2; }
+  else { for (const ref of Object.keys(sheet.cells)) { const p = parseA1(ref); if (p) r2 = Math.max(r2, p.row); } }
+  const ev = evalsFor(sheet, wb);
+  const seen = new Set<string>();
+  for (let r = r1; r <= r2; r++) {
+    const ref = toA1(col, r);
+    const cell = sheet.cells[ref];
+    seen.add(String((cell?.f ? ev.get(ref)?.value : cell?.v) ?? ""));
+  }
+  return [...seen];
 }

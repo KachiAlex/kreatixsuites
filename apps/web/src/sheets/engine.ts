@@ -1,5 +1,5 @@
 import { Parser } from "hot-formula-parser";
-import type { CellData, Workbook } from "./model";
+import type { CellData, Workbook, SheetData, Range } from "./model";
 import { toA1, parseA1, parseRange, colIndex } from "./model";
 
 export interface EvalResult {
@@ -118,7 +118,7 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
   const withFxt = rewriteFormulatext(withOffset);
   // name-binding / lambda forms — whole arglist stashed for lazy eval
   let lazy = withFxt;
-  for (const nm of ["LET", "MAP", "BYROW", "BYCOL", "MAKEARRAY", "REDUCE", "SCAN", "LAMBDA"])
+  for (const nm of ["LET", "MAP", "BYROW", "BYCOL", "MAKEARRAY", "REDUCE", "SCAN", "LAMBDA", "SUBTOTAL"])
     lazy = rewriteCallLazy(lazy, nm);
   // split on "..." literals; rewrite only the plain segments
   const out = lazy.split(/("[^"]*")/).map((seg, i) => {
@@ -150,6 +150,15 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
           ? `KXAT("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}")`
           : `KXAT("","${uref.replace(/\$/g, "")}")`,
     );
+    // structured table refs (S12.1) — T[[#spec],[Col]], T[@C], T[C], T[#spec], [@C]
+    s = s.replace(/([A-Za-z_][\w.]*)\[\[([^\[\]]+)\],\[([^\]]+)\]\]/g,
+      (_m, t: string, spec: string, col: string) => `KXTBLC("${t}","${spec.trim()}","${col.trim()}")`);
+    s = s.replace(/([A-Za-z_][\w.]*)\[@([^\]]+)\]/g,
+      (_m, t: string, col: string) => `KXTHIS("${t}","${col.trim()}")`);
+    s = s.replace(/([A-Za-z_][\w.]*)\[([^\][@]+)\]/g,
+      (_m, t: string, spec: string) => `KXTBL("${t}","${spec.trim()}")`);
+    s = s.replace(/(?<![\w$!'\]"])\[@([^\]]+)\]/g,
+      (_m, col: string) => `KXTHIS("","${col.trim()}")`);
     // range comparisons broadcast elementwise — B1:B3>10 → KXCMP(...) so
     // FILTER masks and array predicates work like Excel's
     const cmpRe = /((?:'([^']+)'|([A-Za-z_][\w.]*))!)?(\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+)\s*(>=|<=|<>|>|<|=)\s*("[^"]*"|'[^']*'|[^\s,;()]+)/g;
@@ -1111,6 +1120,146 @@ function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, Eva
       const args = splitTopArgs(unb64(String(p[0])));
       let acc = evalSub(args[0]);
       return [flat(asMat(evalSub(args[1]))).map((v) => (acc = lambdaCall(args[2], [acc, v])))];
+    });
+    // ---- structured table refs (S12.1) ----
+    const findTable = (tname: string): { sheet: string; t: NonNullable<SheetData["tables"]>[number]; r: Range } | null => {
+      for (const s of wb.sheets) {
+        const t = s.tables?.find((x) => x.name.toLowerCase() === tname.toLowerCase());
+        if (t) { const r = parseRange(t.range); if (r) return { sheet: s.name, t, r }; }
+      }
+      return null;
+    };
+    // column offset inside the table whose header cell text matches `name`
+    const tblColIdx = (f: NonNullable<ReturnType<typeof findTable>>, name: string): number => {
+      for (let c = f.r.c1; c <= f.r.c2; c++) {
+        const res = evalIn(f.sheet, toA1(c, f.r.r1), depth + 1);
+        if (sameKey(res.value, name)) return c - f.r.c1;
+      }
+      return -1;
+    };
+    // computed totals-row values per column spec
+    const tblTotalsRow = (f: NonNullable<ReturnType<typeof findTable>>): unknown[] => {
+      const out: unknown[] = [];
+      for (let c = f.r.c1; c <= f.r.c2; c++) {
+        const agg = f.t.totals?.[c - f.r.c1];
+        if (!agg || agg === "none") { out.push(""); continue; }
+        const vals: number[] = [];
+        for (let row = f.r.r1 + 1; row <= f.r.r2; row++) {
+          const v = evalIn(f.sheet, toA1(c, row), depth + 1).value;
+          if (typeof v === "number") vals.push(v);
+        }
+        out.push(agg === "sum" ? vals.reduce((a, b) => a + b, 0)
+          : agg === "avg" ? (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : "")
+          : agg === "count" ? vals.length
+          : agg === "min" ? (vals.length ? Math.min(...vals) : "")
+          : vals.length ? Math.max(...vals) : "");
+      }
+      return out;
+    };
+    const tblMat = (f: NonNullable<ReturnType<typeof findTable>>, c1: number, c2: number, r1: number, r2: number): unknown[][] =>
+      evalRangeOf(f.sheet, toA1(c1, r1), toA1(c2, r2));
+    parser.setFunction("KXTBL", (p) => {
+      const f = findTable(String(p[0]));
+      if (!f) return "#REF!";
+      const spec = String(p[1]).trim();
+      if (spec.startsWith("#")) {
+        const s2 = spec.slice(1).toLowerCase();
+        if (s2 === "all") { const m = tblMat(f, f.r.c1, f.r.c2, f.r.r1, f.r.r2); if (f.t.totals) m.push(tblTotalsRow(f)); return m; }
+        if (s2 === "headers") return tblMat(f, f.r.c1, f.r.c2, f.r.r1, f.r.r1);
+        if (s2 === "data") return tblMat(f, f.r.c1, f.r.c2, f.r.r1 + 1, f.r.r2);
+        if (s2 === "totals") return f.t.totals ? [tblTotalsRow(f)] : "#REF!";
+        if (s2 === "this row") {
+          const self = parseA1(ctx.selfRef);
+          return self && self.row > f.r.r1 && self.row <= f.r.r2 ? tblMat(f, f.r.c1, f.r.c2, self.row, self.row) : "#VALUE!";
+        }
+        return "#REF!";
+      }
+      const ci = tblColIdx(f, spec);
+      return ci < 0 ? "#REF!" : tblMat(f, f.r.c1 + ci, f.r.c1 + ci, f.r.r1 + 1, f.r.r2);
+    });
+    parser.setFunction("KXTBLC", (p) => {
+      const f = findTable(String(p[0]));
+      if (!f) return "#REF!";
+      const spec = String(p[1]).trim().toLowerCase(), col = String(p[2]).trim();
+      const ci = tblColIdx(f, col);
+      if (ci < 0) return "#REF!";
+      if (spec === "#headers") return tblMat(f, f.r.c1 + ci, f.r.c1 + ci, f.r.r1, f.r.r1);
+      if (spec === "#totals") return f.t.totals ? [[tblTotalsRow(f)[ci]]] : "#REF!";
+      if (spec === "#all") return tblMat(f, f.r.c1 + ci, f.r.c1 + ci, f.r.r1, f.r.r2);
+      if (spec === "#this row") {
+        const self = parseA1(ctx.selfRef);
+        return self ? evalIn(f.sheet, toA1(f.r.c1 + ci, self.row), depth + 1).value : "#VALUE!";
+      }
+      return "#REF!";
+    });
+    // [@Col] / T[@Col] — the host row intersected with the table column
+    parser.setFunction("KXTHIS", (p) => {
+      const self = parseA1(ctx.selfRef);
+      if (!self) return "#VALUE!";
+      const tname = String(p[0]);
+      let f = tname ? findTable(tname) : null;
+      if (!f) {
+        // bare @Col — the table on this sheet whose data rows share the
+        // host row (Excel matches by row intersection, not containment)
+        const s = wb.sheets.find((x) => x.name === ctx.sheet);
+        for (const t of s?.tables ?? []) {
+          const r = parseRange(t.range);
+          if (r && self.row > r.r1 && self.row <= r.r2) {
+            f = { sheet: s!.name, t, r };
+            break;
+          }
+        }
+      }
+      if (!f) return "#REF!";
+      const ci = tblColIdx(f, String(p[1]).trim());
+      if (ci < 0) return "#REF!";
+      const res = evalIn(f.sheet, toA1(f.r.c1 + ci, self.row), depth + 1);
+      return res.error ?? res.value;
+    });
+    // SUBTOTAL(code, range…) — 1-11 exclude filtered rows, 101-111 also
+    // exclude manually hidden rows; fn codes: 1 avg,2 count,3 counta,
+    // 4 max,5 min,6 product,9 sum,10 var,11 varp
+    parser.setFunction("KXSUBTOTAL", (p) => {
+      const args = splitTopArgs(unb64(String(p[0])));
+      const code = Number(evalSub(args[0]));
+      const fnCode = code > 100 ? code - 100 : code;
+      const skipManual = code > 100;
+      const vals: unknown[] = [];
+      for (const a of args.slice(1)) {
+        const m = a.trim().match(/^(?:(?:'([^']+)'|([\w.]+))!)?(\$?[A-Za-z]{1,3}\$?\d+)(?::(\$?[A-Za-z]{1,3}\$?\d+))?$/);
+        if (!m) { vals.push(evalSub(a)); continue; } // scalar / expression
+        const sn = m[1] ?? m[2] ?? ctx.sheet;
+        const r = parseRange(`${m[3]}:${m[4] ?? m[3]}`.replace(/\$/g, ""));
+        if (!r) return "#REF!";
+        const sh = wb.sheets.find((s) => s.name === sn);
+        const hidden = new Set<number>([
+          ...(sh?.filteredRows ?? []),
+          ...(skipManual ? (sh?.hiddenRows ?? []) : []),
+        ]);
+        for (let row = r.r1; row <= r.r2; row++) {
+          if (hidden.has(row)) continue;
+          for (let c = r.c1; c <= r.c2; c++)
+            vals.push(evalIn(sn, toA1(c, row), depth + 1).value);
+        }
+      }
+      const ns = vals.filter((v): v is number => typeof v === "number");
+      const nzs = vals.filter((v) => v !== null && v !== undefined && v !== "");
+      switch (fnCode) {
+        case 1: return ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : "#DIV/0!";
+        case 2: return ns.length;
+        case 3: return nzs.length;
+        case 4: return ns.length ? Math.max(...ns) : 0;
+        case 5: return ns.length ? Math.min(...ns) : 0;
+        case 6: return ns.reduce((a, b) => a * b, 1);
+        case 9: return ns.reduce((a, b) => a + b, 0);
+        case 10: case 11: {
+          if (ns.length < (fnCode === 10 ? 2 : 1)) return "#DIV/0!";
+          const mean = ns.reduce((a, b) => a + b, 0) / ns.length;
+          const v = ns.reduce((a, b) => a + (b - mean) ** 2, 0);
+          return fnCode === 10 ? v / (ns.length - 1) : v / ns.length;
+        }
+        default: return "#VALUE!";
+      }
     });
     // implicit intersection — @range resolves to the cell sharing the
     // formula's row (column ranges) or column (row ranges)

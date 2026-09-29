@@ -1,10 +1,10 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator, explainFormula, toR1C1 } from "./src/sheets/engine";
-import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
+import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek, errorCheck } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -990,6 +990,114 @@ t("S11.6 error-check rules + formula explanation", () => {
   assertEq(ex.parts.length, 2);
   assertEq(ex.parts[0].result.value, [[1],[2],[3]]);
   assertEq(toR1C1("A1+B$2", "B3"), "R[-2]C[-1]+R2C[0]");
+});
+
+t("S12.1 structured table references", () => {
+  const wb: Workbook = { sheets: [{
+    name: "S",
+    cells: {
+      A1: { v: "Item" }, B1: { v: "Qty" }, C1: { v: "Price" },
+      A2: { v: "a" }, B2: { v: 5 }, C2: { v: 10 },
+      A3: { v: "b" }, B3: { v: 3 }, C3: { v: 20 },
+      E1: { f: "SUM(Tbl[Qty])" },
+      E2: { f: "SUM(Tbl[#Data])" },
+      F2: { f: "Tbl[@Qty]*Tbl[@Price]" },
+      F3: { f: "[@Qty]*[@Price]" },
+      E4: { f: "SUM(Tbl[[#Totals],[Qty]])" },
+      E5: { f: "COUNTA(Tbl[#Headers])" },
+      E6: { f: "SUM(Tbl[#All])" },
+    },
+    tables: [{ name: "Tbl", range: "A1:C3", totals: { 1: "sum" } }],
+  }] };
+  const ev = evaluateSheetIn(wb, "S");
+  assertEq(ev.get("E1")?.value, 8);
+  assertEq(ev.get("E2")?.value, 38);        // 5+3+10+20 (data only, text→0)
+  assertEq(ev.get("F2")?.value, 50);        // row2: 5*10
+  assertEq(ev.get("F3")?.value, 60);        // bare @ in table row → 3*20
+  assertEq(ev.get("E4")?.value, 8);         // totals cell for Qty
+  assertEq(ev.get("E5")?.value, 3);         // header row count
+  assertEq(ev.get("E6")?.value, 46);        // all incl totals row
+});
+
+t("S12.4 insert/delete cells with shift", () => {
+  const sheet: SheetData = { name: "S", cells: {
+    A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 },
+    B1: { v: "x" }, B2: { v: "y" },
+    C1: { f: "A3*10" },          // ref into moved band
+    C2: { f: "A2" },             // ref into the soon-deleted zone
+  } };
+  shiftCells(sheet, { c1: 0, r1: 1, c2: 0, r2: 1 }, "down"); // ins at A2
+  assert(sheet.cells.A2 === undefined, "A2 now empty");
+  assertEq(sheet.cells.A3?.v, 2);
+  assertEq(sheet.cells.A4?.v, 3);
+  assertEq(sheet.cells.C1?.f, "A4*10");     // formula ref followed the cell
+  assertEq(sheet.cells.B2?.v, "y");         // outside band untouched
+  shiftCells(sheet, { c1: 0, r1: 1, c2: 0, r2: 1 }, "up");  // delete A2 (empty)
+  assertEq(sheet.cells.A2?.v, 2);
+  assertEq(sheet.cells.A3?.v, 3);
+  assertEq(sheet.cells.A4, undefined);
+  // delete occupied zone → refs pointing AT it become #REF!
+  shiftCells(sheet, { c1: 0, r1: 1, c2: 0, r2: 1 }, "up");
+  assert(sheet.cells.C2?.f?.includes("#REF!"), "ref into deleted zone → #REF!");
+});
+
+t("S12.3 SUBTOTAL + outline collapse", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 10 }, A2: { v: 20 }, A3: { v: 30 },
+    B1: { f: "SUBTOTAL(9, A1:A3)" }, B2: { f: "SUBTOTAL(109, A1:A3)" },
+    B3: { f: "SUBTOTAL(1, A1:A3)" },
+  } }] };
+  assertEq(evaluateSheetIn(wb, "S").get("B1")?.value, 60);
+  assertEq(evaluateSheetIn(wb, "S").get("B3")?.value, 20);
+  // hidden row excluded by 1xx code only
+  wb.sheets[0].hiddenRows = [1];
+  assertEq(evaluateSheetIn(wb, "S").get("B1")?.value, 60);  // 9 includes hidden
+  assertEq(evaluateSheetIn(wb, "S").get("B2")?.value, 40);  // 109 excludes
+  // filtered rows excluded by both
+  wb.sheets[0].filteredRows = [0];
+  assertEq(evaluateSheetIn(wb, "S").get("B1")?.value, 50);  // filtered excluded, manual-hidden included
+  assertEq(evaluateSheetIn(wb, "S").get("B2")?.value, 30);  // 109 excludes both
+  // outline collapse resolves hidden members
+  const s2: SheetData = { name: "S", cells: {}, outlineRows: { 1: 1, 2: 1, 3: 1 }, collapsedRows: [3] };
+  assertEq(outlineHidden(s2, "row").sort(), [1, 2, 3]);
+  toggleOutline(s2, "row", 3);
+  assertEq(outlineHidden(s2, "row"), []);
+});
+
+t("S12.6 flash fill + go-to-special + column suggestions", () => {
+  const ff = flashFillTemplate(["John", "Doe"], "John Doe");
+  assert(ff && ff(["Jane", "Smith"]) === "Jane Smith", "concat template");
+  const ff2 = flashFillTemplate(["Ada Lovelace"], "Ada");
+  assert(ff2 && ff2(["Grace Hopper"]) === "Grace", "first-word template");
+  const ff3 = flashFillTemplate(["abc123"], "123");
+  assert(ff3 && ff3(["xy789"]) === "789", "digit extraction");
+  const sheet: SheetData = { name: "S", cells: {
+    A1: { v: 1 }, A2: { f: "A1*2" }, A4: { v: "x" },
+    B1: { f: "1/0" },
+  }, notes: { A4: "note here" } };
+  const rng = { c1: 0, r1: 0, c2: 1, r2: 3 };
+  const ev = evaluateSheetIn({ sheets: [sheet] }, "S");
+  assert(goToSpecial(sheet, ev, rng, "blanks").includes("A3"), "blanks found");
+  assertEq(goToSpecial(sheet, ev, rng, "formulas").sort(), ["A2", "B1"]);
+  assertEq(goToSpecial(sheet, ev, rng, "constants").sort(), ["A1", "A4"]);
+  assertEq(goToSpecial(sheet, ev, rng, "errors"), ["B1"]);
+  assertEq(goToSpecial(sheet, ev, rng, "notes"), ["A4"]);
+  assert(columnSuggestions({ name: "S", cells: { A1: { v: "red" }, A2: { v: "blue" }, B1: { v: "green" } } }, 0).includes("red"), "col suggestions");
+});
+
+t("S12.2 slicer hidden rows", () => {
+  const wb: Workbook = { sheets: [{
+    name: "S",
+    cells: {
+      A1: { v: "Cat" }, B1: { v: "Qty" },
+      A2: { v: "a" }, B2: { v: 5 },
+      A3: { v: "b" }, B3: { v: 8 },
+    },
+    filter: { range: "A1:B3", cols: {} },
+    slicers: [{ col: 0, title: "Cat", sel: ["a"] }],
+  }] };
+  assertEq(slicerHiddenRows(wb.sheets[0], wb), [2]);
+  assert(slicerValues(wb.sheets[0], wb, 0).includes("a"), "slicer values");
 });
 
 console.log(`${passed} passed, ${failed} failed`);

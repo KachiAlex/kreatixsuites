@@ -121,10 +121,19 @@ export interface SheetData {
   };
   /** rows currently hidden by the active filter (recomputed on apply/data change) */
   filteredRows?: number[];
+  /** Slicers (S12.2) — interactive per-column filters; `col` is absolute,
+   *  applies to the filter/table data range containing it */
+  slicers?: { col: number; title: string; sel: string[] }[];
   /** Table objects (S5.4) */
   tables?: TableSpec[];
   /** in-cell sparklines: ref → spec (S7.3) */
   sparklines?: Record<string, Sparkline>;
+  /** Outline grouping (S12.3) — index → nesting level (1-based).
+   *  Collapsed lists hold the LAST row/col index of each collapsed group. */
+  outlineRows?: Record<number, number>;
+  outlineCols?: Record<number, number>;
+  collapsedRows?: number[];
+  collapsedCols?: number[];
   /** pivot tables (S10.1) — output materialized into cells */
   pivots?: PivotSpec[];
   /** sheet protection (S9.2): locked cells except `allowRanges` */
@@ -199,6 +208,29 @@ export function refInRanges(ref: string, ranges: string[]): boolean {
     const rr = parseRange(r);
     return !!rr && p.col >= rr.c1 && p.col <= rr.c2 && p.row >= rr.r1 && p.row <= rr.r2;
   });
+}
+
+/** Rows/cols hidden by collapsed outline groups. `collapsedRows` entries are
+ *  the index of a group's LAST member row; members are the contiguous rows
+ *  at-or-before that index sharing its level. */
+export function outlineHidden(sheet: SheetData, axis: "row" | "col"): number[] {
+  const lv = axis === "row" ? sheet.outlineRows : sheet.outlineCols;
+  const collapsed = axis === "row" ? sheet.collapsedRows : sheet.collapsedCols;
+  if (!lv || !collapsed?.length) return [];
+  const hidden = new Set<number>();
+  for (const end of collapsed) {
+    const lvl = lv[end] ?? 1;
+    for (let i = end; i >= 0 && (lv[i] ?? 0) >= lvl; i--) hidden.add(i);
+  }
+  return [...hidden];
+}
+
+/** Toggle a collapse marker — `end` is the last member index of a group. */
+export function toggleOutline(sheet: SheetData, axis: "row" | "col", end: number): void {
+  const key = axis === "row" ? "collapsedRows" : "collapsedCols";
+  const cur = new Set(sheet[key] ?? []);
+  if (cur.has(end)) cur.delete(end); else cur.add(end);
+  sheet[key] = cur.size ? [...cur].sort((a, b) => a - b) : undefined;
 }
 
 /** Protected-sheet check: locked unless the ref sits in an allowed range. */
@@ -304,6 +336,65 @@ export function rangeToA1(r: Range): string {
 export function* rangeRefs(r: Range): Generator<string> {
   for (let row = r.r1; row <= r.r2; row++)
     for (let col = r.c1; col <= r.c2; col++) yield toA1(col, row);
+}
+
+/** S12.4 — insert/delete cells inside `zone`, shifting the rest of the
+ *  column-band down/right (insert) or up/left (delete). Formulas anywhere
+ *  in the sheet that reference moved cells get remapped; references into a
+ *  deleted zone become #REF!. Merges intersecting the zone are dropped. */
+export function shiftCells(
+  sheet: SheetData, zone: Range, dir: "down" | "right" | "up" | "left",
+): void {
+  const h = zone.c2 - zone.c1 + 1, v = zone.r2 - zone.r1 + 1;
+  const dC = dir === "right" ? h : dir === "left" ? -h : 0;
+  const dR = dir === "down" ? v : dir === "up" ? -v : 0;
+  const inZone = (p: Ref) =>
+    p.col >= zone.c1 && p.col <= zone.c2 && p.row >= zone.r1 && p.row <= zone.r2;
+  const vertical = dir === "down" || dir === "up";
+  // does an original position sit in the band that physically moved?
+  const moves = (p: Ref): boolean =>
+    vertical ? p.col >= zone.c1 && p.col <= zone.c2 && p.row >= zone.r1
+             : p.row >= zone.r1 && p.row <= zone.r2 && p.col >= zone.c1;
+  const ins = dir === "down" || dir === "right";
+  const next: Record<string, CellData> = {};
+  for (const [ref, cell] of Object.entries(sheet.cells)) {
+    const p = parseA1(ref);
+    if (!p) { next[ref] = cell; continue; }
+    if (!ins && inZone(p)) continue; // inside deleted zone
+    if (moves(p)) {
+      const np = { col: p.col + dC, row: p.row + dR };
+      if (np.col >= 0 && np.row >= 0) next[toA1(np.col, np.row)] = cell;
+    } else next[ref] = cell;
+  }
+  // remap formula refs pointing at positions that moved (or were deleted)
+  const remap = (f: string): string =>
+    f.split(/("[^"]*")/).map((seg, i) => i % 2 ? seg : seg.replace(
+      /((?:'[^']+'|[A-Za-z_][\w.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g,
+      (m, q, ca, cl, ra, rs) => {
+        if (q && q !== `'${sheet.name}'!` && q !== `${sheet.name}!`) return m;
+        const p = { col: colIndex(cl.toUpperCase()), row: parseInt(rs, 10) - 1 };
+        if (!ins && inZone(p)) return "#REF!";
+        if (!moves(p)) return m;
+        const np = { col: p.col + dC, row: p.row + dR };
+        if (np.col < 0 || np.row < 0) return "#REF!";
+        return `${q ?? ""}${ca}${colLabel(np.col)}${ra}${np.row + 1}`;
+      })).join("");
+  for (const cell of Object.values(next)) if (cell.f) cell.f = remap(cell.f);
+  sheet.cells = next;
+  // merges fully inside the moved band shift with it; partial overlaps drop
+  sheet.merges = (sheet.merges ?? []).flatMap((m) => {
+    const inside = ins
+      ? (vertical ? m.c1 >= zone.c1 && m.c2 <= zone.c2 && m.r1 >= zone.r1
+                  : m.r1 >= zone.r1 && m.r2 <= zone.r2 && m.c1 >= zone.c1)
+      : (vertical ? m.c1 >= zone.c1 && m.c2 <= zone.c2 && m.r1 > zone.r2
+                  : m.r1 >= zone.r1 && m.r2 <= zone.r2 && m.c1 > zone.c2);
+    if (inside) {
+      const nm = { c1: m.c1 + dC, c2: m.c2 + dC, r1: m.r1 + dR, r2: m.r2 + dR };
+      return nm.c1 >= 0 && nm.r1 >= 0 ? [nm] : [];
+    }
+    const overlaps = !(m.c2 < zone.c1 || m.c1 > zone.c2 || m.r2 < zone.r1 || m.r1 > zone.r2);
+    return overlaps ? [] : [m];
+  });
 }
 
 // ---------- named ranges ----------

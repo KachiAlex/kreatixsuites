@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type MouseEvent, type CSSProperties } from "react";
 import type { SheetData, Range, Ref, Workbook } from "./model";
-import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange } from "./model";
+import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
-import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects } from "./io";
+import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects, columnSuggestions } from "./io";
 import { FxInput } from "./FxInput";
 import { SparklineView } from "./Chart";
 
@@ -47,11 +47,13 @@ interface GridProps {
   evalFormula?: (f: string) => EvalResult;
   /** highlight cells carrying a change stamp (S9.2) */
   showChanges?: boolean;
+  /** toggle an outline group's collapsed state (S12.3) — `end` = last member index */
+  onOutlineToggle?: (axis: "row" | "col", end: number) => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -77,7 +79,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
 
   // geometry — variable col widths + row heights, live resize preview,
   // hidden = 0 size (manual hidden + autofilter-hidden rows)
-  const hiddenR = useMemo(() => new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? [])]), [sheet.hiddenRows, sheet.filteredRows]);
+  const hiddenR = useMemo(() => new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...outlineHidden(sheet, "row")]), [sheet.hiddenRows, sheet.filteredRows, sheet.outlineRows, sheet.collapsedRows]);
 
   // autofilter chrome — ▾ on header-row cells, active columns highlighted
   const fRange = useMemo(() => (sheet.filter ? parseRange(sheet.filter.range) : null), [sheet.filter]);
@@ -102,7 +104,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     }
     return { bands, totals };
   }, [sheet.tables]);
-  const hiddenC = useMemo(() => new Set(sheet.hiddenCols ?? []), [sheet.hiddenCols]);
+  const hiddenC = useMemo(() => new Set([...(sheet.hiddenCols ?? []), ...outlineHidden(sheet, "col")]), [sheet.hiddenCols, sheet.outlineCols, sheet.collapsedCols]);
   const colW = useCallback((c: number) =>
     resizePrev?.axis === "col" && resizePrev.i === c ? resizePrev.size
     : hiddenC.has(c) ? 0 : (sheet.colWidths?.[c] ?? COL_W), [sheet.colWidths, hiddenC, resizePrev]);
@@ -592,6 +594,48 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
               else if (e.key === "Escape") { setEditing(null); containerRef.current?.focus(); }
             }} />
         )}
+        {/* column autocomplete — non-formula text suggests prior column values (S12.6) */}
+        {editing && !editing.value.startsWith("=") && editing.value.trim() !== "" && (() => {
+          const sug = columnSuggestions(sheet, editing.ref.col)
+            .filter((s) => s.toLowerCase().startsWith(editing.value.toLowerCase()) && s !== editing.value);
+          if (!sug.length) return null;
+          const p = editing.ref;
+          return (
+            <div className="list-drop col-auto"
+              style={{ left: HEADER_W + colX[p.col], top: HEADER_H + rowY[p.row] + rowH(p.row), minWidth: Math.max(120, colW(p.col)) }}>
+              {sug.map((s) => (
+                <button key={s} onMouseDown={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  onCommit(toA1(p.col, p.row), s); setEditing(null);
+                }}>{s}</button>
+              ))}
+            </div>
+          );
+        })()}
+        {/* outline collapse toggles (S12.3) — −/+ sits on the summary row
+            just past each group's last member */}
+        {sheet.outlineRows && (() => {
+          const lv = sheet.outlineRows;
+          const collapsed = new Set(sheet.collapsedRows ?? []);
+          const ends: number[] = [];
+          const max = Math.max(0, ...Object.keys(lv).map(Number));
+          for (let i = 0; i <= max; i++)
+            if ((lv[i] ?? 0) >= 1 && (lv[i + 1] ?? 0) < (lv[i] ?? 0)) ends.push(i);
+          return ends.map((e) => {
+            const sum = e + 1;
+            const y = HEADER_H + (rowY[sum] ?? 0);
+            if (hiddenR.has(sum)) return null;
+            return (
+              <button key={e} className="outline-tgl"
+                style={{ left: 2, top: y + Math.max(0, ((rowH(sum) ?? ROW_H) - 14) / 2) }}
+                title={collapsed.has(e) ? "Expand group" : "Collapse group"}
+                onMouseDown={(ev) => ev.stopPropagation()}
+                onClick={() => onOutlineToggle?.("row", e)}>
+                {collapsed.has(e) ? "+" : "−"}
+              </button>
+            );
+          });
+        })()}
         {/* freeze split indicators */}
         {fz.cols > 0 && <div className="freeze-v" style={{ left: frozenLeft }} />}
         {fz.rows > 0 && <div className="freeze-h" style={{ top: frozenTop }} />}
