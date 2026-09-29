@@ -81,9 +81,26 @@ export async function buildFlattenedPdf(
       }
       form.updateFieldAppearances(helv);
     }
+    // authored fields already embedded in the bytes (Save-into-file) — sync
+    // their latest values, skip re-creating them
+    for (const f of fields) {
+      if (!f.embedded || f.embedded === "drawn") continue;
+      const v = f.value ?? f.defaultValue;
+      try {
+        if (f.kind === "text") form.getTextField(f.embedded).setText(String(v ?? ""));
+        else if (f.kind === "checkbox") v ? form.getCheckBox(f.embedded).check() : form.getCheckBox(f.embedded).uncheck();
+        else if (f.kind === "radio" && v) form.getRadioGroup(f.group ?? f.embedded).select(f.name);
+        else if ((f.kind === "dropdown" || f.kind === "list") && v) {
+          const sel = String(v).split("\n")[0];
+          if (f.kind === "list") form.getOptionList(f.embedded).select(sel);
+          else form.getDropdown(f.embedded).select(sel);
+        }
+      } catch { /* field missing or renamed — leave as-is */ }
+    }
     // PDF-6 — authored fields become real AcroForm fields
     const allPages = src.getPages();
     for (const f of fields) {
+      if (f.embedded) continue; // already a real field (or drawn) in the bytes
       const pg = allPages[f.page - 1];
       if (!pg) continue;
       const [x, y, w, h] = f.rect;
@@ -170,6 +187,7 @@ export async function buildFlattenedPdf(
   // ---- draw annotations into content streams ----
   const pages = src.getPages();
   for (const a of anns) {
+    if (a.embedded) continue; // already a real /Annot in the bytes (Save-into-file)
     const page = pages[a.page - 1];
     if (!page) continue;
     const c = hexToRgb(a.color);

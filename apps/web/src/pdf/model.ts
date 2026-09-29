@@ -29,6 +29,9 @@ export interface PdfAnn {
   status?: "accepted" | "rejected" | "completed" | "none";
   replies?: { by: string; text: string; at: string }[];
   createdAt?: string;
+  /** pdf-lib ref ("23 0 R") of this annotation embedded in the file bytes —
+   *  set by Save-into-file so external viewers show it as a real annotation */
+  embedded?: string;
 }
 
 // PDF-6 — form fields authored on top of the page (become real AcroForm
@@ -52,6 +55,9 @@ export interface PdfField {
   defaultValue?: string;
   /** comb field — max chars, rendered as evenly-spaced boxes */
   comb?: number;
+  /** AcroForm field name this field was embedded under in the file bytes
+   *  ("drawn" for signature/barcode which are baked into the content) */
+  embedded?: string;
 }
 
 // PDF-8.3 — OCR overlay: recognized words (pdf user-space) make scanned
@@ -66,6 +72,8 @@ export interface PdfDoc {
   fields?: PdfField[];
   /** PDF-8.3 — OCR word boxes keyed by 1-based page number */
   ocr?: Record<string, OcrWord[]>;
+  /** AcroForm field names we've ever embedded — used to remove deleted fields */
+  embeddedFieldNames?: string[];
 }
 
 export const emptyPdfDoc = (): PdfDoc => ({ kind: "pdf", annotations: [], fields: [] });

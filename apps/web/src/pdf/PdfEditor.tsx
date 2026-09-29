@@ -20,6 +20,7 @@ import { MenuBar } from "../writer/MenuBar";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
+import { SUBTYPE, PDFJS_TYPE, annotRectOf, pdfjsIdsOf } from "./embed";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -292,6 +293,39 @@ export function PdfEditor({ item, initialDoc, permission }: {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 1500);
   }, [flushSave]);
+
+  /**
+   * Acrobat-style save: embed annotations as real /Annots objects + authored
+   * fields as real AcroForm fields + form values into /V — the work becomes
+   * part of the file itself, visible/editable in Foxit, Acrobat, browsers.
+   * Autosave still writes the JSON layer only; this is the explicit Save.
+   */
+  const saveIntoFile = async () => {
+    if (!pdfDataRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (!canEdit) { void flushSave(); return; }
+    setSaveState("saving");
+    try {
+      const rasters = await rasterizeRedacted();
+      const { embedIntoPdf } = await import("./embed");
+      const { bytes, doc: next } = await embedIntoPdf(
+        pdfDataRef.current.slice(0), annDoc, formValues(), doc, rasters);
+      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      setAnnDoc(next);
+      await persistBytes(buf, "Annotations embedded");
+      const form = formValues();
+      const ok = await saveContent(item.id,
+        { ...next, form: Object.keys(form).length ? form : next.form }, !!session);
+      setSaveState(ok ? "saved" : "error");
+      if (ok) toast("Saved — annotations are now part of the PDF");
+      await reloadPdf(buf); // reload so embedded annots/fields render from the file
+    } catch (e) {
+      console.error(e);
+      setSaveState("error");
+      toast("Could not write into the PDF — saved annotation layer only");
+      void flushSave();
+    }
+  };
 
   const rename = async () => {
     const t = title.trim();
@@ -980,8 +1014,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
         { e.preventDefault(); setCurPage((p) => Math.max(1, cover && viewMode === "two" && p <= 3 ? 1 : p - (viewMode === "two" ? 2 : 1))); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        if (saveTimer.current) clearTimeout(saveTimer.current);
-        void flushSave();
+        void saveIntoFile();
       }
       else if ((e.ctrlKey || e.metaKey) && e.key === "o") { e.preventDefault(); openFileRef.current?.click(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
@@ -1000,6 +1033,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <div className="app-ico pdf" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>P</div>
         <input className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)} onBlur={rename} />
+        <button className="btn-ghost btn-sm" disabled={!canEdit}
+          title="Save — write annotations, fields and filled values into the PDF file"
+          onClick={() => void saveIntoFile()}>💾 Save</button>
         <span className={`save-state ${saveState}`}>{saveLabel}</span>
         <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
           Comments{comments.length ? ` (${comments.length})` : ""}
@@ -1019,8 +1055,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Open…", icon: "📂", shortcut: "Ctrl+O", onClick: () => navigate("/drive") },
           { label: "Open from this computer…", icon: "💻", onClick: () => openFileRef.current?.click() },
           { divider: true },
-          { label: "Save", icon: "💾", shortcut: "Ctrl+S", disabled: !canEdit,
-            onClick: () => { if (saveTimer.current) clearTimeout(saveTimer.current); void flushSave(); } },
+          { label: "Save — write changes into the PDF", icon: "💾", shortcut: "Ctrl+S", disabled: !canEdit,
+            onClick: () => void saveIntoFile() },
           { label: "Save named version…", icon: "🏷", onClick: () => void saveNamed(), disabled: !canEdit },
           { label: "Make a copy", icon: "⧉", onClick: () => void makeCopy() },
           { divider: true },
@@ -1919,7 +1955,34 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         fl.className = "annotationLayer";
         fl.style.setProperty("--scale-factor", `${scale}`);
         try {
-          const annotations = await page.getAnnotations();
+          // Suppress annots/fields WE embedded into the file — our own overlay
+          // renders them (single render, single editing path). Match by stored
+          // ref id first, fall back to rect+type matching.
+          const hideIds = new Set<string>();
+          const hideRects: { t: number; r: number[] }[] = [];
+          for (const a of anns ?? []) {
+            if (!a.embedded) continue;
+            for (const id of pdfjsIdsOf(a.embedded)) hideIds.add(id);
+            const sub = a.type === "sign" || a.type === "image" ? "Stamp" : SUBTYPE[a.type];
+            const r = annotRectOf(a);
+            const t = sub ? PDFJS_TYPE[sub] : undefined;
+            if (r && t !== undefined) hideRects.push({ t, r });
+          }
+          const embFieldNames = new Set((fieldApi?.fields ?? [])
+            .flatMap((f) => f.embedded && f.embedded !== "drawn" ? [f.embedded, ...(f.group ? [f.group] : [])] : []));
+          const annotations = (await page.getAnnotations()).filter((ja) => {
+            const j = ja as { id?: string; fieldName?: string; annotationType?: number; rect?: number[] };
+            if (j.fieldName && embFieldNames.has(j.fieldName)) return false;
+            if (j.id && hideIds.has(j.id)) return false;
+            if (j.rect && j.annotationType !== undefined) {
+              for (const h of hideRects) {
+                if (h.t === j.annotationType &&
+                  Math.abs(j.rect[0] - h.r[0]) < 0.75 && Math.abs(j.rect[1] - h.r[1]) < 0.75 &&
+                  Math.abs(j.rect[2] - h.r[2]) < 0.75 && Math.abs(j.rect[3] - h.r[3]) < 0.75) return false;
+              }
+            }
+            return true;
+          });
           if (annotations.some((a) => a.fieldType)) {
             const layer = new pdfjs.AnnotationLayer({
               div: fl, page, viewport: vp.clone({ dontFlip: true }),
@@ -2351,7 +2414,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         );
       })}
       {/* PDF-6 — authored form fields */}
-      {v && (fieldApi?.fields ?? []).map((f) => {
+      {v && (fieldApi?.fields ?? []).filter((f) => f.embedded !== "drawn").map((f) => {
         const [x, y, w2, h2] = vpRect(f.rect);
         const sel = fieldApi?.sel === f.id;
         const shell = (kids: React.ReactNode) => (
