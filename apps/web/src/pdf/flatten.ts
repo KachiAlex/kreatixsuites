@@ -1,5 +1,5 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { PdfAnn } from "./model";
+import type { PdfAnn, PdfField } from "./model";
 
 type RGB = { r: number; g: number; b: number };
 const hexToRgb = (hex?: string): RGB => {
@@ -28,6 +28,7 @@ export async function buildFlattenedPdf(
   formValues: Record<string, unknown>,
   pdfDoc: PDFDocumentProxy | null,
   opts: FlattenOpts = {},
+  fields: PdfField[] = [],
 ): Promise<Uint8Array> {
   const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -63,6 +64,38 @@ export async function buildFlattenedPdf(
       }
       form.updateFieldAppearances(helv);
     }
+    // PDF-6 — authored fields become real AcroForm fields
+    const allPages = src.getPages();
+    for (const f of fields) {
+      const pg = allPages[f.page - 1];
+      if (!pg) continue;
+      const [x, y, w, h] = f.rect;
+      try {
+        if (f.kind === "text") {
+          const tf = form.createTextField(f.name);
+          tf.addToPage(pg, { x, y, width: w, height: h, borderWidth: 1 });
+          if (f.required) tf.enableRequired();
+          if (f.value) tf.setText(String(f.value));
+        } else if (f.kind === "checkbox") {
+          const cb = form.createCheckBox(f.name);
+          cb.addToPage(pg, { x, y, width: w, height: h });
+          if (f.required) cb.enableRequired();
+          if (f.value) cb.check();
+        } else if (f.kind === "radio") {
+          const rg = (() => { try { return form.getRadioGroup(f.group ?? f.name); } catch { return form.createRadioGroup(f.group ?? f.name); } })();
+          rg.addOptionToPage(f.name, pg, { x, y, width: w, height: h });
+          if (f.value) try { rg.select(f.name); } catch { /* option missing */ }
+        } else {
+          const opts = f.options?.length ? f.options : [" "];
+          const dd = f.kind === "list" ? form.createOptionList(f.name) : form.createDropdown(f.name);
+          dd.addToPage(pg, { x, y, width: w, height: h });
+          dd.addOptions(opts);
+          if (f.required) dd.enableRequired();
+          if (f.value) try { dd.select(String(f.value).split("\n")[0]); } catch { /* option missing */ }
+        }
+      } catch { /* skip malformed field */ }
+    }
+    if (fields.length) form.updateFieldAppearances(helv);
     form.flatten();
   } catch { /* no fields or unsupported — annotations still bake */ }
 
@@ -247,8 +280,9 @@ export async function exportFlattenedPdf(
   pdfDoc: PDFDocumentProxy | null,
   fileName: string,
   opts: FlattenOpts = {},
+  fields: PdfField[] = [],
 ): Promise<void> {
-  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts);
+  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields);
   const url = URL.createObjectURL(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");
   a.href = url;

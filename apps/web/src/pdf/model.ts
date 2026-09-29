@@ -26,13 +26,29 @@ export interface PdfAnn {
   createdAt?: string;
 }
 
+// PDF-6 — form fields authored on top of the page (become real AcroForm
+// fields on export via pdf-lib)
+export type FieldKind = "text" | "checkbox" | "radio" | "dropdown" | "list";
+export interface PdfField {
+  id: string;
+  page: number; // 1-based
+  kind: FieldKind;
+  name: string;
+  rect: [number, number, number, number]; // pdf user-space
+  options?: string[];   // dropdown / list
+  group?: string;       // radio group name (defaults to name)
+  required?: boolean;
+  value?: string | boolean;
+}
+
 export interface PdfDoc {
   kind: "pdf";
   annotations: PdfAnn[];
   /** AcroForm field values harvested from pdf.js AnnotationStorage */
   form?: Record<string, unknown>;
+  fields?: PdfField[];
 }
 
-export const emptyPdfDoc = (): PdfDoc => ({ kind: "pdf", annotations: [] });
+export const emptyPdfDoc = (): PdfDoc => ({ kind: "pdf", annotations: [], fields: [] });
 
 export const STAMPS = ["APPROVED", "DRAFT", "CONFIDENTIAL", "FINAL", "REVIEWED"];

@@ -15,7 +15,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
-import type { PdfAnn, PdfDoc, AnnType } from "./model";
+import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf } from "./pages";
 const flattenMod = () => import("./flatten");
@@ -29,7 +29,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field";
 const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize";
 type Rect4 = [number, number, number, number];
@@ -52,6 +52,7 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "edittext", ico: "✎T", label: "Edit text — drag over a text block to retype it" },
   { id: "image", ico: "🖼", label: "Insert image — drag a box, then pick a file" },
   { id: "whiteout", ico: "▨", label: "White-out — erase content under a white block" },
+  { id: "field", ico: "▣", label: "Form field — drag to place a fillable field" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
@@ -98,6 +99,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [stampText, setStampText] = useState(STAMPS[0]);
   const [sigImg, setSigImg] = useState<string | null>(() => localStorage.getItem(SIG_KEY));
   const [sigPadOpen, setSigPadOpen] = useState(false);
+  const [fieldKind, setFieldKind] = useState<FieldKind>("text");
+  const [selField, setSelField] = useState<string | null>(null);
   // PDF-3 — view depth
   const [viewMode, setViewMode] = useState<"cont" | "single" | "two">("cont");
   const [viewRot, setViewRot] = useState(0);       // session-only rotation, degrees
@@ -392,13 +395,35 @@ export function PdfEditor({ item, initialDoc, permission }: {
       a.points?.forEach((p) => { p[0] += dx; p[1] += dy; });
     }, `move:${id}`);
 
+  // ---------- PDF-6: form fields ----------
+  const addField = (page: number, rect: Rect4) =>
+    mutate((d) => {
+      d.fields ??= [];
+      const n = d.fields.filter((f) => f.kind === fieldKind).length + 1;
+      d.fields.push({ id: crypto.randomUUID().slice(0, 8), page, kind: fieldKind, rect,
+        name: `${fieldKind}_${n}`, group: fieldKind === "radio" ? "radio_1" : undefined,
+        options: fieldKind === "dropdown" || fieldKind === "list" ? ["Option 1", "Option 2"] : undefined });
+    });
+  const patchField = (id: string, p: Partial<PdfField>, key?: string) =>
+    mutate((d) => { const f = d.fields?.find((x) => x.id === id); if (f) Object.assign(f, p); }, key);
+  const delField = (id: string) => mutate((d) => { d.fields = (d.fields ?? []).filter((f) => f.id !== id); });
+  const moveField = (id: string, dx: number, dy: number) =>
+    mutate((d) => { const f = d.fields?.find((x) => x.id === id); if (f) { f.rect[0] += dx; f.rect[1] += dy; } }, `fmove:${id}`);
+  const checkRadio = (f: PdfField) =>
+    mutate((d) => {
+      const grp = f.group ?? f.name;
+      for (const x of d.fields ?? []) if (x.kind === "radio" && x.page === f.page && (x.group ?? x.name) === grp) x.value = x.id === f.id;
+    });
+
   // ---------- collab: per-annotation keys + form values in a shared Y.Map ----------
   const applyRemoteRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
   applyRemoteRef.current = (changed) => {
     setAnnDoc((prev) => {
       const next = structuredClone(prev);
       for (const [k, v] of changed) {
-        if (k === "$form") {
+        if (k === "$fields") {
+          next.fields = v ? JSON.parse(v) : [];
+        } else if (k === "$form") {
           next.form = v ? JSON.parse(v) : undefined;
           // restore into live pdf.js storage so form widgets repaint
           if (doc && v) for (const [fk, fv] of Object.entries(JSON.parse(v))) {
@@ -423,6 +448,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
     if (!mapSync || !doc) return;
     const m = new Map<string, string>();
     for (const a of annDoc.annotations) m.set(a.id, JSON.stringify(a));
+    m.set("$fields", JSON.stringify(annDoc.fields ?? []));
     if (annDoc.form && Object.keys(annDoc.form).length) m.set("$form", JSON.stringify(annDoc.form));
     mapSync.push(m);
   }, [annDoc, mapSync, doc]);
@@ -573,7 +599,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
       else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
       else if ((e.key === "Delete" || e.key === "Backspace") && selAnn && canEdit) { e.preventDefault(); delAnn(selAnn); setSelAnn(null); }
-      else if (e.key === "Escape") setSelAnn(null);
+      else if ((e.key === "Delete" || e.key === "Backspace") && selField && canEdit) { e.preventDefault(); delField(selField); setSelField(null); }
+      else if (e.key === "Escape") { setSelAnn(null); setSelField(null); }
       // PDF-3 — paged-view navigation
       else if (viewMode !== "cont" && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
         { e.preventDefault(); setCurPage((p) => Math.min(numPages, p + (viewMode === "two" ? 2 : 1))); }
@@ -627,6 +654,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
         {tool === "stamp" && (
           <select className="rb-sel" value={stampText} onChange={(e) => setStampText(e.target.value)} title="Stamp text">
             {STAMPS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        {tool === "field" && (
+          <select className="rb-sel" value={fieldKind} onChange={(e) => setFieldKind(e.target.value as FieldKind)} title="Field kind">
+            <option value="text">Text field</option>
+            <option value="checkbox">Checkbox</option>
+            <option value="radio">Radio</option>
+            <option value="dropdown">Dropdown</option>
+            <option value="list">List box</option>
           </select>
         )}
         {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && (
@@ -781,7 +817,13 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onMove={moveAnn}
                 onPatch={patchAnn}
                 onZoomTo={zoomToRect}
-                onPickImage={(r) => { imgPending.current = { page: p, rect: r }; imgFileRef.current?.click(); }} />
+                onPickImage={(r) => { imgPending.current = { page: p, rect: r }; imgFileRef.current?.click(); }}
+                fieldApi={{
+                  fields: (annDoc.fields ?? []).filter((f) => f.page === p),
+                  sel: selField, select: setSelField,
+                  add: (r) => addField(p, r), move: moveField, patch: patchField,
+                  del: delField, checkRadio,
+                }} />
             </div>
           ))}
           {viewMode !== "cont" && doc && (
@@ -847,7 +889,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
         </div>
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
-      {printing && <PrintDeck doc={doc} anns={annDoc.annotations} onDone={() => setPrinting(false)} />}
+      {printing && <PrintDeck doc={doc} anns={annDoc.annotations} fields={annDoc.fields} onDone={() => setPrinting(false)} />}
       {exportDlg && (
         <div className="dlg-back" onClick={() => setExportDlg(false)}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
@@ -872,7 +914,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 if (!pdfDataRef.current) return;
                 flattenMod()
                   .then(({ exportFlattenedPdf }) => exportFlattenedPdf(pdfDataRef.current!, annDoc.annotations, formValues(), doc, title,
-                    { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined, header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined }))
+                    { pageNumbers: pdfOpts.pageNumbers, watermark: pdfOpts.watermark || undefined, header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined },
+                    annDoc.fields ?? []))
                   .catch(() => toast("PDF export failed"));
               }}>Export</button>
             </div>
@@ -1023,7 +1066,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -1039,6 +1082,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   onPatch: (id: string, p: Partial<PdfAnn>, key?: string) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
+  fieldApi?: {
+    fields: PdfField[]; sel: string | null;
+    add: (rect: Rect4) => void;
+    select: (id: string | null) => void;
+    move: (id: string, dx: number, dy: number) => void;
+    patch: (id: string, p: Partial<PdfField>, key?: string) => void;
+    del: (id: string) => void;
+    checkRadio: (f: PdfField) => void;
+  };
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1053,7 +1105,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   const [plCur, setPlCur] = useState<[number, number] | null>(null);
   const [readout, setReadout] = useState<string | null>(null); // measure result badge
   const [editText, setEditText] = useState<string | null>(null);
-  const dragRef = useRef<{ kind: "draw"; sx: number; sy: number; x: number; y: number } | { kind: "move"; id: string; sx: number; sy: number } | null>(null);
+  const dragRef = useRef<{ kind: "draw"; sx: number; sy: number; x: number; y: number } | { kind: "move"; id: string; sx: number; sy: number; field?: boolean } | null>(null);
   const movedFlag = useRef(false);
   const renderedKey = useRef("");
 
@@ -1196,7 +1248,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     const x = e.clientX - b.left, y = e.clientY - b.top;
     if (d.kind === "move") {
       if (Math.abs(x - d.sx) + Math.abs(y - d.sy) > 1) movedFlag.current = true;
-      onMove(d.id, (x - d.sx) / scale, (y - d.sy) / scale); d.sx = x; d.sy = y;
+      (d.field ? fieldApi?.move : onMove)?.(d.id, (x - d.sx) / scale, (y - d.sy) / scale); d.sx = x; d.sy = y;
       return;
     }
     d.x = x; d.y = y;
@@ -1244,6 +1296,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       return;
     }
     if (tool === "whiteout") { onAdd({ type: "whiteout", rects: [rect] }); return; }
+    if (tool === "field") { fieldApi?.add(rect); return; }
     if (tool === "image") { onPickImage?.(rect); return; }
     if (tool === "edittext") { void editTextAt(rect); return; }
     if (tool === "line" || tool === "arrow") {
@@ -1316,6 +1369,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     setSelAnn(a.id);
     const b = boxRef.current!.getBoundingClientRect();
     dragRef.current = { kind: "move", id: a.id, sx: e.clientX - b.left, sy: e.clientY - b.top };
+    movedFlag.current = false;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const startFieldMove = (e: React.PointerEvent, f: PdfField) => {
+    if (tool !== "select" || !canEdit) return;
+    e.stopPropagation();
+    fieldApi?.select(f.id);
+    const b = boxRef.current!.getBoundingClientRect();
+    dragRef.current = { kind: "move", id: f.id, sx: e.clientX - b.left, sy: e.clientY - b.top, field: true };
     movedFlag.current = false;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   };
@@ -1436,6 +1498,74 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
             onBlur={(e) => onPatch(a.id, { text: (e.target as HTMLElement).innerText }, `tb:${a.id}`)}>{a.text}</div>
         );
       })}
+      {/* PDF-6 — authored form fields */}
+      {v && (fieldApi?.fields ?? []).map((f) => {
+        const [x, y, w2, h2] = vpRect(f.rect);
+        const sel = fieldApi?.sel === f.id;
+        const shell = (kids: React.ReactNode) => (
+          <div key={f.id} className={`pdf-field ${sel ? "sel" : ""}`}
+            style={{ left: x, top: y, width: w2, height: h2 }}
+            onPointerDown={(e) => { if (tool === "select") startFieldMove(e, f); }}
+            onClick={() => fieldApi?.select(f.id)}>
+            {kids}
+            {f.required && <span className="pdf-field-req">*</span>}
+          </div>
+        );
+        switch (f.kind) {
+          case "text":
+            return shell(<input className="pdf-field-in" value={String(f.value ?? "")}
+              onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onChange={(e) => fieldApi?.patch(f.id, { value: e.target.value }, `fv:${f.id}`)} />);
+          case "checkbox":
+            return shell(<span className="pdf-field-check" onClick={(e) => { e.stopPropagation(); fieldApi?.patch(f.id, { value: !f.value }); }}>
+              {f.value ? "✔" : ""}</span>);
+          case "radio":
+            return shell(<span className={`pdf-field-radio ${f.value ? "on" : ""}`}
+              onClick={(e) => { e.stopPropagation(); fieldApi?.checkRadio(f); }} />);
+          case "dropdown":
+            return shell(<select className="pdf-field-in" value={String(f.value ?? "")}
+              onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onChange={(e) => fieldApi?.patch(f.id, { value: e.target.value })}>
+              <option value=""></option>
+              {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>);
+          case "list":
+            return shell(<select className="pdf-field-in" multiple value={String(f.value ?? "").split("\n").filter(Boolean)}
+              onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onChange={(e) => fieldApi?.patch(f.id, { value: [...e.target.selectedOptions].map((o) => o.value).join("\n") })}>
+              {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>);
+        }
+      })}
+      {/* selected-field property editor */}
+      {v && canEdit && fieldApi?.sel && (() => {
+        const f = fieldApi.fields.find((x) => x.id === fieldApi.sel);
+        if (!f) return null;
+        const [x, y, , h2] = vpRect(f.rect);
+        return (
+          <div className="pdf-fieldprops" style={{ left: x, top: y + h2 + 4 }}
+            onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <input value={f.name} title="Field name"
+              onChange={(e) => fieldApi.patch(f.id, { name: e.target.value }, `fn:${f.id}`)} />
+            <select value={f.kind} onChange={(e) => fieldApi.patch(f.id, { kind: e.target.value as FieldKind })}>
+              <option value="text">text</option><option value="checkbox">checkbox</option>
+              <option value="radio">radio</option><option value="dropdown">dropdown</option><option value="list">list</option>
+            </select>
+            {(f.kind === "dropdown" || f.kind === "list") && (
+              <input value={(f.options ?? []).join(", ")} title="Options (comma-separated)" placeholder="a, b, c"
+                onChange={(e) => fieldApi.patch(f.id, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }, `fo:${f.id}`)} />
+            )}
+            {f.kind === "radio" && (
+              <input value={f.group ?? ""} title="Radio group" placeholder="group"
+                onChange={(e) => fieldApi.patch(f.id, { group: e.target.value }, `fg:${f.id}`)} />
+            )}
+            <label title="Required"><input type="checkbox" checked={!!f.required}
+              onChange={(e) => fieldApi.patch(f.id, { required: e.target.checked })} />req</label>
+            <button className="btn-ghost btn-sm" title="Delete field"
+              onClick={() => { fieldApi.del(f.id); fieldApi.select(null); }}>🗑</button>
+          </div>
+        );
+      })()}
       <div className="pdf-pageno">{pageNum}</div>
     </div>
   );
@@ -1538,7 +1668,7 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
 }
 
 // ---------- print all pages ----------
-function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: PdfAnn[]; onDone: () => void }) {
+function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null; anns: PdfAnn[]; fields?: PdfField[]; onDone: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!doc) return;
@@ -1673,6 +1803,22 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
                 svg.appendChild(b);
               }
             }
+          }
+        }
+        // PDF-6 — authored form fields print as boxed values
+        for (const f of (fields ?? []).filter((x) => x.page === p)) {
+          const [x, y, w, h] = vpR(f.rect);
+          const bx = document.createElementNS(svgNS, "rect");
+          bx.setAttribute("x", `${x}`); bx.setAttribute("y", `${y}`); bx.setAttribute("width", `${w}`); bx.setAttribute("height", `${h}`);
+          bx.setAttribute("fill", "rgba(240,244,255,.5)"); bx.setAttribute("stroke", "#8098c9"); bx.setAttribute("stroke-width", "0.8");
+          svg.appendChild(bx);
+          const val = f.kind === "checkbox" ? (f.value ? "✔" : "") : f.kind === "radio" ? (f.value ? "●" : "") : String(f.value ?? "");
+          if (val) {
+            const t = document.createElementNS(svgNS, "text");
+            t.setAttribute("x", `${x + 3}`); t.setAttribute("y", `${y + h / 2 + 4}`);
+            t.setAttribute("fill", "#171717"); t.setAttribute("font-size", "10");
+            t.textContent = val.slice(0, 80);
+            svg.appendChild(t);
           }
         }
         wrap.appendChild(svg);
