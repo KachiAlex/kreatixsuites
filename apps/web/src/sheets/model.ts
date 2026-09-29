@@ -64,6 +64,9 @@ export interface ChartSpec {
   id: string;
   type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut";
   range: string;
+  /** S13.4 — index into sheet.pivots; the chart's data range follows the
+   *  pivot's materialized span (header + data cells, totals excluded) */
+  pivot?: number;
   title?: string;
   xTitle?: string;
   yTitle?: string;
@@ -172,8 +175,21 @@ export interface PivotSpec {
   rows: string[];
   /** column-area fields */
   cols: string[];
-  /** value fields + aggregation */
-  vals: { field: string; agg: "sum" | "count" | "avg" | "min" | "max" }[];
+  /** value fields + aggregation; `showAs` post-processes the aggregate
+   *  (S13.2): % of grand/col/row total, running total, difference vs base */
+  vals: {
+    field: string; agg: "sum" | "count" | "avg" | "min" | "max";
+    showAs?: "value" | "%total" | "%col" | "%row" | "running" | "diff";
+    base?: string;
+  }[];
+  /** report-filter area (S13.1) — keep only rows where field ∈ sel */
+  filters?: { field: string; sel: string[] }[];
+  /** calculated fields (S13.2) — per-source-row expression over field names */
+  calcFields?: { name: string; formula: string }[];
+  /** key grouping (S13.3) — bucket a field's values before aggregation */
+  groups?: { field: string; kind: "month" | "quarter" | "year" | "num"; size?: number }[];
+  /** refresh materialized output when the workbook opens */
+  refreshOnOpen?: boolean;
   /** last materialized extent {rows, cols} — cleared on refresh/move */
   span?: { r: number; c: number };
 }

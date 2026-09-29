@@ -4,7 +4,7 @@ import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cyc
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -720,6 +720,122 @@ t("S10: goal seek quadratic root", () => {
 t("S10: goal seek no-solution returns null", () => {
   const x = solveGoalSeek(() => 5, 10); // constant — never reaches 10
   assertEq(x, null);
+});
+
+// ============ S13: pivot depth ============
+
+t("S13: pivot report filter restricts rows and totals", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }],
+      filters: [{ field: "Region", sel: ["N"] }] })!;
+  assertEq(out.cells.F2.v, "N"); assertEq(out.cells.G2.v, 30);
+  assertEq(out.cells.F3.v, "Grand Total"); assertEq(out.cells.G3.v, 30);
+  assert(!out.cells.F4, "no extra rows past filtered set");
+});
+
+t("S13: pivot showAs %total", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [],
+      vals: [{ field: "Sales", agg: "sum", showAs: "%total" }] })!;
+  assertEq(out.cells.G2.v, 20);  // 30/150
+  assertEq(out.cells.G3.v, 80);  // 120/150
+});
+
+t("S13: pivot showAs running total", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [],
+      vals: [{ field: "Sales", agg: "sum", showAs: "running" }] })!;
+  assertEq(out.cells.G2.v, 30);   // N
+  assertEq(out.cells.G3.v, 150);  // N+S accumulated
+});
+
+t("S13: pivot showAs diff from base", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [],
+      vals: [{ field: "Sales", agg: "sum", showAs: "diff", base: "N" }] })!;
+  assertEq(out.cells.G2.v, 0);   // 30-30
+  assertEq(out.cells.G3.v, 90);  // 120-30
+});
+
+t("S13: pivot %row/%col splits", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: ["Product"],
+      vals: [{ field: "Sales", agg: "sum", showAs: "%col" }] })!;
+  // col A total = 10+30+50=90 → N/A = 10/90 ≈ 11.11
+  assert(Math.abs((out.cells.G2.v as number) - 11.111) < 0.01, `got ${out.cells.G2.v}`);
+  // col B total = 20+40=60 → S/B = 40/60 ≈ 66.67
+  assert(Math.abs((out.cells.H3.v as number) - 66.667) < 0.01, `got ${out.cells.H3.v}`);
+});
+
+t("S13: calculated field feeds values", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [],
+      vals: [{ field: "DoubleSales", agg: "sum" }],
+      calcFields: [{ name: "DoubleSales", formula: "Sales*2" }] })!;
+  assertEq(out.cells.G2.v, 60);   // (10+20)*2
+  assertEq(out.cells.G3.v, 240);  // (30+40+50)*2
+});
+
+const datePivotWb = (): Workbook => ({
+  sheets: [{
+    name: "S1",
+    cells: {
+      A1: { v: "When" }, B1: { v: "Amt" },
+      A2: { v: 45292 }, B2: { v: 10 },   // 2024-01-01
+      A3: { v: 45322 }, B3: { v: 20 },   // 2024-01-31
+      A4: { v: 45351 }, B4: { v: 30 },   // 2024-02-29
+      A5: { v: 45657 }, B5: { v: 40 },   // 2024-12-31
+    },
+  }],
+});
+
+t("S13: pivot month grouping buckets dates", () => {
+  const wb = datePivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:B5", at: "E1", rows: ["When"], cols: [], vals: [{ field: "Amt", agg: "sum" }],
+      groups: [{ field: "When", kind: "month" }] })!;
+  assertEq(out.cells.E2.v, "Dec 2024"); assertEq(out.cells.F2.v, 40);
+  assertEq(out.cells.E3.v, "Feb 2024"); assertEq(out.cells.F3.v, 30);
+  assertEq(out.cells.E4.v, "Jan 2024"); assertEq(out.cells.F4.v, 30); // 10+20
+});
+
+t("S13: pivot numeric binning", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Sales"], cols: [], vals: [{ field: "Sales", agg: "count" }],
+      groups: [{ field: "Sales", kind: "num", size: 30 }] })!;
+  // bins: 0–29 (10,20) → 2; 30–59 (30,40,50) → 3
+  assertEq(out.cells.F2.v, "0–29"); assertEq(out.cells.G2.v, 2);
+  assertEq(out.cells.F3.v, "30–59"); assertEq(out.cells.G3.v, 3);
+});
+
+t("S13: drill-down returns matching source rows", () => {
+  const wb = pivotWb();
+  const drill = pivotDrillRows(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }] },
+    ["N"])!;
+  assert(drill);
+  assertEq(drill.A1.v, "Region");
+  assertEq(drill.A2.v, "N"); assertEq(drill.C2.v, 10);
+  assertEq(drill.A3.v, "N"); assertEq(drill.C3.v, 20);
+  assert(!drill.A4, "only the two N rows");
+});
+
+t("S13: drill-down respects report filters", () => {
+  const wb = pivotWb();
+  const drill = pivotDrillRows(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }],
+      filters: [{ field: "Product", sel: ["A"] }] },
+    ["S"])!;
+  assertEq(drill.A2.v, "S"); assertEq(drill.B2.v, "A");
+  assertEq(drill.A3.v, "S"); assertEq(drill.B3.v, "A");
+  assert(!drill.A4, "Product=B rows filtered out");
 });
 
 // ============ results ============

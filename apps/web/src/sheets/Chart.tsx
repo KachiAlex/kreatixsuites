@@ -1,6 +1,6 @@
 import { useMemo, type JSX, type MouseEvent } from "react";
 import type { ChartSpec, SheetData, Workbook } from "./model";
-import { parseRange, toA1 } from "./model";
+import { parseRange, parseA1, toA1 } from "./model";
 import { evaluateSheet, evaluateSheetIn } from "./engine";
 
 const COLORS = ["#F2782E", "#3578E5", "#1F9D66", "#D84B57", "#8E6BC8", "#E9B44C"];
@@ -58,6 +58,15 @@ const fmtTick = (v: number) => {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 };
 
+/** S13.4 — range covering a pivot's materialized output, excluding the
+ *  grand-total row and column. Null when the pivot hasn't been built. */
+export function pivotChartRange(sheet: SheetData, i: number): string | null {
+  const p = sheet.pivots?.[i];
+  const at = p && parseA1(p.at);
+  if (!p?.span || !at) return null;
+  return `${toA1(at.col, at.row)}:${toA1(at.col + p.span.c - 2, at.row + p.span.r - 2)}`;
+}
+
 export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
   spec: ChartSpec;
   sheet: SheetData;
@@ -66,7 +75,9 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
   onRemove?: (id: string) => void;
   onEdit?: (spec: ChartSpec) => void;
 }) {
-  const series = useMemo(() => extractSeries(sheet, spec.range, wb), [sheet, spec.range, wb]);
+  // pivot-linked charts re-derive their range from the live span each render
+  const effectiveRange = spec.pivot != null ? pivotChartRange(sheet, spec.pivot) ?? spec.range : spec.range;
+  const series = useMemo(() => extractSeries(sheet, effectiveRange, wb), [sheet, effectiveRange, wb]);
   const W = 440, H = 250;
   const rightLegend = spec.legend === "right";
   const legendPos = spec.legend ?? "bottom";

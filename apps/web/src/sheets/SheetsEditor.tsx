@@ -15,7 +15,7 @@ import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, C
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -141,6 +141,24 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const evaluator = useMemo(
     () => createSheetEvaluator(manualCalc ? calcWb : wb, sheet.name),
     [wb, calcWb, manualCalc, sheet.name]);
+  // S13.1 refresh-on-open — rebuild flagged pivots once per mount
+  const refreshed = useRef(false);
+  useEffect(() => {
+    if (refreshed.current) return;
+    const flagged = wb.sheets.filter((s) => s.pivots?.some((p) => p.refreshOnOpen));
+    if (!flagged.length) { refreshed.current = true; return; }
+    refreshed.current = true;
+    setWb((prev) => {
+      const next = structuredClone(prev);
+      for (const s of next.sheets)
+        s.pivots?.forEach((p, i) => {
+          if (!p.refreshOnOpen) return;
+          const built = buildPivotCells(next, s, s.pivots![i]);
+          if (built) applyPivot(s, built, s.pivots![i]);
+        });
+      return next;
+    });
+  }, [wb]);
   const evals = evaluator.values;
   const selRefs = useMemo(() => selections.flatMap((r) => [...rangeRefs(r)]), [selections]);
   const anchorRef = toA1(selection.c1, selection.r1);
@@ -1592,6 +1610,38 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             <span key={i} className="sheet-table-chip" title={`${p.src} → ${p.at}`}>
               Pivot {p.at}
               {canEdit && <>
+                <button className="chip-x" title="Insert PivotChart" onClick={() => {
+                  mutateSheet((s) => {
+                    s.charts = [...(s.charts ?? []), {
+                      id: crypto.randomUUID(), type: "bar", range: "",
+                      pivot: i, title: `Pivot ${p.at}`, x: 200, y: 80,
+                    }];
+                  });
+                }}>📊</button>
+                <button className="chip-x" title="Drill into selected pivot row" onClick={() => {
+                  const spec = sheet.pivots![i];
+                  const at = parseA1(spec.at);
+                  if (!at || !spec.span) return;
+                  const r = selection.r1;
+                  if (r <= at.row || r >= at.row + spec.span.r - 1) { toast("Select a pivot data row first"); return; }
+                  // expand the row's key parts — blanks repeat the outer value
+                  const nHdr = Math.max(spec.rows.length, 1);
+                  const parts: string[] = [];
+                  for (let c = 0; c < nHdr && c < spec.rows.length; c++) {
+                    let rr = r, v = "";
+                    while (rr > at.row && !(v = String(sheet.cells[toA1(at.col + c, rr)]?.v ?? ""))) rr--;
+                    parts.push(v);
+                  }
+                  const drill = pivotDrillRows(wb, sheet, spec, parts);
+                  if (!drill) { toast("No source rows behind this group"); return; }
+                  const name = `Drill ${parts.join("-")}`.slice(0, 28);
+                  setWb((prev) => {
+                    const next = structuredClone(prev);
+                    next.sheets.push({ name: wb.sheets.some((s) => s.name === name) ? `${name} ${next.sheets.length}` : name, cells: drill });
+                    return next;
+                  });
+                  setActive(wb.sheets.length);
+                }}>⤵</button>
                 <button className="chip-x" title="Refresh" onClick={() => {
                   const built = buildPivotCells(wb, sheet, sheet.pivots![i]);
                   if (!built) { toast("Pivot source invalid"); return; }
@@ -2666,7 +2716,14 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
   });
   const [rows, setRows] = useState<string[]>([]);
   const [cols, setCols] = useState<string[]>([]);
-  const [vals, setVals] = useState<{ field: string; agg: PivotSpec["vals"][number]["agg"] }[]>([]);
+  const [vals, setVals] = useState<PivotSpec["vals"]>([]);
+  const [filters, setFilters] = useState<{ field: string; sel: string[] }[]>([]);
+  const [groups, setGroups] = useState<Record<string, { kind: "month" | "quarter" | "year" | "num"; size?: number }>>({});
+  const [calcFields, setCalcFields] = useState<{ name: string; formula: string }[]>([]);
+  const [calcName, setCalcName] = useState("");
+  const [calcF, setCalcF] = useState("");
+  const [refreshOpen, setRefreshOpen] = useState(false);
+  const [editFilter, setEditFilter] = useState<string | null>(null);
 
   // resolve header fields from the src range (qualified or same-sheet)
   const fields = useMemo(() => {
@@ -2689,18 +2746,47 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
     return out;
   }, [src, sheet, wb]);
 
+  // source-sheet + range for filter value lists and drill-downs
+  const srcCtx = useMemo(() => {
+    let r = src, sh = sheet;
+    const bang = r.indexOf("!");
+    if (bang >= 0) {
+      const nm = r.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
+      sh = wb.sheets.find((s) => s.name === nm) ?? sheet;
+      r = r.slice(bang + 1);
+    }
+    const range = parseRange(r);
+    return range ? { sh, range } : null;
+  }, [src, sheet, wb]);
+  const distinctVals = (field: string): string[] => {
+    if (!srcCtx) return [];
+    const i = fields.indexOf(field);
+    if (i < 0) return [];
+    const evals = evaluateSheetIn(wb, srcCtx.sh.name);
+    const seen = new Set<string>();
+    for (let r = srcCtx.range.r1 + 1; r <= srcCtx.range.r2; r++) {
+      const ref = toA1(srcCtx.range.c1 + i, r);
+      const cell = srcCtx.sh.cells[ref];
+      seen.add((cell?.f ? displayValue(evals.get(ref), cell) : cell?.v == null ? "" : String(cell.v)));
+    }
+    return [...seen];
+  };
+
   const unassign = (f: string) => {
     setRows((rs) => rs.filter((x) => x !== f));
     setCols((cs) => cs.filter((x) => x !== f));
     setVals((vs) => vs.filter((x) => x.field !== f));
+    setFilters((fs) => fs.filter((x) => x.field !== f));
   };
-  const move = (f: string, area: "rows" | "cols" | "vals") => {
+  const move = (f: string, area: "rows" | "cols" | "vals" | "filters") => {
     unassign(f);
     if (area === "rows") setRows((rs) => [...rs.filter((x) => x !== f), f]);
     if (area === "cols") setCols((cs) => [...cs.filter((x) => x !== f), f]);
     if (area === "vals") setVals((vs) => [...vs.filter((x) => x.field !== f), { field: f, agg: "sum" }]);
+    if (area === "filters") setFilters((fs) => [...fs.filter((x) => x.field !== f), { field: f, sel: distinctVals(f) }]);
   };
-  const unassigned = fields.filter((f) => !rows.includes(f) && !cols.includes(f) && !vals.some((v) => v.field === f));
+  const unassigned = fields.filter((f) => !rows.includes(f) && !cols.includes(f)
+    && !vals.some((v) => v.field === f) && !filters.some((x) => x.field === f) && !calcFields.some((c) => c.name === f));
   const ok = vals.length > 0 && (rows.length > 0 || cols.length > 0) && fields.length > 0 && !!parseA1(at);
 
   const Area = ({ title, items, area }: { title: string; items: string[]; area: "rows" | "cols" | "vals" }) => (
@@ -2710,12 +2796,36 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
         {items.map((f) => (
           <span key={f} className="pv-chip">
             {f}
-            {area === "vals" && (
-              <select value={vals.find((v) => v.field === f)?.agg}
-                onChange={(e) => setVals((vs) => vs.map((v) => v.field === f ? { ...v, agg: e.target.value as PivotSpec["vals"][number]["agg"] } : v))}>
-                <option value="sum">Sum</option><option value="count">Count</option><option value="avg">Avg</option>
-                <option value="min">Min</option><option value="max">Max</option>
+            {(area === "rows" || area === "cols") && (
+              <select value={groups[f]?.kind ?? ""} title="Group"
+                onChange={(e) => {
+                  const k = e.target.value;
+                  setGroups((g) => {
+                    const n = { ...g };
+                    if (!k) delete n[f];
+                    else n[f] = k === "num" ? { kind: "num", size: 10 } : { kind: k as "month" | "quarter" | "year" };
+                    return n;
+                  });
+                }}>
+                <option value="">ungrouped</option>
+                <option value="month">by month</option><option value="quarter">by quarter</option>
+                <option value="year">by year</option><option value="num">by 10s</option>
               </select>
+            )}
+            {area === "vals" && (
+              <>
+                <select value={vals.find((v) => v.field === f)?.agg}
+                  onChange={(e) => setVals((vs) => vs.map((v) => v.field === f ? { ...v, agg: e.target.value as PivotSpec["vals"][number]["agg"] } : v))}>
+                  <option value="sum">Sum</option><option value="count">Count</option><option value="avg">Avg</option>
+                  <option value="min">Min</option><option value="max">Max</option>
+                </select>
+                <select value={vals.find((v) => v.field === f)?.showAs ?? "value"} title="Show as"
+                  onChange={(e) => setVals((vs) => vs.map((v) => v.field === f ? { ...v, showAs: e.target.value as NonNullable<typeof v.showAs> } : v))}>
+                  <option value="value">value</option><option value="%total">% total</option>
+                  <option value="%col">% col</option><option value="%row">% row</option>
+                  <option value="running">running</option><option value="diff">diff prev</option>
+                </select>
+              </>
             )}
             <button className="chip-x" title="Remove" onClick={() => unassign(f)}>×</button>
           </span>
@@ -2747,6 +2857,7 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
                   <button onClick={() => move(f, "rows")} title="Row field">R</button>
                   <button onClick={() => move(f, "cols")} title="Column field">C</button>
                   <button onClick={() => move(f, "vals")} title="Value field">Σ</button>
+                  <button onClick={() => move(f, "filters")} title="Report filter">F</button>
                 </span>
               ))}
             </div>
@@ -2756,11 +2867,64 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
           <Area title="Rows" items={rows} area="rows" />
           <Area title="Columns" items={cols} area="cols" />
           <Area title="Values" items={vals.map((v) => v.field)} area="vals" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Filters</div>
+            <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+              {filters.map((ft) => (
+                <span key={ft.field} className="pv-chip" onClick={() => setEditFilter(editFilter === ft.field ? null : ft.field)} style={{ cursor: "pointer" }}>
+                  {ft.field} ({ft.sel.length})
+                  <button className="chip-x" title="Remove" onClick={(e) => { e.stopPropagation(); unassign(ft.field); }}>×</button>
+                </span>
+              ))}
+              {!filters.length && <span style={{ fontSize: 11, color: "#B8B2AA", padding: 4 }}>drop fields here</span>}
+            </div>
+            {editFilter && (
+              <div style={{ marginTop: 4, border: "1px solid #D9D4CC", borderRadius: 6, padding: 4, maxHeight: 110, overflowY: "auto" }}>
+                {distinctVals(editFilter).map((v) => {
+                  const ft = filters.find((x) => x.field === editFilter)!;
+                  const on = ft.sel.includes(v);
+                  return (
+                    <label key={v} style={{ display: "flex", gap: 6, fontSize: 12, padding: "1px 4px" }}>
+                      <input type="checkbox" checked={on}
+                        onChange={() => setFilters((fs) => fs.map((x) => x.field === editFilter
+                          ? { ...x, sel: on ? x.sel.filter((s) => s !== v) : [...x.sel, v] } : x))} />
+                      {v === "" ? "(blank)" : v}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Calculated fields</div>
+          {calcFields.map((cf, i) => (
+            <span key={cf.name} className="pv-chip" style={{ marginRight: 4 }}>
+              {cf.name} = {cf.formula}
+              <button className="chip-x" onClick={() => setCalcFields((cs) => cs.filter((_, j) => j !== i))}>×</button>
+            </span>
+          ))}
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <input className="inp" style={{ width: 110 }} placeholder="Field name" value={calcName} onChange={(e) => setCalcName(e.target.value)} />
+            <input className="inp" style={{ flex: 1 }} placeholder="=Price*Qty (field names)" value={calcF} onChange={(e) => setCalcF(e.target.value)} />
+            <button className="btn-ghost btn-sm" disabled={!calcName.trim() || !calcF.trim() || fields.includes(calcName.trim())}
+              onClick={() => { setCalcFields((cs) => [...cs, { name: calcName.trim(), formula: calcF.trim() }]); setCalcName(""); setCalcF(""); }}>Add</button>
+          </div>
+        </div>
+        <label className="frow" style={{ marginTop: 10 }}>
+          <input type="checkbox" checked={refreshOpen} onChange={(e) => setRefreshOpen(e.target.checked)} />
+          Refresh when the sheet is opened
+        </label>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" disabled={!ok}
-            onClick={() => onApply({ src, at, rows, cols, vals })}>Create</button>
+            onClick={() => onApply({
+              src, at, rows, cols,
+              vals: [...vals, ...calcFields.map((c) => ({ field: c.name, agg: "sum" as const, formula: c.formula }))],
+              filters: filters.length ? filters : undefined,
+              groups: Object.keys(groups).length ? Object.entries(groups).map(([field, g]) => ({ field, ...g })) : undefined,
+              refreshOnOpen: refreshOpen || undefined,
+            })}>Create</button>
         </div>
       </div>
     </div>

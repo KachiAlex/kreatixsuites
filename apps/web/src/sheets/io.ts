@@ -7,7 +7,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
 };
 import type { CellData, SheetData, Workbook, Validation, Range } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols } from "./model";
-import { evaluateSheet, evaluateSheetIn, toR1C1, type EvalResult } from "./engine";
+import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -750,24 +750,72 @@ export function buildPivotCells(
     const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
     return Number.isFinite(n) ? (n as number) : null;
   };
-  // fields from header row
+  // fields from header row + calculated fields (S13.2)
   const fields: string[] = [];
   for (let c = range.c1; c <= range.c2; c++) fields.push(cellText(c, range.r1) || `Col ${c - range.c1 + 1}`);
+  const calcIdx = new Map<string, number>();
+  for (const cf of spec.calcFields ?? []) {
+    calcIdx.set(cf.name, fields.length);
+    fields.push(cf.name);
+  }
   const fieldIdx = (name: string) => fields.indexOf(name);
   const rowIdx = spec.rows.map(fieldIdx).filter((i) => i >= 0);
   const colIdx = spec.cols.map(fieldIdx).filter((i) => i >= 0);
   const valIdx = spec.vals.map((v) => ({ ...v, i: fieldIdx(v.field) })).filter((v) => v.i >= 0);
+  const filterIdx = (spec.filters ?? []).map((f) => ({ ...f, i: fieldIdx(f.field) })).filter((f) => f.i >= 0 && f.sel.length);
   if (!valIdx.length || (!rowIdx.length && !colIdx.length)) return null;
 
-  // gather data rows
+  // S13.2 calc-field evaluator — substitute field names with row literals
+  const ce = spec.calcFields?.length ? createSheetEvaluator(wb, host.name) : null;
+  const calcVal = (r: number, name: string): unknown => {
+    const cf = spec.calcFields!.find((x) => x.name === name)!;
+    let body = cf.formula;
+    for (let i = 0; i < fields.length - calcIdx.size; i++) {
+      const v = cellNum(range.c1 + i, r);
+      const lit = v !== null ? String(v) : `"${cellText(range.c1 + i, r).replace(/"/g, '""')}"`;
+      body = body.replace(new RegExp(`(?<![\\w])${fields[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`, "gi"), `(${lit})`);
+    }
+    const res = ce!.evalFormula(body);
+    return res.error ?? res.value;
+  };
+  const fieldVal = (i: number, r: number): unknown =>
+    calcIdx.size && i >= range.c2 - range.c1 + 1 ? calcVal(r, fields[i]) : cellText(range.c1 + i, r);
+
+  // S13.3 grouping — transform a key value into its bucket label
+  const groupOf = (i: number, r: number): string => {
+    const raw = fieldVal(i, r);
+    const g = spec.groups?.find((x) => fieldIdx(x.field) === i);
+    if (!g) return String(raw ?? "");
+    const n = Number(raw);
+    if (g.kind === "num") {
+      if (!Number.isFinite(n)) return String(raw ?? "");
+      const size = g.size ?? 10;
+      const lo = Math.floor(n / size) * size;
+      return `${lo}–${lo + size - 1}`;
+    }
+    // date kinds — serial → date parts
+    const d = Number.isFinite(n) && n > 1000 ? new Date((n - 25569) * 86400000) : new Date(String(raw));
+    if (isNaN(d.getTime())) return String(raw ?? "");
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    if (g.kind === "year") return String(d.getUTCFullYear());
+    if (g.kind === "quarter") return `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`;
+    return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  };
+
+  // gather data rows — S13.1 report filters applied here
   type Group = Map<string, { key: string[]; vals: number[][] }>;
   const rowGroups: Group = new Map();   // rowTuple -> per-val-field numbers
   const colGroups: Group = new Map();
   const cellGroups = new Map<string, Map<string, number[][]>>(); // rowKey -> colKey -> numbers
   for (let r = range.r1 + 1; r <= range.r2; r++) {
-    const rk = rowIdx.map((i) => cellText(range.c1 + i, r));
-    const ck = colIdx.map((i) => cellText(range.c1 + i, r));
-    const nums = valIdx.map((v) => cellNum(range.c1 + v.i, r)).map((n) => (n == null ? [] : [n]));
+    if (filterIdx.some((f) => !f.sel.includes(String(fieldVal(f.i, r) ?? "")))) continue;
+    const rk = rowIdx.map((i) => groupOf(i, r));
+    const ck = colIdx.map((i) => groupOf(i, r));
+    const nums = valIdx.map((v) => {
+      const cv = calcIdx.has(v.field) ? calcVal(r, v.field) : cellNum(range.c1 + v.i, r);
+      const n = typeof cv === "number" ? cv : Number(cv);
+      return Number.isFinite(n) ? [n] : [];
+    });
     const rKey = rk.join("\x01");
     const cKey = ck.join("\x01");
     if (!rowGroups.has(rKey)) rowGroups.set(rKey, { key: rk, vals: valIdx.map(() => []) });
@@ -802,6 +850,35 @@ export function buildPivotCells(
   dataCols.forEach((d, i) => put(0, nRowHdr + i, { v: d.label, s: H }));
   put(0, nRowHdr + dataCols.length, { v: "Grand Total", s: H });
 
+  // ---- S13.2 show-values-as context ----
+  const grand = valIdx.map((_, vi) =>
+    aggregate([...rowGroups.values()].flatMap((g) => g.vals[vi]), valIdx[vi].agg));
+  const rowTot = new Map(rowKeys.map((rk) => [rk.key.join("\x01"),
+    valIdx.map((_, vi) => aggregate(rk.vals[vi], valIdx[vi].agg))]));
+  const colTot = new Map(colKeys.map((ck) => [ck.key.join("\x01"),
+    valIdx.map((_, vi) => aggregate(ck.vals[vi], valIdx[vi].agg))]));
+  const running = new Map<string, number>(); // `${vi}${rowKey}` accumulator
+  const shown = (raw: number, vi: number, rowKey: string, ck: string | null): unknown => {
+    const sa = valIdx[vi].showAs;
+    if (!sa || sa === "value") return raw;
+    if (sa === "%total") return typeof grand[vi] === "number" && grand[vi] ? raw / (grand[vi] as number) * 100 : "";
+    if (sa === "%row") { const t = rowTot.get(rowKey)?.[vi]; return typeof t === "number" && t ? raw / t * 100 : ""; }
+    if (sa === "%col") { const t = ck !== null ? colTot.get(ck)?.[vi] : undefined; return typeof t === "number" && t ? raw / t * 100 : ""; }
+    if (sa === "running") {
+      const k = `${vi}\x01${ck ?? ""}`;
+      const acc = (running.get(k) ?? 0) + raw;
+      running.set(k, acc);
+      return acc;
+    }
+    if (sa === "diff") {
+      const base = valIdx[vi].base;
+      const bg = rowGroups.get(base ?? "")?.vals[vi];
+      const bv = bg ? aggregate(bg, valIdx[vi].agg) : 0;
+      return typeof bv === "number" ? raw - bv : raw;
+    }
+    return raw;
+  };
+
   // data rows
   rowKeys.forEach((rk, ri) => {
     rk.key.forEach((part, i) => {
@@ -812,7 +889,8 @@ export function buildPivotCells(
     const rowKey = rk.key.join("\x01");
     dataCols.forEach((d, i) => {
       const grp = d.ck == null ? rowGroups.get(rowKey)!.vals[d.vi] : cellGroups.get(rowKey)?.get(d.ck)?.[d.vi] ?? [];
-      put(1 + ri, nRowHdr + i, { v: grp.length ? aggregate(grp, valIdx[d.vi].agg) : "" });
+      const raw = grp.length ? aggregate(grp, valIdx[d.vi].agg) : "";
+      put(1 + ri, nRowHdr + i, { v: typeof raw === "number" ? shown(raw, d.vi, rowKey, d.ck) as CellData["v"] : raw });
     });
     // row grand total = first val field aggregated over the whole row group
     put(1 + ri, nRowHdr + dataCols.length,
@@ -832,6 +910,77 @@ export function buildPivotCells(
   put(gtRow, nRowHdr + dataCols.length, { v: aggregate(all, valIdx[0].agg), s: TOT });
 
   return { cells: out, rows: gtRow + 1, cols: nRowHdr + dataCols.length + 1 };
+}
+
+/**
+ * S13.1 drill-down — extract the source rows behind a pivot row group.
+ * `rowKey` is the clicked row's full key parts (as rendered, i.e. post-grouping
+ * labels). Returns a flat header+rows cell map for a drill sheet, or null.
+ */
+export function pivotDrillRows(
+  wb: Workbook,
+  host: SheetData,
+  spec: PivotSpec,
+  rowKey: string[],
+): Record<string, CellData> | null {
+  let src = spec.src;
+  let srcSheet = host;
+  const bang = src.indexOf("!");
+  if (bang >= 0) {
+    const name = src.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
+    srcSheet = wb.sheets.find((s) => s.name === name) ?? host;
+    src = src.slice(bang + 1);
+  }
+  const range = parseRange(src);
+  if (!range) return null;
+  const evals = evalsFor(srcSheet, wb);
+  const text = (c: number, r: number): string => {
+    const ref = toA1(c, r);
+    const cell = srcSheet.cells[ref];
+    return cell?.f ? displayValue(evals.get(ref), cell) : cell?.v == null ? "" : String(cell.v);
+  };
+  const fields: string[] = [];
+  for (let c = range.c1; c <= range.c2; c++) fields.push(text(c, range.r1) || `Col ${c - range.c1 + 1}`);
+  const fieldIdx = (name: string) => fields.indexOf(name);
+  const rowIdx = spec.rows.map(fieldIdx).filter((i) => i >= 0);
+  const filterIdx = (spec.filters ?? []).map((f) => ({ ...f, i: fieldIdx(f.field) })).filter((f) => f.i >= 0 && f.sel.length);
+  const groupOf = (i: number, r: number): string => {
+    const raw = text(range.c1 + i, r);
+    const g = spec.groups?.find((x) => fieldIdx(x.field) === i);
+    if (!g) return raw;
+    const n = Number(raw);
+    if (g.kind === "num") {
+      if (!Number.isFinite(n)) return raw;
+      const size = g.size ?? 10;
+      const lo = Math.floor(n / size) * size;
+      return `${lo}–${lo + size - 1}`;
+    }
+    const d = Number.isFinite(n) && n > 1000 ? new Date((n - 25569) * 86400000) : new Date(raw);
+    if (isNaN(d.getTime())) return raw;
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    if (g.kind === "year") return String(d.getUTCFullYear());
+    if (g.kind === "quarter") return `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`;
+    return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  };
+  const H: CellData["s"] = { b: true, bg: "#E8E4DE" };
+  const out: Record<string, CellData> = {};
+  fields.forEach((f, c) => { out[toA1(c, 0)] = { v: f, s: H }; });
+  let dr = 1;
+  for (let r = range.r1 + 1; r <= range.r2; r++) {
+    if (filterIdx.some((f) => !f.sel.includes(text(range.c1 + f.i, r)))) continue;
+    const rk = rowIdx.map((i) => groupOf(i, r));
+    if (rk.join("\x01") !== rowKey.join("\x01")) continue;
+    for (let c = 0; c < fields.length; c++) {
+      const cell = srcSheet.cells[toA1(range.c1 + c, r)];
+      const v = cell?.f ? evals.get(toA1(range.c1 + c, r))?.value : cell?.v;
+      out[toA1(c, dr)] = {
+        v: Array.isArray(v) ? String(v[0]?.[0] ?? "") : (v as CellData["v"]) ?? "",
+        s: cell?.s?.fmt ? { fmt: cell.s.fmt } : undefined,
+      };
+    }
+    dr++;
+  }
+  return out;
 }
 
 // ---------- Goal Seek (S10.2) ----------
