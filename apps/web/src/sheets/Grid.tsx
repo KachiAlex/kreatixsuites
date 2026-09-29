@@ -4,6 +4,7 @@ import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange 
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
 import { rangeToTSV } from "./io";
+import { FxInput } from "./FxInput";
 
 const HEADER_H = 26;
 const OVERSCAN_ROWS = 6;
@@ -14,6 +15,7 @@ interface GridProps {
   evals: Map<string, EvalResult>;
   canEdit: boolean;
   wb?: Workbook;
+  audit?: { refs: Set<string>; kind: "pre" | "dep" };
   selection: Range;
   setSelection: (r: Range) => void;
   onCommit: (ref: string, raw: string) => void;
@@ -24,7 +26,7 @@ interface GridProps {
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, selection, setSelection, onCommit, onClear, onPaste, onFillHandle }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selection, setSelection, onCommit, onClear, onPaste, onFillHandle }: GridProps) {
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState({ r0: 0, r1: 80, c0: 0, c1: 26 });
@@ -271,7 +273,7 @@ export function Grid({ sheet, evals, canEdit, wb, selection, setSelection, onCom
       <td key={c} data-c={c} data-r={r}
         colSpan={head ? head.c2 - head.c1 + 1 : 1}
         rowSpan={head ? head.r2 - head.r1 + 1 : 1}
-        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""}`}
+        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""}`}
         style={{
           ...sticky, zIndex: z,
           fontWeight: s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
@@ -378,12 +380,13 @@ export function Grid({ sheet, evals, canEdit, wb, selection, setSelection, onCom
             }} />}
         </div>
 
-        {/* cell editor */}
+        {/* cell editor — formula-aware (autocomplete, hints, F4) */}
         {editing && (
-          <input ref={inputRef} className="cell-editor"
-            style={{ left: HEADER_W + colX[editing.ref.col], top: HEADER_H + editing.ref.row * ROW_H, width: colW(editing.ref.col) + 60 }}
+          <FxInput wb={wb} inputRef={inputRef} className="cell-editor"
+            wrapStyle={{ position: "absolute", left: HEADER_W + colX[editing.ref.col], top: HEADER_H + editing.ref.row * ROW_H, width: colW(editing.ref.col) + 60, zIndex: 40 }}
+            inputStyle={{ position: "relative" }}
             value={editing.value}
-            onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+            onValue={(v) => setEditing({ ...editing, value: v })}
             onBlur={() => commitEdit()}
             onKeyDown={(e) => {
               if (e.key === "Enter") { e.preventDefault(); commitEdit({ dc: 0, dr: 1 }); }

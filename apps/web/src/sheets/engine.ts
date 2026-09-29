@@ -108,7 +108,16 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
   // split on "..." literals; rewrite only the plain segments
   const out = withOffset.split(/("[^"]*")/).map((seg, i) => {
     if (i % 2 === 1) return seg;
-    let s = seg.replace(
+    let s = seg;
+    // named ranges first — the substituted ref may itself be sheet-qualified
+    // and must be caught by the KXREF rewrite below
+    if (names) {
+      for (const [nm, ref] of Object.entries(names)) {
+        const re = new RegExp(`(?<![A-Za-z0-9_.$!"'])${nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_.$(!])`, "g");
+        s = s.replace(re, `(${ref})`);
+      }
+    }
+    s = s.replace(
       /(?:'([^']+)'|([A-Za-z_][\w.]*))!\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?/g,
       (_m, qs: string | undefined, ps: string | undefined, c1: string, r1: string, c2?: string, r2?: string) => {
         const sheet = (qs ?? ps)!;
@@ -117,12 +126,12 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
                   : `KXREF("${sheet.replace(/"/g, '""')}","${ref}")`;
       },
     );
-    if (names) {
-      for (const [nm, ref] of Object.entries(names)) {
-        const re = new RegExp(`(?<![A-Za-z0-9_.$!"'])${nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_.$(!])`, "g");
-        s = s.replace(re, `(${ref})`);
-      }
-    }
+    // intersection operator: `A1:B2 B2:C3` → KXINT (Excel's space operator;
+    // empty overlap → #NULL!)
+    s = s.replace(
+      /(?<![\w$.!:'"])([\$]?[A-Za-z]{1,3}[\$]?\d+(?::[\$]?[A-Za-z]{1,3}[\$]?\d+)?)( +)([\$]?[A-Za-z]{1,3}[\$]?\d+(?::[\$]?[A-Za-z]{1,3}[\$]?\d+)?)(?![\w$:(])/g,
+      (_m, a: string, _ws: string, b: string) => `KXINT("${a}","${b}")`,
+    );
     return s;
   }).join("");
   return out;
@@ -133,6 +142,57 @@ export function* sheetRefsOf(f: string): Generator<{ sheet: string; ref: string;
   for (const m of f.matchAll(/(?:'([^']+)'|([A-Za-z_][\w.]*))!\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?/g)) {
     yield { sheet: m[1] ?? m[2], ref: m[0].split("!")[1], span: [m.index!, m.index! + m[0].length] };
   }
+}
+
+// ---------- formula-editor helpers (autocomplete + F4) ----------
+
+/** All refs a formula reads — `{sheet:null}` = same-sheet. For auditing. */
+export function refsInFormula(f: string): { sheet: string | null; range: { c1: number; r1: number; c2: number; r2: number } }[] {
+  const out: { sheet: string | null; range: { c1: number; r1: number; c2: number; r2: number } }[] = [];
+  // strip string literals first
+  const noStr = f.replace(/"(?:[^"]|"")*"/g, " ");
+  const tmp = noStr.replace(
+    /(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)/g,
+    (_m, qs: string | undefined, ps: string | undefined, ref: string) => {
+      const r = parseRange(ref.replace(/\$/g, ""));
+      if (r) out.push({ sheet: qs ?? ps ?? null, range: r });
+      return " ";
+    },
+  );
+  for (const m of tmp.matchAll(/(?<![A-Za-z0-9_$!.])(\$?[A-Za-z]{1,3}\$?\d+)(?::(\$?[A-Za-z]{1,3}\$?\d+))?(?![\w$:(])/g)) {
+    const r = parseRange(`${m[1]}:${m[2] ?? m[1]}`.replace(/\$/g, ""));
+    if (r) out.push({ sheet: null, range: r });
+  }
+  return out;
+}
+
+/** Identifier-ish token immediately left of the caret (for autocomplete). */
+export function tokenAtCaret(v: string, caret: number): { start: number; text: string } | null {
+  const m = v.slice(0, caret).match(/[A-Za-z_][\w.]*$/);
+  return m ? { start: caret - m[0].length, text: m[0] } : null;
+}
+
+/** F4 — cycle the ref under/just-left-of the caret through
+ *  A1 → $A$1 → A$1 → $A1 → A1. Only fires when the caret is inside or
+ *  immediately after a ref token. */
+export function cycleAnchors(v: string, caret: number): { text: string; caret: number } | null {
+  const re = /(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g;
+  for (const m of v.matchAll(re)) {
+    const s = m.index!, e = s + m[0].length;
+    if (caret < s || caret > e) continue;
+    // don't touch fn names, qualified sheet names, or mid-word hits
+    if (s > 0 && /[A-Za-z0-9_.$]/.test(v[s - 1])) continue;
+    if (v[e] === "(") continue;
+    const [, dc, cl, dr, rn] = m;
+    const colAbs = !!dc, rowAbs = !!dr;
+    const [nc, nr]: [boolean, boolean] =
+      !colAbs && !rowAbs ? [true, true] :
+      colAbs && rowAbs ? [false, true] :
+      !colAbs && rowAbs ? [true, false] : [false, false];
+    const rep = `${nc ? "$" : ""}${cl}${nr ? "$" : ""}${rn}`;
+    return { text: v.slice(0, s) + rep + v.slice(e), caret: s + rep.length };
+  }
+  return null;
 }
 
 // ---------- extra functions (the Excel set hot-formula-parser lacks) ----------
@@ -379,8 +439,11 @@ export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResu
       done(matrix);
     });
     // KX sentinel fns produced by the sheet-ref rewrite
+    const hasSheet = (n: string) => wb.sheets.some((s) => s.name.toLowerCase() === n.toLowerCase());
     parser.setFunction("KXREF", (p) => {
-      const r = evalIn(String(p[0]), String(p[1]).toUpperCase(), depth + 1);
+      const sn = String(p[0]);
+      if (!hasSheet(sn)) return "#REF!";
+      const r = evalIn(sn, String(p[1]).replace(/\$/g, "").toUpperCase(), depth + 1);
       return r.error ?? r.value;
     });
     // lazy error catchers — arg was stashed as base64 text by the rewriter.
@@ -415,7 +478,26 @@ export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResu
       }
       return m.length === 1 && m[0].length === 1 ? m[0][0] : m;
     });
+    // intersection operator — KXINT("A1:B2","B2:C3") → overlap or #NULL!
+    parser.setFunction("KXINT", (p) => {
+      const ra = parseRange(String(p[0]).replace(/\$/g, ""));
+      const rb = parseRange(String(p[1]).replace(/\$/g, ""));
+      if (!ra || !rb) return "#NULL!";
+      const c1 = Math.max(ra.c1, rb.c1), r1 = Math.max(ra.r1, rb.r1);
+      const c2 = Math.min(ra.c2, rb.c2), r2 = Math.min(ra.r2, rb.r2);
+      if (c2 < c1 || r2 < r1) return "#NULL!";
+      const m: unknown[][] = [];
+      for (let row = r1; row <= r2; row++) {
+        m.push([]);
+        for (let c = c1; c <= c2; c++) {
+          const res = evalIn(ctx.sheet, toA1(c, row), depth + 1);
+          m[m.length - 1].push(res.error ?? res.value ?? null);
+        }
+      }
+      return m.length === 1 && m[0].length === 1 ? m[0][0] : m;
+    });
     parser.setFunction("KXRANGE", (p) => {
+      if (!hasSheet(String(p[0]))) return "#REF!";
       const r = parseRange(`${p[1]}:${p[2]}`);
       if (!r) return "#REF!";
       const m: unknown[][] = [];

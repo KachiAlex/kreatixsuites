@@ -105,6 +105,28 @@ export function* rangeRefs(r: Range): Generator<string> {
     for (let col = r.c1; col <= r.c2; col++) yield toA1(col, row);
 }
 
+// ---------- named ranges ----------
+
+/** Excel rules: letter/_/\ start, then letters/digits/._; must not look
+ *  like a cell ref (A1, R1C1) or be a bare R/C. */
+export function validRangeName(name: string): string | null {
+  if (!/^[A-Za-z_\\][A-Za-z0-9_.\\]*$/.test(name)) return "Names must start with a letter or _ and contain only letters, digits, _ .";
+  if (/^[A-Za-z]{1,3}\d{1,7}$/.test(name) || /^[RrCc]$/.test(name) || /^[Rr]\d+[Cc]\d+$/.test(name))
+    return "That name looks like a cell reference";
+  if (name.length > 255) return "Name too long";
+  return null;
+}
+
+/** Validate a refers-to string like `Sheet1!$B$2` or `A1:C3`. */
+export function validNameRef(ref: string, wb: Workbook): string | null {
+  const m = ref.trim().match(/^(?:(?:'([^']+)'|([A-Za-z_][\w.]*))!)?(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$/);
+  if (!m) return "Enter a range like Sheet1!A1:B2";
+  const sheet = m[1] ?? m[2];
+  if (sheet && !wb.sheets.some((s) => s.name.toLowerCase() === sheet.toLowerCase()))
+    return `No sheet named ${sheet}`;
+  return null;
+}
+
 /** Interpret typed input: numbers, booleans, percent, formula, else text */
 export function parseInput(raw: string): CellData {
   const t = raw.trim();

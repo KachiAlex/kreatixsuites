@@ -451,6 +451,22 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .formula-bar .fx-input:focus{outline:none}
 .formula-bar .fx-val{font-size:11px;color:#1F9D66;font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+/* formula autocomplete + hints (FxInput) */
+.fx-wrap{display:inline-flex;position:relative}
+.fx-pop{position:absolute;top:100%;left:0;z-index:60;min-width:220px;max-width:420px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(23,18,15,.18);padding:4px;font-family:inherit}
+.fx-sug{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px;font-size:12px;cursor:pointer;color:#26221F;white-space:nowrap;overflow:hidden}
+.fx-sug.hi{background:#F1EDE9}
+.fx-sug .fx-sig{margin-left:auto;font-size:10px;color:#A19A95;overflow:hidden;text-overflow:ellipsis}
+.fx-kind{width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-style:italic;font-weight:700;flex:none}
+.fx-kind.fn{background:#DCE9FF;color:#3578E5}
+.fx-kind.name{background:#FFF3C4;color:#8a6d00}
+.fx-kind.sheet{background:#D4F5E2;color:#1F9D66}
+.fx-hint{padding:6px 8px;border-top:1px solid var(--line);font-size:11px;color:#6E6862;font-family:ui-monospace,monospace}
+
+/* formula auditing overlays */
+.cell.audit-pre{box-shadow:inset 0 0 0 2px #3578E5;background:#EFF5FF !important}
+.cell.audit-dep{box-shadow:inset 0 0 0 2px #F2782E;background:#FFF5EE !important}
+
 .sheet-tabs{display:flex;align-items:center;gap:4px;padding:6px 12px;background:#F4F1ED;border-top:1px solid var(--line);overflow-x:auto}
 .sheet-tab{display:flex;align-items:center;gap:4px;padding:6px 14px;border-radius:10px 10px 0 0;font-size:12px;font-weight:600;color:#6E6862;cursor:pointer;background:#EDE8E2;border:1px solid transparent;white-space:nowrap}
 .sheet-tab.active{background:#fff;color:#171717;border-color:var(--line);border-bottom-color:#fff;position:relative}

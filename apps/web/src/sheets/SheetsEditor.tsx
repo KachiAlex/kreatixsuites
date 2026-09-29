@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
@@ -11,12 +11,13 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs } from "./model";
-import { evaluateSheetIn } from "./engine";
+import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef } from "./model";
+import { evaluateSheetIn, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1 } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
+import { FxInput } from "./FxInput";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -38,6 +39,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [newComment, setNewComment] = useState(false);
   const [cfOpen, setCfOpen] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
+  const [nameMgr, setNameMgr] = useState(false);
+  const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const csvRef = useRef<HTMLInputElement>(null);
   const xlsxRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
@@ -92,6 +95,36 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const anchorCell = sheet.cells[anchorRef];
   const anchorRes = evals.get(anchorRef);
   const anchorStyle = anchorCell?.s ?? {};
+
+  // formula bar — controlled value; fxAnchor pins the cell being edited so a
+  // blur caused by selecting another cell still commits to the right target
+  const [fxValue, setFxValue] = useState("");
+  const fxAnchor = useRef(anchorRef);
+  useEffect(() => { fxAnchor.current = anchorRef; setFxValue(cellEditText(anchorCell)); }, [anchorRef, anchorCell]);
+
+  // formula auditing — precedents of the anchor cell / dependents of it
+  const auditRefs = useMemo(() => {
+    if (!audit) return null;
+    const set = new Set<string>();
+    if (audit === "pre") {
+      const f = sheet.cells[anchorRef]?.f;
+      if (f) for (const r of refsInFormula(f)) {
+        if (!r.sheet || r.sheet.toLowerCase() === sheet.name.toLowerCase())
+          for (const ref of rangeRefs(r.range)) set.add(ref);
+      }
+    } else {
+      const ar = parseA1(anchorRef);
+      if (ar) for (const s2 of wb.sheets) for (const [ref, c] of Object.entries(s2.cells)) {
+        if (!c.f) continue;
+        for (const rr of refsInFormula(c.f)) {
+          const on = (rr.sheet ?? s2.name).toLowerCase() === sheet.name.toLowerCase();
+          if (on && ar.col >= rr.range.c1 && ar.col <= rr.range.c2 && ar.row >= rr.range.r1 && ar.row <= rr.range.r2)
+            if (s2.name === sheet.name) set.add(ref);
+        }
+      }
+    }
+    return set;
+  }, [audit, anchorRef, sheet, wb]);
 
   // ---- mutation helpers ----
   const mutate = useCallback((fn: (wb: Workbook) => void, save = true) => {
@@ -510,6 +543,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
           <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
           <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
+          <button className="rb" title="Name Manager — define named ranges" onClick={() => setNameMgr(true)}>📛</button>
+          <button className={`rb ${audit === "pre" ? "on" : ""}`} title="Trace precedents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+            onClick={() => setAudit(audit === "pre" ? null : "pre")}>⇠Pre</button>
+          <button className={`rb ${audit === "dep" ? "on" : ""}`} title="Trace dependents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+            onClick={() => setAudit(audit === "dep" ? null : "dep")}>Dep⇢</button>
           <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
@@ -525,20 +563,22 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       <div className="formula-bar">
         <div className="name-box">{anchorRef}{selection.c2 - selection.c1 || selection.r2 - selection.r1 ? ` : ${rangeToA1(selection)}` : ""}</div>
         <span className="fx">fx</span>
-        <input className="fx-input" disabled={!canEdit}
-          key={anchorRef + (anchorCell ? "1" : "0")}
-          defaultValue={cellEditText(anchorCell)}
+        <FxInput wb={wb} className="fx-input" wrapStyle={{ flex: 1 }}
+          disabled={!canEdit}
+          value={fxValue}
+          onValue={setFxValue}
           placeholder={canEdit ? "Value or =formula" : ""}
           onKeyDown={(e) => {
-            if (e.key === "Enter") { commitCell(anchorRef, (e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); }
+            if (e.key === "Enter") { commitCell(fxAnchor.current, fxValue); (e.target as HTMLInputElement).blur(); }
             else if (e.key === "Escape") (e.target as HTMLInputElement).blur();
           }}
-          onBlur={(e) => e.target.value !== cellEditText(anchorCell) && commitCell(anchorRef, e.target.value)} />
+          onBlur={() => fxValue !== cellEditText(anchorCell) && commitCell(fxAnchor.current, fxValue)} />
         <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt)}` : ""}</span>
       </div>
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
         <Grid sheet={sheet} evals={evals} canEdit={canEdit} wb={wb}
+          audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
           selection={selection} setSelection={setSelection}
           onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle} />
         {(sheet.charts ?? []).map((c) => (
@@ -577,6 +617,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
       {/* conditional format dialog */}
       {cfOpen && <CfDialog selection={rangeToA1(selection)} onAdd={addCF} onClose={() => setCfOpen(false)} />}
+      {nameMgr && (
+        <NameManager wb={wb} sheetName={sheet.name} selection={rangeToA1(selection)}
+          onMutate={mutate} onClose={() => setNameMgr(false)} toast={toast} />
+      )}
       {chartOpen && (
         <div className="dlg-back" onClick={() => setChartOpen(false)}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
@@ -649,6 +693,90 @@ function CfDialog({ selection, onAdd, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" onClick={() => onAdd(op, Number(value) || 0, bg)}>Apply</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Name Manager ----------
+
+function NameManager({ wb, sheetName, selection, onMutate, onClose, toast }: {
+  wb: Workbook;
+  sheetName: string;
+  selection: string;
+  onMutate: (fn: (w: Workbook) => void) => void;
+  onClose: () => void;
+  toast: (m: string) => void;
+}) {
+  const names = wb.names ?? {};
+  const qSheet = /[\s]/.test(sheetName) || /^\d/.test(sheetName) ? `'${sheetName}'` : sheetName;
+  const [newName, setNewName] = useState("");
+  const [newRef, setNewRef] = useState(`${qSheet}!${selection}`);
+  const [editKey, setEditKey] = useState<string | null>(null);
+  const [editRef, setEditRef] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const addName = () => {
+    const nm = newName.trim();
+    const bad = validRangeName(nm) ?? validNameRef(newRef, wb);
+    if (bad) return setErr(bad);
+    if (Object.keys(names).some((k) => k.toLowerCase() === nm.toLowerCase()))
+      return setErr(`"${nm}" is already defined`);
+    onMutate((w) => { w.names = { ...w.names, [nm]: newRef.trim() }; });
+    setNewName(""); setErr(null);
+    toast(`Defined ${nm}`);
+  };
+
+  const saveEdit = (key: string) => {
+    const bad = validNameRef(editRef, wb);
+    if (bad) return setErr(bad);
+    onMutate((w) => { w.names = { ...w.names, [key]: editRef.trim() }; });
+    setEditKey(null); setErr(null);
+  };
+
+  const row: CSSProperties = { display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--line)" };
+  const inp: CSSProperties = { height: 28, border: "1px solid var(--line)", borderRadius: 7, padding: "0 8px", fontSize: 12, fontFamily: "inherit" };
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Name Manager</h3>
+        <div style={{ maxHeight: 240, overflowY: "auto", marginTop: 8 }}>
+          {Object.entries(names).length === 0 && (
+            <p style={{ fontSize: 12, color: "#8B8480" }}>No named ranges yet. Names work in any formula — e.g. <code>=SUM(Sales)</code>.</p>
+          )}
+          {Object.entries(names).map(([nm, ref]) => (
+            <div key={nm} style={row}>
+              <b style={{ width: 110, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>{nm}</b>
+              {editKey === nm ? (
+                <>
+                  <input style={{ ...inp, flex: 1 }} value={editRef} autoFocus
+                    onChange={(e) => setEditRef(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveEdit(nm); if (e.key === "Escape") setEditKey(null); }} />
+                  <button className="btn-primary btn-sm" onClick={() => saveEdit(nm)}>Save</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ flex: 1, fontSize: 12, fontFamily: "monospace", color: "#6E6862" }}>{ref}</span>
+                  <button className="btn-ghost btn-sm" onClick={() => { setEditKey(nm); setEditRef(ref); setErr(null); }}>Edit</button>
+                  <button className="btn-ghost btn-sm" onClick={() => onMutate((w) => { const n = { ...w.names }; delete n[nm]; w.names = n; })}>✕</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{ ...row, borderBottom: "none", marginTop: 8 }}>
+          <input style={{ ...inp, width: 110 }} placeholder="Name" value={newName}
+            onChange={(e) => setNewName(e.target.value)} />
+          <input style={{ ...inp, flex: 1 }} placeholder="Refers to" value={newRef}
+            onChange={(e) => setNewRef(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addName()} />
+          <button className="btn-primary btn-sm" onClick={addName}>Add</button>
+        </div>
+        {err && <p style={{ fontSize: 12, color: "#D84B57", marginTop: 4 }}>{err}</p>}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

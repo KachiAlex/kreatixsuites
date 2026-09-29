@@ -1,6 +1,6 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
-import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue } from "./src/sheets/engine";
+import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula } from "./src/sheets/engine";
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs } from "./src/sheets/model";
 import type { Workbook } from "./src/sheets/model";
 import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook } from "./src/sheets/io";
@@ -44,7 +44,7 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("cross-sheet range SUM", val(wb, "Sheet1", "A3")?.value === 26);
   check("absolute anchors $A$1", val(wb, "Sheet1", "A4")?.value === 15);
   check("two cross-sheet refs", val(wb, "Sheet1", "A5")?.value === 12);
-  check("missing sheet → error", !!val(wb, "Sheet1", "A6")?.error || val(wb, "Sheet1", "A6")?.value === null);
+  check("missing sheet → #REF!", val(wb, "Sheet1", "A6")?.value === "#REF!");
   check("quoted range SUM", val(wb, "Sheet1", "A7")?.value === 6);
   check("same-sheet ref still works", val(wb, "Sheet1", "A8")?.value === 42);
   check("INDIRECT cross-sheet scalar", val(wb, "Sheet1", "B1")?.value === 5);
@@ -255,6 +255,88 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("TEXTJOIN skips empty", val(wb, "S", "A5")?.value === "a-b");
   const seq = val(wb, "S", "A6")?.value;
   check("SEQUENCE returns array", Array.isArray(seq) || seq === 1);
+}
+
+// ---------- named ranges (S1.2) ----------
+{
+  const wb: Workbook = {
+    sheets: [
+      { name: "Sheet1", cells: {
+        A1: { v: 100 }, B1: { v: 0.2 },
+        C1: { f: "A1*TaxRate" },
+        C2: { f: "SUM(MyData)" },
+        C3: { f: "SUM(Local)" },
+        C4: { f: "TaxRate*2" },
+      } },
+      { name: "Sheet2", cells: { A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 } } },
+    ],
+    names: {
+      TaxRate: "Sheet1!$B$1",
+      MyData: "Sheet2!$A$1:$A$3",
+      Local: "A1",          // same-sheet name (no qualifier)
+    },
+  };
+  check("named scalar (qualified)", val(wb, "Sheet1", "C1")?.value === 20);
+  check("named range SUM", val(wb, "Sheet1", "C2")?.value === 6);
+  check("same-sheet name", val(wb, "Sheet1", "C3")?.value === 100);
+  check("name mid-expression", val(wb, "Sheet1", "C4")?.value === 0.4);
+}
+
+// ---------- error set (S1.3) + intersection ----------
+{
+  const wb: Workbook = {
+    sheets: [{ name: "S", cells: {
+      A1: { v: 1 }, A2: { v: 2 }, A3: { v: 3 },
+      B1: { v: 10 }, B2: { v: 20 }, B3: { v: 30 },
+      C1: { f: "A1:B2 B2" },           // overlap single cell → 20
+      C2: { f: "SUM(A1:B3 A2:C2)" },   // overlap A2:B2 → 12
+      C3: { f: "A1:B2 C3:D3" },        // disjoint → #NULL!
+      C4: { f: "NA()" },               // #N/A
+      C5: { f: "SQRT(-1)" },           // #NUM!
+      C6: { f: "1/0" },                // #DIV/0!
+      C7: { f: "NOSUCHFN(1)" },        // #NAME?
+      C8: { f: "\"a\"+1" },            // #VALUE!
+      C9: { f: "#REF!" },              // literal
+      C10: { f: "IFERROR(A1:B2 C3:D3,\"no\")" }, // lazy catch of #NULL!
+    } }],
+  };
+  const show = (r: string) => { const res = val(wb, "S", r); return res?.error ?? res?.value; };
+  check("intersection single cell", show("C1") === 20);
+  check("intersection range SUM", show("C2") === 22);
+  check("disjoint intersection → #NULL!", show("C3") === "#NULL!");
+  check("NA() → #N/A", show("C4") === "#N/A");
+  check("SQRT(-1) → #NUM!", show("C5") === "#NUM!");
+  check("1/0 → #DIV/0!", show("C6") === "#DIV/0!");
+  check("unknown fn → #NAME?", show("C7") === "#NAME?");
+  check("type error → #VALUE!", show("C8") === "#VALUE!");
+  check("#REF! literal", show("C9") === "#REF!");
+  check("IFERROR catches #NULL!", show("C10") === "no");
+}
+
+// ---------- F4 anchor cycling + autocomplete token (S1.6/1.7) ----------
+{
+  const cyc = (v: string, caret: number) => cycleAnchors(v, caret)?.text ?? v;
+  // "=A1" caret at 3 (after A1)
+  let f = "=A1";
+  f = cyc(f, 3); check("F4 → $A$1", f === "=$A$1");
+  f = cyc(f, 5); check("F4 → A$1", f === "=A$1");
+  f = cyc(f, 4); check("F4 → $A1", f === "=$A1");
+  f = cyc(f, 4); check("F4 → A1 again", f === "=A1");
+  check("F4 on qualified ref", cyc("=Sheet2!A1+1", 10) === "=Sheet2!$A$1+1");
+  check("F4 inside fn", cyc("=SUM(A1:B2)", 7) === "=SUM($A$1:B2)");
+  check("F4 no ref → null", cycleAnchors("=SUM()", 6) === null);
+  check("token at caret", tokenAtCaret("=VLO", 4)?.text === "VLO");
+  check("token none", tokenAtCaret("=", 1) === null);
+}
+
+// ---------- formula auditing (S1.8) ----------
+{
+  const refs = refsInFormula("SUM(A1:B3,Sheet2!C1)+'My Sheet'!D5:E6*2");
+  check("audit finds same-sheet range", refs.some((r) => r.sheet === null && r.range.c1 === 0 && r.range.r2 === 2));
+  check("audit finds qualified scalar", refs.some((r) => r.sheet === "Sheet2" && r.range.c1 === 2 && r.range.r1 === 0));
+  check("audit finds quoted range", refs.some((r) => r.sheet === "My Sheet" && r.range.c2 === 4));
+  check("audit skips strings", refsInFormula('"A1"+1').length === 0);
+  check("audit skips fn names", !refsInFormula("SUM(A1)").some((r) => r.range.r1 === -1));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
