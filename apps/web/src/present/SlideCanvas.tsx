@@ -619,6 +619,23 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
       );
       break;
     }
+    case "media": {
+      // P6.4 — audio/video embed. Interactive when presented or selected.
+      const interactive = selected || !onPointerDown;
+      content = o.mediaKind === "audio" ? (
+        <div className="s-media s-media-audio">
+          <div className="s-media-icon">♪</div>
+          <audio src={o.mediaSrc} controls={interactive}
+            style={{ pointerEvents: interactive ? "auto" : "none", width: "100%" }}
+            onPointerDown={onPointerDown ? (e) => e.stopPropagation() : undefined} />
+        </div>
+      ) : (
+        <video src={o.mediaSrc} className="s-media s-media-video" controls={interactive} muted={!interactive}
+          style={{ pointerEvents: interactive ? "auto" : "none" }}
+          onPointerDown={onPointerDown ? (e) => e.stopPropagation() : undefined} />
+      );
+      break;
+    }
     default:
       break;
   }

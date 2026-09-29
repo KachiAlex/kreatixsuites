@@ -1,7 +1,7 @@
-import type { Deck, SlideObject } from "./model";
-import { chartSeries } from "./model";
+import type { Deck, Slide, SlideObject } from "./model";
+import { chartSeries, deckSize, resolveConn } from "./model";
 
-// slide is 960×540 px → 10in × 5.625in at 96dpi
+// slide px → inches at 96dpi
 const IN = 1 / 96;
 const px2in = (v: number) => v * IN;
 const px2pt = (v: number) => v * 0.75;
@@ -22,14 +22,16 @@ const hex = (c?: string) => (c ?? "#000000").replace("#", "");
 export async function exportPptxBytes(deck: Deck, title: string): Promise<ArrayBuffer> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
-  pptx.defineLayout({ name: "K", width: 10, height: 5.625 });
+  const dims = deckSize(deck);
+  pptx.defineLayout({ name: "K", width: px2in(dims.w), height: px2in(dims.h) });
   pptx.layout = "K";
   pptx.title = title;
 
   for (const s of deck.slides) {
     const slide = pptx.addSlide();
-    if (s.bg) slide.background = { color: hex(s.bg) };
-    for (const o of [...s.objects].sort((a, b) => a.z - b.z)) addObj(pptx, slide, o);
+    if (s.bgImage) slide.background = { data: s.bgImage };
+    else if (s.bg) slide.background = { color: hex(s.bg) };
+    for (const o of [...s.objects].sort((a, b) => a.z - b.z)) addObj(pptx, slide, o, s);
     if (s.notes) slide.addNotes(stripHtml(s.notes));
   }
   return (await pptx.write({ outputType: "arraybuffer" })) as ArrayBuffer;
@@ -48,7 +50,7 @@ export async function exportPptx(deck: Deck, title: string) {
   URL.revokeObjectURL(url);
 }
 
-function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: { addText: Function; addShape: Function; addImage: Function; addTable: Function; addChart: Function }, o: SlideObject) {
+function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: { addText: Function; addShape: Function; addImage: Function; addTable: Function; addChart: Function; addMedia?: Function }, o: SlideObject, s?: Slide) {
   const pos = { x: px2in(o.x), y: px2in(o.y), w: px2in(o.w), h: px2in(o.h), rotate: o.rotate ?? 0 };
   switch (o.type) {
     case "text":
@@ -92,6 +94,21 @@ function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: {
         x: px2in(o.x), y: px2in(o.y), w: px2in(o.x2 ?? o.w), h: px2in(o.y2 ?? 0),
         line: { color: hex(o.stroke ?? "#171717"), width: o.strokeW ?? 2, endArrowType: o.shape === "arrow" ? "triangle" : "none" },
       });
+      break;
+    case "connector": {
+      // pptxgenjs has no connector shape types — emit a line with direction flips
+      const p = s ? resolveConn(o, s) : { x1: o.x, y1: o.y, x2: o.x + o.w, y2: o.y + o.h };
+      slide.addShape(pptx.ShapeType.line, {
+        x: px2in(Math.min(p.x1, p.x2)), y: px2in(Math.min(p.y1, p.y2)),
+        w: px2in(Math.abs(p.x2 - p.x1)), h: px2in(Math.abs(p.y2 - p.y1)),
+        flipH: p.x2 < p.x1, flipV: p.y2 < p.y1,
+        line: { color: hex(o.stroke ?? "#171717"), width: o.strokeW ?? 2, endArrowType: "triangle" },
+      });
+      break;
+    }
+    case "media":
+      if (o.mediaSrc && slide.addMedia)
+        slide.addMedia({ type: o.mediaKind ?? "video", data: o.mediaSrc, x: px2in(o.x), y: px2in(o.y), w: px2in(o.w), h: px2in(o.h) });
       break;
   }
 }

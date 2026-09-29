@@ -17,7 +17,8 @@ import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLID
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
-import { importPptx } from "./import";
+import { exportVideo } from "./video";
+import { importPptx, importOdp } from "./import";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -37,6 +38,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const [newComment, setNewComment] = useState(false);
   const [presenting, setPresenting] = useState<"none" | "present" | "presenter">("none");
   const [printing, setPrinting] = useState(false);
+  const [exporting, setExporting] = useState(false); // P6.3 — video export in progress
   const [editingObj, setEditingObj] = useState<string | null>(null); // P1.1 — text object in run-editing mode
   const [cropId, setCropId] = useState<string | null>(null); // P1.6 — image in crop mode
   const [paintArmed, setPaintArmed] = useState(false); // P1.8 — format painter armed
@@ -49,6 +51,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const dragSlide = useRef<number | null>(null); // P4.2 — sorter drag source
   const [grad, setGrad] = useState({ c1: "#FFFFFF", c2: "#F2782E", angle: 135 });
   const bgImageRef = useRef<HTMLInputElement>(null);
+  const mediaRef = useRef<HTMLInputElement>(null);
   const [chartDlg, setChartDlg] = useState<{ id: string | null } | null>(null);
   const [shapeMenu, setShapeMenu] = useState(false);
   const [tableDlg, setTableDlg] = useState<{ id: string | null } | null>(null);
@@ -439,13 +442,18 @@ export function PresentEditor({ item, initialDoc, permission }: {
 
   const onImportPptx = async (f: File) => {
     try {
-      const d = await importPptx(f);
-      mutate((deck) => { deck.theme = d.theme; deck.customTheme = d.customTheme; deck.slides = d.slides; });
+      const d = /\.odp$/i.test(f.name) ? await importOdp(f) : await importPptx(f);
+      // P6.2 — import now carries slide size, master, layouts, transitions, anims
+      mutate((deck) => {
+        // clear import-owned fields that may be absent this time
+        for (const k of ["theme", "customTheme", "slideW", "slideH", "master", "layouts"] as const) delete deck[k];
+        Object.assign(deck, d);
+      });
       setSlideIdx(0);
       setSelection(new Set());
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
     } catch {
-      toast("Could not read that .pptx file");
+      toast(`Could not read ${f.name}`);
     }
   };
 
@@ -544,6 +552,13 @@ export function PresentEditor({ item, initialDoc, permission }: {
       const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(f);
     });
     addObject({ type: "image", src, x: 160, y: 100, w: 480, h: 320 });
+  };
+  const insertMedia = async (f: File) => {
+    const src = await new Promise<string>((res) => {
+      const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(f);
+    });
+    const mediaKind = f.type.startsWith("audio") ? "audio" as const : "video" as const;
+    addObject({ type: "media", mediaSrc: src, mediaKind, x: 160, y: 100, w: mediaKind === "audio" ? 320 : 480, h: mediaKind === "audio" ? 64 : 270 });
   };
   const insertTable = () => setTableDlg({ id: null });
   const insertChart = () => setChartDlg({ id: null });
@@ -821,7 +836,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
         <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" onClick={() => pptxRef.current?.click()}>Import</button>
-        <input ref={pptxRef} type="file" accept=".pptx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
+        <input ref={pptxRef} type="file" accept=".pptx,.potx,.odp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
         <select className="rb-sel" value={printLayout} title="Print layout (P4.5)"
           onChange={(e) => setPrintLayout(e.target.value as typeof printLayout)}>
           <option value="slides">Full-page slides</option>
@@ -832,6 +847,13 @@ export function PresentEditor({ item, initialDoc, permission }: {
         </select>
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Export PDF</button>
         <button className="btn-ghost btn-sm" onClick={() => void exportPptx(deck, title).catch(() => toast("Export failed"))}>Export .pptx</button>
+        <button className="btn-ghost btn-sm" title="Timed video export (P6.3)" disabled={exporting}
+          onClick={() => {
+            setExporting(true);
+            void exportVideo(deck, title, (m) => toast(m))
+              .catch(() => toast("Video export failed"))
+              .finally(() => setExporting(false));
+          }}>{exporting ? "Recording…" : "Export video"}</button>
         <button className="btn-primary btn-sm" onClick={() => setPresenting("present")}>▶ Present</button>
       </div>
 
@@ -971,6 +993,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Connector — elbow" onClick={() => insertConnector("elbow")}>⌐</button>
           <button className="rb" title="Connector — curved" onClick={() => insertConnector("curve")}>⌒</button>
           <button className="rb" title="Image" onClick={() => imageRef.current?.click()}>🖼</button>
+          <button className="rb" title="Audio / video (P6.4)" onClick={() => mediaRef.current?.click()}>🎬</button>
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
           <button className="rb" title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
@@ -1191,6 +1214,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <div className="rb-sep" />
           <button className="rb" title="Add comment" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <input ref={imageRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && void insertImage(e.target.files[0])} />
+          <input ref={mediaRef} type="file" accept="video/*,audio/*" hidden onChange={(e) => e.target.files?.[0] && void insertMedia(e.target.files[0])} />
           <span style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
             <select className="rb-sel" style={{ width: 76 }} value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
               {[0.4, 0.5, 0.6, 0.75, 1, 1.25].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}

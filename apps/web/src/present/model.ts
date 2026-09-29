@@ -2,7 +2,7 @@
 
 export interface SlideObject {
   id: string;
-  type: "text" | "shape" | "image" | "table" | "chart" | "line" | "connector";
+  type: "text" | "shape" | "image" | "table" | "chart" | "line" | "connector" | "media";
   x: number; y: number; w: number; h: number;
   rotate?: number;
   z: number;
@@ -22,6 +22,10 @@ export interface SlideObject {
   fill?: string;
   stroke?: string;
   strokeW?: number;
+
+  // media — P6.4: audio/video embed (data URL)
+  mediaSrc?: string;
+  mediaKind?: "audio" | "video";
 
   // image — P1.6: crop fractions (0-1 per edge), flips, css filter
   src?: string;
