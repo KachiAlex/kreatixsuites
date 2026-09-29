@@ -688,3 +688,187 @@ export function printSheet(sheet: SheetData, wb: Workbook | undefined, opts: Pri
   w.document.write(sheetToPrintHTML(sheet, wb, opts));
   w.document.close();
 }
+
+// ---------- PivotTables (S10.1) ----------
+
+import type { PivotSpec } from "./model";
+import { displayValue } from "./engine";
+
+type Agg = PivotSpec["vals"][number]["agg"];
+
+const aggregate = (vals: number[], agg: Agg): number => {
+  if (!vals.length) return agg === "count" ? 0 : 0;
+  switch (agg) {
+    case "sum": return vals.reduce((a, b) => a + b, 0);
+    case "count": return vals.length;
+    case "avg": return vals.reduce((a, b) => a + b, 0) / vals.length;
+    case "min": return Math.min(...vals);
+    case "max": return Math.max(...vals);
+  }
+};
+
+const AGG_LABEL: Record<Agg, string> = { sum: "Sum", count: "Count", avg: "Average", min: "Min", max: "Max" };
+
+/**
+ * Compute a pivot table's output cells. Layout (anchored at spec.at):
+ *   [row field headers…] [col-key headers…] [Grand Total]
+ *   [row key…]           [aggregates…]      [row total]
+ *   [Grand Total]        [col totals…]      [grand total]
+ * With multiple val fields and no col fields, each val gets its own column;
+ * with col fields, columns are (colKey × valField) combos.
+ * Returns the cell map + span, or null if the spec/source is invalid.
+ */
+export function buildPivotCells(
+  wb: Workbook,
+  host: SheetData,
+  spec: PivotSpec,
+): { cells: Record<string, CellData>; rows: number; cols: number } | null {
+  const at = parseA1(spec.at);
+  if (!at) return null;
+  // resolve source sheet — qualified "Sheet!A1:D10" or unqualified (host)
+  let src = spec.src;
+  let srcSheet = host;
+  const bang = src.indexOf("!");
+  if (bang >= 0) {
+    const name = src.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
+    srcSheet = wb.sheets.find((s) => s.name === name) ?? host;
+    src = src.slice(bang + 1);
+  }
+  const range = parseRange(src);
+  if (!range) return null;
+  const evals = evalsFor(srcSheet, wb);
+  const cellText = (c: number, r: number): string => {
+    const ref = toA1(c, r);
+    const cell = srcSheet.cells[ref];
+    return cell?.f ? displayValue(evals.get(ref), cell) : cell?.v == null ? "" : String(cell.v);
+  };
+  const cellNum = (c: number, r: number): number | null => {
+    const ref = toA1(c, r);
+    const cell = srcSheet.cells[ref];
+    const v = cell?.f ? evals.get(ref)?.value : cell?.v;
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+    return Number.isFinite(n) ? (n as number) : null;
+  };
+  // fields from header row
+  const fields: string[] = [];
+  for (let c = range.c1; c <= range.c2; c++) fields.push(cellText(c, range.r1) || `Col ${c - range.c1 + 1}`);
+  const fieldIdx = (name: string) => fields.indexOf(name);
+  const rowIdx = spec.rows.map(fieldIdx).filter((i) => i >= 0);
+  const colIdx = spec.cols.map(fieldIdx).filter((i) => i >= 0);
+  const valIdx = spec.vals.map((v) => ({ ...v, i: fieldIdx(v.field) })).filter((v) => v.i >= 0);
+  if (!valIdx.length || (!rowIdx.length && !colIdx.length)) return null;
+
+  // gather data rows
+  type Group = Map<string, { key: string[]; vals: number[][] }>;
+  const rowGroups: Group = new Map();   // rowTuple -> per-val-field numbers
+  const colGroups: Group = new Map();
+  const cellGroups = new Map<string, Map<string, number[][]>>(); // rowKey -> colKey -> numbers
+  for (let r = range.r1 + 1; r <= range.r2; r++) {
+    const rk = rowIdx.map((i) => cellText(range.c1 + i, r));
+    const ck = colIdx.map((i) => cellText(range.c1 + i, r));
+    const nums = valIdx.map((v) => cellNum(range.c1 + v.i, r)).map((n) => (n == null ? [] : [n]));
+    const rKey = rk.join("\x01");
+    const cKey = ck.join("\x01");
+    if (!rowGroups.has(rKey)) rowGroups.set(rKey, { key: rk, vals: valIdx.map(() => []) });
+    if (!colGroups.has(cKey)) colGroups.set(cKey, { key: ck, vals: valIdx.map(() => []) });
+    if (!cellGroups.has(rKey)) cellGroups.set(rKey, new Map());
+    const cg = cellGroups.get(rKey)!;
+    if (!cg.has(cKey)) cg.set(cKey, valIdx.map(() => []));
+    const rg = rowGroups.get(rKey)!, cgv = cg.get(cKey)!, gg = colGroups.get(cKey)!;
+    nums.forEach((ns, i) => { rg.vals[i].push(...ns); cgv[i].push(...ns); gg.vals[i].push(...ns); });
+  }
+  const rowKeys = [...rowGroups.values()].sort((a, b) => a.key.join("").localeCompare(b.key.join("")));
+  const colKeys = [...colGroups.values()].sort((a, b) => a.key.join("").localeCompare(b.key.join("")));
+
+  const H: CellData["s"] = { b: true, bg: "#E8E4DE" };
+  const TOT: CellData["s"] = { b: true, bg: "#F4F1EC" };
+  const out: Record<string, CellData> = {};
+  const put = (dr: number, dc: number, cell: CellData) => { out[toA1(at.col + dc, at.row + dr)] = cell; };
+
+  const nRowHdr = Math.max(rowIdx.length, 1);
+  // data columns: colFields ? colKey × vals : vals
+  const dataCols: { label: string; ck: string | null; vi: number }[] = [];
+  if (colIdx.length)
+    for (const ck of colKeys) for (let vi = 0; vi < valIdx.length; vi++)
+      dataCols.push({ label: `${ck.key.join(" / ")} — ${AGG_LABEL[valIdx[vi].agg]} ${valIdx[vi].field}`, ck: ck.key.join("\x01"), vi });
+  else
+    for (let vi = 0; vi < valIdx.length; vi++)
+      dataCols.push({ label: `${AGG_LABEL[valIdx[vi].agg]} ${valIdx[vi].field}`, ck: null, vi });
+
+  // header row: row-field names | data col labels | Grand Total
+  spec.rows.forEach((f, i) => put(0, i, { v: f, s: H }));
+  if (!rowIdx.length) put(0, 0, { v: "", s: H });
+  dataCols.forEach((d, i) => put(0, nRowHdr + i, { v: d.label, s: H }));
+  put(0, nRowHdr + dataCols.length, { v: "Grand Total", s: H });
+
+  // data rows
+  rowKeys.forEach((rk, ri) => {
+    rk.key.forEach((part, i) => {
+      // blank repeated outer keys (Excel-style nesting)
+      const repeat = ri > 0 && rowKeys[ri - 1].key.slice(0, i + 1).join("\x01") === rk.key.slice(0, i + 1).join("\x01");
+      put(1 + ri, i, { v: repeat ? "" : part, s: i === rk.key.length - 1 ? undefined : { b: true } });
+    });
+    const rowKey = rk.key.join("\x01");
+    dataCols.forEach((d, i) => {
+      const grp = d.ck == null ? rowGroups.get(rowKey)!.vals[d.vi] : cellGroups.get(rowKey)?.get(d.ck)?.[d.vi] ?? [];
+      put(1 + ri, nRowHdr + i, { v: grp.length ? aggregate(grp, valIdx[d.vi].agg) : "" });
+    });
+    // row grand total = first val field aggregated over the whole row group
+    put(1 + ri, nRowHdr + dataCols.length,
+      { v: aggregate(rowGroups.get(rowKey)!.vals[0], valIdx[0].agg), s: TOT });
+  });
+
+  // grand total row
+  const gtRow = 1 + rowKeys.length;
+  put(gtRow, 0, { v: "Grand Total", s: TOT });
+  dataCols.forEach((d, i) => {
+    const vals = d.ck == null
+      ? [...rowGroups.values()].flatMap((g) => g.vals[d.vi])
+      : colGroups.get(d.ck)!.vals[d.vi];
+    put(gtRow, nRowHdr + i, { v: vals.length ? aggregate(vals, valIdx[d.vi].agg) : "", s: TOT });
+  });
+  const all = [...rowGroups.values()].flatMap((g) => g.vals[0]);
+  put(gtRow, nRowHdr + dataCols.length, { v: aggregate(all, valIdx[0].agg), s: TOT });
+
+  return { cells: out, rows: gtRow + 1, cols: nRowHdr + dataCols.length + 1 };
+}
+
+// ---------- Goal Seek (S10.2) ----------
+
+/**
+ * Find x such that evalTarget(x) ≈ goal. Hybrid secant/bisection, ~60 iters.
+ * evalTarget returns the target cell's numeric value for a candidate input,
+ * or null/NaN when unevaluable. Returns the input value or null.
+ */
+export function solveGoalSeek(evalTarget: (x: number) => number | null, goal: number, guess = 0): number | null {
+  const f = (x: number) => {
+    const v = evalTarget(x);
+    return v == null || !Number.isFinite(v) ? null : v - goal;
+  };
+  let x0 = guess, x1 = guess === 0 ? 1 : guess * 1.01 + 0.01;
+  let f0 = f(x0), f1 = f(x1);
+  if (f0 === null && f1 === null) return null;
+  for (let i = 0; i < 60; i++) {
+    if (f0 !== null && Math.abs(f0) < 1e-7) return x0;
+    if (f1 !== null && Math.abs(f1) < 1e-7) return x1;
+    if (f0 !== null && f1 !== null && f1 !== f0) {
+      const x2 = x1 - (f1 * (x1 - x0)) / (f1 - f0);
+      const f2 = f(x2);
+      x0 = x1; f0 = f1; x1 = x2; f1 = f2;
+    } else {
+      // bisection fallback — widen the bracket
+      const span = Math.abs(x1 - x0) || 1;
+      const cands = [x1 + span, x1 - span, x1 * 2, x1 / 2, x1 + span * 4, x1 - span * 4];
+      let found = false;
+      for (const c of cands) {
+        const fc = f(c);
+        if (fc === null) continue;
+        if (f1 !== null && fc * f1 < 0) { x0 = x1; f0 = f1; x1 = c; f1 = fc; found = true; break; }
+        if (f0 !== null && f0 * fc < 0) { x1 = c; f1 = fc; found = true; break; }
+      }
+      if (!found) { x1 += span; f1 = f(x1); }
+    }
+    if (Math.abs(x1 - x0) < 1e-10 && f1 !== null && Math.abs(f1) < 1e-6) return x1;
+  }
+  return f1 !== null && Math.abs(f1) < 1e-4 ? x1 : null;
+}

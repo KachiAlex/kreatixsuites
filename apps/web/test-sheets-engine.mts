@@ -4,13 +4,27 @@ import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cyc
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, solveGoalSeek } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
 const check = (name: string, cond: boolean) => {
   if (cond) passed++;
   else { failed++; console.log("FAIL:", name); }
+};
+const assert = (cond: boolean, msg?: string) => {
+  if (cond) passed++;
+  else { failed++; console.log("FAIL:", msg ?? "assertion"); }
+};
+const assertEq = (a: unknown, b: unknown) => {
+  const ok = JSON.stringify(a) === JSON.stringify(b);
+  if (ok) passed++;
+  else { failed++; console.log("FAIL: expected", JSON.stringify(b), "got", JSON.stringify(a)); }
+};
+const t = (name: string, fn: () => void) => {
+  const before = failed;
+  try { fn(); } catch (e) { failed++; console.log("FAIL:", name, "-", e); }
+  void before;
 };
 const val = (wb: Workbook, sheet: string, ref: string) =>
   evaluateSheetIn(wb, sheet).get(ref);
@@ -585,8 +599,6 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("spark col shift", !!s.sparklines!["D4"] && s.sparklines!["D4"].range === "B2:C2");
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
 
 // ============ S9: protection + change stamps ============
 
@@ -624,7 +636,93 @@ t("S9: per-cell collab key encoding", () => {
   assertEq(sh, "O'Brien"); assertEq(ref, "C3");
 });
 
+
+// ============ S10: pivots + goal seek ============
+
+const pivotWb = (): Workbook => ({
+  sheets: [{
+    name: "S1",
+    cells: {
+      A1: { v: "Region" }, B1: { v: "Product" }, C1: { v: "Sales" },
+      A2: { v: "N" }, B2: { v: "A" }, C2: { v: 10 },
+      A3: { v: "N" }, B3: { v: "B" }, C3: { v: 20 },
+      A4: { v: "S" }, B4: { v: "A" }, C4: { v: 30 },
+      A5: { v: "S" }, B5: { v: "B" }, C5: { v: 40 },
+      A6: { v: "S" }, B6: { v: "A" }, C6: { v: 50 },
+    },
+  }],
+});
+
+t("S10: pivot rows+vals sums and grand total", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }] })!;
+  assert(out);
+  assertEq(out.cells.F1.v, "Region");
+  assertEq(out.cells.G1.v, "Sum Sales");
+  assertEq(out.cells.H1.v, "Grand Total");
+  // rows sorted: N then S
+  assertEq(out.cells.F2.v, "N"); assertEq(out.cells.G2.v, 30);
+  assertEq(out.cells.F3.v, "S"); assertEq(out.cells.G3.v, 120);
+  assertEq(out.cells.F4.v, "Grand Total"); assertEq(out.cells.G4.v, 150);
+  assertEq(out.cells.H4.v, 150);
+});
+
+t("S10: pivot with column field splits values", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: ["Product"], vals: [{ field: "Sales", agg: "sum" }] })!;
+  // header: Region | A — Sum Sales | B — Sum Sales | Grand Total
+  assertEq(out.cells.G1.v, "A — Sum Sales");
+  assertEq(out.cells.H1.v, "B — Sum Sales");
+  assertEq(out.cells.G2.v, 10);  // N/A
+  assertEq(out.cells.H2.v, 20);  // N/B
+  assertEq(out.cells.G3.v, 80);  // S/A
+  assertEq(out.cells.H3.v, 40);  // S/B
+  assertEq(out.cells.I3.v, 120); // S total
+});
+
+t("S10: pivot count + avg aggregations", () => {
+  const wb = pivotWb();
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [],
+      vals: [{ field: "Sales", agg: "count" }, { field: "Sales", agg: "avg" }] })!;
+  assertEq(out.cells.G2.v, 2);   // N count
+  assertEq(out.cells.H2.v, 15);  // N avg
+  assertEq(out.cells.G3.v, 3);   // S count
+  assertEq(out.cells.H3.v, 40);  // S avg
+});
+
+t("S10: pivot invalid spec returns null", () => {
+  const wb = pivotWb();
+  assertEq(buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Nope"], cols: [], vals: [{ field: "Sales", agg: "sum" }] }), null);
+  assertEq(buildPivotCells(wb, wb.sheets[0],
+    { src: "bad", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }] }), null);
+});
+
+t("S10: pivot formula-valued source aggregates evaluated values", () => {
+  const wb = pivotWb();
+  wb.sheets[0].cells.C2 = { f: "5+5" };
+  const out = buildPivotCells(wb, wb.sheets[0],
+    { src: "A1:C6", at: "F1", rows: ["Region"], cols: [], vals: [{ field: "Sales", agg: "sum" }] })!;
+  assertEq(out.cells.G2.v, 30); // 10 (formula) + 20
+});
+
+t("S10: goal seek linear", () => {
+  const x = solveGoalSeek((v) => v * 3 + 2, 20);
+  assert(x !== null && Math.abs(x - 6) < 1e-4, `expected ~6, got ${x}`);
+});
+t("S10: goal seek quadratic root", () => {
+  const x = solveGoalSeek((v) => v * v, 9, 1);
+  assert(x !== null && Math.abs(Math.abs(x) - 3) < 1e-3, `expected ±3, got ${x}`);
+});
+t("S10: goal seek no-solution returns null", () => {
+  const x = solveGoalSeek(() => 5, 10); // constant — never reaches 10
+  assertEq(x, null);
+});
+
 // ============ results ============
-console.log(`
-${passed} passed, ${failed} failed`);
+
+console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

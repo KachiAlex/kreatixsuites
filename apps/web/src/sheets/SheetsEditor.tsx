@@ -11,11 +11,11 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, type Validation, type FilterCrit, type TableSpec } from "./model";
-import { evaluateSheetIn, createSheetEvaluator, refsInFormula } from "./engine";
+import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues, printSheet, type PrintOpts } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, solveGoalSeek } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -66,6 +66,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [tableDlg, setTableDlg] = useState(false);
   const [chartEdit, setChartEdit] = useState<ChartSpec | null>(null);
   const [sparkDlg, setSparkDlg] = useState(false);
+  const [pivotDlg, setPivotDlg] = useState(false);
+  const [seekDlg, setSeekDlg] = useState(false);
   const [printDlg, setPrintDlg] = useState(false);
   const [propsDlg, setPropsDlg] = useState(false);
   const [protectDlg, setProtectDlg] = useState(false);
@@ -1140,6 +1142,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setProtectDlg(true)}>🔒</button>
           <button className={`rb ${showChanges ? "on" : ""}`} title="Show change marks — who last edited each cell"
             onClick={() => setShowChanges(!showChanges)}>✎</button>
+          <button className="rb" title="PivotTable — summarize selection by row/column fields"
+            onClick={() => setPivotDlg(true)}>⊞</button>
+          <button className="rb" title="Goal Seek — find input that makes a formula hit a target"
+            onClick={() => setSeekDlg(true)}>🎯</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
@@ -1407,6 +1413,44 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           }}
           onClose={() => setSparkDlg(false)} />
       )}
+      {pivotDlg && (
+        <PivotDialog sheet={sheet} wb={wb} selection={selection}
+          onApply={(spec) => {
+            const built = buildPivotCells(wb, sheet, spec);
+            if (!built) { toast("Invalid pivot — check source range and fields"); return; }
+            if (anyLocked(Object.keys(built.cells))) return;
+            mutateSheet((s) => applyPivot(s, built, spec));
+            setPivotDlg(false);
+          }}
+          onClose={() => setPivotDlg(false)} />
+      )}
+      {seekDlg && (
+        <GoalSeekDialog sheet={sheet} wb={wb} anchor={anchorRef}
+          onApply={(ref, v) => {
+            if (anyLocked([ref])) return;
+            mutateSheet((s) => { s.cells[ref] = { s: s.cells[ref]?.s, v, h: stamp() }; });
+            setSeekDlg(false);
+          }}
+          onClose={() => setSeekDlg(false)} />
+      )}
+      {sheet.pivots?.length ? (
+        <div className="sheet-tables-bar">
+          {sheet.pivots.map((p, i) => (
+            <span key={i} className="sheet-table-chip" title={`${p.src} → ${p.at}`}>
+              Pivot {p.at}
+              {canEdit && <>
+                <button className="chip-x" title="Refresh" onClick={() => {
+                  const built = buildPivotCells(wb, sheet, sheet.pivots![i]);
+                  if (!built) { toast("Pivot source invalid"); return; }
+                  if (anyLocked(Object.keys(built.cells))) return;
+                  mutateSheet((s) => applyPivot(s, built, s.pivots![i]));
+                }}>⟳</button>
+                <button className="chip-x" title="Remove" onClick={() => mutateSheet((s) => removePivot(s, i))}>×</button>
+              </>}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {sheet.tables?.length ? (
         <div className="sheet-tables-bar">
           {sheet.tables.map((t) => (
@@ -2400,6 +2444,199 @@ function ProtectDialog({ sheet, onSave, onClose }: {
             onClick={() => onSave(prot, ranges.split(",").map((r) => r.trim()).filter(Boolean))}>
             {prot ? "Protect" : "Unprotect"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- S10.1 pivot helpers ----------
+
+/** Materialize a built pivot into the sheet: clear the previous output span,
+ *  write the new cells, record the spec. */
+function applyPivot(s: SheetData, built: { cells: Record<string, CellData>; rows: number; cols: number }, spec: PivotSpec) {
+  if (spec.span) {
+    const at = parseA1(spec.at)!;
+    for (let r = 0; r < spec.span.r; r++)
+      for (let c = 0; c < spec.span.c; c++)
+        delete s.cells[toA1(at.col + c, at.row + r)];
+  }
+  Object.assign(s.cells, built.cells);
+  spec.span = { r: built.rows, c: built.cols };
+  s.pivots = s.pivots ?? [];
+  const i = s.pivots.indexOf(spec);
+  if (i < 0) s.pivots.push(spec);
+}
+
+function removePivot(s: SheetData, i: number) {
+  const spec = s.pivots?.[i];
+  if (spec?.span) {
+    const at = parseA1(spec.at)!;
+    for (let r = 0; r < spec.span.r; r++)
+      for (let c = 0; c < spec.span.c; c++)
+        delete s.cells[toA1(at.col + c, at.row + r)];
+  }
+  s.pivots?.splice(i, 1);
+  if (!s.pivots?.length) delete s.pivots;
+}
+
+// ---------- S10 dialogs ----------
+
+function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
+  sheet: SheetData; wb: Workbook; selection: Range;
+  onApply: (spec: PivotSpec) => void; onClose: () => void;
+}) {
+  const [src, setSrc] = useState(rangeToA1(selection));
+  const [at, setAt] = useState(() => {
+    // default anchor: two cols right of the source block, same top row
+    const p = parseRange(rangeToA1(selection));
+    return p ? toA1(p.c2 + 2, p.r1) : "A1";
+  });
+  const [rows, setRows] = useState<string[]>([]);
+  const [cols, setCols] = useState<string[]>([]);
+  const [vals, setVals] = useState<{ field: string; agg: PivotSpec["vals"][number]["agg"] }[]>([]);
+
+  // resolve header fields from the src range (qualified or same-sheet)
+  const fields = useMemo(() => {
+    let r = src, sh = sheet;
+    const bang = r.indexOf("!");
+    if (bang >= 0) {
+      const nm = r.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
+      sh = wb.sheets.find((s) => s.name === nm) ?? sheet;
+      r = r.slice(bang + 1);
+    }
+    const range = parseRange(r);
+    if (!range) return [];
+    const evals = evaluateSheetIn(wb, sh.name);
+    const out: string[] = [];
+    for (let c = range.c1; c <= range.c2; c++) {
+      const ref = toA1(c, range.r1);
+      const cell = sh.cells[ref];
+      out.push((cell?.f ? displayValue(evals.get(ref), cell) : cell?.v == null ? "" : String(cell.v)) || `Col ${c - range.c1 + 1}`);
+    }
+    return out;
+  }, [src, sheet, wb]);
+
+  const unassign = (f: string) => {
+    setRows((rs) => rs.filter((x) => x !== f));
+    setCols((cs) => cs.filter((x) => x !== f));
+    setVals((vs) => vs.filter((x) => x.field !== f));
+  };
+  const move = (f: string, area: "rows" | "cols" | "vals") => {
+    unassign(f);
+    if (area === "rows") setRows((rs) => [...rs.filter((x) => x !== f), f]);
+    if (area === "cols") setCols((cs) => [...cs.filter((x) => x !== f), f]);
+    if (area === "vals") setVals((vs) => [...vs.filter((x) => x.field !== f), { field: f, agg: "sum" }]);
+  };
+  const unassigned = fields.filter((f) => !rows.includes(f) && !cols.includes(f) && !vals.some((v) => v.field === f));
+  const ok = vals.length > 0 && (rows.length > 0 || cols.length > 0) && fields.length > 0 && !!parseA1(at);
+
+  const Area = ({ title, items, area }: { title: string; items: string[]; area: "rows" | "cols" | "vals" }) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>{title}</div>
+      <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+        {items.map((f) => (
+          <span key={f} className="pv-chip">
+            {f}
+            {area === "vals" && (
+              <select value={vals.find((v) => v.field === f)?.agg}
+                onChange={(e) => setVals((vs) => vs.map((v) => v.field === f ? { ...v, agg: e.target.value as PivotSpec["vals"][number]["agg"] } : v))}>
+                <option value="sum">Sum</option><option value="count">Count</option><option value="avg">Avg</option>
+                <option value="min">Min</option><option value="max">Max</option>
+              </select>
+            )}
+            <button className="chip-x" title="Remove" onClick={() => unassign(f)}>×</button>
+          </span>
+        ))}
+        {!items.length && <span style={{ fontSize: 11, color: "#B8B2AA", padding: 4 }}>drop fields here</span>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 520 }}>
+        <h3>PivotTable</h3>
+        <div className="frow" style={{ marginTop: 10 }}>
+          <label style={{ flex: 1 }}>Source range
+            <input className="inp" value={src} onChange={(e) => setSrc(e.target.value)} />
+          </label>
+          <label style={{ width: 110 }}>Output at
+            <input className="inp" value={at} onChange={(e) => setAt(e.target.value)} />
+          </label>
+        </div>
+        {!!unassigned.length && (
+          <div style={{ margin: "10px 0 4px" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Fields — click to assign:</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {unassigned.map((f) => (
+                <span key={f} className="pv-chip pv-un">
+                  {f}
+                  <button onClick={() => move(f, "rows")} title="Row field">R</button>
+                  <button onClick={() => move(f, "cols")} title="Column field">C</button>
+                  <button onClick={() => move(f, "vals")} title="Value field">Σ</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <Area title="Rows" items={rows} area="rows" />
+          <Area title="Columns" items={cols} area="cols" />
+          <Area title="Values" items={vals.map((v) => v.field)} area="vals" />
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!ok}
+            onClick={() => onApply({ src, at, rows, cols, vals })}>Create</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoalSeekDialog({ sheet, wb, anchor, onApply, onClose }: {
+  sheet: SheetData; wb: Workbook; anchor: string;
+  onApply: (ref: string, v: number) => void; onClose: () => void;
+}) {
+  const [target, setTarget] = useState(anchor);
+  const [goal, setGoal] = useState("");
+  const [input, setInput] = useState("");
+  const [err, setErr] = useState("");
+  const ok = !!parseA1(target) && !!parseA1(input) && goal.trim() !== "" && Number.isFinite(Number(goal));
+
+  const run = () => {
+    setErr("");
+    const g = Number(goal);
+    const cur = sheet.cells[input];
+    const guess = typeof cur?.v === "number" ? cur.v : Number(cur?.v) || 0;
+    const x = solveGoalSeek((xv) => {
+      const wb2 = structuredClone(wb);
+      const sh = wb2.sheets.find((s) => s.name === sheet.name)!;
+      sh.cells[input] = { s: sh.cells[input]?.s, v: xv };
+      const evals = evaluateSheetIn(wb2, sh.name);
+      const res = evals.get(target);
+      const v = res?.value;
+      const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+      return Number.isFinite(n) ? n : null;
+    }, g, guess);
+    if (x === null) { setErr("No solution found — target may not depend on the input cell"); return; }
+    onApply(input, x);
+  };
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 360 }}>
+        <h3>Goal Seek</h3>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <label>Set cell <input className="inp" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="B10" /></label>
+          <label>To value <input className="inp" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="100000" /></label>
+          <label>By changing cell <input className="inp" value={input} onChange={(e) => setInput(e.target.value)} placeholder="B3" /></label>
+          {err && <p style={{ fontSize: 12, color: "#D84B57", margin: 0 }}>{err}</p>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!ok} onClick={run}>Solve</button>
         </div>
       </div>
     </div>

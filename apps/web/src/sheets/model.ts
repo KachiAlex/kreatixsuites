@@ -125,6 +125,8 @@ export interface SheetData {
   tables?: TableSpec[];
   /** in-cell sparklines: ref → spec (S7.3) */
   sparklines?: Record<string, Sparkline>;
+  /** pivot tables (S10.1) — output materialized into cells */
+  pivots?: PivotSpec[];
   /** sheet protection (S9.2): locked cells except `allowRanges` */
   protected?: boolean;
   allowRanges?: string[];
@@ -148,6 +150,23 @@ export interface TableSpec {
   style?: "plain" | "banded" | "accent" | "dark";
   /** render a totals row below the range; per-col aggregation */
   totals?: Record<number, "sum" | "avg" | "count" | "min" | "max" | "none">;
+}
+
+/** PivotTable spec (S10.1) — output is materialized into cells at `at`;
+ *  `span` records the last-written output extent so refresh can clear it. */
+export interface PivotSpec {
+  /** source range incl. header row, e.g. "A1:D100" (may be qualified) */
+  src: string;
+  /** output anchor cell, e.g. "F2" */
+  at: string;
+  /** row-area fields (header names), outermost first */
+  rows: string[];
+  /** column-area fields */
+  cols: string[];
+  /** value fields + aggregation */
+  vals: { field: string; agg: "sum" | "count" | "avg" | "min" | "max" }[];
+  /** last materialized extent {rows, cols} — cleared on refresh/move */
+  span?: { r: number; c: number };
 }
 
 export interface Workbook {
@@ -584,6 +603,15 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
       }
       t.totals = totals;
     }
+  }
+
+  // pivot tables: output anchor follows the cell map; src range shifts too
+  for (const pv of sheet.pivots ?? []) {
+    const p = parseA1(pv.at);
+    const np = p && map(p);
+    if (np) pv.at = toA1(np.col, np.row);
+    const nr = shiftRangeA1(pv.src, map);
+    if (nr) pv.src = nr;
   }
 }
 
