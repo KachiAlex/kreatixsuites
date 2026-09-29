@@ -47,6 +47,17 @@ export class MapSync {
       for (const k of [...this.map.keys()]) if (!items.has(k)) this.map.delete(k);
     });
   }
+
+  /** Sparse update — set changed keys, delete nulls, leave other keys alone.
+   *  Unlike `push`, this does not treat absent keys as deletions. */
+  patch(items: Map<string, string | null>) {
+    this.map.doc!.transact(() => {
+      for (const [k, v] of items) {
+        if (v === null) { if (this.map.has(k)) this.map.delete(k); }
+        else if (this.map.get(k) !== v) this.map.set(k, v);
+      }
+    });
+  }
 }
 
 /**

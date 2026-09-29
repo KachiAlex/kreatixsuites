@@ -31,6 +31,8 @@ export interface CellData {
   v?: string | number | boolean | null;
   f?: string;
   s?: CellStyle;
+  /** change stamp — last writer (S9.2 change-history markup) */
+  h?: { by: string; at: number };
 }
 
 export interface CondFormat {
@@ -123,6 +125,9 @@ export interface SheetData {
   tables?: TableSpec[];
   /** in-cell sparklines: ref → spec (S7.3) */
   sparklines?: Record<string, Sparkline>;
+  /** sheet protection (S9.2): locked cells except `allowRanges` */
+  protected?: boolean;
+  allowRanges?: string[];
 }
 
 export interface FilterCrit {
@@ -159,6 +164,21 @@ export interface Ref { col: number; row: number }
 export interface Range { c1: number; r1: number; c2: number; r2: number }
 
 /** Validations covering a ref. */
+/** Is `ref` inside any of the given A1 ranges? */
+export function refInRanges(ref: string, ranges: string[]): boolean {
+  const p = parseA1(ref);
+  if (!p) return false;
+  return ranges.some((r) => {
+    const rr = parseRange(r);
+    return !!rr && p.col >= rr.c1 && p.col <= rr.c2 && p.row >= rr.r1 && p.row <= rr.r2;
+  });
+}
+
+/** Protected-sheet check: locked unless the ref sits in an allowed range. */
+export function cellLocked(sheet: SheetData, ref: string): boolean {
+  return !!sheet.protected && !refInRanges(ref, sheet.allowRanges ?? []);
+}
+
 export function validationsAt(sheet: SheetData, ref: string): Validation[] {
   const p = parseA1(ref);
   if (!p) return [];

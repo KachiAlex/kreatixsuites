@@ -526,6 +526,7 @@ textarea.inp{padding:8px 10px;height:auto}
 .cell-flag{position:absolute;width:0;height:0;pointer-events:none}
 .cell-flag.inv{left:0;bottom:0;border-left:7px solid transparent;border-bottom:7px solid #D64545}
 .cell-flag.note{right:0;top:0;border-right:7px solid var(--k-orange);border-top:7px solid var(--k-orange)}
+.cell-flag.chg{left:0;top:0;border-left:7px solid #8E6BC8;border-top:7px solid #8E6BC8}
 .list-drop-btn{position:absolute;z-index:35;width:18px;height:18px;border:1px solid var(--line);border-radius:4px;background:#fff;color:#8B8480;font-size:9px;line-height:1;cursor:pointer;padding:0}
 .list-drop-btn:hover{border-color:var(--k-orange);color:var(--k-orange)}
 .list-drop{position:absolute;z-index:75;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(23,18,15,.2);padding:3px;max-height:200px;overflow-y:auto;display:flex;flex-direction:column}

@@ -2,6 +2,7 @@
 // Run: npx tsx test-sheets-engine.mts
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator } from "./src/sheets/engine";
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
+import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
 import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
@@ -585,4 +586,45 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
+
+// ============ S9: protection + change stamps ============
+
+t("S9: unprotected sheet never locked", () => {
+  const s: SheetData = { name: "S1", cells: { A1: { v: 1 } } };
+  assert(!cellLocked(s, "A1")); assert(!cellLocked(s, "Z99"));
+});
+t("S9: protected sheet locks all cells", () => {
+  const s: SheetData = { name: "S1", cells: {}, protected: true };
+  assert(cellLocked(s, "A1")); assert(cellLocked(s, "Z99"));
+});
+t("S9: allowRanges exempt cells", () => {
+  const s: SheetData = { name: "S1", cells: {}, protected: true, allowRanges: ["B2:D10", "F1"] };
+  assert(cellLocked(s, "A1"));
+  assert(!cellLocked(s, "B2")); assert(!cellLocked(s, "C5")); assert(!cellLocked(s, "D10"));
+  assert(!cellLocked(s, "F1"));          // single-cell range
+  assert(cellLocked(s, "E5"));           // outside all ranges
+  assert(cellLocked(s, "F2"));
+});
+t("S9: malformed allowRanges ignored", () => {
+  const s: SheetData = { name: "S1", cells: {}, protected: true, allowRanges: ["junk", "B2:B4"] };
+  assert(!cellLocked(s, "B3"));          // valid range still applies
+  assert(cellLocked(s, "C3"));
+});
+t("S9: change stamp serializes through workbook JSON", () => {
+  const s: SheetData = { name: "S1", cells: { A1: { v: 1, h: { by: "u@x.com", at: 1700000000000 } } } };
+  const rt: SheetData = JSON.parse(JSON.stringify(s));
+  assertEq(rt.cells.A1.h!.by, "u@x.com");
+  assertEq(rt.cells.A1.h!.at, 1700000000000);
+});
+t("S9: per-cell collab key encoding", () => {
+  const k = (sh: string, ref: string) => `${sh}\x01${ref}`;
+  assertEq(k("Sheet 1", "B5"), "Sheet 1\x01B5");
+  const [sh, ref] = k("O'Brien", "C3").split("\x01");
+  assertEq(sh, "O'Brien"); assertEq(ref, "C3");
+});
+
+// ============ results ============
+console.log(`
+${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

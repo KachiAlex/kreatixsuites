@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { saveContent } from "../lib/drafts";
-import { useCollabSession, useMapSync } from "../collab/useCollab";
+import { useCollabSession, useMapSync, type MapSync } from "../collab/useCollab";
+import { useAuth } from "../lib/auth";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
@@ -11,7 +12,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat } from "./model";
-import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation, type FilterCrit, type TableSpec } from "./model";
+import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, type Validation, type FilterCrit, type TableSpec } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues, printSheet, type PrintOpts } from "./io";
@@ -67,6 +68,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [sparkDlg, setSparkDlg] = useState(false);
   const [printDlg, setPrintDlg] = useState(false);
   const [propsDlg, setPropsDlg] = useState(false);
+  const [protectDlg, setProtectDlg] = useState(false);
+  const [showChanges, setShowChanges] = useState(false);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const [borderMenu, setBorderMenu] = useState(false);
@@ -125,8 +128,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const selRefs = useMemo(() => selections.flatMap((r) => [...rangeRefs(r)]), [selections]);
   const anchorRef = toA1(selection.c1, selection.r1);
 
-  // ---- collab: per-sheet keys in a shared Y.Map; remote applies merge in ----
+  // ---- collab: sheet meta + per-cell keys in shared Y.Maps (S9.1) ----
+  // "sheets" map: sheet meta (everything except cells) + $order.
+  // "cells" map: "Sheet\x01A1" → JSON CellData — two editors in one sheet
+  // merge at cell granularity instead of last-writer-wins per sheet.
   const session = useCollabSession(item.id);
+  const pushSnap = useRef<Workbook | null>(null);
+  const cellsSyncRef = useRef<MapSync | null>(null);
   const applyRemoteRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
   applyRemoteRef.current = (changed) => {
     setWb((prev) => {
@@ -143,13 +151,58 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         } else {
           const sh = JSON.parse(v) as SheetData;
           const i = next.sheets.findIndex((s) => s.name === k);
-          if (i >= 0) next.sheets[i] = sh; else next.sheets.push(sh);
+          // keep local cells — cell data lives in the "cells" map
+          if (i >= 0) next.sheets[i] = { ...sh, cells: next.sheets[i].cells };
+          else {
+            // hydrate cells that may have arrived in the cells map before this sheet's meta
+            const cells: SheetData["cells"] = {};
+            const m = cellsSyncRef.current?.map;
+            if (m) for (const [ck, cv] of m) {
+              const sep = ck.indexOf("\x01");
+              if (ck.slice(0, sep) === sh.name) cells[ck.slice(sep + 1)] = JSON.parse(cv);
+            }
+            next.sheets.push({ ...sh, cells });
+          }
         }
       }
+      pushSnap.current = next;
       return next;
     });
   };
   const mapSync = useMapSync(session, "sheets", applyRemoteRef);
+  const applyCellsRef = useRef<(changed: Map<string, string | null>) => void>(() => {});
+  applyCellsRef.current = (changed) => {
+    setWb((prev) => {
+      const next = structuredClone(prev);
+      for (const [key, v] of changed) {
+        const sep = key.indexOf("\x01");
+        const sh = next.sheets.find((s) => s.name === key.slice(0, sep));
+        if (!sh) continue;
+        if (v === null) delete sh.cells[key.slice(sep + 1)];
+        else sh.cells[key.slice(sep + 1)] = JSON.parse(v);
+      }
+      pushSnap.current = next;
+      return next;
+    });
+  };
+  const cellsSync = useMapSync(session, "cells", applyCellsRef);
+  cellsSyncRef.current = cellsSync;
+
+  // seed existing cells into the cells map once — otherwise deletions of
+  // pre-existing cells produce no remote event (key never existed in the map)
+  const cellsSeeded = useRef(false);
+  useEffect(() => {
+    if (!cellsSync || cellsSeeded.current) return;
+    cellsSeeded.current = true;
+    const patch = new Map<string, string>();
+    for (const s of pushSnap.current?.sheets ?? wb.sheets)
+      for (const [ref, cell] of Object.entries(s.cells)) {
+        const k = `${s.name}\x01${ref}`;
+        if (!cellsSync.map.has(k)) patch.set(k, JSON.stringify(cell));
+      }
+    if (patch.size) cellsSync.patch(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cellsSync]);
 
   // presence: which cell we're on
   useEffect(() => {
@@ -302,15 +355,40 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   const mounted = useRef(false);
   useEffect(() => {
-    if (!mounted.current) { mounted.current = true; return; }
+    if (!mounted.current) { mounted.current = true; pushSnap.current = wb; return; }
     pendingJson.current = { kind: "sheets", workbook: wb };
+    const prev = pushSnap.current;
+    if (prev === wb) return; // remote-applied state — nothing to echo back
+    pushSnap.current = wb;
+    // sheet meta (cells stripped — they sync through the cells map)
     if (mapSync) {
       const m = new Map<string, string>();
-      for (const s of wb.sheets) m.set(s.name, JSON.stringify(s));
+      for (const s of wb.sheets) {
+        const { cells: _cells, ...meta } = s;
+        m.set(s.name, JSON.stringify({ ...meta, cells: {} }));
+      }
       m.set("$order", JSON.stringify(wb.sheets.map((s) => s.name)));
       mapSync.push(m);
     }
-  }, [wb, mapSync]);
+    // per-cell patch: only keys that differ from the last pushed snapshot
+    if (cellsSync && prev) {
+      const patch = new Map<string, string | null>();
+      const prevSheets = new Map(prev.sheets.map((s) => [s.name, s]));
+      for (const s of wb.sheets) {
+        const ps = prevSheets.get(s.name);
+        for (const [ref, cell] of Object.entries(s.cells)) {
+          const js = JSON.stringify(cell);
+          if (JSON.stringify(ps?.cells[ref]) !== js) patch.set(`${s.name}\x01${ref}`, js);
+        }
+        for (const ref of Object.keys(ps?.cells ?? {}))
+          if (!(ref in s.cells)) patch.set(`${s.name}\x01${ref}`, null);
+      }
+      for (const [name, ps] of prevSheets)
+        if (!wb.sheets.some((s) => s.name === name))
+          for (const ref of Object.keys(ps.cells)) patch.set(`${name}\x01${ref}`, null);
+      if (patch.size) cellsSync.patch(patch);
+    }
+  }, [wb, mapSync, cellsSync]);
 
   const flushSave = useCallback(async () => {
     if (!pendingJson.current) return;
@@ -342,7 +420,25 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   }, [flushSave]);
 
   // ---- cell ops ----
+  const { user } = useAuth();
+  const stamp = useCallback(() => ({ by: user?.displayName ?? "you", at: Date.now() }), [user]);
+
+  /** S9.2 — true if any of `refs` is locked by sheet protection. */
+  const anyLocked = useCallback((refs: string[]) => {
+    const bad = sheet.protected ? refs.find((r) => cellLocked(sheet, r)) : undefined;
+    if (bad) toast(`${bad} is locked — this sheet is protected`);
+    return !!bad;
+  }, [sheet, toast]);
+
+  /** Structural ops (insert/delete/sort/merge/dedupe) are blocked entirely
+   *  on protected sheets — they'd break allowed-range boundaries. */
+  const structuralLocked = useCallback(() => {
+    if (sheet.protected) toast("Blocked — this sheet is protected");
+    return !!sheet.protected;
+  }, [sheet, toast]);
+
   const commitCell = useCallback((ref: string, raw: string) => {
+    if (anyLocked([ref])) return;
     // data validation — direct entry only (paste bypasses, like Excel)
     if (raw.trim() !== "" && !raw.trimStart().startsWith("=")) {
       for (const v of validationsAt(sheet, ref)) {
@@ -361,27 +457,31 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         if (style) s.cells[ref] = { s: style }; else delete s.cells[ref];
         return;
       }
-      s.cells[ref] = { s: s.cells[ref]?.s, ...parseInput(raw) };
+      s.cells[ref] = { s: s.cells[ref]?.s, ...parseInput(raw), h: stamp() };
     });
-  }, [mutateSheet, sheet, wb, toast]);
+  }, [mutateSheet, sheet, wb, toast, anyLocked, stamp]);
 
   const clearCells = useCallback((refs: string[]) => {
-    mutateSheet((s) => refs.forEach((r) => { if (s.cells[r]) s.cells[r] = { s: s.cells[r].s }; }));
-  }, [mutateSheet]);
+    if (anyLocked(refs)) return;
+    mutateSheet((s) => refs.forEach((r) => { if (s.cells[r]) s.cells[r] = { s: s.cells[r].s, h: stamp() }; }));
+  }, [mutateSheet, anyLocked, stamp]);
 
   const pasteTsv = useCallback((anchor: Ref, tsv: string) => {
     const cells = tsvToCells(tsv, anchor);
-    mutateSheet((s) => Object.assign(s.cells, cells));
+    if (anyLocked(Object.keys(cells))) return;
+    const h = stamp();
+    mutateSheet((s) => Object.entries(cells).forEach(([r, c]) => { s.cells[r] = { ...c, h }; }));
     const rows = tsv.replace(/\r/g, "").split("\n");
     const maxC = Math.max(...rows.map((r) => r.split("\t").length));
     setSelection({ c1: anchor.col, r1: anchor.row, c2: anchor.col + maxC - 1, r2: anchor.row + rows.length - 1 });
-  }, [mutateSheet]);
+  }, [mutateSheet, anyLocked, stamp]);
 
   const setStyle = useCallback((patch: CellStyle) => {
+    if (anyLocked(selRefs)) return;
     mutateSheet((s) => selRefs.forEach((r) => {
       s.cells[r] = { ...s.cells[r], s: { ...s.cells[r]?.s, ...patch } };
     }));
-  }, [mutateSheet, selRefs]);
+  }, [mutateSheet, selRefs, anyLocked]);
 
   const toggleStyle = useCallback((key: "b" | "i" | "u" | "st") => {
     setStyle({ [key]: !anchorStyle[key] });
@@ -440,6 +540,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   // fill handle: repeat source block across extended region
   const fillHandle = useCallback((src: Range, dst: Range) => {
+    if (anyLocked([...rangeRefs(dst)])) return;
     mutateSheet((s) => {
       const sw = src.c2 - src.c1 + 1, sh = src.r2 - src.r1 + 1;
       const ev = evaluateSheetIn(wb, s.name);
@@ -482,12 +583,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         }
       }
     });
-  }, [mutateSheet, wb]);
+  }, [mutateSheet, wb, anyLocked]);
 
   // sort selected rows by one or more key columns; formula refs pointing
   // into the sorted block are remapped to the rows' new positions.
   // `range` defaults to selection; the filter menu sorts data rows only.
   const sortBy = useCallback((keys: { col: number; asc: boolean }[], range?: Range) => {
+    if (structuralLocked()) return;
     const rng = range ?? selection;
     mutateSheet((s) => {
       const ev = evaluateSheetIn(wb, s.name);
@@ -528,7 +630,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             : { col: r.col, row: r.row });
       }
     });
-  }, [mutateSheet, selection, wb]);
+  }, [mutateSheet, selection, wb, structuralLocked]);
 
   const sortSel = useCallback((asc: boolean) => sortBy([{ col: selection.c1, asc }]), [sortBy, selection.c1]);
 
@@ -564,6 +666,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   }, [sheet.filter, sortBy]);
 
   const dedupe = useCallback((cols: number[]) => {
+    if (structuralLocked()) return;
     mutateSheet((s) => {
       const ev = evaluateSheetIn(wb, s.name);
       const seen = new Set<string>();
@@ -596,9 +699,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       }
       toast(`${selection.r2 - selection.r1 + 1 - keep.length} duplicate row(s) removed`);
     });
-  }, [mutateSheet, wb, selection]);
+  }, [mutateSheet, wb, selection, structuralLocked]);
 
   const textToCols = useCallback((delim: string) => {
+    if (anyLocked([...rangeRefs(selection)])) return;
     mutateSheet((s) => {
       for (let r = selection.r1; r <= selection.r2; r++)
         for (let c = selection.c1; c <= selection.c2; c++) {
@@ -608,7 +712,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           parts.forEach((p, i) => { s.cells[toA1(c + i, r)] = { ...cell, ...parseInput(p.trim()) }; });
         }
     });
-  }, [mutateSheet, selection]);
+  }, [mutateSheet, selection, anyLocked]);
 
   const createTable = useCallback((name: string, style: TableSpec["style"], totals: NonNullable<TableSpec["totals"]>) => {
     mutateSheet((s) => {
@@ -623,17 +727,21 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   // insert / delete rows & cols (formulas incl. cross-sheet refs, merges,
   // cf, charts all shift)
   const insRows = useCallback(() => {
+    if (structuralLocked()) return;
     mutate((w) => adjustForRowsCols(w.sheets[active], "row", selection.r1, Math.max(1, selection.r2 - selection.r1 + 1), w));
-  }, [mutate, active, selection]);
+  }, [mutate, active, selection, structuralLocked]);
   const delRows = useCallback(() => {
+    if (structuralLocked()) return;
     mutate((w) => adjustForRowsCols(w.sheets[active], "row", selection.r1, -(selection.r2 - selection.r1 + 1), w));
-  }, [mutate, active, selection]);
+  }, [mutate, active, selection, structuralLocked]);
   const insCols = useCallback(() => {
+    if (structuralLocked()) return;
     mutate((w) => adjustForRowsCols(w.sheets[active], "col", selection.c1, Math.max(1, selection.c2 - selection.c1 + 1), w));
-  }, [mutate, active, selection]);
+  }, [mutate, active, selection, structuralLocked]);
   const delCols = useCallback(() => {
+    if (structuralLocked()) return;
     mutate((w) => adjustForRowsCols(w.sheets[active], "col", selection.c1, -(selection.c2 - selection.c1 + 1), w));
-  }, [mutate, active, selection]);
+  }, [mutate, active, selection, structuralLocked]);
 
   // ---- geometry: col widths / row heights / hide / header ops ----
   const onGeom = useCallback((axis: "col" | "row", i: number, size: number) => {
@@ -650,6 +758,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     const at = inSel ? lo : index;
     const count = inSel ? hi - lo + 1 : 1;
     if (action === "ins" || action === "del") {
+      if (structuralLocked()) return;
       mutate((w) => adjustForRowsCols(w.sheets[active], axis, at, action === "ins" ? count : -count, w));
     } else {
       mutateSheet((s) => {
@@ -660,10 +769,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         s[key] = cur.size ? [...cur].sort((a, b) => a - b) : undefined;
       });
     }
-  }, [mutate, mutateSheet, selection, active]);
+  }, [mutate, mutateSheet, selection, active, structuralLocked]);
 
   // merge / unmerge
   const mergeSel = useCallback(() => {
+    if (anyLocked([...rangeRefs(selection)])) return;
     if (selection.c1 === selection.c2 && selection.r1 === selection.r2) return toast("Select a range to merge");
     mutateSheet((s) => {
       s.merges = (s.merges ?? []).filter((m) =>
@@ -677,13 +787,14 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       s.cells[head] = { ...s.cells[head], s: { ...(s.cells[head]?.s ?? {}), align: "center", valign: "middle" } };
     });
     return undefined;
-  }, [mutateSheet, selection, toast]);
+  }, [mutateSheet, selection, toast, anyLocked]);
   const unmergeSel = useCallback(() => {
+    if (anyLocked([...rangeRefs(selection)])) return;
     mutateSheet((s) => {
       s.merges = (s.merges ?? []).filter((m) =>
         !(m.c1 <= selection.c2 && m.c2 >= selection.c1 && m.r1 <= selection.r2 && m.r2 >= selection.r1));
     });
-  }, [mutateSheet, selection]);
+  }, [mutateSheet, selection, anyLocked]);
 
   // ---- sheets tabs ----
   const addSheet = () => {
@@ -817,6 +928,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   }, [wb, sheet.name, setSelection, toast]);
 
   const pasteSpecial = useCallback((mode: PasteMode, op: PasteOp) => {
+    if (anyLocked([...rangeRefs(selection)])) return;
     const buf = getCopyBuffer();
     if (!buf) return toast("Nothing copied yet — copy a range first");
     mutateSheet((s) => {
@@ -824,7 +936,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     });
     setPasteSpec(false);
     toast("Pasted");
-  }, [mutateSheet, selection, evals, toast]);
+  }, [mutateSheet, selection, evals, toast, anyLocked]);
 
   // Ctrl+G → Go To (focus the name box); Ctrl+Alt+V / Ctrl+Shift+V → Paste Special
   useEffect(() => {
@@ -1024,6 +1136,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setAudit(audit === "dep" ? null : "dep")}>Dep⇢</button>
           <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
           <button className="rb" title="Sparkline — in-cell mini chart (anchor cell gets it)" onClick={() => setSparkDlg(true)}>∿</button>
+          <button className={`rb ${sheet.protected ? "on" : ""}`} title="Protect sheet — lock cells except allowed ranges"
+            onClick={() => setProtectDlg(true)}>🔒</button>
+          <button className={`rb ${showChanges ? "on" : ""}`} title="Show change marks — who last edited each cell"
+            onClick={() => setShowChanges(!showChanges)}>✎</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
@@ -1068,6 +1184,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           addSelection={addSelection} extendSelection={extWithPaint}
           invalid={invalidCells}
           noted={notedCells}
+          showChanges={showChanges}
           onCellMenu={(ref, x, y) => setCellMenu({ ref, x, y })}
           onFilterClick={(col, x, y) => setFilterMenu({ col, x, y })}
           listDrop={canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined}
@@ -1270,6 +1387,14 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       {propsDlg && (
         <PropsDialog wb={wb} onSave={(p) => { mutate((w) => { w.props = p; }); setPropsDlg(false); }}
           onClose={() => setPropsDlg(false)} />
+      )}
+      {protectDlg && (
+        <ProtectDialog sheet={sheet}
+          onSave={(prot, ranges) => {
+            mutateSheet((s) => { s.protected = prot || undefined; s.allowRanges = ranges; });
+            setProtectDlg(false);
+          }}
+          onClose={() => setProtectDlg(false)} />
       )}
       {sparkDlg && (
         <SparklineDialog anchor={anchorRef} sheet={sheet}
@@ -1580,17 +1705,20 @@ function FindDialog({ wb, replace, canEdit, onMutate, onJump, toast, onClose }: 
       if (!bySheet.has(h.sheet)) bySheet.set(h.sheet, new Set());
       bySheet.get(h.sheet)!.add(h.ref);
     }
+    let blocked = 0;
     onMutate((w) => {
       for (const s of w.sheets) {
         const refs = bySheet.get(s.name);
         if (!refs) continue;
         for (const ref of refs) {
+          if (cellLocked(s, ref)) { blocked++; continue; }
           const cell = s.cells[ref];
           if (cell && replaceInCell(cell, q, rep, matchCase)) n++;
         }
       }
     });
-    toast(n ? `Replaced ${n} cell${n > 1 ? "s" : ""}` : "Nothing replaced");
+    toast(n ? `Replaced ${n} cell${n > 1 ? "s" : ""}${blocked ? ` (${blocked} locked)` : ""}`
+            : blocked ? `${blocked} hit${blocked > 1 ? "s" : ""} locked — sheet protected` : "Nothing replaced");
     setHits([]);
     setSearched(false);
   };
@@ -2234,6 +2362,44 @@ function PropsDialog({ wb, onSave, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" onClick={() => onSave(p)}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Sheet protection dialog (S9.2): lock cells except allowed ranges. */
+function ProtectDialog({ sheet, onSave, onClose }: {
+  sheet: SheetData;
+  onSave: (prot: boolean, ranges: string[]) => void;
+  onClose: () => void;
+}) {
+  const [prot, setProt] = useState(!!sheet.protected);
+  const [ranges, setRanges] = useState((sheet.allowRanges ?? []).join(", "));
+  const bad = ranges.split(",").map((r) => r.trim()).filter(Boolean).filter((r) => !parseRange(r));
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Protect sheet — {sheet.name}</h3>
+        <label className="frow" style={{ marginTop: 12 }}>
+          <input type="checkbox" checked={prot} onChange={(e) => setProt(e.target.checked)} />
+          Lock all cells (editing, formatting, structural changes)
+        </label>
+        <div style={{ marginTop: 10 }}>
+          <span style={{ fontSize: 12, color: "#8B8480" }}>
+            Allowed ranges stay editable — comma-separated, e.g. <code>B2:D10, F2</code>
+          </span>
+          <input className="inp" style={{ width: "100%", marginTop: 6 }} value={ranges}
+            onChange={(e) => setRanges(e.target.value)} placeholder="none — everything locked"
+            disabled={!prot} />
+          {!!bad.length && <p style={{ fontSize: 11, color: "#D84B57", marginTop: 4 }}>Invalid: {bad.join(", ")}</p>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" disabled={!!bad.length}
+            onClick={() => onSave(prot, ranges.split(",").map((r) => r.trim()).filter(Boolean))}>
+            {prot ? "Protect" : "Unprotect"}
+          </button>
         </div>
       </div>
     </div>

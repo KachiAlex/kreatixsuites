@@ -45,11 +45,13 @@ interface GridProps {
   onFilterClick?: (col: number, x: number, y: number) => void;
   /** evaluate an ad-hoc formula in this sheet's context (CF formula rules) */
   evalFormula?: (f: string) => EvalResult;
+  /** highlight cells carrying a change stamp (S9.2) */
+  showChanges?: boolean;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -438,7 +440,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         onMouseDown={(e) => cellMouse(c, r, e)}
         onMouseEnter={(e) => cellMouse(c, r, e)}
         onDoubleClick={(e) => cellMouse(c, r, e)}
-        title={sheet.notes?.[ref] ? `${sheet.notes[ref]}` : undefined}
+        title={[
+          sheet.notes?.[ref] ?? "",
+          showChanges && cell?.h ? `Edited by ${cell.h.by} · ${new Date(cell.h.at).toLocaleString()}` : "",
+        ].filter(Boolean).join("\n") || undefined}
         onContextMenu={(e) => { if (onCellMenu) { e.preventDefault(); if (!inSel(c, r)) setSelection({ c1: c, r1: r, c2: c, r2: r }); onCellMenu(ref, e.clientX, e.clientY); } }}>
         {cfx?.bar && (
           <span className="cf-bar" style={{ width: `${cfx.bar.pct}%`, background: cfx.bar.color }} />
@@ -452,6 +457,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         ) : content}
         {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
         {noted?.has(ref) && <span className="cell-flag note" />}
+        {showChanges && cell?.h && <span className="cell-flag chg" />}
         {fRange && r === fRange.r1 && c >= fRange.c1 && c <= fRange.c2 && canEdit && (
           <span className={`fbtn ${fActive.has(c) ? "on" : ""}`}
             onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onFilterClick?.(c, e.clientX, e.clientY); }}>▾</span>
