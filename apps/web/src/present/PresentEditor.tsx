@@ -12,8 +12,8 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Deck, Slide, SlideObject, Theme, TransitionType } from "./model";
-import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint, masterObjects, layoutObjects, deckSize } from "./model";
+import type { Deck, Slide, SlideObject, Theme, TransitionType, TransitionDir } from "./model";
+import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint, masterObjects, layoutObjects, deckSize, TRANSITION_DIRS, animKind } from "./model";
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
@@ -31,7 +31,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects" | "ai">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects" | "ai" | "anim">("none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -446,17 +446,38 @@ export function PresentEditor({ item, initialDoc, permission }: {
     }
   };
 
-  const setTransition = (type: TransitionType) => {
-    mutateSlide((s) => { s.transition = type === "none" ? undefined : { type, duration: 500 }; });
+  const setTransition = (type: TransitionType, dir?: string) => {
+    mutateSlide((s) => {
+      if (type === "none") { s.transition = undefined; return; }
+      const dirs = TRANSITION_DIRS[type];
+      const d = (dir ?? s.transition?.dir) as TransitionDir | undefined;
+      s.transition = { type, duration: s.transition?.duration ?? 500, dir: dirs?.includes(d as TransitionDir) ? d : dirs?.[0] };
+    });
   };
 
+  // P3.3 — patch a single object's anim (pane edits) or set type on selection
+  const patchAnim = (id: string, patch: Partial<NonNullable<SlideObject["anim"]>>) =>
+    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o?.anim) Object.assign(o.anim, patch); });
+  const moveAnim = (id: string, dir: -1 | 1) =>
+    mutateSlide((s) => {
+      const anims = s.objects.filter((o) => o.anim).sort((a, b) => a.anim!.order - b.anim!.order);
+      const k = anims.findIndex((o) => o.id === id);
+      const j = k + dir;
+      if (k < 0 || j < 0 || j >= anims.length) return;
+      const t = anims[k].anim!.order; anims[k].anim!.order = anims[j].anim!.order; anims[j].anim!.order = t;
+    });
   const setAnim = (type: string) => {
     mutateSlide((s) => s.objects.forEach((o) => {
       if (!selection.has(o.id)) return;
       if (!type) o.anim = undefined;
       else {
         const maxOrder = Math.max(0, ...s.objects.map((x) => x.anim?.order ?? 0));
-        o.anim = { type: type as never, order: o.anim?.order ?? maxOrder + 1 };
+        o.anim = {
+          ...(o.anim ?? { order: maxOrder + 1 }),
+          type: type as SlideObject["anim"] extends { type: infer T } ? T : never,
+          // P3.2 — motion paths default to a rightward destination
+          motion: type === "path" ? (o.anim?.motion ?? { dx: 160, dy: 0 }) : undefined,
+        } as SlideObject["anim"];
       }
     }));
   };
@@ -860,14 +881,29 @@ export function PresentEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
           <button className="rb" title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
-          <select className="rb-sel" value={slide.transition?.type ?? "none"} title="Slide transition"
+          <select className="rb-sel" value={slide.transition?.type ?? "none"} title="Slide transition (P3.4)"
             onChange={(e) => setTransition(e.target.value as TransitionType)}>
             <option value="none">No transition</option>
             <option value="fade">Fade</option>
             <option value="slide">Slide</option>
-            <option value="zoom">Zoom</option>
             <option value="push">Push</option>
+            <option value="cover">Cover</option>
+            <option value="wipe">Wipe</option>
+            <option value="split">Split</option>
+            <option value="blinds">Blinds</option>
+            <option value="zoom">Zoom</option>
+            <option value="dissolve">Dissolve</option>
+            <option value="morph">Morph</option>
+            <option value="flip">Flip</option>
           </select>
+          {slide.transition && TRANSITION_DIRS[slide.transition.type] && (
+            <select className="rb-sel" value={slide.transition.dir ?? TRANSITION_DIRS[slide.transition.type]![0]} title="Direction"
+              onChange={(e) => setTransition(slide.transition!.type, e.target.value)}>
+              {TRANSITION_DIRS[slide.transition.type]!.map((d) => (
+                <option key={d} value={d}>{{ l: "← Left", r: "→ Right", t: "↓ Down", b: "↑ Up", h: "Horizontal", v: "Vertical" }[d]}</option>
+              ))}
+            </select>
+          )}
           <div className="rb-sep" />
           {editingObj && (
             <>
@@ -1004,15 +1040,38 @@ export function PresentEditor({ item, initialDoc, permission }: {
             </>
           )}
           {selCount > 0 && (
-            <select className="rb-sel" value={firstSel?.anim?.type ?? ""} title="Entrance animation"
+            <>
+            <select className="rb-sel" value={firstSel?.anim?.type ?? ""} title="Animation (P3.1/3.2)"
               onChange={(e) => setAnim(e.target.value)}>
               <option value="">No animation</option>
-              <option value="fade">Fade in</option>
-              <option value="slide-up">Slide up</option>
-              <option value="slide-left">Slide left</option>
-              <option value="zoom">Zoom in</option>
-              <option value="wipe">Wipe</option>
+              <optgroup label="Entrance">
+                <option value="fade">Fade</option>
+                <option value="slide-up">Slide up</option>
+                <option value="slide-left">Slide left</option>
+                <option value="zoom">Zoom</option>
+                <option value="wipe">Wipe</option>
+                <option value="float">Float in</option>
+                <option value="spin-in">Spin in</option>
+              </optgroup>
+              <optgroup label="Exit">
+                <option value="fade-out">Fade out</option>
+                <option value="slide-out">Slide out</option>
+                <option value="zoom-out">Zoom out</option>
+                <option value="wipe-out">Wipe out</option>
+              </optgroup>
+              <optgroup label="Emphasis">
+                <option value="pulse">Pulse</option>
+                <option value="grow">Grow/shrink</option>
+                <option value="shake">Shake</option>
+                <option value="color">Color pulse</option>
+              </optgroup>
+              <optgroup label="Motion">
+                <option value="path">Motion path</option>
+              </optgroup>
             </select>
+            <button className={`rb ${panel === "anim" ? "on" : ""}`} title="Animation pane (order, timing, triggers)"
+              onClick={() => setPanel(panel === "anim" ? "none" : "anim")}>✦</button>
+            </>
           )}
           {selCount > 0 && <button className="rb" title="Delete" onClick={() => delSelected()}>⌫</button>}
           <div className="rb-sep" />
@@ -1164,6 +1223,46 @@ export function PresentEditor({ item, initialDoc, permission }: {
               </div>
             ))}
             {!slide.objects.length && <div className="empty">No objects on this slide</div>}
+          </div>
+        </div>
+      )}
+      {panel === "anim" && (
+        <div className="side-panel">
+          <div className="sp-head">
+            <h3>Animations — slide {slideIdx + 1}</h3>
+            <button className="sp-close" onClick={() => setPanel("none")}>✕</button>
+          </div>
+          <div className="sp-body">
+            {editSlide.objects.filter((o) => o.anim).sort((a, b) => a.anim!.order - b.anim!.order).map((o) => (
+              <div key={o.id} className={`obj-row ${selection.has(o.id) ? "sel" : ""}`} style={{ flexWrap: "wrap", rowGap: 4 }}
+                onClick={() => setSelection(new Set([o.id]))}>
+                <span className="obj-anim" title={`Order ${o.anim!.order}`}>✦{o.anim!.order}</span>
+                <span className="obj-name">
+                  {animKind(o.anim!.type) === "exit" ? "↗" : animKind(o.anim!.type) === "emphasis" ? "◎" : animKind(o.anim!.type) === "path" ? "⤳" : "➤"} {o.anim!.type}
+                  <span style={{ color: "#A19A95", fontWeight: 400 }}> · {objName(o, editSlide.objects.indexOf(o))}</span>
+                </span>
+                <span className="obj-ops" onClick={(e) => e.stopPropagation()}>
+                  <button title="Move earlier" onClick={() => moveAnim(o.id, -1)}>↑</button>
+                  <button title="Move later" onClick={() => moveAnim(o.id, 1)}>↓</button>
+                  <button title="Remove animation" onClick={() => mutateSlide((s) => { const x = s.objects.find((v) => v.id === o.id); if (x) x.anim = undefined; })}>✕</button>
+                </span>
+                <div className="anim-fields" onClick={(e) => e.stopPropagation()}>
+                  <select value={o.anim!.trigger ?? "click"} title="Trigger"
+                    onChange={(e) => patchAnim(o.id, { trigger: e.target.value as "click" | "with" | "after" })}>
+                    <option value="click">On click</option>
+                    <option value="with">With previous</option>
+                    <option value="after">After previous</option>
+                  </select>
+                  <input type="number" min={50} step={50} value={o.anim!.duration ?? 450} title="Duration (ms)"
+                    onChange={(e) => patchAnim(o.id, { duration: Math.max(50, Number(e.target.value) || 450) })} />
+                  {(o.anim!.trigger ?? "click") !== "after" && (
+                    <input type="number" min={0} step={50} value={o.anim!.delay ?? 0} title="Delay (ms)"
+                      onChange={(e) => patchAnim(o.id, { delay: Math.max(0, Number(e.target.value) || 0) })} />
+                  )}
+                </div>
+              </div>
+            ))}
+            {!editSlide.objects.some((o) => o.anim) && <div className="empty">No animations on this slide — select an object and pick an effect in the ribbon.</div>}
           </div>
         </div>
       )}

@@ -600,6 +600,9 @@ textarea.inp{padding:8px 10px;height:auto}
 .guide-v{position:absolute;top:0;bottom:0;width:1px;background:#E85D9E;z-index:49;pointer-events:none}
 .guide-h{position:absolute;left:0;right:0;height:1px;background:#E85D9E;z-index:49;pointer-events:none}
 .s-cropbar{position:absolute;background:#26221F;border:1.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);border-radius:2px;z-index:52;touch-action:none}
+.anim-fields{display:flex;gap:5px;width:100%;padding-left:22px}
+.anim-fields select,.anim-fields input{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;padding:3px 5px;font-size:11px;color:#5B554F;background:#fff}
+.anim-fields input{width:52px;flex:none}
 .rail-sec{display:flex;align-items:center;gap:4px;padding:4px 8px;font-size:11px;font-weight:600;color:#7A726B;border-top:1px solid var(--line);margin-top:6px;position:sticky;top:0;background:var(--panel,#fff);z-index:5}
 .rail-sec button{border:0;background:transparent;cursor:pointer;color:#A19A95;font-size:10px;padding:1px 3px;border-radius:3px}
 .rail-sec button:hover{background:var(--soft,#F4F1EE);color:#26221F}
@@ -672,26 +675,88 @@ textarea.inp{padding:8px 10px;height:auto}
 .s-table-bar label{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;font-size:11px;color:#5B554F;border-radius:4px}
 .s-table-bar label:hover{background:var(--soft,#F4F1EE)}
 
+/* P3.4 — transition catalog: anim-<type> + dir-<d> on .pres-slide */
 .pres-slide.anim-fade{animation:t-fade .5s ease}
-.pres-slide.anim-slide{animation:t-slide .45s ease}
+.pres-slide.anim-slide.dir-l,.pres-slide.anim-slide{animation:t-slide-l .45s ease}
+.pres-slide.anim-slide.dir-r{animation:t-slide-r .45s ease}
+.pres-slide.anim-slide.dir-t{animation:t-slide-t .45s ease}
+.pres-slide.anim-slide.dir-b{animation:t-slide-b .45s ease}
 .pres-slide.anim-zoom{animation:t-zoom .45s ease}
-.pres-slide.anim-push{animation:t-push .45s ease}
+.pres-slide.anim-push.dir-l,.pres-slide.anim-push{animation:t-push-l .45s ease}
+.pres-slide.anim-push.dir-r{animation:t-push-r .45s ease}
+.pres-slide.anim-push.dir-t{animation:t-push-t .45s ease}
+.pres-slide.anim-push.dir-b{animation:t-push-b .45s ease}
+.pres-slide.anim-cover.dir-l,.pres-slide.anim-cover{animation:t-cover-l .45s ease}
+.pres-slide.anim-cover.dir-r{animation:t-cover-r .45s ease}
+.pres-slide.anim-cover.dir-t{animation:t-cover-t .45s ease}
+.pres-slide.anim-cover.dir-b{animation:t-cover-b .45s ease}
+.pres-slide.anim-wipe.dir-l,.pres-slide.anim-wipe{animation:t-wipe-l .45s ease}
+.pres-slide.anim-wipe.dir-r{animation:t-wipe-r .45s ease}
+.pres-slide.anim-wipe.dir-t{animation:t-wipe-t .45s ease}
+.pres-slide.anim-wipe.dir-b{animation:t-wipe-b .45s ease}
+.pres-slide.anim-split.dir-h,.pres-slide.anim-split{animation:t-split-h .5s ease}
+.pres-slide.anim-split.dir-v{animation:t-split-v .5s ease}
+.pres-slide.anim-blinds{animation:t-blinds .55s ease}
+.pres-slide.anim-dissolve{animation:t-dissolve .55s steps(10)}
+.pres-slide.anim-morph{animation:t-morph .5s ease}
+.pres-slide.anim-flip{animation:t-flip .55s ease}
 @keyframes t-fade{from{opacity:0}to{opacity:1}}
-@keyframes t-slide{from{opacity:0;transform:translateX(120px)}to{opacity:1;transform:none}}
+@keyframes t-slide-l{from{opacity:0;transform:translateX(120px)}to{opacity:1;transform:none}}
+@keyframes t-slide-r{from{opacity:0;transform:translateX(-120px)}to{opacity:1;transform:none}}
+@keyframes t-slide-t{from{opacity:0;transform:translateY(90px)}to{opacity:1;transform:none}}
+@keyframes t-slide-b{from{opacity:0;transform:translateY(-90px)}to{opacity:1;transform:none}}
 @keyframes t-zoom{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
-@keyframes t-push{from{opacity:0;transform:translateY(80px)}to{opacity:1;transform:none}}
+@keyframes t-push-l{from{opacity:.4;transform:translateX(60px)}to{opacity:1;transform:none}}
+@keyframes t-push-r{from{opacity:.4;transform:translateX(-60px)}to{opacity:1;transform:none}}
+@keyframes t-push-t{from{opacity:.4;transform:translateY(45px)}to{opacity:1;transform:none}}
+@keyframes t-push-b{from{opacity:.4;transform:translateY(-45px)}to{opacity:1;transform:none}}
+@keyframes t-cover-l{from{transform:translateX(100%)}to{transform:none}}
+@keyframes t-cover-r{from{transform:translateX(-100%)}to{transform:none}}
+@keyframes t-cover-t{from{transform:translateY(100%)}to{transform:none}}
+@keyframes t-cover-b{from{transform:translateY(-100%)}to{transform:none}}
+@keyframes t-wipe-l{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+@keyframes t-wipe-r{from{clip-path:inset(0 0 0 100%)}to{clip-path:inset(0)}}
+@keyframes t-wipe-t{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0)}}
+@keyframes t-wipe-b{from{clip-path:inset(100% 0 0 0)}to{clip-path:inset(0)}}
+@keyframes t-split-h{from{clip-path:inset(0 50% 0 50%)}to{clip-path:inset(0)}}
+@keyframes t-split-v{from{clip-path:inset(50% 0 50% 0)}to{clip-path:inset(0)}}
+@keyframes t-blinds{from{clip-path:inset(0 0 0 0);opacity:0;transform:scaleY(.02)}33%{opacity:1;transform:scaleY(.35)}66%{transform:scaleY(.68)}to{transform:scaleY(1)}}
+@keyframes t-dissolve{from{opacity:0;filter:saturate(1.6) contrast(1.4)}to{opacity:1;filter:none}}
+@keyframes t-morph{from{opacity:0;transform:scale(1.06)}to{opacity:1;transform:scale(1)}}
+@keyframes t-flip{from{opacity:.3;transform:perspective(900px) rotateY(-75deg)}to{opacity:1;transform:perspective(900px) rotateY(0)}}
 
-.s-enter{position:absolute;inset:0}
-.s-enter.enter-fade{animation:e-fade .4s ease}
-.s-enter.enter-slide-up{animation:e-slide-up .45s ease}
-.s-enter.enter-slide-left{animation:e-slide-left .45s ease}
-.s-enter.enter-zoom{animation:e-zoom .45s ease}
-.s-enter.enter-wipe{animation:e-wipe .45s ease}
+/* P3 — per-object animation effects (wrapper div; delay/duration inline) */
+.s-fx{position:absolute;inset:0;animation-fill-mode:both}
+.fx-enter-fade{animation-name:e-fade;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-slide-up{animation-name:e-slide-up;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-slide-left{animation-name:e-slide-left;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-zoom{animation-name:e-zoom;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-wipe{animation-name:e-wipe;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-float{animation-name:e-float;animation-duration:.5s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-enter-spin-in{animation-name:e-spin-in;animation-duration:.5s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-exit-fade-out{animation-name:x-fade;animation-duration:.4s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-exit-slide-out{animation-name:x-slide;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-exit-zoom-out{animation-name:x-zoom;animation-duration:.4s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-exit-wipe-out{animation-name:x-wipe;animation-duration:.45s;animation-timing-function:ease;animation-fill-mode:both}
+.fx-em-pulse{animation-name:m-pulse;animation-duration:.5s;animation-timing-function:ease-in-out;animation-fill-mode:both}
+.fx-em-grow{animation-name:m-grow;animation-duration:.5s;animation-timing-function:ease-in-out;animation-fill-mode:both}
+.fx-em-shake{animation-name:m-shake;animation-duration:.5s;animation-timing-function:ease-in-out;animation-fill-mode:both}
+.fx-em-color{animation-name:m-color;animation-duration:.7s;animation-timing-function:ease-in-out;animation-fill-mode:both}
 @keyframes e-fade{from{opacity:0}to{opacity:1}}
 @keyframes e-slide-up{from{opacity:0;transform:translateY(60px)}to{opacity:1;transform:none}}
 @keyframes e-slide-left{from{opacity:0;transform:translateX(80px)}to{opacity:1;transform:none}}
 @keyframes e-zoom{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
 @keyframes e-wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+@keyframes e-float{from{opacity:0;transform:translateY(30px) scale(.95)}to{opacity:1;transform:none}}
+@keyframes e-spin-in{from{opacity:0;transform:rotate(-160deg) scale(.5)}to{opacity:1;transform:none}}
+@keyframes x-fade{from{opacity:1}to{opacity:0}}
+@keyframes x-slide{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-50px)}}
+@keyframes x-zoom{from{opacity:1;transform:scale(1)}to{opacity:0;transform:scale(.6)}}
+@keyframes x-wipe{from{clip-path:inset(0)}to{clip-path:inset(0 0 0 100%)}}
+@keyframes m-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+@keyframes m-grow{from{transform:scale(1)}50%{transform:scale(1.12)}to{transform:scale(1)}}
+@keyframes m-shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+@keyframes m-color{0%,100%{filter:none}50%{filter:hue-rotate(120deg) saturate(1.6)}}
 
 /* ===================== Kreatix PDF ===================== */
 .pdf-rail{width:190px;min-width:190px;background:var(--sidebar,#FBF9F7);border-right:1px solid var(--line);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}

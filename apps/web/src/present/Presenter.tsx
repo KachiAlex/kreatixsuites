@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Deck, Theme } from "./model";
-import { masterObjects, layoutObjects, deckSize } from "./model";
+import { masterObjects, layoutObjects, deckSize, maxAnimStep } from "./model";
 import { SlideCanvas } from "./SlideCanvas";
 
 /** Fullscreen slideshow + Presenter View (KBS-PRESENT-015) */
@@ -19,8 +19,8 @@ export function Presenter({ deck, theme, startIndex, presenterView, onClose }: {
   const slides = deck.slides;
   const slide = slides[idx];
 
-  // entrance animations: each click reveals the next ordered object (KBS-PRESENT-005)
-  const maxStep = slide ? Math.max(0, ...slide.objects.map((o) => o.anim ? o.anim.order : 0)) : 0;
+  // P3.3 — click-steps from animSteps: click triggers consume steps, with/after chain on
+  const maxStep = slide ? maxAnimStep(slide.objects) : 0;
 
   const go = useCallback((d: number) => {
     setBlank("none");
@@ -77,7 +77,7 @@ export function Presenter({ deck, theme, startIndex, presenterView, onClose }: {
   const mainScale = presenterView ? scaleFor(window.innerWidth * 0.62, window.innerHeight * 0.72) : scaleFor(window.innerWidth, window.innerHeight);
 
   const renderSlide = (s: typeof slide, scale: number, withAnim = false) => (
-    <div className={`pres-slide ${withAnim && s?.transition && s.transition.type !== "none" ? `anim-${s.transition.type}` : ""}`}
+    <div className={`pres-slide ${withAnim && s?.transition && s.transition.type !== "none" ? `anim-${s.transition.type} dir-${s.transition.dir ?? "l"}` : ""}`}
       key={s?.id}
       style={{
         width: dims.w * scale, height: dims.h * scale, overflow: "hidden", position: "relative",

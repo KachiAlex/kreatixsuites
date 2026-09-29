@@ -1,6 +1,6 @@
 import { Fragment, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from "react";
 import type { Slide, SlideObject, Theme } from "./model";
-import { SLIDE_W, SLIDE_H, chartSeries, resolveConn, connBBox, hitAnchor } from "./model";
+import { SLIDE_W, SLIDE_H, chartSeries, resolveConn, connBBox, hitAnchor, animSteps, animKind } from "./model";
 
 const GRID = 8;
 const HANDLE = 8;
@@ -32,12 +32,13 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   const [guides, setGuides] = useState<{ v?: number; h?: number }>({});
   const boxRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
-    mode: "move" | "resize" | "rotate" | "connEnd" | "crop";
+    mode: "move" | "resize" | "rotate" | "connEnd" | "crop" | "mpath";
     handle?: string;
     startX: number; startY: number;
     orig: Map<string, { x: number; y: number; w: number; h: number; rotate?: number }>;
     connEnd?: 1 | 2;
     cropOrig?: { l: number; t: number; r: number; b: number };
+    motionOrig?: { dx: number; dy: number };
   } | null>(null);
 
   const objs = [...slide.objects].sort((a, b) => a.z - b.z);
@@ -102,6 +103,14 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   };
 
+  const startMPath = (e: RPointerEvent, o: SlideObject) => {
+    if (!interactive || !canEdit || !o.anim?.motion) return;
+    e.stopPropagation();
+    const orig = new Map([[o.id, { x: o.x, y: o.y, w: o.w, h: o.h }]]);
+    dragRef.current = { mode: "mpath", startX: e.clientX, startY: e.clientY, orig, motionOrig: { ...o.anim.motion } };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+
   const startCrop = (e: RPointerEvent, o: SlideObject, edge: string) => {
     if (!interactive || !canEdit) return;
     e.stopPropagation();
@@ -125,7 +134,12 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
     const dx = (e.clientX - d.startX) / scale;
     const dy = (e.clientY - d.startY) / scale;
     const patches: ObjPatch[] = [];
-    if (d.mode === "crop") {
+    if (d.mode === "mpath") {
+      const [id] = [...d.orig][0];
+      const cur = objs.find((x) => x.id === id);
+      const m0 = d.motionOrig!;
+      if (cur?.anim) patches.push({ id, patch: { anim: { ...cur.anim, motion: { dx: Math.round(m0.dx + dx), dy: Math.round(m0.dy + dy) } } } });
+    } else if (d.mode === "crop") {
       const [id, o] = [...d.orig][0];
       const c0 = d.cropOrig!;
       const cl = (v: number) => Math.max(0, Math.min(0.9, v));
@@ -204,7 +218,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
       const d = dragRef.current;
       dragRef.current = null;
       setGuides({});
-      if (d.mode === "crop") { onPatch([], true); return; }
+      if (d.mode === "crop" || d.mode === "mpath") { onPatch([], true); return; }
       // connEnd drop — attach to the nearest anchor if we're over an object
       if (d.mode === "connEnd") {
         const [id] = [...d.orig][0];
@@ -249,19 +263,36 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
         </defs>
       </svg>
       {under?.map((o) => <ObjView key={`u${o.id}`} o={o} theme={theme} />)}
-      {objs.map((o0) => {
+      {(() => { const aSteps = animStep !== undefined ? animSteps(objs) : null; return objs.map((o0) => {
         // connector bbox derives from resolved endpoints so it tracks
         // attached objects even when the stored box is stale
         const connPts = o0.type === "connector" ? resolveConn(o0, slide) : undefined;
-        const o = connPts ? { ...o0, ...connBBox(connPts) } : o0;
-        const hidden = animStep !== undefined && o.anim && o.anim.order > animStep;
-        const entering = animStep !== undefined && o.anim && o.anim.order === animStep ? o.anim.type : undefined;
+        // P3 — per-kind visibility + effect class; path shifts position at its step
+        const a = o0.anim;
+        let hidden = false;
+        let fx: { cls: string; delay?: number; dur?: number; outer?: boolean } | undefined;
+        let shift: { dx: number; dy: number } | undefined;
+        if (animStep !== undefined && a) {
+          const info = aSteps?.get(o0.id);
+          const s0 = info?.step ?? a.order;
+          const kind = animKind(a.type);
+          const spec = { delay: info?.delay, dur: a.duration };
+          if (kind === "enter") { hidden = s0 > animStep; if (s0 === animStep) fx = { cls: `fx-enter-${a.type}`, ...spec }; }
+          else if (kind === "exit") { hidden = s0 < animStep; if (s0 === animStep) fx = { cls: `fx-exit-${a.type}`, ...spec }; }
+          else if (kind === "emphasis") { if (s0 === animStep) fx = { cls: `fx-em-${a.type}`, ...spec }; }
+          else if (kind === "path" && a.motion && s0 <= animStep) {
+            shift = a.motion;
+            if (s0 === animStep) fx = { cls: "fx-path", ...spec, outer: true };
+          }
+        }
+        const o = connPts ? { ...o0, ...connBBox(connPts) }
+          : shift ? { ...o0, x: o0.x + shift.dx, y: o0.y + shift.dy } : o0;
         return (
         <ObjView key={o.id} o={o} theme={theme} connPts={connPts}
           selected={interactive && selection.has(o.id)}
           editing={editingId === o.id}
-          hidden={!!hidden}
-          enterAnim={entering}
+          hidden={hidden}
+          fx={fx}
           onMouseDown={(e) => selectObj(o, e)}
           onPointerDown={(e) => startDrag(e, o)}
           onDblClick={() => {
@@ -273,7 +304,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
           onTextBlur={(html) => { onTextCommit?.(o.id, html); setEditingId(null); }}
           onTableEdit={onTableCommit ? (rows) => onTableCommit(o.id, rows) : undefined} />
         );
-      })}
+      });})()}
       {interactive && canEdit && [...selection].map((id) => {
         const o = slide.objects.find((x) => x.id === id);
         if (!o || editingId === o.id) return null;
@@ -327,6 +358,22 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
           </Fragment>
         );
       })}
+      {/* P3.2 — motion-path endpoints for selected objects */}
+      {interactive && canEdit && [...selection].map((id) => {
+        const o = slide.objects.find((x) => x.id === id);
+        if (!o?.anim?.motion) return null;
+        const sx = o.x + o.w / 2, sy = o.y + o.h / 2;
+        const ex = sx + o.anim.motion.dx, ey = sy + o.anim.motion.dy;
+        return (
+          <Fragment key={`mp${id}`}>
+            <svg style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}>
+              <line x1={sx} y1={sy} x2={ex} y2={ey} stroke="#E85D9E" strokeWidth={1.5} strokeDasharray="5 4" />
+            </svg>
+            <div className="conn-end" title="Motion-path destination — drag to adjust"
+              style={{ left: ex - 6, top: ey - 6 }} onPointerDown={(e) => startMPath(e, o)} />
+          </Fragment>
+        );
+      })}
       {guides.v !== undefined && <div className="guide-v" style={{ left: guides.v }} />}
       {guides.h !== undefined && <div className="guide-h" style={{ top: guides.h }} />}
     </div>
@@ -335,11 +382,11 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
 
 // ---------- object renderer (also used for thumbnails & presenter) ----------
 
-export function ObjView({ o, theme, selected, editing, hidden, enterAnim, connPts, onMouseDown, onPointerDown, onDblClick, onTextBlur, onTableEdit }: {
+export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMouseDown, onPointerDown, onDblClick, onTextBlur, onTableEdit }: {
   o: SlideObject; theme: Theme;
   connPts?: { x1: number; y1: number; x2: number; y2: number };
   selected?: boolean; editing?: boolean; hidden?: boolean;
-  enterAnim?: string;
+  fx?: { cls: string; delay?: number; dur?: number; outer?: boolean };
   onMouseDown?: (e: RMouseEvent) => void;
   onPointerDown?: (e: RPointerEvent) => void;
   onDblClick?: () => void;
@@ -380,6 +427,9 @@ export function ObjView({ o, theme, selected, editing, hidden, enterAnim, connPt
     left: o.x, top: o.y, width: o.w, height: o.h,
     transform: o.rotate ? `rotate(${o.rotate}deg)` : undefined,
     opacity: hidden ? 0 : 1,
+    // P3.2 — path motion: the position flip transitions via left/top
+    transition: fx?.outer ? "left .45s ease, top .45s ease" : undefined,
+    transitionDelay: fx?.outer && fx.delay ? `${fx.delay}ms` : undefined,
     pointerEvents: hidden ? "none" : undefined,
   };
   const common = {
@@ -575,7 +625,12 @@ export function ObjView({ o, theme, selected, editing, hidden, enterAnim, connPt
   // enter-* animates an inner wrapper so it never fights the object's own rotate transform
   return (
     <div {...common} style={style}>
-      {enterAnim ? <div className={`s-enter enter-${enterAnim}`}>{content}</div> : content}
+      {fx && !fx.outer ? (
+        <div className={`s-fx ${fx.cls}`}
+          style={{ animationDelay: fx.delay ? `${fx.delay}ms` : undefined, animationDuration: fx.dur ? `${fx.dur}ms` : undefined }}>
+          {content}
+        </div>
+      ) : content}
     </div>
   );
 }

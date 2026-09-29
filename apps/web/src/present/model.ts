@@ -65,11 +65,54 @@ export interface SlideObject {
   // hyperlink — P1.7: object-level URL (run-level links live inside `html`)
   link?: string;
 
-  // entrance animation (KBS-PRESENT-005)
-  anim?: { type: "fade" | "slide-up" | "slide-left" | "zoom" | "wipe"; order: number };
+  // animation (KBS-PRESENT-005 + P3): entrances, exits, emphasis, motion paths
+  anim?: {
+    type: AnimType;
+    order: number;                       // sequence position
+    trigger?: "click" | "with" | "after"; // P3.3 — click consumes a step; with/after chain
+    duration?: number;                   // ms
+    delay?: number;                      // ms (with/after compute from chain)
+    motion?: { dx: number; dy: number }; // P3.2 — motion-path destination offset
+  };
 }
 
-export type TransitionType = "none" | "fade" | "slide" | "zoom" | "push";
+export type AnimType =
+  | "fade" | "slide-up" | "slide-left" | "zoom" | "wipe" | "float" | "spin-in"          // entrances
+  | "fade-out" | "slide-out" | "zoom-out" | "wipe-out"                                   // exits
+  | "pulse" | "grow" | "shake" | "color"                                                 // emphasis
+  | "path";                                                                              // motion path
+
+export const animKind = (t?: AnimType | string): "enter" | "exit" | "emphasis" | "path" | null =>
+  !t ? null : t === "path" ? "path" : t.endsWith("-out") ? "exit"
+    : t === "pulse" || t === "grow" || t === "shake" || t === "color" ? "emphasis" : "enter";
+
+/** P3.3 — the click-step + fire delay for each animated object.
+ *  click anims consume a step; with/after join the running group (after = sequential). */
+export function animSteps(objects: SlideObject[]): Map<string, { step: number; delay: number }> {
+  const m = new Map<string, { step: number; delay: number }>();
+  const sorted = objects.filter((o) => o.anim).sort((a, b) => a.anim!.order - b.anim!.order);
+  let step = 0, chain = 0;
+  for (const o of sorted) {
+    const a = o.anim!;
+    const trig = a.trigger ?? "click";
+    if (trig === "click" || step === 0) { step++; chain = 0; }
+    m.set(o.id, { step, delay: trig === "after" ? chain : a.delay ?? 0 });
+    chain += a.duration ?? 450;
+  }
+  return m;
+}
+
+export const maxAnimStep = (objects: SlideObject[]): number =>
+  [...animSteps(objects).values()].reduce((mx, v) => Math.max(mx, v.step), 0);
+
+export type TransitionType =
+  | "none" | "fade" | "slide" | "zoom" | "push" | "wipe" | "split" | "blinds"
+  | "dissolve" | "morph" | "flip" | "cover";
+export type TransitionDir = "l" | "r" | "t" | "b" | "h" | "v";
+export const TRANSITION_DIRS: Partial<Record<TransitionType, TransitionDir[]>> = {
+  slide: ["l", "r", "t", "b"], push: ["l", "r", "t", "b"], cover: ["l", "r", "t", "b"],
+  wipe: ["l", "r", "t", "b"], split: ["h", "v"], blinds: ["h", "v"],
+};
 
 export interface Slide {
   id: string;
@@ -77,7 +120,7 @@ export interface Slide {
   notes?: string;
   bg?: string;
   layout?: string;
-  transition?: { type: TransitionType; duration?: number };
+  transition?: { type: TransitionType; duration?: number; dir?: TransitionDir };
   hidden?: boolean;        // P2.3 — skipped during presentation
   sectionStart?: string;   // P2.2 — this slide heads a named section
   bgImage?: string;        // P2.5 — picture background (data URL), layered over `bg`
