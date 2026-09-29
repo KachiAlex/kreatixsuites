@@ -127,6 +127,30 @@ export function contentRoutes(app: FastifyInstance) {
     return { version: next };
   });
 
+  /** GET a remote page's HTML for the web→PDF import (server-side fetch avoids
+   *  browser CORS; response is returned as inert text — clients must parse it
+   *  without injecting it into the DOM). */
+  app.get("/api/fetch-html", async (req, reply) => {
+    let url: URL;
+    try {
+      url = new URL(String((req.query as { url?: string }).url ?? ""));
+    } catch {
+      return reply.code(400).send({ error: "bad_request", message: "Invalid URL" });
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:")
+      return reply.code(400).send({ error: "bad_request", message: "http(s) URLs only" });
+    try {
+      const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(12000) });
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("text/html"))
+        return reply.code(415).send({ error: "unsupported", message: "URL did not return HTML" });
+      const html = (await res.text()).slice(0, 2_000_000);
+      return { url: res.url, html };
+    } catch {
+      return reply.code(502).send({ error: "fetch_failed", message: "Could not fetch that URL" });
+    }
+  });
+
   /** PUT new content — creates an immutable version (autosave calls this, debounced client-side) */
   app.put("/api/files/:id/content", async (req, reply) => {
     const { user } = req as AuthedRequest;

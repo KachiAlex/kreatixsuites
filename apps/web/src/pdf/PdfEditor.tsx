@@ -15,9 +15,9 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
-import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind } from "./model";
+import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
-import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages } from "./pages";
+import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -129,6 +129,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [attachments, setAttachments] = useState<{ name: string; content: Uint8Array }[]>([]);
   // PDF-14.1 — accessibility check results
   const [accessReport, setAccessReport] = useState<{ ok: boolean; label: string }[] | null>(null);
+  // PDF-8.3 — OCR
+  const [ocrBusy, setOcrBusy] = useState(false);
+  // PDF-12.3 — review filter in the annotations panel
+  const [annFilter, setAnnFilter] = useState<"all" | "open" | "accepted" | "rejected" | "completed">("all");
+  // PDF-13.4 — web page → pages
+  const [webUrl, setWebUrl] = useState("");
+  const attachRef = useRef<HTMLInputElement>(null);
+  const portRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
@@ -416,6 +424,111 @@ export function PdfEditor({ item, initialDoc, permission }: {
     toast(`Split at page ${curPage}`);
   };
 
+  // ---------- PDF-8.3: OCR — rasterize page, recognize words, invisible selectable layer ----------
+  const runOcr = async () => {
+    if (!doc || !pdfDataRef.current || ocrBusy || !canEdit) return;
+    setOcrBusy(true);
+    try {
+      const { recognize } = await import("tesseract.js");
+      const page = await doc.getPage(curPage);
+      const S = 2;
+      const vp = page.getViewport({ scale: S });
+      const cv = document.createElement("canvas");
+      cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+      const ctx = cv.getContext("2d");
+      if (!ctx) throw new Error("no canvas ctx");
+      await page.render({ canvasContext: ctx, canvas: cv, viewport: vp }).promise;
+      const res = await recognize(cv, "eng");
+      // tesseract bbox is top-left canvas px; convert to bottom-left pdf units
+      const words: OcrWord[] = ((res.data as { words?: { bbox: { x0: number; y0: number; x1: number; y1: number }; text: string }[] }).words ?? [])
+        .map((w) => ({
+          x: w.bbox.x0 / S, y: (vp.height - w.bbox.y1) / S,
+          w: (w.bbox.x1 - w.bbox.x0) / S, h: (w.bbox.y1 - w.bbox.y0) / S, text: w.text,
+        }));
+      mutate((d) => { d.ocr = { ...(d.ocr ?? {}), [String(curPage)]: words }; });
+      toast(`OCR complete — ${words.length} words on page ${curPage}`);
+    } catch { toast("OCR failed"); }
+    finally { setOcrBusy(false); }
+  };
+
+  // ---------- PDF-10.2: auto-detect fields (underscore runs, checkbox glyphs) ----------
+  const detectFields = async () => {
+    if (!doc || !canEdit) return;
+    const found: PdfField[] = [];
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      const vp1 = page.getViewport({ scale: 1 });
+      for (const it of tc.items) {
+        if (!("str" in it) || !it.transform) continue;
+        const str = it.str;
+        if (!str) continue;
+        const tx = pdfjs.Util.transform(vp1.transform, it.transform);
+        const fh = Math.max(6, Math.hypot(tx[2], tx[3]));
+        const [px, py] = vp1.convertToPdfPoint(tx[4], tx[5]);
+        const cw = it.width / Math.max(1, str.length);
+        for (const mm of str.matchAll(/_{3,}/g))
+          found.push({ id: crypto.randomUUID().slice(0, 8), page: p, kind: "text",
+            name: `field_${p}_${found.length + 1}`,
+            rect: [px + cw * (mm.index ?? 0), py - fh * 0.3, Math.max(20, cw * mm[0].length), fh * 1.4] });
+        for (const mm of str.matchAll(/☐|▢|\[\s?\]/g))
+          found.push({ id: crypto.randomUUID().slice(0, 8), page: p, kind: "checkbox",
+            name: `check_${p}_${found.length + 1}`,
+            rect: [px + cw * (mm.index ?? 0), py - fh * 0.3, fh, fh] });
+      }
+    }
+    if (!found.length) { toast("No blank fields detected on this PDF"); return; }
+    mutate((d) => { d.fields = [...(d.fields ?? []), ...found]; });
+    toast(`Detected ${found.length} field${found.length === 1 ? "" : "s"}`);
+  };
+
+  // ---------- PDF-13.5: attach files / build a portfolio cover ----------
+  const attachFiles = async (list: FileList | null, withCover: boolean) => {
+    const bytes = pdfDataRef.current;
+    if (!bytes || !list?.length || !canEdit) return;
+    try {
+      const files = await Promise.all([...list].map(async (f) => ({
+        name: f.name, data: new Uint8Array(await f.arrayBuffer()), mime: f.type || undefined,
+      })));
+      const out = withCover ? await makePortfolio(bytes, files, title) : await attachFilesToPdf(bytes, files);
+      const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+      if (withCover)
+        mutate((d) => {
+          d.annotations = d.annotations.map((a) => ({ ...a, page: a.page + 1 }));
+          d.fields = (d.fields ?? []).map((f) => ({ ...f, page: f.page + 1 }));
+          if (d.ocr) d.ocr = Object.fromEntries(Object.entries(d.ocr).map(([k, v]) => [String(Number(k) + 1), v]));
+        });
+      else mutate(() => {});
+      await reloadPdf(ab);
+      void persistBytes(ab, withCover ? "Created portfolio" : `Attached ${files.length} file(s)`);
+      setAttachments((a) => [...a, ...files.map((f) => ({ name: f.name, content: f.data }))]);
+      toast(withCover ? "Portfolio cover + attachments added" : `${files.length} file(s) attached`);
+    } catch { toast("Attach failed"); }
+  };
+
+  // ---------- PDF-13.4: web page → appended text pages ----------
+  const insertWebPage = async () => {
+    const url = webUrl.trim();
+    const bytes = pdfDataRef.current;
+    if (!url || !bytes || !canEdit) return;
+    try {
+      const res = await api.get<{ url: string; html: string }>(`/api/fetch-html?url=${encodeURIComponent(url)}`);
+      const dom = new DOMParser().parseFromString(res.html, "text/html");
+      dom.querySelectorAll("script,style,noscript").forEach((n) => n.remove());
+      const t = dom.title || res.url;
+      const text = (dom.body?.innerText ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 30000);
+      if (!text) { toast("No readable text on that page"); return; }
+      const pageBytes = await webTextToPdf(t, res.url, text);
+      const { bytes: merged, count } = await mergePdf(bytes, pageBytes.buffer.slice(pageBytes.byteOffset, pageBytes.byteOffset + pageBytes.byteLength) as ArrayBuffer);
+      const ab = merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength) as ArrayBuffer;
+      mutate(() => {});
+      await reloadPdf(ab);
+      void persistBytes(ab, `Inserted web page ${res.url}`);
+      setWebUrl("");
+      toast(`Added ${count} page${count === 1 ? "" : "s"} from ${res.url}`);
+    } catch { toast("Could not fetch that page"); }
+  };
+
   const undo = useCallback(() => {
     const e = undoStack.current.pop();
     if (!e) return;
@@ -567,6 +680,24 @@ export function PdfEditor({ item, initialDoc, permission }: {
         }
         out.push({ page: p, snippet: text.slice(Math.max(0, m.index - 30), m.index + m[0].length + 30).trim(), rects });
         if (out.length >= 200) break;
+      }
+      // PDF-8.3 — OCR'd words on scanned pages participate in search too
+      const ocrWords = annDoc.ocr?.[String(p)] ?? [];
+      if (ocrWords.length) {
+        const ocrText = ocrWords.map((w) => w.text).join(" ");
+        re.lastIndex = 0;
+        while ((m = re.exec(ocrText))) {
+          const ms = m.index, me = ms + m[0].length;
+          const rects: Rect4[] = [];
+          let off = 0;
+          for (const w of ocrWords) {
+            const ws = off; off += w.text.length + 1; // joined with spaces
+            if (ws + w.text.length <= ms || ws >= me) continue;
+            rects.push([w.x, w.y, w.w, w.h]);
+          }
+          out.push({ page: p, snippet: ocrText.slice(Math.max(0, ms - 30), me + 30).trim(), rects });
+          if (out.length >= 200) break;
+        }
       }
       if (out.length >= 200) break;
     }
@@ -811,10 +942,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           <button className={`rb ${panel === "layers" ? "on" : ""}`} title="Layers — toggle optional content groups"
             onClick={() => setPanel(panel === "layers" ? "none" : "layers")}>⧈</button>
         )}
-        {attachments.length > 0 && (
-          <button className={`rb ${panel === "attach" ? "on" : ""}`} title="Embedded attachments"
-            onClick={() => setPanel(panel === "attach" ? "none" : "attach")}>📎</button>
-        )}
+        <button className={`rb ${panel === "attach" ? "on" : ""}`} title="Embedded attachments — attach files, build portfolio"
+          onClick={() => setPanel(panel === "attach" ? "none" : "attach")}>📎</button>
         <button className={`rb ${panel === "access" ? "on" : ""}`} title="Accessibility check"
           onClick={() => { setPanel(panel === "access" ? "none" : "access"); if (!accessReport) void runAccessCheck(); }}>♿</button>
         <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
@@ -855,6 +984,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
             <option value="barcode">Barcode</option>
           </select>
         )}
+        {tool === "field" && (
+          <button className="rb" title="Auto-detect blank fields (underscores, checkbox glyphs)"
+            onClick={() => void detectFields()}>⚡ Detect</button>
+        )}
         {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && tool !== "caret" && (
           <div className="rb-colors">
             {MARKUP_COLORS.map((c) => (
@@ -892,6 +1025,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
         <input ref={cmpRef} type="file" accept=".pdf" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void runCompare(f); e.target.value = ""; }} />
+        <button className="rb" title="OCR this page — recognize text on scans (searchable/selectable)"
+          disabled={!canEdit || ocrBusy} onClick={() => void runOcr()}>{ocrBusy ? "⏳" : "OCR"}</button>
         <button className="rb" title="Add comment" onClick={() => { setPanel("comments"); }}>💬+</button>
         {panel === "organize" && (
           <>
@@ -909,6 +1044,13 @@ export function PdfEditor({ item, initialDoc, permission }: {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
             <input ref={imgPageRef} type="file" accept="image/png,image/jpeg" multiple hidden
               onChange={(e) => { if (e.target.files?.length) void orgInsertImages(e.target.files); e.target.value = ""; }} />
+            <span className="rb-info" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <input className="pg-in" style={{ width: 180 }} placeholder="https://… → pages (PDF-13.4)"
+                value={webUrl} onChange={(e) => setWebUrl(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void insertWebPage(); }} />
+              <button className="rb" title="Fetch web page and append as text pages" disabled={!webUrl.trim()}
+                onClick={() => void insertWebPage()}>🌐</button>
+            </span>
           </>
         )}
         <input ref={imgFileRef} type="file" accept="image/png,image/jpeg" hidden
@@ -987,6 +1129,18 @@ export function PdfEditor({ item, initialDoc, permission }: {
             {panel === "attach" && (
               <div className="pdf-annlist">
                 <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Embedded files</div>
+                {canEdit && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    <button className="btn-ghost btn-sm" onClick={() => attachRef.current?.click()}>Attach file…</button>
+                    <button className="btn-ghost btn-sm" title="Attach files + prepend a cover page listing them"
+                      onClick={() => portRef.current?.click()}>Make portfolio</button>
+                    <input ref={attachRef} type="file" multiple hidden
+                      onChange={(e) => { void attachFiles(e.target.files, false); e.target.value = ""; }} />
+                    <input ref={portRef} type="file" multiple hidden
+                      onChange={(e) => { void attachFiles(e.target.files, true); e.target.value = ""; }} />
+                  </div>
+                )}
+                {!attachments.length && <div style={{ fontSize: 11, color: "#8B8480" }}>No embedded files</div>}
                 {attachments.map((a) => (
                   <div key={a.name} className="pdf-annrow">
                     <div className="pdf-annrow-top">
@@ -1047,8 +1201,19 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   <button className="btn-ghost btn-sm" style={{ flex: 1 }} disabled={!canEdit}
                     onClick={() => fdfRef.current?.click()}>⇩ Import .fdf</button>
                 </div>
+                {/* PDF-12.3 — review filter */}
+                <select className="rb-sel" style={{ width: "100%" }} value={annFilter}
+                  onChange={(e) => setAnnFilter(e.target.value as typeof annFilter)}>
+                  <option value="all">All annotations</option>
+                  <option value="open">Open (unresolved)</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="completed">Completed</option>
+                </select>
                 {!annDoc.annotations.length && <div className="empty">No annotations yet — draw one with the markup tools</div>}
-                {[...annDoc.annotations].sort((x, y) => x.page - y.page || (x.createdAt ?? "").localeCompare(y.createdAt ?? "")).map((a) => (
+                {[...annDoc.annotations]
+                  .filter((a) => annFilter === "all" ? true : annFilter === "open" ? !a.status || a.status === "none" : a.status === annFilter)
+                  .sort((x, y) => x.page - y.page || (x.createdAt ?? "").localeCompare(y.createdAt ?? "")).map((a) => (
                   <AnnRow key={a.id} a={a} sel={selAnn === a.id} canEdit={canEdit} userName={user?.displayName ?? "You"}
                     onPick={() => { setSelAnn(a.id); scrollToPage(a.page); }}
                     onDel={() => delAnn(a.id)}
@@ -1105,7 +1270,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 anns={annDoc.annotations.filter((a) => a.page === p)}
                 selAnn={selAnn} setSelAnn={setSelAnn}
                 tool={canEdit ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
-                tbFont={tbFont} tbSize={tbSize}
+                tbFont={tbFont} tbSize={tbSize} ocrWords={annDoc.ocr?.[String(p)]}
                 canEdit={canEdit} viewRot={viewRot} dark={dark}
                 searchRects={matches.filter((m, i) => m.page === p && i <= matchIdx + 3).flatMap((m) => m.rects)}
                 onAdd={(a) => addAnn(p, a)}
@@ -1264,7 +1429,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                         header: pdfOpts.header || undefined, footer: pdfOpts.footer || undefined,
                         sanitize: pdfOpts.sanitize, optimize: pdfOpts.optimize,
                         bates: pdfOpts.batesPrefix ? { prefix: pdfOpts.batesPrefix, start: pdfOpts.batesStart, digits: 5 } : undefined },
-                      annDoc.fields ?? [], rasters);
+                      annDoc.fields ?? [], rasters, annDoc.ocr);
                     if (rasters) toast("Redacted pages permanently removed");
                   } catch { toast("PDF export failed"); }
                 })();
@@ -1418,7 +1583,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -1429,6 +1594,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   tbFont?: "helv" | "times" | "courier"; tbSize?: number;
   canEdit: boolean;
   viewRot?: number; dark?: boolean;
+  ocrWords?: OcrWord[];
   searchRects: Rect4[];
   onAdd: (a: Omit<PdfAnn, "id" | "page" | "createdAt">) => void;
   onMove: (id: string, dx: number, dy: number) => void;
@@ -1780,6 +1946,12 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
       <div ref={textRef} />
       <div ref={formRef} />
+      {/* PDF-8.3 — OCR words: invisible but selectable/copyable over scans */}
+      {v && ocrWords?.map((w, i) => {
+        const [x, y, w2, h2] = vpRect([w.x, w.y, w.w, w.h]);
+        return <span key={`oc${i}`} className="pdf-ocrw"
+          style={{ left: x, top: y, width: w2, height: h2, fontSize: h2 }}>{w.text}</span>;
+      })}
       {/* search match flashes */}
       {v && searchRects.map((r, i) => {
         const [x, y, w2, h2] = vpRect(r);
@@ -2389,7 +2561,11 @@ function AnnRow({ a, sel, canEdit, userName, onPick, onDel, onPatch }: {
             {ANN_STATUS.map((s) => <option key={s} value={s}>Status: {s}</option>)}
           </select>
           {(a.replies ?? []).map((r, i) => (
-            <div key={i} className="pdf-annreply"><b>{r.by}</b> {r.text}</div>
+            <div key={i} className="pdf-annreply"><b>{r.by}</b>{" "}
+              {/* PDF-12.3 — @mentions render as highlighted chips */}
+              {r.text.split(/(@[\w.-]+)/g).map((t, j) =>
+                t.startsWith("@") ? <span key={j} className="pdf-mention">{t}</span> : t)}
+            </div>
           ))}
           {canEdit && (
             <div style={{ display: "flex", gap: 4 }}>

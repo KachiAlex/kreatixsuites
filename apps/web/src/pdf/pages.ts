@@ -113,6 +113,90 @@ export async function appendImagePages(bytes: ArrayBuffer, images: { dataUrl: st
   return doc.save();
 }
 
+/** PDF-13.5 — embed arbitrary files as PDF attachments. */
+export async function attachFilesToPdf(
+  bytes: ArrayBuffer,
+  files: { name: string; data: Uint8Array; mime?: string }[],
+): Promise<Uint8Array> {
+  const { PDFDocument } = await import("pdf-lib");
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  for (const f of files)
+    await doc.attach(f.data, f.name, {
+      mimeType: f.mime || "application/octet-stream",
+      description: f.name,
+      creationDate: new Date(),
+      modificationDate: new Date(),
+    });
+  return doc.save();
+}
+
+/** PDF-13.5 — portfolio: attach files + prepend a cover page listing them. */
+export async function makePortfolio(
+  bytes: ArrayBuffer,
+  files: { name: string; data: Uint8Array; mime?: string }[],
+  title = "PDF Portfolio",
+): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+  const body = await doc.embedFont(StandardFonts.Helvetica);
+  for (const f of files)
+    await doc.attach(f.data, f.name, {
+      mimeType: f.mime || "application/octet-stream",
+      description: f.name,
+      creationDate: new Date(),
+      modificationDate: new Date(),
+    });
+  const cover = doc.insertPage(0, [612, 792]);
+  cover.drawRectangle({ x: 0, y: 0, width: 612, height: 792, color: rgb(0.96, 0.95, 0.94) });
+  cover.drawText(title.slice(0, 60), { x: 60, y: 720, size: 26, font, color: rgb(0.1, 0.1, 0.1) });
+  cover.drawText(`${files.length} embedded file(s) — open the attachments pane to extract`, {
+    x: 60, y: 692, size: 10, font: body, color: rgb(0.4, 0.4, 0.4),
+  });
+  let y = 650;
+  for (const f of files) {
+    if (y < 60) break;
+    cover.drawText(`•  ${f.name.slice(0, 70)}  (${(f.data.length / 1024).toFixed(1)} KB)`, {
+      x: 72, y, size: 12, font: body, color: rgb(0.15, 0.15, 0.15),
+    });
+    y -= 20;
+  }
+  return doc.save();
+}
+
+/** PDF-13.4 — build a simple multi-page PDF from a web page's title + text. */
+export async function webTextToPdf(title: string, url: string, text: string): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+  const body = await doc.embedFont(StandardFonts.Helvetica);
+  const W = 612, H = 792, M = 60, LH = 14;
+  const wrap = (s: string, max = 95) => {
+    const out: string[] = [];
+    for (const para of s.split("\n")) {
+      let line = "";
+      for (const wd of para.split(/\s+/)) {
+        if ((line + " " + wd).trim().length > max) { out.push(line.trimEnd()); line = wd; }
+        else line += " " + wd;
+      }
+      out.push(line.trimEnd());
+    }
+    return out;
+  };
+  let page = doc.addPage([W, H]);
+  let y = H - M;
+  page.drawText(title.slice(0, 70), { x: M, y, size: 18, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 24;
+  page.drawText(url.slice(0, 100), { x: M, y, size: 9, font: body, color: rgb(0.35, 0.5, 0.8) });
+  y -= 28;
+  for (const line of wrap(text)) {
+    if (y < M) { page = doc.addPage([W, H]); y = H - M; }
+    if (line) page.drawText(line.slice(0, 110), { x: M, y, size: 10, font: body, color: rgb(0.12, 0.12, 0.12) });
+    y -= LH;
+  }
+  return doc.save();
+}
+
 export function downloadPdf(bytes: Uint8Array, name: string) {
   const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");

@@ -53,12 +53,18 @@ export interface PdfField {
   comb?: number;
 }
 
+// PDF-8.3 — OCR overlay: recognized words (pdf user-space) make scanned
+// pages selectable/copyable in the viewer and searchable on export
+export interface OcrWord { x: number; y: number; w: number; h: number; text: string; }
+
 export interface PdfDoc {
   kind: "pdf";
   annotations: PdfAnn[];
   /** AcroForm field values harvested from pdf.js AnnotationStorage */
   form?: Record<string, unknown>;
   fields?: PdfField[];
+  /** PDF-8.3 — OCR word boxes keyed by 1-based page number */
+  ocr?: Record<string, OcrWord[]>;
 }
 
 export const emptyPdfDoc = (): PdfDoc => ({ kind: "pdf", annotations: [], fields: [] });

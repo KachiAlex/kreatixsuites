@@ -1,5 +1,5 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { PdfAnn, PdfField } from "./model";
+import type { PdfAnn, PdfField, OcrWord } from "./model";
 
 type RGB = { r: number; g: number; b: number };
 const hexToRgb = (hex?: string): RGB => {
@@ -36,6 +36,8 @@ export async function buildFlattenedPdf(
   /** PDF-7 — pages that must be content-replaced by a raster (true redaction):
    * 1-based page → PNG data URL of the rendered page */
   rasters?: Record<number, string>,
+  /** PDF-8.3 — OCR word boxes baked as invisible text → searchable output */
+  ocr?: Record<string, OcrWord[]>,
 ): Promise<Uint8Array> {
   const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -131,6 +133,19 @@ export async function buildFlattenedPdf(
     if (fields.length) form.updateFieldAppearances(helv);
     form.flatten();
   } catch { /* no fields or unsupported — annotations still bake */ }
+
+  // ---- PDF-8.3: OCR layer — invisible text makes scans searchable in the export ----
+  if (ocr) {
+    for (const [pn, words] of Object.entries(ocr)) {
+      const pg = src.getPages()[Number(pn) - 1];
+      if (!pg) continue;
+      for (const w of words) {
+        try {
+          pg.drawText(safe(w.text), { x: w.x, y: w.y, size: Math.max(4, w.h * 0.8), font: helv, opacity: 0 });
+        } catch { /* skip word */ }
+      }
+    }
+  }
 
   // ---- PDF-7: true redaction — replace redacted pages with a flat image ----
   // Removing the page object drops its original content stream entirely, so the
@@ -371,8 +386,9 @@ export async function exportFlattenedPdf(
   opts: FlattenOpts = {},
   fields: PdfField[] = [],
   rasters?: Record<number, string>,
+  ocr?: Record<string, OcrWord[]>,
 ): Promise<void> {
-  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields, rasters);
+  const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields, rasters, ocr);
   const url = URL.createObjectURL(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }));
   const a = document.createElement("a");
   a.href = url;
