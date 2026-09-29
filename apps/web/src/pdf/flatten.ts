@@ -49,6 +49,8 @@ export async function buildFlattenedPdf(
     times: await src.embedFont(StandardFonts.TimesRoman),
     courier: await src.embedFont(StandardFonts.Courier),
   };
+  // check/cross fill marks render as ZapfDingbats glyphs 4/8
+  const ding = await src.embedFont(StandardFonts.ZapfDingbats);
 
   // ---- fill + flatten AcroForm fields ----
   try {
@@ -246,6 +248,13 @@ export async function buildFlattenedPdf(
         case "whiteout": {
           const [x, y, w, h] = a.rects![0];
           page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1) });
+          break;
+        }
+        case "check":
+        case "cross": {
+          const [x, y, , h] = a.rects![0];
+          page.drawText(a.type === "check" ? "4" : "8",
+            { x, y: y + 1, size: Math.max(8, h * 0.9), font: ding, color: col });
           break;
         }
         case "redact": {

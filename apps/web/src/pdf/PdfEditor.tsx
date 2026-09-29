@@ -15,6 +15,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
+import { MenuBar } from "../writer/MenuBar";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
@@ -34,36 +35,59 @@ const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "layers" | "attach" | "access" | "comments" | "versions" | "ai" | "organize" | "compare";
 type Rect4 = [number, number, number, number];
 
-const TOOLS: { id: Tool; ico: string; label: string }[] = [
-  { id: "select", ico: "➤", label: "Select / move annotations" },
-  { id: "highlight", ico: "🖍", label: "Highlight text (select text, or drag a region)" },
-  { id: "underline", ico: "U̲", label: "Underline text" },
-  { id: "strikeout", ico: "S̶", label: "Strikeout text" },
-  { id: "squiggly", ico: "≋", label: "Squiggly underline" },
-  { id: "freehand", ico: "✏", label: "Freehand draw" },
-  { id: "polyline", ico: "⛓", label: "Polyline — click vertices, double-click to finish" },
-  { id: "rect", ico: "▭", label: "Rectangle" },
-  { id: "ellipse", ico: "◯", label: "Ellipse" },
-  { id: "line", ico: "╱", label: "Line" },
-  { id: "arrow", ico: "↗", label: "Arrow" },
-  { id: "callout", ico: "🗨", label: "Callout — box with a tail to the point you drag from" },
-  { id: "cloud", ico: "☁", label: "Cloud" },
-  { id: "measure", ico: "📏", label: "Measure — drag to measure distance" },
-  { id: "edittext", ico: "✎T", label: "Edit text — drag over a text block to retype it" },
-  { id: "image", ico: "🖼", label: "Insert image — drag a box, then pick a file" },
-  { id: "whiteout", ico: "▨", label: "White-out — erase content under a white block" },
-  { id: "field", ico: "▣", label: "Form field — drag to place a fillable field" },
-  { id: "redact", ico: "▮", label: "Redact — permanently removes the marked content on export" },
-  { id: "caret", ico: "⌃", label: "Insert text at caret — click where text should be inserted, then type it" },
-  { id: "replace", ico: "⌁", label: "Replace text — select text, then type the suggested replacement" },
-  { id: "loupe", ico: "🔎", label: "Loupe — hover to magnify (viewing tool)" },
-  { id: "note", ico: "💬", label: "Sticky note" },
-  { id: "textbox", ico: "T", label: "Text box" },
-  { id: "stamp", ico: "✅", label: "Stamp" },
-  { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
+// Tools grouped by task — the ribbon renders each group as a labeled dropdown
+// so every function is discoverable by name without a 26-icon row.
+const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: string }[] }[] = [
+  { label: "Markup", tools: [
+    { id: "highlight", ico: "🖍", label: "Highlight text" },
+    { id: "underline", ico: "U̲", label: "Underline text" },
+    { id: "strikeout", ico: "S̶", label: "Strikeout text" },
+    { id: "squiggly", ico: "≋", label: "Squiggly underline" },
+  ]},
+  { label: "Draw", tools: [
+    { id: "freehand", ico: "✏", label: "Freehand draw" },
+    { id: "polyline", ico: "⛓", label: "Polyline (click vertices, double-click ends)" },
+    { id: "rect", ico: "▭", label: "Rectangle" },
+    { id: "ellipse", ico: "◯", label: "Ellipse" },
+    { id: "line", ico: "╱", label: "Line" },
+    { id: "arrow", ico: "↗", label: "Arrow" },
+    { id: "callout", ico: "🗨", label: "Callout (box + tail)" },
+    { id: "cloud", ico: "☁", label: "Cloud" },
+    { id: "measure", ico: "📏", label: "Measure distance" },
+  ]},
+  { label: "Fill & Sign", tools: [
+    { id: "textbox", ico: "T", label: "Typewriter — type text anywhere on the form" },
+    { id: "check", ico: "✔", label: "Check mark — click to tick a checkbox" },
+    { id: "cross", ico: "✖", label: "Cross mark — click to place ✖" },
+    { id: "sign", ico: "✍", label: "Signature — draw or type, then click to place" },
+    { id: "note", ico: "💬", label: "Sticky note" },
+    { id: "stamp", ico: "✅", label: "Stamp (APPROVED / DRAFT / …)" },
+  ]},
+  { label: "Edit content", tools: [
+    { id: "edittext", ico: "✎T", label: "Edit text — drag over a block to retype it" },
+    { id: "image", ico: "🖼", label: "Insert image" },
+    { id: "whiteout", ico: "▨", label: "White-out — erase content" },
+    { id: "redact", ico: "▮", label: "Redact — permanently remove on export" },
+  ]},
+  { label: "Forms", tools: [
+    { id: "field", ico: "▣", label: "Form field — drag to place" },
+  ]},
+  { label: "Review", tools: [
+    { id: "caret", ico: "⌃", label: "Insert text at caret" },
+    { id: "replace", ico: "⌁", label: "Replace text — suggest a correction" },
+  ]},
+  { label: "Inspect", tools: [
+    { id: "zoombox", ico: "🔍+", label: "Marquee zoom — drag a box to fill the view" },
+    { id: "loupe", ico: "🔎", label: "Loupe — hover to magnify" },
+  ]},
 ];
+
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
-const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact", "caret", "replace"]);
+const COLOR_NAMES: Record<string, string> = {
+  "#FFD23F": "Yellow", "#F2782E": "Orange", "#D84B57": "Red",
+  "#1F9D66": "Green", "#3578E5": "Blue", "#8E6BC8": "Purple",
+};
+const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact", "caret", "replace", "check", "cross"]);
 
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
@@ -120,6 +144,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
     ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false, batesPrefix: "", batesStart: 1 });
   const [speaking, setSpeaking] = useState(false);
   const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
+  // shared tool picker — ribbon dropdowns and the menubar route through here
+  const pickTool = (t: Tool) => {
+    setTool(t);
+    if (t === "sign" && !sigImg) setSigPadOpen(true);
+  };
   const cmpRef = useRef<HTMLInputElement>(null);
   // PDF-11.1 — optional content groups (layers)
   const ocgCfgRef = useRef<{ getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null>(null);
@@ -507,8 +536,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   };
 
   // ---------- PDF-13.4: web page → appended text pages ----------
-  const insertWebPage = async () => {
-    const url = webUrl.trim();
+  const insertWebPage = async (u?: string) => {
+    const url = (u ?? webUrl).trim();
     const bytes = pdfDataRef.current;
     if (!url || !bytes || !canEdit) return;
     try {
@@ -932,6 +961,152 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print</button>
       </div>
 
+      {/* ---- menubar: every feature, grouped + labeled (Acrobat/Office-style) ---- */}
+      <MenuBar items={[
+        { label: "File", items: [
+          { label: "Export PDF…", icon: "⤓", onClick: () => setExportDlg(true), disabled: !pdfDataRef.current },
+          { label: "Export as", icon: "📤", submenu: [
+            { label: "Word (.docx)", onClick: () => void import("./exportDocx").then(({ exportPdfToDocx }) => doc && exportPdfToDocx(doc, title)).catch(() => toast("DOCX export failed")) },
+            { label: "Excel (.xlsx)", onClick: () => void import("./convert").then(({ exportPdfToXlsx }) => doc && exportPdfToXlsx(doc, title)).catch(() => toast("XLSX export failed")) },
+            { label: "Slides (.pptx)", onClick: () => { toast("Rendering slides…"); void import("./convert").then(({ exportPdfToPptx }) => doc && exportPdfToPptx(doc, title)).catch(() => toast("PPTX export failed")); } },
+            { label: "HTML (.html)", onClick: () => void import("./convert").then(({ exportPdfToText }) => doc && exportPdfToText(doc, title, true)).catch(() => toast("HTML export failed")) },
+            { label: "Plain text (.txt)", onClick: () => void import("./convert").then(({ exportPdfToText }) => doc && exportPdfToText(doc, title, false)).catch(() => toast("TXT export failed")) },
+          ]},
+          { label: "Print…", icon: "🖨", shortcut: "Ctrl+P", onClick: () => setPrinting(true) },
+          { divider: true },
+          { label: "Version history", icon: "🕘", onClick: () => setPanel("versions") },
+          { label: "Comments", icon: "💬", onClick: () => setPanel("comments") },
+          { divider: true },
+          { label: "Share…", icon: "🔗", onClick: () => setSharing(true) },
+        ]},
+        { label: "Edit", items: [
+          { label: "Undo", icon: "↶", shortcut: "Ctrl+Z", onClick: undo, disabled: !canEdit },
+          { label: "Redo", icon: "↷", shortcut: "Ctrl+Y", onClick: redo, disabled: !canEdit },
+          { divider: true },
+          { label: "Find in document…", icon: "🔍", shortcut: "Ctrl+F", onClick: () => setPanel("search") },
+          { divider: true },
+          { label: "Edit page content", icon: "✎", submenu: [
+            { label: "Edit text — retype a block", icon: "✎T", checked: tool === "edittext", onClick: () => pickTool("edittext"), disabled: !canEdit },
+            { label: "Insert image…", icon: "🖼", checked: tool === "image", onClick: () => pickTool("image"), disabled: !canEdit },
+            { label: "White-out", icon: "▨", checked: tool === "whiteout", onClick: () => pickTool("whiteout"), disabled: !canEdit },
+            { label: "Redact (permanent)", icon: "▮", checked: tool === "redact", onClick: () => pickTool("redact"), disabled: !canEdit },
+          ]},
+          { divider: true },
+          { label: "OCR this page (make text searchable)", icon: "OCR", onClick: () => void runOcr(), disabled: !canEdit },
+          { label: "Compare with another PDF…", icon: "⇄", onClick: () => cmpRef.current?.click() },
+        ]},
+        { label: "View", items: [
+          { label: "Continuous scroll", checked: viewMode === "cont", onClick: () => setViewMode("cont") },
+          { label: "Single page", checked: viewMode === "single", onClick: () => setViewMode("single") },
+          { label: "Two pages", checked: viewMode === "two" && !cover, onClick: () => { setViewMode("two"); setCover(false); } },
+          { label: "Two-page cover", checked: viewMode === "two" && cover, onClick: () => { setViewMode("two"); setCover(true); } },
+          { label: "Reflow text", checked: viewMode === "reflow", onClick: () => setViewMode("reflow") },
+          { divider: true },
+          { label: "Fit width", onClick: () => void fitWidth() },
+          { label: "Fit page", onClick: () => void fitPage() },
+          { label: "100%", onClick: () => setScale(1) },
+          { label: "Zoom in", onClick: () => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2))) },
+          { label: "Zoom out", onClick: () => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2))) },
+          { divider: true },
+          { label: "Rotate view 90°", onClick: () => setViewRot((r) => (r + 90) % 360) },
+          { label: "Dark mode", checked: dark, onClick: () => setDark((d) => !d) },
+          { label: "Fullscreen", onClick: () => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {}) },
+          { divider: true },
+          { label: "Read page aloud", checked: speaking, onClick: () => void speakPage() },
+          { label: "Panes", submenu: [
+            { label: "Page thumbnails", checked: panel === "thumbs", onClick: () => setPanel(panel === "thumbs" ? "none" : "thumbs") },
+            { label: "Bookmarks", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
+            { label: "Search results", checked: panel === "search", onClick: () => setPanel(panel === "search" ? "none" : "search") },
+            { label: "Annotations", checked: panel === "anns", onClick: () => setPanel(panel === "anns" ? "none" : "anns") },
+            { label: "Layers", checked: panel === "layers", disabled: !ocg.length, onClick: () => setPanel(panel === "layers" ? "none" : "layers") },
+            { label: "Attachments", checked: panel === "attach", onClick: () => setPanel(panel === "attach" ? "none" : "attach") },
+            { label: "Accessibility check", checked: panel === "access", onClick: () => { setPanel("access"); if (!accessReport) void runAccessCheck(); } },
+            { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
+            { label: "AI assistant", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
+          ]},
+          { label: "Zoom & inspect", icon: "🔎", submenu: [
+            { label: "Marquee zoom — drag a box to fill the view", icon: "🔍+", checked: tool === "zoombox", onClick: () => pickTool("zoombox") },
+            { label: "Loupe — hover to magnify", icon: "🔎", checked: tool === "loupe", onClick: () => pickTool("loupe") },
+          ]},
+        ]},
+        { label: "Insert", items: [
+          { label: "Image…", icon: "🖼", checked: tool === "image", onClick: () => pickTool("image"), disabled: !canEdit },
+          { label: "Sticky note", icon: "💬", checked: tool === "note", onClick: () => pickTool("note"), disabled: !canEdit },
+          { label: "Stamp", icon: "✅", checked: tool === "stamp", onClick: () => pickTool("stamp"), disabled: !canEdit },
+          { divider: true },
+          { label: "Blank page", icon: "▤", onClick: () => void orgInsertBlank(), disabled: !canEdit },
+          { label: "Images as pages…", icon: "🖼", onClick: () => imgPageRef.current?.click(), disabled: !canEdit },
+          { label: "Web page…", icon: "🌐", onClick: () => { const u = window.prompt("Web page URL to append as pages:"); if (u?.trim()) void insertWebPage(u); }, disabled: !canEdit },
+          { label: "PDF file — merge at end…", icon: "📄", onClick: () => mergeRef.current?.click(), disabled: !canEdit },
+        ]},
+        { label: "Format", items: [
+          { label: "Typewriter font", icon: "T", submenu: [
+            { label: "Helvetica", checked: tbFont === "helv", onClick: () => setTbFont("helv") },
+            { label: "Times", checked: tbFont === "times", onClick: () => setTbFont("times") },
+            { label: "Courier", checked: tbFont === "courier", onClick: () => setTbFont("courier") },
+          ]},
+          { label: "Typewriter size", icon: "↕", submenu: [8, 9, 10, 12, 14, 18, 24].map((s) => ({
+            label: `${s} pt`, checked: tbSize === s, onClick: () => setTbSize(s),
+          }))},
+          { divider: true },
+          { label: "Annotation color", icon: "🎨", submenu: MARKUP_COLORS.map((c) => ({
+            label: COLOR_NAMES[c] ?? c, icon: <span className="fmt-swatch" style={{ background: c }} />,
+            checked: toolColor === c, onClick: () => setToolColor(c),
+          }))},
+          { label: "Stamp text", icon: "◈", submenu: STAMPS.map((s) => ({
+            label: s, checked: stampText === s, onClick: () => { setStampText(s); pickTool("stamp"); },
+          }))},
+        ]},
+        { label: "Comment", items: [
+          ...TOOL_GROUPS[0].tools.map((t) => ({ label: t.label, icon: t.ico, checked: tool === t.id, onClick: () => pickTool(t.id), disabled: !canEdit })),
+          { label: "Shapes & drawing", icon: "✏", submenu: TOOL_GROUPS[1].tools.map((t) => ({
+            label: t.label, icon: t.ico, checked: tool === t.id, onClick: () => pickTool(t.id), disabled: !canEdit,
+          }))},
+          { divider: true },
+          { label: "Sticky note", icon: "💬", checked: tool === "note", onClick: () => pickTool("note"), disabled: !canEdit },
+          { label: "Insert text at caret", icon: "⌃", checked: tool === "caret", onClick: () => pickTool("caret"), disabled: !canEdit },
+          { label: "Replace text", icon: "⌁", checked: tool === "replace", onClick: () => pickTool("replace"), disabled: !canEdit },
+          { label: "Stamp", icon: "✅", checked: tool === "stamp", onClick: () => pickTool("stamp"), disabled: !canEdit },
+          { divider: true },
+          { label: "Annotation list", icon: "📋", onClick: () => setPanel("anns") },
+          { label: "Export comments (.fdf)", onClick: () => void import("./fdf").then(({ exportFdf }) => exportFdf(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
+          { label: "Import comments (.fdf)…", onClick: () => fdfRef.current?.click(), disabled: !canEdit },
+        ]},
+        { label: "Fill & Sign", items: [
+          { label: "Typewriter — type anywhere", icon: "T", checked: tool === "textbox", onClick: () => pickTool("textbox"), disabled: !canEdit },
+          { label: "Check mark — tick a checkbox", icon: "✔", checked: tool === "check", onClick: () => pickTool("check"), disabled: !canEdit },
+          { label: "Cross mark", icon: "✖", checked: tool === "cross", onClick: () => pickTool("cross"), disabled: !canEdit },
+          { divider: true },
+          { label: "Place signature", icon: "✍", checked: tool === "sign", onClick: () => pickTool("sign"), disabled: !canEdit },
+          { label: "Create / edit signature…", onClick: () => setSigPadOpen(true), disabled: !canEdit },
+        ]},
+        { label: "Forms", items: [
+          { label: "Place a field", icon: "▣", checked: tool === "field", onClick: () => pickTool("field"), disabled: !canEdit },
+          { label: "Field kind", submenu: (["text", "checkbox", "radio", "dropdown", "list", "signature", "barcode"] as FieldKind[]).map((k) => ({
+            label: k[0].toUpperCase() + k.slice(1), checked: fieldKind === k,
+            onClick: () => { setFieldKind(k); pickTool("field"); },
+          }))},
+          { divider: true },
+          { label: "Auto-detect fields on this PDF", icon: "⚡", onClick: () => void detectFields(), disabled: !canEdit },
+        ]},
+        { label: "Pages", items: [
+          { label: "Organize pages…", icon: "⧉", checked: panel === "organize", disabled: !canEdit,
+            onClick: () => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); } },
+          { divider: true },
+          { label: "Insert blank page", onClick: () => void orgInsertBlank(), disabled: !canEdit },
+          { label: "Insert images as pages…", onClick: () => imgPageRef.current?.click(), disabled: !canEdit },
+          { label: "Insert web page…", onClick: () => { const u = window.prompt("Web page URL to append as pages:"); if (u?.trim()) void insertWebPage(u); }, disabled: !canEdit },
+          { label: "Merge another PDF…", onClick: () => mergeRef.current?.click(), disabled: !canEdit },
+          { divider: true },
+          { label: "Rotate current page right", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(90); }, disabled: !canEdit },
+          { label: "Rotate current page left", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(270); }, disabled: !canEdit },
+          { label: "Delete current page", onClick: () => { setOrgSel(new Set([curPage])); orgDelete(); }, disabled: !canEdit || numPages <= 1 },
+          { divider: true },
+          { label: `Split at page ${curPage}`, onClick: () => void orgSplit(), disabled: !canEdit || curPage <= 1 },
+          { label: "Extract all pages", onClick: () => { setOrgSel(new Set(Array.from({ length: numPages }, (_, i) => i + 1))); void orgExtract(); }, disabled: !canEdit },
+        ]},
+      ]} />
+
       <div className="ribbon">
         <button className={`rb ${panel === "thumbs" ? "on" : ""}`} title="Page thumbnails" onClick={() => setPanel(panel === "thumbs" ? "none" : "thumbs")}>▦</button>
         <button className={`rb ${panel === "outline" ? "on" : ""}`} title="Bookmarks" onClick={() => setPanel(panel === "outline" ? "none" : "outline")}>🔖</button>
@@ -949,9 +1124,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
           onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
         <div className="rb-sep" />
-        {TOOLS.map((t) => (
-          <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label} disabled={!canEdit && t.id !== "select"}
-            onClick={() => { setTool(t.id); if (t.id === "sign" && !sigImg) setSigPadOpen(true); }}>{t.ico}</button>
+        <button className={`rb ${tool === "select" ? "on" : ""}`} title="Select / move annotations"
+          onClick={() => setTool("select")}>➤</button>
+        {TOOL_GROUPS.map((g) => (
+          <ToolMenu key={g.label} label={g.label} tools={g.tools} tool={tool} canEdit={canEdit} onPick={pickTool} />
         ))}
         {tool === "sign" && (
           <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
@@ -1006,8 +1182,6 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className="rb" title="Zoom in" onClick={() => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2)))}>＋</button>
         <button className="rb" title="Fit width" onClick={() => void fitWidth()}>⇤⇥</button>
         <button className="rb" title="Fit page" onClick={() => void fitPage()}>⛶</button>
-        <button className={`rb ${tool === "zoombox" ? "on" : ""}`} title="Marquee zoom — drag a box to fill the view"
-          onClick={() => setTool(tool === "zoombox" ? "select" : "zoombox")}>🔍+</button>
         <button className="rb" title="Rotate view (session only)" onClick={() => setViewRot((r) => (r + 90) % 360)}>⟳</button>
         <button className="rb" title="Reading view: continuous / single / two-page" onClick={() => setViewMode((m) => m === "cont" ? "single" : m === "single" ? "two" : "cont")}>{viewMode === "cont" ? "📜" : viewMode === "single" ? "📄" : "📑"}</button>
         {viewMode === "two" && (
@@ -1787,6 +1961,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onAdd({ type: "caret", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
       return;
     }
+    if (tool === "check" || tool === "cross") {
+      const [px, py] = toPdf(e.clientX, e.clientY);
+      onAdd({ type: tool, rects: [[px - 9, py - 8, 18, 16]], color: toolColor === "#FFD23F" ? "#1F9D66" : toolColor });
+      return;
+    }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };
     if (tool === "freehand") setPenPts([[x, y]]);
     else setPreview({ x, y, w: 0, h: 0 }); // zoombox/measure preview via the same rect
@@ -1999,8 +2178,16 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         </div>
       )}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace").map((a) => {
+      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace" || a.type === "check" || a.type === "cross").map((a) => {
         const sel = selAnn === a.id;
+        if (a.type === "check" || a.type === "cross") {
+          const [x, y, w2, h2] = vpRect(a.rects![0]);
+          return (
+            <div key={a.id} className={`ann-mark ${sel ? "sel" : ""}`}
+              style={{ left: x, top: y, width: w2, height: h2, fontSize: Math.max(12, h2), color: a.color }}
+              onPointerDown={(e) => startMove(e, a)}>{a.type === "check" ? "✔" : "✖"}</div>
+          );
+        }
         if (a.type === "caret") {
           const [x, y] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
           return (
@@ -2382,6 +2569,13 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
               n.textContent = `insert: ${a.text.slice(0, 50)}`;
               svg.appendChild(n);
             }
+          } else if (a.type === "check" || a.type === "cross") {
+            const [x, y, , h] = vpR(a.rects![0]);
+            const t = document.createElementNS(svgNS, "text");
+            t.setAttribute("x", `${x}`); t.setAttribute("y", `${y + h - 2}`);
+            t.setAttribute("fill", c); t.setAttribute("font-size", `${Math.max(10, h)}`); t.setAttribute("font-weight", "700");
+            t.textContent = a.type === "check" ? "✔" : "✖";
+            svg.appendChild(t);
           } else if (a.type === "squiggly") for (const r of a.rects ?? []) {
             const [x, y, w, h] = vpR(r);
             const ly = y + h - 1, step = 4, amp = 1.8;
@@ -2527,12 +2721,67 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
   return createPortal(<div className="print-deck" ref={ref} />, document.body);
 }
 
+/** Labeled tool-group dropdown for the PDF ribbon — replaces the flat icon row
+ *  so every tool is discoverable by name (Acrobat/Office-style grouping). */
+function ToolMenu({ label, tools, tool, canEdit, onPick }: {
+  label: string;
+  tools: { id: Tool; ico: string; label: string }[];
+  tool: Tool;
+  canEdit: boolean;
+  onPick: (t: Tool) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  const active = tools.find((t) => t.id === tool);
+  if (tools.length === 1) {
+    const t = tools[0];
+    return (
+      <button className={`rb rb-group${t.id === tool ? " on" : ""}`} disabled={!canEdit}
+        title={t.label} onClick={() => onPick(t.id)}>
+        <span aria-hidden>{t.ico}</span>
+        <span className="rb-group-label">{label}</span>
+      </button>
+    );
+  }
+  return (
+    <span className={`menu-root${open ? " open" : ""}`} ref={rootRef}>
+      <button className={`rb rb-group${open ? " open" : ""}${active ? " on" : ""}`}
+        disabled={!canEdit} title={active ? `${label}: ${active.label}` : `${label} tools`}
+        onClick={() => setOpen((o) => !o)}>
+        <span aria-hidden>{active ? active.ico : tools[0]?.ico}</span>
+        <span className="rb-group-label">{label}</span>
+        <span className="rb-caret">▾</span>
+      </button>
+      {open && (
+        <div className="menu-drop" role="menu">
+          {tools.map((t) => (
+            <div key={t.id} role="menuitem" className={`menu-item${t.id === tool ? " on" : ""}`}
+              onClick={() => { setOpen(false); onPick(t.id); }}>
+              <span className="menu-check">{t.id === tool ? "✓" : ""}</span>
+              <span className="mi-ico" aria-hidden>{t.ico}</span>
+              <span>{t.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ---------- PDF-5: annotation list row (author · status · replies) ----------
 const ANN_ICON: Record<string, string> = {
   highlight: "🖍", underline: "U̲", strikeout: "S̶", squiggly: "≋", freehand: "✏", polyline: "⛓",
   rect: "▭", ellipse: "◯", line: "╱", arrow: "↗", callout: "🗨", cloud: "☁",
   note: "💬", textbox: "T", stamp: "◈", sign: "✍", image: "🖼", whiteout: "▨",
-  redact: "▮", caret: "⌃", replace: "⌁",
+  redact: "▮", caret: "⌃", replace: "⌁", check: "✔", cross: "✖",
 };
 const ANN_STATUS = ["none", "accepted", "rejected", "completed"] as const;
 

@@ -187,7 +187,16 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .ribbon{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
 .ribbon::-webkit-scrollbar{display:none}
 /* a scroll container clips absolutely-positioned menus — drop clipping while any dropdown is open */
-.ribbon:has(.rb-drop-menu){overflow:visible}
+.ribbon:has(.rb-drop-menu),.ribbon:has(.menu-drop){overflow:visible}
+/* PDF ribbon tool-group dropdowns (labeled categories instead of flat icons) */
+.rb-group{width:auto;display:flex;align-items:center;gap:5px;padding:0 9px;font-size:12px;white-space:nowrap}
+.rb-group.open{background:#F2EEE9}
+.rb-group-label{font-weight:600}
+.rb-caret{font-size:8.5px;color:#A19A95;margin-left:1px}
+.ribbon .menu-drop{margin-top:5px;max-height:72vh;overflow:auto;min-width:250px}
+.ribbon .menu-item.on{background:var(--k-orange-soft)}
+.mi-ico{display:inline-flex;min-width:20px;justify-content:center;color:#6B6560;font-weight:700}
+.fmt-swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;border:1px solid rgba(0,0,0,.12)}
 .doc-zoom{min-width:fit-content}
 .ruler-wrap{display:flex;justify-content:center;position:sticky;top:4px;z-index:4;margin-bottom:8px}
 .ruler{display:block;overflow:visible;border-radius:2px}
@@ -845,6 +854,8 @@ textarea.inp{padding:8px 10px;height:auto}
 
 .ann-note{position:absolute;z-index:6;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:move;box-shadow:0 2px 6px rgba(0,0,0,.25);user-select:none}
 .ann-note.sel{outline:2px solid #3578E5}
+.ann-mark{position:absolute;z-index:6;display:flex;align-items:center;justify-content:center;cursor:move;font-weight:700;line-height:1;user-select:none}
+.ann-mark.sel{outline:1.5px dashed #3578E5;outline-offset:2px}
 .ann-pop{position:absolute;top:26px;left:0;z-index:10;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);padding:8px;width:190px;display:flex;flex-direction:column;gap:6px}
 .ann-pop textarea{width:100%;height:74px;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:12px;font-family:inherit;resize:vertical}
 .ann-stamp{position:absolute;z-index:6;display:flex;align-items:center;justify-content:center;border:2.5px solid;border-radius:6px;font-weight:800;font-size:14px;letter-spacing:1.5px;opacity:.85;cursor:move;user-select:none}

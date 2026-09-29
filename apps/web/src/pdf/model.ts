@@ -8,7 +8,8 @@ export type AnnType =
   | "note" | "textbox" | "stamp"
   | "sign" | "image" | "whiteout"
   | "redact" // PDF-7 — page content under the mark is physically removed on export
-  | "caret" | "replace"; // PDF-12.1 — proofing marks (insert-at-caret / replace-text)
+  | "caret" | "replace" // PDF-12.1 — proofing marks (insert-at-caret / replace-text)
+  | "check" | "cross";   // fill marks — tick/cross a checkbox on a flat form
 
 export interface PdfAnn {
   id: string;
