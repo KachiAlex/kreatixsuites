@@ -12,7 +12,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec } from "./model";
-import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec } from "./model";
+import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues } from "./io";
@@ -36,6 +36,12 @@ const CELL_STYLES: [string, string, CellStyle][] = [
   ["accent", "Accent", { bg: "#F2782E", color: "#FFFFFF", b: true }],
 ];
 const fmtStat = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+
+/** S15.1 — SHA-256 hex for the workbook open-password gate. */
+async function sha256hex(s: string): Promise<string> {
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
 
 export function SheetsEditor({ item, initialDoc, permission }: {
   item: DriveItem;
@@ -94,6 +100,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     const d = initialDoc as { workbook?: Workbook } | null;
     return d?.workbook?.sheets?.length ? d.workbook : { sheets: [{ name: "Sheet1", cells: {} }] };
   });
+  // S15.1 — open-password gate (S8.4 workbook-level lock)
+  const [pwLocked, setPwLocked] = useState(() => !!wb.passwordHash);
+  const [pwTry, setPwTry] = useState("");
+  const [pwErr, setPwErr] = useState(false);
+  const [reviewDlg, setReviewDlg] = useState(false);
   const [active, setActive] = useState(0);
   // multi-range: last entry is the active range (Ctrl+click/drag adds more)
   const [selections, setSelections] = useState<Range[]>([{ c1: 0, r1: 0, c2: 0, r2: 0 }]);
@@ -346,9 +357,27 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   }, []);
 
   const mutateSheet = useCallback((fn: (s: SheetData) => void) => {
-    mutate((w) => fn(w.sheets[active]), true);
+    mutate((w) => {
+      const s = w.sheets[active];
+      if (!s.trackChanges) { fn(s); return; }
+      // S15.3 — record the cell-level delta for accept/reject review
+      const before = { ...s.cells };
+      fn(s);
+      const log = (s.changeLog ??= []);
+      for (const ref of new Set([...Object.keys(before), ...Object.keys(s.cells)])) {
+        const prev = before[ref], next = s.cells[ref];
+        if (JSON.stringify(prev ?? null) !== JSON.stringify(next ?? null))
+          log.push({ ref, prev, next, by: userRef.current?.displayName, at: Date.now() });
+      }
+      if (log.length > 500) s.changeLog = log.slice(-500);
+    }, true);
   }, [mutate, active]);
   mutateRef.current = mutateSheet;
+  /** Same as mutateSheet but never writes change-log entries — used by
+   *  review accept/reject so rejections don't re-log as new changes (S15.3). */
+  const mutateSheetRaw = useCallback((fn: (s: SheetData) => void) => {
+    mutate((w) => fn(w.sheets[active]), true);
+  }, [mutate, active]);
 
   // ---- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----
   const aiSerialize = useCallback(() => wb.sheets.map((s) => {
@@ -456,11 +485,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   // ---- cell ops ----
   const { user } = useAuth();
+  const userRef = useRef(user);
+  userRef.current = user;
   const stamp = useCallback(() => ({ by: user?.displayName ?? "you", at: Date.now() }), [user]);
 
-  /** S9.2 — true if any of `refs` is locked by sheet protection. */
+  /** S9.2/S15.2 — true if any of `refs` is locked by sheet protection for this user. */
   const anyLocked = useCallback((refs: string[]) => {
-    const bad = sheet.protected ? refs.find((r) => cellLocked(sheet, r)) : undefined;
+    const bad = sheet.protected ? refs.find((r) => cellLocked(sheet, r, user)) : undefined;
     if (bad) toast(`${bad} is locked — this sheet is protected`);
     return !!bad;
   }, [sheet, toast]);
@@ -898,7 +929,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   }, [mutateSheet, selection, anyLocked]);
 
   // ---- sheets tabs ----
+  /** S15.1 — workbook structure lock blocks sheet add/remove/rename/reorder/hide. */
+  const wbLocked = () => {
+    if (wb.protectStructure) toast("Workbook structure is protected");
+    return !!wb.protectStructure;
+  };
   const addSheet = () => {
+    if (wbLocked()) return;
     mutate((w) => {
       let n = w.sheets.length + 1;
       while (w.sheets.some((s) => s.name === `Sheet${n}`)) n++;
@@ -907,11 +944,13 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     setActive(wb.sheets.length);
   };
   const delSheet = (i: number) => {
+    if (wbLocked()) return;
     if (wb.sheets.length <= 1) return toast("Workbook needs at least one sheet");
     mutate((w) => { w.sheets.splice(i, 1); });
     setActive((a) => Math.min(a, wb.sheets.length - 2));
   };
   const dupSheet = (i: number) => {
+    if (wbLocked()) return;
     mutate((w) => {
       const copy = structuredClone(w.sheets[i]);
       copy.name = `${copy.name} copy`;
@@ -920,6 +959,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     setActive(i + 1);
   };
   const hideSheet = (i: number) => {
+    if (wbLocked()) return;
     if (wb.sheets.filter((s) => !s.hidden).length <= 1) return toast("Cannot hide the only visible sheet");
     mutate((w) => { w.sheets[i].hidden = true; });
     if (i === active) {
@@ -1071,6 +1111,34 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const saveLabel: Record<SaveState, string> = {
     saved: "All changes saved", saving: "Saving…", unsaved: "Unsaved changes", error: "Save failed",
   };
+
+  // S15.1 — open-password gate blocks the whole editor until unlocked
+  if (pwLocked) {
+    return (
+      <div className="editor-shell sheets-shell" style={{ alignItems: "center", justifyContent: "center", display: "flex" }}>
+        <div className="dlg" style={{ width: 320 }}>
+          <h3>🔒 {item.name}</h3>
+          <p style={{ fontSize: 12, color: "#8B8480" }}>This workbook is password protected.</p>
+          <input className="inp" type="password" placeholder="Password" autoFocus value={pwTry}
+            style={{ width: "100%", marginTop: 8 }}
+            onChange={(e) => { setPwTry(e.target.value); setPwErr(false); }}
+            onKeyDown={async (e) => {
+              if (e.key !== "Enter") return;
+              if (await sha256hex(pwTry) === wb.passwordHash) setPwLocked(false);
+              else setPwErr(true);
+            }} />
+          {pwErr && <p style={{ fontSize: 11, color: "#D84B57", marginTop: 6 }}>Incorrect password</p>}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <button className="btn-ghost btn-sm" onClick={() => navigate(-1)}>Back</button>
+            <button className="btn-primary btn-sm" onClick={async () => {
+              if (await sha256hex(pwTry) === wb.passwordHash) setPwLocked(false);
+              else setPwErr(true);
+            }}>Open</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="editor-shell sheets-shell">
@@ -1244,6 +1312,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setProtectDlg(true)}>🔒</button>
           <button className={`rb ${showChanges ? "on" : ""}`} title="Show change marks — who last edited each cell"
             onClick={() => setShowChanges(!showChanges)}>✎</button>
+          <button className={`rb ${sheet.trackChanges ? "on" : ""}`} title={`Review tracked changes${sheet.changeLog?.length ? ` — ${sheet.changeLog.length} pending` : ""}`}
+            onClick={() => setReviewDlg(true)}>☑{sheet.changeLog?.length ? ` ${sheet.changeLog.length}` : ""}</button>
           <button className="rb" title="PivotTable — summarize selection by row/column fields"
             onClick={() => setPivotDlg(true)}>⊞</button>
           <button className="rb" title="Goal Seek — find input that makes a formula hit a target"
@@ -1341,6 +1411,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onDrop={() => {
               const from = dragTab.current;
               dragTab.current = null;
+              if (wb.protectStructure) return;
               if (from === null || from === i) return;
               mutate((w) => { const [moved] = w.sheets.splice(from, 1); w.sheets.splice(i, 0, moved); });
               setActive(i);
@@ -1352,7 +1423,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
               <input autoFocus defaultValue={s.name}
                 onBlur={(e) => {
                   const nn = (e.target.value || s.name).trim();
-                  if (nn !== s.name) mutate((w) => { renameSheetRefs(w, s.name, nn); w.sheets[i].name = nn; });
+                  if (nn !== s.name && !wb.protectStructure) mutate((w) => { renameSheetRefs(w, s.name, nn); w.sheets[i].name = nn; });
                   setRenamingTab(null);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
@@ -1472,7 +1543,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           onMutate={mutateSheet} onClose={() => setValDlg(false)} />
       )}
       {findDlg && (
-        <FindDialog wb={wb} replace={findDlg.replace} canEdit={canEdit}
+        <FindDialog wb={wb} replace={findDlg.replace} canEdit={canEdit} user={user}
           onMutate={mutate} onJump={(hit) => {
             const si = wb.sheets.findIndex((s) => s.name === hit.sheet);
             if (si >= 0) { setActive(si); setSelection({ c1: parseA1(hit.ref)!.col, r1: parseA1(hit.ref)!.row, c2: parseA1(hit.ref)!.col, r2: parseA1(hit.ref)!.row }); }
@@ -1520,12 +1591,39 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           onClose={() => setPropsDlg(false)} />
       )}
       {protectDlg && (
-        <ProtectDialog sheet={sheet}
-          onSave={(prot, ranges) => {
-            mutateSheet((s) => { s.protected = prot || undefined; s.allowRanges = ranges; });
+        <ProtectDialog sheet={sheet} wb={wb}
+          onSave={(o) => {
+            mutateSheet((s) => {
+              s.protected = o.prot || undefined;
+              s.allowRanges = o.ranges.length ? o.ranges : undefined;
+              s.trackChanges = o.track || undefined;
+              if (!o.track) s.changeLog = undefined;
+            });
+            if (o.structure !== !!wb.protectStructure || o.passwordHash !== wb.passwordHash)
+              mutate((w) => {
+                w.protectStructure = o.structure || undefined;
+                w.passwordHash = o.passwordHash ?? undefined;
+              });
             setProtectDlg(false);
           }}
           onClose={() => setProtectDlg(false)} />
+      )}
+      {reviewDlg && (
+        <ReviewDialog sheet={sheet}
+          onReject={(i) => mutateSheetRaw((s) => {
+            const e = s.changeLog?.[i];
+            if (!e) return;
+            if (e.prev) s.cells[e.ref] = e.prev; else delete s.cells[e.ref];
+            s.changeLog!.splice(i, 1);
+          })}
+          onRejectAll={() => mutateSheetRaw((s) => {
+            (s.changeLog ?? []).slice().reverse().forEach((e) => {
+              if (e.prev) s.cells[e.ref] = e.prev; else delete s.cells[e.ref];
+            });
+            s.changeLog = [];
+          })}
+          onAcceptAll={() => mutateSheetRaw((s) => { s.changeLog = []; })}
+          onClose={() => setReviewDlg(false)} />
       )}
       {sparkDlg && (
         <SparklineDialog anchor={anchorRef} sheet={sheet}
@@ -1913,10 +2011,11 @@ function PasteSpecialDialog({ onPick, onClose }: {
 
 // ---------- Find & Replace (S3.2) ----------
 
-function FindDialog({ wb, replace, canEdit, onMutate, onJump, toast, onClose }: {
+function FindDialog({ wb, replace, canEdit, user, onMutate, onJump, toast, onClose }: {
   wb: Workbook;
   replace: boolean;
   canEdit: boolean;
+  user?: { id?: string; email?: string; role?: string } | null;
   onMutate: (fn: (wb: Workbook) => void) => void;
   onJump: (hit: FindHit) => void;
   toast: (m: string) => void;
@@ -1958,7 +2057,7 @@ function FindDialog({ wb, replace, canEdit, onMutate, onJump, toast, onClose }: 
         const refs = bySheet.get(s.name);
         if (!refs) continue;
         for (const ref of refs) {
-          if (cellLocked(s, ref)) { blocked++; continue; }
+          if (cellLocked(s, ref, user)) { blocked++; continue; }
           const cell = s.cells[ref];
           if (cell && replaceInCell(cell, q, rep, matchCase)) n++;
         }
@@ -2666,38 +2765,124 @@ function PropsDialog({ wb, onSave, onClose }: {
   );
 }
 
-/** Sheet protection dialog (S9.2): lock cells except allowed ranges. */
-function ProtectDialog({ sheet, onSave, onClose }: {
-  sheet: SheetData;
-  onSave: (prot: boolean, ranges: string[]) => void;
+/** Sheet + workbook protection dialog (S9.2/S15): lock cells with optional
+ *  per-user/per-role allowed ranges, track-changes toggle, structure lock,
+ *  and an open password. */
+function ProtectDialog({ sheet, wb, onSave, onClose }: {
+  sheet: SheetData; wb: Workbook;
+  onSave: (o: {
+    prot: boolean; ranges: (string | AllowRange)[]; track: boolean;
+    structure: boolean; passwordHash?: string | null;
+  }) => void;
   onClose: () => void;
 }) {
+  const rangeText = (sheet.allowRanges ?? []).map((e) =>
+    typeof e === "string" ? e : `${e.range}${e.users?.length ? ` | ${e.users.join(";")}` : ""}${e.roles?.length ? ` | role:${e.roles.join(";")}` : ""}`
+  ).join(", ");
   const [prot, setProt] = useState(!!sheet.protected);
-  const [ranges, setRanges] = useState((sheet.allowRanges ?? []).join(", "));
-  const bad = ranges.split(",").map((r) => r.trim()).filter(Boolean).filter((r) => !parseRange(r));
+  const [ranges, setRanges] = useState(rangeText);
+  const [track, setTrack] = useState(!!sheet.trackChanges);
+  const [structure, setStructure] = useState(!!wb.protectStructure);
+  const [pw, setPw] = useState("");
+  const [pwOn, setPwOn] = useState(!!wb.passwordHash);
+  const parsed = ranges.split(",").map((r) => r.trim()).filter(Boolean).map((entry) => {
+    const [rng, ...scopes] = entry.split("|").map((x) => x.trim());
+    if (!parseRange(rng)) return { bad: rng };
+    const ar: AllowRange = { range: rng };
+    for (const sc of scopes) {
+      if (sc.startsWith("role:")) ar.roles = sc.slice(5).split(";").map((x) => x.trim()).filter(Boolean);
+      else ar.users = sc.split(";").map((x) => x.trim()).filter(Boolean);
+    }
+    return (ar.users || ar.roles) ? ar : rng;
+  });
+  const bad = parsed.filter((e): e is { bad: string } => typeof e === "object" && "bad" in e);
   return (
     <div className="dlg-back" onClick={onClose}>
-      <div className="dlg" onClick={(e) => e.stopPropagation()}>
-        <h3>Protect sheet — {sheet.name}</h3>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 440 }}>
+        <h3>Protect — {sheet.name}</h3>
         <label className="frow" style={{ marginTop: 12 }}>
           <input type="checkbox" checked={prot} onChange={(e) => setProt(e.target.checked)} />
           Lock all cells (editing, formatting, structural changes)
         </label>
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 8 }}>
           <span style={{ fontSize: 12, color: "#8B8480" }}>
-            Allowed ranges stay editable — comma-separated, e.g. <code>B2:D10, F2</code>
+            Editable ranges — comma-separated; scope to users or roles with <code>|</code>, e.g.{" "}
+            <code>B2:D10 | ana@x.com</code>, <code>F2 | role:admin</code>
           </span>
           <input className="inp" style={{ width: "100%", marginTop: 6 }} value={ranges}
             onChange={(e) => setRanges(e.target.value)} placeholder="none — everything locked"
             disabled={!prot} />
-          {!!bad.length && <p style={{ fontSize: 11, color: "#D84B57", marginTop: 4 }}>Invalid: {bad.join(", ")}</p>}
+          {!!bad.length && <p style={{ fontSize: 11, color: "#D84B57", marginTop: 4 }}>Invalid: {bad.map((b) => b.bad).join(", ")}</p>}
         </div>
+        <label className="frow" style={{ marginTop: 10 }}>
+          <input type="checkbox" checked={track} onChange={(e) => setTrack(e.target.checked)} />
+          Track changes on this sheet (records edits for accept/reject review)
+        </label>
+        <h4 style={{ margin: "16px 0 6px", fontSize: 12, color: "#8B8480", textTransform: "uppercase", letterSpacing: 0.5 }}>Workbook</h4>
+        <label className="frow">
+          <input type="checkbox" checked={structure} onChange={(e) => setStructure(e.target.checked)} />
+          Protect structure (no sheet add / delete / rename / reorder / hide)
+        </label>
+        <label className="frow" style={{ marginTop: 6 }}>
+          <input type="checkbox" checked={pwOn} onChange={(e) => setPwOn(e.target.checked)} />
+          Require a password to open this workbook
+        </label>
+        {pwOn && (
+          <input className="inp" type="password" style={{ width: "100%", marginTop: 6 }} value={pw}
+            placeholder={wb.passwordHash ? "Leave blank to keep current password" : "New open password"}
+            onChange={(e) => setPw(e.target.value)} />
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" disabled={!!bad.length}
-            onClick={() => onSave(prot, ranges.split(",").map((r) => r.trim()).filter(Boolean))}>
-            {prot ? "Protect" : "Unprotect"}
+            onClick={async () => {
+              const passwordHash = !pwOn ? null : pw ? await sha256hex(pw) : wb.passwordHash;
+              onSave({ prot, ranges: parsed.filter((e): e is string | AllowRange => typeof e === "string" || !("bad" in e)), track, structure, passwordHash });
+            }}>
+            Save
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Tracked-changes review (S15.3): per-entry reject, accept/reject-all. */
+function ReviewDialog({ sheet, onReject, onRejectAll, onAcceptAll, onClose }: {
+  sheet: SheetData;
+  onReject: (i: number) => void;
+  onRejectAll: () => void;
+  onAcceptAll: () => void;
+  onClose: () => void;
+}) {
+  const log = sheet.changeLog ?? [];
+  const cellText = (c?: CellData) => c == null ? "(empty)" : c.f ? `=${c.f}` : String(c.v ?? "(style)");
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 480 }}>
+        <h3>Track changes — {sheet.name}</h3>
+        {!sheet.trackChanges && <p style={{ fontSize: 12, color: "#8B8480" }}>Tracking is off — enable it in 🔒 Protect.</p>}
+        {sheet.trackChanges && !log.length && <p style={{ fontSize: 12, color: "#8B8480" }}>No pending changes.</p>}
+        <div style={{ maxHeight: 300, overflowY: "auto", marginTop: 8 }}>
+          {log.map((e, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F0ECE8", fontSize: 12 }}>
+              <code style={{ minWidth: 42, fontWeight: 600 }}>{e.ref}</code>
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <s style={{ color: "#B0574A" }}>{cellText(e.prev)}</s> → <b>{cellText(e.next)}</b>
+              </span>
+              <span style={{ color: "#A19A95", fontSize: 10, whiteSpace: "nowrap" }}>
+                {e.by ?? ""} {new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+              <button className="chip-x" title="Reject — restore previous value" onClick={() => onReject(i)}>↩</button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+          {!!log.length && <>
+            <button className="btn-ghost btn-sm" onClick={onRejectAll}>Reject all</button>
+            <button className="btn-ghost btn-sm" onClick={onAcceptAll}>Accept all</button>
+          </>}
+          <button className="btn-primary btn-sm" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

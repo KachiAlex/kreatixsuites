@@ -151,7 +151,12 @@ export interface SheetData {
   pivots?: PivotSpec[];
   /** sheet protection (S9.2): locked cells except `allowRanges` */
   protected?: boolean;
-  allowRanges?: string[];
+  /** S15.2 — entries may be plain ranges (everyone may edit) or scoped to
+   *  user ids/emails and/or roles */
+  allowRanges?: (string | AllowRange)[];
+  /** S15.3 — record changes into `changeLog` for accept/reject review */
+  trackChanges?: boolean;
+  changeLog?: { ref: string; prev?: CellData; next?: CellData; by?: string; at: number }[];
 }
 
 export interface FilterCrit {
@@ -220,6 +225,10 @@ export interface Workbook {
     maxIterations?: number;
     maxChange?: number;
   };
+  /** S15.1 — lock workbook structure (no sheet add/remove/rename/reorder) */
+  protectStructure?: boolean;
+  /** S15.1 — SHA-256 hex of the open password; gate the editor until unlocked */
+  passwordHash?: string;
 }
 
 export interface Ref { col: number; row: number }
@@ -259,9 +268,29 @@ export function toggleOutline(sheet: SheetData, axis: "row" | "col", end: number
   sheet[key] = cur.size ? [...cur].sort((a, b) => a - b) : undefined;
 }
 
-/** Protected-sheet check: locked unless the ref sits in an allowed range. */
-export function cellLocked(sheet: SheetData, ref: string): boolean {
-  return !!sheet.protected && !refInRanges(ref, sheet.allowRanges ?? []);
+/** Per-user/per-role editable range inside a protected sheet (S15.2). */
+export interface AllowRange {
+  range: string;
+  /** user ids or emails permitted to edit; omit = anyone */
+  users?: string[];
+  /** user roles permitted to edit; omit = any role */
+  roles?: string[];
+}
+
+/** Protected-sheet check: locked unless the ref sits in a range the user may edit. */
+export function cellLocked(sheet: SheetData, ref: string, user?: { id?: string; email?: string; role?: string } | null): boolean {
+  if (!sheet.protected) return false;
+  const p = parseA1(ref);
+  if (!p) return false;
+  return !(sheet.allowRanges ?? []).some((entry) => {
+    const ar: AllowRange = typeof entry === "string" ? { range: entry } : entry;
+    const rr = parseRange(ar.range);
+    if (!rr || p.col < rr.c1 || p.col > rr.c2 || p.row < rr.r1 || p.row > rr.r2) return false;
+    if (!ar.users && !ar.roles) return true;
+    if (!user) return false;
+    if (ar.roles?.includes(user.role ?? "")) return true;
+    return !!ar.users?.includes(user.id ?? "") || !!ar.users?.includes(user.email ?? "");
+  });
 }
 
 export function validationsAt(sheet: SheetData, ref: string): Validation[] {

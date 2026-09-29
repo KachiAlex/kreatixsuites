@@ -862,6 +862,39 @@ t("S14: new chart types + overlay fields typecheck on spec", () => {
   assertEq(spec2.type, "boxwhisker");
 });
 
+// ============ S15: protection depth ============
+
+t("S15: cellLocked honors per-user allow ranges", () => {
+  const s: SheetData = {
+    name: "S", cells: {},
+    protected: true,
+    allowRanges: [{ range: "B2:B5", users: ["u1", "ana@x.com"] }],
+  };
+  // scoped range — only u1 / ana@x.com may edit
+  assertEq(cellLocked(s, "B3", { id: "u1" }), false);
+  assertEq(cellLocked(s, "B3", { email: "ana@x.com" }), false);
+  assertEq(cellLocked(s, "B3", { id: "u2", email: "bob@x.com" }), true);
+  assertEq(cellLocked(s, "B3", null), true);            // anonymous can't use scoped ranges
+  assertEq(cellLocked(s, "C3", { id: "u1" }), true);    // outside range still locked
+});
+
+t("S15: cellLocked honors per-role allow ranges", () => {
+  const s: SheetData = {
+    name: "S", cells: {},
+    protected: true,
+    allowRanges: [{ range: "C1:C3", roles: ["admin"] }, "D1:D3"],
+  };
+  assertEq(cellLocked(s, "C2", { role: "admin" }), false);
+  assertEq(cellLocked(s, "C2", { role: "member" }), true);
+  assertEq(cellLocked(s, "D2", null), false);           // unscoped range = anyone
+  assertEq(cellLocked(s, "E2", { role: "admin" }), true);
+});
+
+t("S15: workbook protection fields typecheck", () => {
+  const wb: Workbook = { sheets: [], protectStructure: true, passwordHash: "abc" };
+  assertEq(wb.protectStructure, true);
+});
+
 // ============ results ============
 
 
