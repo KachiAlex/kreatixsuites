@@ -92,6 +92,50 @@ export async function buildFlattenedPdf(
             page.drawLine({ start: { x, y: ly }, end: { x: x + w, y: ly }, thickness: 1.2, color: col });
           }
           break;
+        case "squiggly":
+          for (const [x, y, w] of a.rects ?? []) {
+            const ly = y - 0.8, step = 3.2, amp = 1.6;
+            let d = `M ${x} ${ly}`;
+            for (let px = step, up = true; px < w + step; px += step, up = !up)
+              d += ` l ${Math.min(step, x + w - (px - step)).toFixed(1)} ${up ? -amp : amp}`;
+            page.drawSvgPath(d, { borderColor: col, borderWidth: 1.1 });
+          }
+          break;
+        case "polyline": {
+          const pts = a.points ?? [];
+          if (pts.length > 1)
+            page.drawSvgPath(pts.map(([x, y], i) => `${i ? "L" : "M"} ${x} ${y}`).join(" "), { borderColor: col, borderWidth: bw });
+          break;
+        }
+        case "cloud": {
+          // scalloped border: arcs along each edge, bulging outward (CCW trace in y-up space)
+          const [x, y, w, h] = a.rects![0];
+          const b = 5;
+          let d = `M ${x} ${y}`;
+          const bump = (x1: number, y1: number, x2: number, y2: number) => {
+            const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / (1.7 * b)));
+            const ux = (x2 - x1) / n, uy = (y2 - y1) / n;
+            for (let i = 0; i < n; i++) d += ` a ${b} ${b} 0 0 0 ${ux.toFixed(1)} ${uy.toFixed(1)}`;
+          };
+          bump(x, y, x + w, y); bump(x + w, y, x + w, y + h); bump(x + w, y + h, x, y + h); bump(x, y + h, x, y);
+          page.drawSvgPath(d + " Z", { borderColor: col, borderWidth: bw });
+          break;
+        }
+        case "callout": {
+          const [x, y, w, h] = a.rects![0];
+          const [tx, ty] = a.points?.[0] ?? [x, y];
+          const cx = x + w / 2, cy = y + h / 2, dx = tx - cx, dy = ty - cy;
+          const t = Math.min(dx ? (w / 2) / Math.abs(dx) : Infinity, dy ? (h / 2) / Math.abs(dy) : Infinity);
+          page.drawLine({ start: { x: tx, y: ty }, end: { x: cx + dx * t, y: cy + dy * t }, thickness: bw, color: col });
+          page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1), borderColor: col, borderWidth: bw });
+          let cy2 = y + h - 11;
+          for (const line of safe(a.text ?? "").split("\n")) {
+            if (cy2 < y + 4) break;
+            page.drawText(line.slice(0, Math.floor(w / 4.6)), { x: x + 3, y: cy2, size: 9, font: helv, color: rgb(0.09, 0.09, 0.09) });
+            cy2 -= 11;
+          }
+          break;
+        }
         case "freehand": {
           const pts = a.points ?? [];
           if (pts.length > 1) {

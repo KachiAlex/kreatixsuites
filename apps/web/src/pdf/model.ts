@@ -2,9 +2,9 @@
 // themselves stay immutable in the original upload version)
 
 export type AnnType =
-  | "highlight" | "underline" | "strikeout"
-  | "freehand"
-  | "rect" | "ellipse" | "line" | "arrow"
+  | "highlight" | "underline" | "strikeout" | "squiggly"
+  | "freehand" | "polyline"
+  | "rect" | "ellipse" | "line" | "arrow" | "callout" | "cloud"
   | "note" | "textbox" | "stamp"
   | "sign";
 
@@ -19,6 +19,10 @@ export interface PdfAnn {
   points?: [number, number][];
   text?: string;
   img?: string; // PDF-2 — signature image (PNG data URL)
+  // PDF-5 — review metadata
+  author?: string;
+  status?: "accepted" | "rejected" | "completed" | "none";
+  replies?: { by: string; text: string; at: string }[];
   createdAt?: string;
 }
 

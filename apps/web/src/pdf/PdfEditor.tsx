@@ -14,6 +14,7 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
+import { useAuth } from "../lib/auth";
 import type { PdfAnn, PdfDoc, AnnType } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf } from "./pages";
@@ -28,9 +29,9 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure";
 const SIG_KEY = "kx.signature";
-type Panel = "none" | "thumbs" | "outline" | "search" | "comments" | "versions" | "ai" | "organize";
+type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize";
 type Rect4 = [number, number, number, number];
 
 const TOOLS: { id: Tool; ico: string; label: string }[] = [
@@ -38,18 +39,23 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "highlight", ico: "🖍", label: "Highlight text (select text, or drag a region)" },
   { id: "underline", ico: "U̲", label: "Underline text" },
   { id: "strikeout", ico: "S̶", label: "Strikeout text" },
+  { id: "squiggly", ico: "≋", label: "Squiggly underline" },
   { id: "freehand", ico: "✏", label: "Freehand draw" },
+  { id: "polyline", ico: "⛓", label: "Polyline — click vertices, double-click to finish" },
   { id: "rect", ico: "▭", label: "Rectangle" },
   { id: "ellipse", ico: "◯", label: "Ellipse" },
   { id: "line", ico: "╱", label: "Line" },
   { id: "arrow", ico: "↗", label: "Arrow" },
+  { id: "callout", ico: "🗨", label: "Callout — box with a tail to the point you drag from" },
+  { id: "cloud", ico: "☁", label: "Cloud" },
+  { id: "measure", ico: "📏", label: "Measure — drag to measure distance" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
   { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
 ];
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
-const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "freehand", "rect", "ellipse", "line", "arrow", "note", "textbox", "stamp"]);
+const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure"]);
 
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
@@ -69,6 +75,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   permission: string;
 }) {
   const { msg, toast } = useToast();
+  const { user } = useAuth();
   const canEdit = permission === "owner" || permission === "editor";
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
@@ -366,7 +373,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   }, [annDoc, reloadPdf, persistBytes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addAnn = (page: number, a: Omit<PdfAnn, "id" | "page" | "createdAt">) => {
-    mutate((d) => d.annotations.push({ ...a, id: crypto.randomUUID().slice(0, 8), page, createdAt: new Date().toISOString() }));
+    mutate((d) => d.annotations.push({ ...a, id: crypto.randomUUID().slice(0, 8), page,
+      author: user?.displayName, createdAt: new Date().toISOString() }));
   };
   const delAnn = (id: string) => mutate((d) => { d.annotations = d.annotations.filter((a) => a.id !== id); });
   const patchAnn = (id: string, patch: Partial<PdfAnn>, actionKey?: string) =>
@@ -597,6 +605,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <button className={`rb ${panel === "thumbs" ? "on" : ""}`} title="Page thumbnails" onClick={() => setPanel(panel === "thumbs" ? "none" : "thumbs")}>▦</button>
         <button className={`rb ${panel === "outline" ? "on" : ""}`} title="Bookmarks" onClick={() => setPanel(panel === "outline" ? "none" : "outline")}>🔖</button>
         <button className={`rb ${panel === "search" ? "on" : ""}`} title="Search" onClick={() => setPanel(panel === "search" ? "none" : "search")}>🔍</button>
+        <button className={`rb ${panel === "anns" ? "on" : ""}`} title="Annotations list — review status and replies"
+          onClick={() => setPanel(panel === "anns" ? "none" : "anns")}>📋</button>
         <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
           onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
         <div className="rb-sep" />
@@ -693,6 +703,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   ))}
                   {query && !matches.length && <div className="empty">No matches</div>}
                 </div>
+              </div>
+            )}
+            {panel === "anns" && (
+              <div className="pdf-annlist">
+                {!annDoc.annotations.length && <div className="empty">No annotations yet — draw one with the markup tools</div>}
+                {[...annDoc.annotations].sort((x, y) => x.page - y.page || (x.createdAt ?? "").localeCompare(y.createdAt ?? "")).map((a) => (
+                  <AnnRow key={a.id} a={a} sel={selAnn === a.id} canEdit={canEdit} userName={user?.displayName ?? "You"}
+                    onPick={() => { setSelAnn(a.id); scrollToPage(a.page); }}
+                    onDel={() => delAnn(a.id)}
+                    onPatch={(p) => patchAnn(a.id, p)} />
+                ))}
               </div>
             )}
           </div>
@@ -1012,6 +1033,9 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [preview, setPreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [penPts, setPenPts] = useState<[number, number][]>([]);
+  const [plPts, setPlPts] = useState<[number, number][]>([]);   // in-progress polyline vertices (viewport px)
+  const [plCur, setPlCur] = useState<[number, number] | null>(null);
+  const [readout, setReadout] = useState<string | null>(null); // measure result badge
   const [editText, setEditText] = useState<string | null>(null);
   const dragRef = useRef<{ kind: "draw"; sx: number; sy: number; x: number; y: number } | { kind: "move"; id: string; sx: number; sy: number } | null>(null);
   const movedFlag = useRef(false);
@@ -1099,11 +1123,36 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   };
 
   // ---------- drawing tools ----------
+  // Enter/Esc finish or cancel an in-progress polyline
+  useEffect(() => {
+    if (!plPts.length) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setPlPts([]); setPlCur(null); }
+      else if (e.key === "Enter" && plPts.length > 1) finishPolyline(plPts);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [plPts]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPlPts([]); setPlCur(null); setReadout(null); }, [tool]);
+
+  const finishPolyline = (pts: [number, number][]) => {
+    if (pts.length > 1 && vp())
+      onAdd({ type: "polyline", points: pts.map(([x, y]) => vp()!.convertToPdfPoint(x, y) as [number, number]), color: toolColor });
+    setPlPts([]); setPlCur(null);
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (!canEdit && tool !== "zoombox") return;
     if (tool === "select" || tool === "pan") return;
     const b = boxRef.current!.getBoundingClientRect();
     const x = e.clientX - b.left, y = e.clientY - b.top;
+    if (tool === "polyline") {
+      // two consecutive clicks on the same spot (≤6px) finish the path
+      const last = plPts[plPts.length - 1];
+      if (last && Math.abs(last[0] - x) < 6 && Math.abs(last[1] - y) < 6 && plPts.length > 1) finishPolyline(plPts);
+      else { setPlPts((p) => [...p, [x, y]]); setPlCur([x, y]); }
+      return;
+    }
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     if (tool === "note") {
       onAdd({ type: "note", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
@@ -1122,7 +1171,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };
     if (tool === "freehand") setPenPts([[x, y]]);
-    else setPreview({ x, y, w: 0, h: 0 }); // zoombox previews via the same rect
+    else setPreview({ x, y, w: 0, h: 0 }); // zoombox/measure preview via the same rect
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
@@ -1137,6 +1186,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     d.x = x; d.y = y;
     if (tool === "freehand") setPenPts((p) => [...p, [x, y]]);
     else setPreview({ x: Math.min(d.sx, x), y: Math.min(d.sy, y), w: Math.abs(x - d.sx), h: Math.abs(y - d.sy) });
+  };
+  const onPolylineHover = (e: React.PointerEvent) => {
+    if (tool !== "polyline" || !plPts.length) return;
+    const b = boxRef.current!.getBoundingClientRect();
+    setPlCur([e.clientX - b.left, e.clientY - b.top]);
   };
   const onPointerUp = () => {
     const d = dragRef.current;
@@ -1154,14 +1208,25 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     setPreview(null);
     if (w < 4 && h < 4) return;
     if (tool === "zoombox") { onZoomTo?.(preview, boxRef.current!); return; }
+    if (tool === "measure") {
+      const pt = Math.hypot(d.x - d.sx, d.y - d.sy) / scale;
+      setReadout(`${pt.toFixed(1)} pt · ${(pt / 72).toFixed(2)} in · ${(pt / 72 * 2.54).toFixed(2)} cm`);
+      return;
+    }
     // text-markup tools: let onMouseUp handle a real text selection instead
-    if (tool === "highlight" || tool === "underline" || tool === "strikeout") {
+    if (tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly") {
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed) return;
     }
     const [px0, py0] = vp()!.convertToPdfPoint(x, y) as [number, number];
     const [px1, py1] = vp()!.convertToPdfPoint(x + w, y + h) as [number, number];
     const rect: Rect4 = [Math.min(px0, px1), Math.min(py0, py1), Math.abs(px1 - px0), Math.abs(py1 - py0)];
+    if (tool === "callout") {
+      // tail tip = the point you dragged from; box sits where you released
+      const [tx, ty] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
+      onAdd({ type: "callout", rects: [rect], points: [[tx, ty]], color: toolColor, text: "" });
+      return;
+    }
     if (tool === "line" || tool === "arrow") {
       const [ax, ay] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
       const [bx, by] = vp()!.convertToPdfPoint(d.x, d.y) as [number, number];
@@ -1173,7 +1238,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
 
   // text-selection → highlight/underline/strikeout
   const onMouseUp = () => {
-    if (!canEdit || (tool !== "highlight" && tool !== "underline" && tool !== "strikeout")) return;
+    if (!canEdit || (tool !== "highlight" && tool !== "underline" && tool !== "strikeout" && tool !== "squiggly")) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     const b = boxRef.current!.getBoundingClientRect();
@@ -1207,7 +1272,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   return (
     <div ref={boxRef} className={`pdf-page ${tool !== "select" ? "draw" : ""}`}
       style={{ width: size.w || undefined, height: size.h || undefined }}
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onMouseUp={onMouseUp}>
+      onPointerDown={onPointerDown} onPointerMove={(e) => { onPointerMove(e); onPolylineHover(e); }} onPointerUp={onPointerUp} onMouseUp={onMouseUp}
+      onDoubleClick={() => { if (tool === "polyline" && plPts.length > 1) finishPolyline(plPts.slice(0, -1)); }}>
       <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
       <div ref={textRef} />
       <div ref={formRef} />
@@ -1222,7 +1288,24 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           {penPts.length > 1 && (
             <polyline points={penPts.map(([x, y]) => `${x},${y}`).join(" ")} fill="none" stroke={toolColor} strokeWidth={2.2} strokeLinecap="round" />
           )}
-          {preview && (
+          {plPts.length > 0 && (
+            <polyline points={[...plPts, ...(plCur ? [plCur] : [])].map(([x, y]) => `${x},${y}`).join(" ")}
+              fill="none" stroke={toolColor} strokeWidth={2} strokeLinecap="round" strokeDasharray={plCur ? "0" : undefined} />
+          )}
+          {plPts.map(([x, y], i) => <circle key={`plv${i}`} cx={x} cy={y} r={2.4} fill={toolColor} />)}
+          {preview && tool === "measure" && dragRef.current?.kind === "draw" && (() => {
+            const d = dragRef.current;
+            const pt = Math.hypot(d.x - d.sx, d.y - d.sy) / scale;
+            return (
+              <g>
+                <line x1={d.sx} y1={d.sy} x2={d.x} y2={d.y} stroke="#3578E5" strokeWidth={1.5} strokeDasharray="5 3" />
+                <circle cx={d.sx} cy={d.sy} r={3} fill="#3578E5" /><circle cx={d.x} cy={d.y} r={3} fill="#3578E5" />
+                <text x={(d.sx + d.x) / 2} y={(d.sy + d.y) / 2 - 6} textAnchor="middle" fontSize={11} fill="#3578E5"
+                  style={{ paintOrder: "stroke", stroke: "#fff", strokeWidth: 3 }}>{pt.toFixed(1)} pt</text>
+              </g>
+            );
+          })()}
+          {preview && tool !== "measure" && (
             <rect x={preview.x} y={preview.y} width={preview.w} height={preview.h}
               fill={tool === "highlight" ? toolColor : "none"} fillOpacity={tool === "highlight" ? 0.35 : 0}
               stroke={toolColor} strokeWidth={1.5} strokeDasharray="4 3" />
@@ -1234,9 +1317,21 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           ))}
         </svg>
       )}
+      {readout && <div className="pdf-measure">📏 {readout}</div>}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign").map((a) => {
+      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout").map((a) => {
         const sel = selAnn === a.id;
+        if (a.type === "callout") {
+          const [x, y, w2, h2] = vpRect(a.rects![0]);
+          return (
+            <div key={a.id} className={`ann-callout ${sel ? "sel" : ""}`}
+              style={{ left: x, top: y, width: w2, minHeight: h2, borderColor: a.color === "#FFD23F" ? "#F2782E" : a.color }}
+              contentEditable={canEdit && tool === "select" && sel} suppressContentEditableWarning
+              onPointerDown={(e) => { if (tool === "select" && !sel) startMove(e, a); }}
+              onClick={() => setSelAnn(a.id)}
+              onBlur={(e) => onPatch(a.id, { text: (e.target as HTMLElement).innerText }, `co:${a.id}`)}>{a.text}</div>
+          );
+        }
         if (a.type === "note") {
           const [x, y] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
           return (
@@ -1312,6 +1407,38 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
         const ly = a.type === "underline" ? y + h - 1 : y + h / 2;
         return <line key={i} x1={x} y1={ly} x2={x + w} y2={ly} stroke={color} strokeWidth={sw} style={pe} />;
       })}</g>;
+    case "squiggly":
+      return <g style={selOutline} onPointerDown={onDown}>{(a.rects ?? []).map((r, i) => {
+        const [x, y, w, h] = vpRect(r);
+        const ly = y + h - 1, step = Math.max(3, 4 * scale), amp = Math.max(1.4, 1.8 * scale);
+        let d = `M ${x} ${ly}`;
+        for (let px = step, up = true; px < w + step; px += step, up = !up)
+          d += ` l ${Math.min(step, x + w - (px - step))} ${up ? -amp : amp}`;
+        return <path key={i} d={d} fill="none" stroke={color} strokeWidth={sw} style={pe} />;
+      })}</g>;
+    case "polyline":
+      return <polyline points={(a.points ?? []).map(([px, py]) => { const [x, y] = toVp(px, py); return `${x},${y}`; }).join(" ")}
+        fill="none" stroke={color} strokeWidth={sw} strokeLinejoin="round" style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+    case "cloud": {
+      const [x, y, w, h] = vpRect(a.rects![0]);
+      const b = Math.max(5, 7 * scale); // bump radius
+      let d = `M ${x} ${y}`;
+      const bump = (x1: number, y1: number, x2: number, y2: number) => {
+        const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / (1.7 * b)));
+        const ux = (x2 - x1) / n, uy = (y2 - y1) / n;
+        for (let i = 0; i < n; i++) d += ` a ${b} ${b} 0 0 1 ${ux.toFixed(1)} ${uy.toFixed(1)}`;
+      };
+      bump(x, y, x + w, y); bump(x + w, y, x + w, y + h); bump(x + w, y + h, x, y + h); bump(x, y + h, x, y);
+      return <path d={d + " Z"} fill="none" stroke={color} strokeWidth={sw} style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+    }
+    case "callout": {
+      // svg draws just the tail; the bordered text box renders in the html layer
+      const [x, y, w, h] = vpRect(a.rects![0]);
+      const [tx, ty] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
+      const cx = x + w / 2, cy = y + h / 2, dx = tx - cx, dy = ty - cy;
+      const t = Math.min(dx ? (w / 2) / Math.abs(dx) : Infinity, dy ? (h / 2) / Math.abs(dy) : Infinity);
+      return <line x1={tx} y1={ty} x2={cx + dx * t} y2={cy + dy * t} stroke={color} strokeWidth={sw} style={pe} />;
+    }
     case "freehand":
       return <polyline points={(a.points ?? []).map(([px, py]) => { const [x, y] = toVp(px, py); return `${x},${y}`; }).join(" ")}
         fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
@@ -1385,7 +1512,17 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
             el.setAttribute("x1", `${x}`); el.setAttribute("y1", `${ly}`); el.setAttribute("x2", `${x + w}`); el.setAttribute("y2", `${ly}`);
             el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
             svg.appendChild(el);
-          } else if (a.type === "freehand" && a.points?.length) {
+          } else if (a.type === "squiggly") for (const r of a.rects ?? []) {
+            const [x, y, w, h] = vpR(r);
+            const ly = y + h - 1, step = 4, amp = 1.8;
+            let d = `M ${x} ${ly}`;
+            for (let px = step, up = true; px < w + step; px += step, up = !up)
+              d += ` l ${Math.min(step, x + w - (px - step)).toFixed(1)} ${up ? -amp : amp}`;
+            const el = document.createElementNS(svgNS, "path");
+            el.setAttribute("d", d); el.setAttribute("fill", "none");
+            el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.3");
+            svg.appendChild(el);
+          } else if ((a.type === "freehand" || a.type === "polyline") && a.points?.length) {
             const el = document.createElementNS(svgNS, "polyline");
             el.setAttribute("points", a.points.map(([px, py]) => { const [x, y] = toVp(px, py); return `${x},${y}`; }).join(" "));
             el.setAttribute("fill", "none"); el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.8");
@@ -1404,6 +1541,41 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
             el.setAttribute("x1", `${ax}`); el.setAttribute("y1", `${ay}`); el.setAttribute("x2", `${bx}`); el.setAttribute("y2", `${by}`);
             el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
             svg.appendChild(el);
+          } else if (a.type === "cloud" && a.rects?.length) {
+            const [x, y, w, h] = vpR(a.rects[0]);
+            const b = 7;
+            let d = `M ${x} ${y}`;
+            const bump = (x1: number, y1: number, x2: number, y2: number) => {
+              const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / (1.7 * b)));
+              const ux = (x2 - x1) / n, uy = (y2 - y1) / n;
+              for (let i = 0; i < n; i++) d += ` a ${b} ${b} 0 0 1 ${ux.toFixed(1)} ${uy.toFixed(1)}`;
+            };
+            bump(x, y, x + w, y); bump(x + w, y, x + w, y + h); bump(x + w, y + h, x, y + h); bump(x, y + h, x, y);
+            const el = document.createElementNS(svgNS, "path");
+            el.setAttribute("d", d + " Z"); el.setAttribute("fill", "none");
+            el.setAttribute("stroke", c); el.setAttribute("stroke-width", "1.6");
+            svg.appendChild(el);
+          } else if (a.type === "callout" && a.rects?.length) {
+            const [x, y, w, h] = vpR(a.rects[0]);
+            const [tx, ty] = toVp(a.points?.[0]?.[0] ?? 0, a.points?.[0]?.[1] ?? 0);
+            const cx = x + w / 2, cy = y + h / 2, dx = tx - cx, dy = ty - cy;
+            const t = Math.min(dx ? (w / 2) / Math.abs(dx) : Infinity, dy ? (h / 2) / Math.abs(dy) : Infinity);
+            const ln = document.createElementNS(svgNS, "line");
+            ln.setAttribute("x1", `${tx}`); ln.setAttribute("y1", `${ty}`);
+            ln.setAttribute("x2", `${cx + dx * t}`); ln.setAttribute("y2", `${cy + dy * t}`);
+            ln.setAttribute("stroke", c); ln.setAttribute("stroke-width", "1.4");
+            svg.appendChild(ln);
+            const bx = document.createElementNS(svgNS, "rect");
+            bx.setAttribute("x", `${x}`); bx.setAttribute("y", `${y}`); bx.setAttribute("width", `${w}`); bx.setAttribute("height", `${h}`);
+            bx.setAttribute("fill", "#fff"); bx.setAttribute("stroke", c); bx.setAttribute("stroke-width", "1.4");
+            svg.appendChild(bx);
+            if (a.text) {
+              const t2 = document.createElementNS(svgNS, "text");
+              t2.setAttribute("x", `${x + 4}`); t2.setAttribute("y", `${y + 14}`);
+              t2.setAttribute("fill", "#171717"); t2.setAttribute("font-size", "10");
+              t2.textContent = a.text.slice(0, 90);
+              svg.appendChild(t2);
+            }
           } else if (a.type === "sign" && a.img) {
             const [x, y, w, h] = vpR(a.rects![0]);
             const el = document.createElementNS(svgNS, "image");
@@ -1440,4 +1612,57 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
   return createPortal(<div className="print-deck" ref={ref} />, document.body);
+}
+
+// ---------- PDF-5: annotation list row (author · status · replies) ----------
+const ANN_ICON: Record<string, string> = {
+  highlight: "🖍", underline: "U̲", strikeout: "S̶", squiggly: "≋", freehand: "✏", polyline: "⛓",
+  rect: "▭", ellipse: "◯", line: "╱", arrow: "↗", callout: "🗨", cloud: "☁",
+  note: "💬", textbox: "T", stamp: "◈", sign: "✍",
+};
+const ANN_STATUS = ["none", "accepted", "rejected", "completed"] as const;
+
+function AnnRow({ a, sel, canEdit, userName, onPick, onDel, onPatch }: {
+  a: PdfAnn; sel: boolean; canEdit: boolean; userName: string;
+  onPick: () => void; onDel: () => void; onPatch: (p: Partial<PdfAnn>) => void;
+}) {
+  const [reply, setReply] = useState("");
+  const label = a.type === "note" || a.type === "textbox" || a.type === "callout" || a.type === "stamp"
+    ? (a.text ?? "").slice(0, 60) : a.type;
+  return (
+    <div className={`pdf-annrow ${sel ? "on" : ""}`} onClick={onPick}>
+      <div className="pdf-annrow-top">
+        <span className="pdf-annrow-ico" style={{ borderColor: a.color }}>{ANN_ICON[a.type] ?? "◌"}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="pdf-annrow-label">{label || a.type}</div>
+          <div className="pdf-annrow-meta">p.{a.page}{a.author ? ` · ${a.author}` : ""}</div>
+        </div>
+        {canEdit && <button className="btn-ghost btn-sm" title="Delete" onClick={(e) => { e.stopPropagation(); onDel(); }}>🗑</button>}
+      </div>
+      {sel && (
+        <div className="pdf-annrow-detail" onClick={(e) => e.stopPropagation()}>
+          <select className="rb-sel" style={{ width: "100%" }} value={a.status ?? "none"}
+            disabled={!canEdit}
+            onChange={(e) => onPatch({ status: e.target.value as PdfAnn["status"] })}>
+            {ANN_STATUS.map((s) => <option key={s} value={s}>Status: {s}</option>)}
+          </select>
+          {(a.replies ?? []).map((r, i) => (
+            <div key={i} className="pdf-annreply"><b>{r.by}</b> {r.text}</div>
+          ))}
+          {canEdit && (
+            <div style={{ display: "flex", gap: 4 }}>
+              <input value={reply} placeholder="Reply…" style={{ flex: 1, height: 26, fontSize: 11 }}
+                onChange={(e) => setReply(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && reply.trim()) {
+                  onPatch({ replies: [...(a.replies ?? []), { by: userName, text: reply.trim(), at: new Date().toISOString() }] });
+                  setReply("");
+                } }} />
+              <button className="btn-ghost btn-sm" disabled={!reply.trim()}
+                onClick={() => { onPatch({ replies: [...(a.replies ?? []), { by: userName, text: reply.trim(), at: new Date().toISOString() }] }); setReply(""); }}>↩</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
