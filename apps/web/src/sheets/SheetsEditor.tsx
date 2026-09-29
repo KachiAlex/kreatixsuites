@@ -11,8 +11,8 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula } from "./model";
-import { evaluateSheet } from "./engine";
+import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs } from "./model";
+import { evaluateSheetIn } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1 } from "./io";
 import { Grid } from "./Grid";
@@ -55,7 +55,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [, forceUi] = useState(0);
 
   const sheet = wb.sheets[Math.min(active, wb.sheets.length - 1)];
-  const evals = useMemo(() => evaluateSheet(sheet.cells), [sheet.cells]);
+  const evals = useMemo(() => evaluateSheetIn(wb, sheet.name), [wb, sheet.name]);
   const selRefs = useMemo(() => [...rangeRefs(selection)], [selection]);
   const anchorRef = toA1(selection.c1, selection.r1);
 
@@ -271,7 +271,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   // sorted block are remapped to the rows' new positions (Excel semantics)
   const sortSel = useCallback((asc: boolean) => {
     mutateSheet((s) => {
-      const ev = evaluateSheet(s.cells);
+      const ev = evaluateSheetIn(wb, s.name);
       const rows: number[] = [];
       for (let r = selection.r1; r <= selection.r2; r++) rows.push(r);
       const val = (r: number) => {
@@ -306,21 +306,22 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             : { col: r.col, row: r.row });
       }
     });
-  }, [mutateSheet, selection]);
+  }, [mutateSheet, selection, wb]);
 
-  // insert / delete rows & cols (formulas, merges, cf, charts all shift)
+  // insert / delete rows & cols (formulas incl. cross-sheet refs, merges,
+  // cf, charts all shift)
   const insRows = useCallback(() => {
-    mutateSheet((s) => adjustForRowsCols(s, "row", selection.r1, Math.max(1, selection.r2 - selection.r1 + 1)));
-  }, [mutateSheet, selection]);
+    mutate((w) => adjustForRowsCols(w.sheets[active], "row", selection.r1, Math.max(1, selection.r2 - selection.r1 + 1), w));
+  }, [mutate, active, selection]);
   const delRows = useCallback(() => {
-    mutateSheet((s) => adjustForRowsCols(s, "row", selection.r1, -(selection.r2 - selection.r1 + 1)));
-  }, [mutateSheet, selection]);
+    mutate((w) => adjustForRowsCols(w.sheets[active], "row", selection.r1, -(selection.r2 - selection.r1 + 1), w));
+  }, [mutate, active, selection]);
   const insCols = useCallback(() => {
-    mutateSheet((s) => adjustForRowsCols(s, "col", selection.c1, Math.max(1, selection.c2 - selection.c1 + 1)));
-  }, [mutateSheet, selection]);
+    mutate((w) => adjustForRowsCols(w.sheets[active], "col", selection.c1, Math.max(1, selection.c2 - selection.c1 + 1), w));
+  }, [mutate, active, selection]);
   const delCols = useCallback(() => {
-    mutateSheet((s) => adjustForRowsCols(s, "col", selection.c1, -(selection.c2 - selection.c1 + 1)));
-  }, [mutateSheet, selection]);
+    mutate((w) => adjustForRowsCols(w.sheets[active], "col", selection.c1, -(selection.c2 - selection.c1 + 1), w));
+  }, [mutate, active, selection]);
 
   // merge / unmerge
   const mergeSel = useCallback(() => {
@@ -387,7 +388,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   // ---- import/export ----
   const exportCSV = () => {
-    const blob = new Blob([sheetToCSV(sheet)], { type: "text/csv" });
+    const blob = new Blob([sheetToCSV(sheet, wb)], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `${title}-${sheet.name}.csv`;
@@ -537,11 +538,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       </div>
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
-        <Grid sheet={sheet} evals={evals} canEdit={canEdit}
+        <Grid sheet={sheet} evals={evals} canEdit={canEdit} wb={wb}
           selection={selection} setSelection={setSelection}
           onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle} />
         {(sheet.charts ?? []).map((c) => (
-          <ChartCard key={c.id} spec={c} sheet={sheet}
+          <ChartCard key={c.id} spec={c} sheet={sheet} wb={wb}
             onMove={canEdit ? (id, x, y) => mutateSheet((s) => { const ch = s.charts?.find((k) => k.id === id); if (ch) { ch.x = x; ch.y = y; } }) : undefined}
             onRemove={canEdit ? (id) => mutateSheet((s) => { s.charts = s.charts?.filter((k) => k.id !== id); }) : undefined} />
         ))}
@@ -556,7 +557,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onDoubleClick={() => canEdit && setRenamingTab(i)}>
             {renamingTab === i ? (
               <input autoFocus defaultValue={s.name}
-                onBlur={(e) => { mutate((w) => { w.sheets[i].name = e.target.value || s.name; }); setRenamingTab(null); }}
+                onBlur={(e) => {
+                  const nn = (e.target.value || s.name).trim();
+                  if (nn !== s.name) mutate((w) => { renameSheetRefs(w, s.name, nn); w.sheets[i].name = nn; });
+                  setRenamingTab(null);
+                }}
                 onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
                 style={{ width: 70 }} />
             ) : s.name}

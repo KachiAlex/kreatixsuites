@@ -1,17 +1,20 @@
 import type * as XLSX from "xlsx";
 import type { CellData, SheetData, Workbook } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange } from "./model";
-import { evaluateSheet } from "./engine";
+import { evaluateSheet, evaluateSheetIn } from "./engine";
+
+const evalsFor = (sheet: SheetData, wb?: Workbook) =>
+  wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
 
 // ---------- CSV ----------
 
-export function sheetToCSV(sheet: SheetData): string {
+export function sheetToCSV(sheet: SheetData, wb?: Workbook): string {
   const refs = Object.keys(sheet.cells);
   if (!refs.length) return "";
   const parsed = refs.map((r) => parseA1(r)!);
   const maxC = Math.max(...parsed.map((p) => p.col));
   const maxR = Math.max(...parsed.map((p) => p.row));
-  const evals = evaluateSheet(sheet.cells);
+  const evals = evalsFor(sheet, wb);
   const rows: string[] = [];
   for (let r = 0; r <= maxR; r++) {
     const row: string[] = [];
@@ -69,7 +72,7 @@ export async function workbookToXLSX(wb: Workbook, filename: string) {
 function buildBook(XLSX: typeof import("xlsx"), wb: Workbook) {
   const out = XLSX.utils.book_new();
   for (const sheet of wb.sheets) {
-    const evals = evaluateSheet(sheet.cells);
+    const evals = evalsFor(sheet, wb);
     const ws: XLSX.WorkSheet = {};
     const refs = Object.keys(sheet.cells);
     const parsed = refs.map((r) => parseA1(r)!);
@@ -115,8 +118,8 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
 
 // ---------- clipboard TSV (copy/paste, KBS-SHARED-013) ----------
 
-export function rangeToTSV(sheet: SheetData, range: { c1: number; r1: number; c2: number; r2: number }): string {
-  const evals = evaluateSheet(sheet.cells);
+export function rangeToTSV(sheet: SheetData, range: { c1: number; r1: number; c2: number; r2: number }, wb?: Workbook): string {
+  const evals = evalsFor(sheet, wb);
   const rows: string[] = [];
   for (let r = range.r1; r <= range.r2; r++) {
     const cols: string[] = [];

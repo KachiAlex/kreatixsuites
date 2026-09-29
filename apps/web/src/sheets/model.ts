@@ -45,6 +45,8 @@ export interface SheetData {
 
 export interface Workbook {
   sheets: SheetData[];
+  /** Named ranges: "TaxRate" → "Sheet1!$B$2" or "Sheet1!$B$2:$D$2" */
+  names?: Record<string, string>;
 }
 
 export interface Ref { col: number; row: number }
@@ -131,30 +133,101 @@ export function mergeAt(merges: Range[] | undefined, c: number, r: number): Rang
 
 export interface ParsedRef { col: number; row: number; colAbs: boolean; rowAbs: boolean }
 
+const QUALIFIED_RE = /(?:'[^']+'|[A-Za-z_][\w.]*)!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?/g;
+
 /**
  * Rewrite every A1-style reference in a formula through `map`.
  * Returning null marks the ref as deleted -> "#REF!".
  * `$` flags are preserved; the map decides whether anchored axes shift.
+ * Sheet-qualified refs (Sheet2!A1) are left untouched — shifting those is the
+ * job of the sheet that owns them (see adjustForRowsCols).
  */
 export function translateFormula(
   f: string,
   map: (r: ParsedRef) => { col: number; row: number } | null,
+  opts?: { qualified?: boolean },
 ): string {
-  return f.replace(
-    /(?<![A-Za-z0-9_$!.])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?!\d)(?!\s*\()/g,
+  const stashed: string[] = [];
+  const tmp = f.replace(QUALIFIED_RE, (tok) => {
+    let out = tok;
+    if (opts?.qualified) {
+      // fill-handle semantics: the sheet name stays, the ref part shifts
+      const m = tok.match(/^(?:'[^']+'|[A-Za-z_][\w.]*)!(.+)$/);
+      if (m) {
+        const head = tok.slice(0, tok.length - m[1].length);
+        const mapped = m[1].split(":").map((raw) => {
+          const rm = raw.match(/^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$/);
+          if (!rm) return raw;
+          const p = map({ col: colIndex(rm[2]), row: Number(rm[4]) - 1, colAbs: !!rm[1], rowAbs: !!rm[3] });
+          return p === null ? "#REF!" : `${rm[1]}${colLabel(p.col)}${rm[3]}${p.row + 1}`;
+        }).join(":");
+        out = head + mapped;
+      }
+    }
+    stashed.push(out);
+    return `\x00${stashed.length - 1}\x00`;
+  });
+  const shifted = tmp.replace(
+    /(?<![A-Za-z0-9_$!.\x00])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?!\d)(?!\s*\()/g,
     (_m, dc: string, cl: string, dr: string, rn: string) => {
       const out = map({ col: colIndex(cl), row: Number(rn) - 1, colAbs: !!dc, rowAbs: !!dr });
       return out === null ? "#REF!" : `${dc}${colLabel(out.col)}${dr}${out.row + 1}`;
     },
   );
+  return shifted.replace(/\x00(\d+)\x00/g, (_m, i) => stashed[Number(i)]);
 }
 
-/** Fill-handle semantics: relative axes shift, `$`-anchored axes stay */
+/** Rewrite qualified refs to `sheetName` through `map` (other sheets' formulas
+ *  that point into the sheet whose rows/cols moved). */
+export function translateQualifiedRefs(
+  f: string,
+  sheetName: string,
+  map: (p: { col: number; row: number }) => { col: number; row: number } | null,
+): string {
+  return f.replace(QUALIFIED_RE, (tok) => {
+    const m = tok.match(/^(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$/);
+    if (!m) return tok;
+    const name = m[1] ?? m[2];
+    if (name.toLowerCase() !== sheetName.toLowerCase()) return tok;
+    const [a, b] = m[3].split(":");
+    const pa = parseA1(a); const pb = b ? parseA1(b) : pa;
+    if (!pa || !pb) return tok;
+    const na = map({ col: pa.col, row: pa.row });
+    const nb = map({ col: pb.col, row: pb.row });
+    const q = name.includes(" ") ? `'${name}'` : name;
+    if (!na || !nb) return `${q}!#REF!`;
+    const emit = (raw: string, p: { col: number; row: number }) =>
+      `${raw.startsWith("$") ? "$" : ""}${colLabel(p.col)}${/\$\d/.test(raw) ? "$" : ""}${p.row + 1}`;
+    const ref = na.col === nb.col && na.row === nb.row ? emit(a, na) : `${emit(a, na)}:${emit(b, nb)}`;
+    return `${q}!${ref}`;
+  });
+}
+
+/** Rename a sheet — rewrites `Old!`/`'Old'!` refs in every formula. */
+export function renameSheetRefs(wb: Workbook, oldName: string, newName: string): void {
+  const q = newName.includes(" ") || /^\d/.test(newName) ? `'${newName}'` : newName;
+  for (const s of wb.sheets) {
+    for (const cell of Object.values(s.cells)) {
+      if (!cell.f) continue;
+      cell.f = cell.f.replace(/(?:'([^']+)'|([A-Za-z_][\w.]*))!/g, (m, qs, ps) =>
+        (qs ?? ps).toLowerCase() === oldName.toLowerCase() ? `${q}!` : m);
+    }
+  }
+  if (wb.names) {
+    for (const k of Object.keys(wb.names)) {
+      wb.names[k] = wb.names[k].replace(/^(?:'([^']+)'|([A-Za-z_][\w.]*))!/i,
+        (m, qs, ps) => ((qs ?? ps) as string).toLowerCase() === oldName.toLowerCase() ? `${q}!` : m);
+    }
+  }
+}
+
+/** Fill-handle semantics: relative axes shift, `$`-anchored axes stay.
+ *  Qualified refs shift their ref part too (Excel does this on fill). */
 export function shiftForFill(f: string, dCol: number, dRow: number): string {
   return translateFormula(f, (r) => ({
     col: r.colAbs ? r.col : Math.max(0, r.col + dCol),
     row: r.rowAbs ? r.row : Math.max(0, r.row + dRow),
-  }));
+  }), { qualified: true });
 }
 
 function axisShift(axis: "row" | "col", at: number, count: number, band: "insert" | "delete") {
@@ -178,13 +251,16 @@ function shiftRangeA1(rangeA1: string, map: (p: { col: number; row: number }) =>
 }
 
 /**
- * Insert (count > 0) or delete (count < 0) whole rows/cols at index `at`.
- * Moves cells, rewrites formula refs (deleted-band refs become #REF!),
- * and shifts merges / conditional-format ranges / chart ranges.
+ * Insert (count > 0) or delete (count < 0) whole rows/cols at index `at`
+ * in one sheet. Moves cells, rewrites formula refs (deleted-band refs
+ * become #REF!) — including `Sheet!A1` refs in OTHER sheets — and shifts
+ * merges / conditional-format ranges / chart ranges.
  */
-export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: number, count: number): void {
+export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: number, count: number,
+  wb?: Workbook): void {
   const band = count > 0 ? "insert" : "delete";
   const map = axisShift(axis, at, count, band);
+  const mapRef = (p: { col: number; row: number }) => map(p);
 
   const cells: Record<string, CellData> = {};
   for (const [ref, cell] of Object.entries(sheet.cells)) {
@@ -196,6 +272,16 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
 
   for (const cell of Object.values(sheet.cells)) {
     if (cell.f) cell.f = translateFormula(cell.f, (r) => map({ col: r.col, row: r.row }));
+  }
+
+  // qualified refs anywhere in the workbook pointing into this sheet
+  // (including self-qualified refs like =S2!A1 inside S2)
+  if (wb) {
+    for (const s of wb.sheets) {
+      for (const cell of Object.values(s.cells)) {
+        if (cell.f) cell.f = translateQualifiedRefs(cell.f, sheet.name, mapRef);
+      }
+    }
   }
 
   sheet.merges = (sheet.merges ?? [])

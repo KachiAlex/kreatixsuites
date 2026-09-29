@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type MouseEvent, type CSSProperties } from "react";
-import type { SheetData, Range, Ref } from "./model";
+import type { SheetData, Range, Ref, Workbook } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
@@ -13,6 +13,7 @@ interface GridProps {
   sheet: SheetData;
   evals: Map<string, EvalResult>;
   canEdit: boolean;
+  wb?: Workbook;
   selection: Range;
   setSelection: (r: Range) => void;
   onCommit: (ref: string, raw: string) => void;
@@ -23,7 +24,7 @@ interface GridProps {
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, selection, setSelection, onCommit, onClear, onPaste, onFillHandle }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, selection, setSelection, onCommit, onClear, onPaste, onFillHandle }: GridProps) {
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState({ r0: 0, r1: 80, c0: 0, c1: 26 });
@@ -203,12 +204,12 @@ export function Grid({ sheet, evals, canEdit, selection, setSelection, onCommit,
   const onCopy = (e: ClipboardEvent) => {
     if (editing) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection));
+    e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection, wb));
   };
   const onCut = (e: ClipboardEvent) => {
     if (editing) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection));
+    e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection, wb));
     if (canEdit) onClear([...rangeRefs(selection)]);
   };
   const onPasteCb = (e: ClipboardEvent) => {

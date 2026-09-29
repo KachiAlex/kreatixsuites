@@ -1,16 +1,28 @@
 import { useMemo, type JSX, type MouseEvent } from "react";
-import type { ChartSpec, SheetData } from "./model";
+import type { ChartSpec, SheetData, Workbook } from "./model";
 import { parseRange, toA1 } from "./model";
-import { evaluateSheet } from "./engine";
+import { evaluateSheet, evaluateSheetIn } from "./engine";
 
 const COLORS = ["#F2782E", "#3578E5", "#1F9D66", "#D84B57", "#8E6BC8", "#E9B44C"];
 
 interface Series { name: string; values: number[]; labels: string[] }
 
-function extractSeries(sheet: SheetData, rangeA1: string): Series[] {
-  const r = parseRange(rangeA1);
+/** Range may be `Sheet2!A1:C5` — resolve to the owning sheet + plain range. */
+function resolveRange(wb: Workbook | undefined, fallback: SheetData, rangeA1: string): { sheet: SheetData; rangeA1: string } {
+  const m = rangeA1.match(/^(?:'([^']+)'|([A-Za-z_][\w.]*))!(.+)$/);
+  const name = m?.[1] ?? m?.[2];
+  const sheet = name && wb
+    ? (wb.sheets.find((s) => s.name.toLowerCase() === name.toLowerCase()) ?? fallback)
+    : fallback;
+  return { sheet, rangeA1: m ? m[3] : rangeA1 };
+}
+
+function extractSeries(sheet: SheetData, rangeA1: string, wb?: Workbook): Series[] {
+  const target = resolveRange(wb, sheet, rangeA1);
+  sheet = target.sheet;
+  const r = parseRange(target.rangeA1);
   if (!r) return [];
-  const evals = evaluateSheet(sheet.cells);
+  const evals = wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
   const val = (c: number, row: number): unknown => {
     const cell = sheet.cells[toA1(c, row)];
     if (!cell) return null;
@@ -39,13 +51,14 @@ function extractSeries(sheet: SheetData, rangeA1: string): Series[] {
   return series;
 }
 
-export function ChartCard({ spec, sheet, onMove, onRemove }: {
+export function ChartCard({ spec, sheet, wb, onMove, onRemove }: {
   spec: ChartSpec;
   sheet: SheetData;
+  wb?: Workbook;
   onMove?: (id: string, x: number, y: number) => void;
   onRemove?: (id: string) => void;
 }) {
-  const series = useMemo(() => extractSeries(sheet, spec.range), [sheet, spec.range]);
+  const series = useMemo(() => extractSeries(sheet, spec.range, wb), [sheet, spec.range, wb]);
   const W = 420, H = 240, PL = 44, PB = 30, PT = 30, PR = 12;
 
   const all = series.flatMap((s) => s.values);
