@@ -33,6 +33,23 @@ export interface ChartSpec {
   y: number;
 }
 
+/** Data validation rule applied to a range (S3.4). */
+export interface Validation {
+  range: string;
+  type: "list" | "number" | "date" | "text_len" | "any";
+  /** list: "a,b,c" literal or "=Sheet!A1:A5" / "A1:A5" / named range */
+  list?: string;
+  /** comparison for number/date/text_len */
+  op?: "between" | "notbetween" | ">" | "<" | ">=" | "<=" | "=" | "!=";
+  min?: string;
+  max?: string;
+  inputMsg?: string;
+  errorMsg?: string;
+  errorStyle?: "stop" | "warn";
+  /** if set, validation violations are allowed but flagged */
+  showInvalid?: boolean;
+}
+
 export interface SheetData {
   name: string;
   cells: Record<string, CellData>;
@@ -46,6 +63,9 @@ export interface SheetData {
   hiddenCols?: number[];
   hidden?: boolean;
   tabColor?: string;
+  validations?: Validation[];
+  /** non-threaded cell notes (S3.5): ref → text */
+  notes?: Record<string, string>;
 }
 
 export interface Workbook {
@@ -56,6 +76,54 @@ export interface Workbook {
 
 export interface Ref { col: number; row: number }
 export interface Range { c1: number; r1: number; c2: number; r2: number }
+
+/** Validations covering a ref. */
+export function validationsAt(sheet: SheetData, ref: string): Validation[] {
+  const p = parseA1(ref);
+  if (!p) return [];
+  return (sheet.validations ?? []).filter((v) => {
+    const r = parseRange(v.range);
+    return !!r && p.col >= r.c1 && p.col <= r.c2 && p.row >= r.r1 && p.row <= r.r2;
+  });
+}
+
+/** Check a stored value against a rule. Blanks always pass (Excel's
+ *  "ignore blank" default). `list` = resolved items for type "list". */
+export function validateValue(v: CellData["v"] | undefined, val: Validation, list?: string[] | null): boolean {
+  if (v === null || v === undefined || v === "") return true;
+  const num = (s: string | undefined) => (s === undefined || s === "" ? NaN : Number(s));
+  const cmp = (n: number, a: number, b: number): boolean => {
+    switch (val.op ?? "between") {
+      case "between": return n >= a && n <= b;
+      case "notbetween": return !(n >= a && n <= b);
+      case ">": return n > a;
+      case "<": return n < a;
+      case ">=": return n >= a;
+      case "<=": return n <= a;
+      case "=": return n === a;
+      case "!=": return n !== a;
+    }
+  };
+  switch (val.type) {
+    case "list":
+      return !!list && list.some((i) => i.toLowerCase() === String(v).toLowerCase());
+    case "number": {
+      const n = Number(v);
+      return !isNaN(n) && cmp(n, num(val.min), num(val.max));
+    }
+    case "date": {
+      const t = Date.parse(String(v));
+      if (isNaN(t)) return false;
+      const a = val.min ? Date.parse(val.min) : NaN;
+      const b = val.max ? Date.parse(val.max) : NaN;
+      return cmp(t, a, b);
+    }
+    case "text_len":
+      return cmp(String(v).length, num(val.min), num(val.max));
+    default:
+      return true;
+  }
+}
 
 export const ROW_H = 26;
 export const COL_W = 100;
@@ -356,4 +424,97 @@ export function adjustForRowsCols(sheet: SheetData, axis: "row" | "col", at: num
   };
   sheet.hiddenRows = remapList(sheet.hiddenRows, "row");
   sheet.hiddenCols = remapList(sheet.hiddenCols, "col");
+
+  // notes follow their cells
+  if (sheet.notes) {
+    const notes: Record<string, string> = {};
+    for (const [ref, text] of Object.entries(sheet.notes)) {
+      const p = parseA1(ref);
+      const np = p && map(p);
+      if (np) notes[toA1(np.col, np.row)] = text;
+    }
+    sheet.notes = notes;
+  }
+  // validation ranges shift too
+  sheet.validations = (sheet.validations ?? [])
+    .map((v) => {
+      const nr = shiftRangeA1(v.range, map);
+      return nr ? { ...v, range: nr } : null;
+    })
+    .filter((v): v is Validation => !!v);
+}
+
+// ---------- fill series detection (S3.3) ----------
+
+export type Series =
+  | { kind: "num"; v0: number; step: number }
+  | { kind: "text"; prefix: string; n0: number; step: number; pad: number }
+  | { kind: "date"; t0: number; stepMs: number; fmt: "iso" | "slash" }
+  | { kind: "list"; items: string[]; i0: number };
+
+const MONTHS_S = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_L = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DAYS_S = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAYS_L = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const LISTS = [MONTHS_S, MONTHS_L, DAYS_S, DAYS_L];
+
+function parseDateStr(v: unknown): { t: number; fmt: "iso" | "slash" } | null {
+  if (typeof v !== "string") return null;
+  const iso = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return { t: Date.UTC(+iso[1], +iso[2] - 1, +iso[3]), fmt: "iso" };
+  const sl = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (sl) return { t: Date.UTC(+sl[3], +sl[1] - 1, +sl[2]), fmt: "slash" };
+  return null;
+}
+
+/** Detect an auto-fill series from seed values (numbers, dates, "Item1" text, month/day names). */
+export function detectSeries(vals: unknown[]): Series | null {
+  const used = vals.filter((v) => v !== null && v !== undefined && v !== "");
+  if (!used.length || used.length !== vals.length) return null; // gaps → plain copy
+  // numbers
+  if (used.every((v) => typeof v === "number" || (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v))))) {
+    const ns = used.map(Number);
+    const step = ns.length > 1 ? (ns[ns.length - 1] - ns[0]) / (ns.length - 1) : 1;
+    return { kind: "num", v0: ns[0], step };
+  }
+  // dates
+  const ds = used.map(parseDateStr);
+  if (ds.every(Boolean)) {
+    const ts = ds.map((d) => d!.t);
+    const step = ts.length > 1 ? (ts[ts.length - 1] - ts[0]) / (ts.length - 1) : 86400000;
+    return { kind: "date", t0: ts[0], stepMs: step, fmt: ds[0]!.fmt };
+  }
+  // custom lists (months, days)
+  for (const list of LISTS) {
+    const i0 = list.findIndex((m) => m.toLowerCase() === String(used[0]).toLowerCase());
+    if (i0 >= 0) return { kind: "list", items: list, i0 };
+  }
+  // text with trailing number: "Item1" → "Item2", "Item3"…
+  const ms = used.map((v) => String(v).match(/^(.*?)(\d+)$/));
+  if (ms.every(Boolean) && new Set(ms.map((m) => m![1])).size === 1) {
+    const ns = ms.map((m) => Number(m![2]));
+    const step = ns.length > 1 ? (ns[ns.length - 1] - ns[0]) / (ns.length - 1) : 1;
+    return { kind: "text", prefix: ms[0]![1], n0: ns[0], step, pad: ms[0]![2].length };
+  }
+  return null;
+}
+
+export function seriesValue(ser: Series, i: number): CellData["v"] {
+  switch (ser.kind) {
+    case "num": {
+      const n = ser.v0 + ser.step * i;
+      return Math.round(n * 1e9) / 1e9;
+    }
+    case "text":
+      return ser.prefix + String(Math.round(ser.n0 + ser.step * i)).padStart(ser.pad, "0");
+    case "date": {
+      const d = new Date(ser.t0 + ser.stepMs * i);
+      const p = (n: number, l = 2) => String(n).padStart(l, "0");
+      return ser.fmt === "iso"
+        ? `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`
+        : `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`;
+    }
+    case "list":
+      return ser.items[((ser.i0 + i) % ser.items.length + ser.items.length) % ser.items.length];
+  }
 }

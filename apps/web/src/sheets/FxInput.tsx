@@ -117,6 +117,7 @@ export function FxInput({ wb, className, wrapStyle, inputStyle, inputRef, value,
     <span className="fx-wrap" style={{ position: "relative", display: "inline-flex", flex: wrapStyle?.flex ?? "none", ...wrapStyle }}>
       <input ref={ref} className={className} style={{ width: "100%", ...inputStyle }}
         value={value} disabled={disabled} placeholder={placeholder} autoFocus={autoFocus}
+        spellCheck={!value.startsWith("=")}
         onChange={(e) => { onValue(e.target.value); setCaret(e.target.selectionStart ?? 0); setHi(0); }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
         onKeyDown={(e) => {

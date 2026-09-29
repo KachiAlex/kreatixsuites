@@ -10,11 +10,11 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec } from "./model";
-import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData } from "./model";
+import { toA1, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation } from "./model";
 import { evaluateSheetIn, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1 } from "./io";
+import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems } from "./io";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
@@ -41,6 +41,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [cfOpen, setCfOpen] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
   const [nameMgr, setNameMgr] = useState(false);
+  const [pasteSpec, setPasteSpec] = useState(false);
+  const [findDlg, setFindDlg] = useState<null | { replace: boolean }>(null);
+  const [valDlg, setValDlg] = useState(false);
+  const [cellMenu, setCellMenu] = useState<{ ref: string; x: number; y: number } | null>(null);
+  const [noteEdit, setNoteEdit] = useState<{ ref: string; text: string } | null>(null);
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const csvRef = useRef<HTMLInputElement>(null);
@@ -157,6 +162,34 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     };
   }, [selRefs, sheet.cells, evals]);
 
+  // data validation — invalid markers + list dropdown for the anchor cell
+  const invalidCells = useMemo(() => {
+    const out = new Set<string>();
+    for (const v of sheet.validations ?? []) {
+      const range = parseRange(v.range);
+      if (!range) continue;
+      const refs = Array.from(rangeRefs(range));
+      if (refs.length > 5000) continue;
+      const list = v.type === "list" ? listItems(v, wb, sheet.name) : null;
+      for (const ref of refs) {
+        const cell = sheet.cells[ref];
+        const val = cell?.f ? evals.get(ref)?.value : cell?.v;
+        if (!validateValue(val as CellData["v"], v, list)) out.add(ref);
+      }
+    }
+    return out;
+  }, [sheet, wb, evals]);
+
+  const anchorVals = useMemo(() => validationsAt(sheet, anchorRef), [sheet, anchorRef]);
+  const activeList = useMemo(() => {
+    const lv = anchorVals.find((v) => v.type === "list");
+    return lv ? listItems(lv, wb, sheet.name) : null;
+  }, [anchorVals, wb, sheet.name]);
+  const anchorInputMsg = anchorVals.find((v) => v.inputMsg)?.inputMsg;
+
+  // cell notes (S3.5)
+  const notedCells = useMemo(() => new Set(Object.keys(sheet.notes ?? {})), [sheet.notes]);
+
   // ---- mutation helpers ----
   const mutate = useCallback((fn: (wb: Workbook) => void, save = true) => {
     setWb((prev) => {
@@ -261,6 +294,18 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   // ---- cell ops ----
   const commitCell = useCallback((ref: string, raw: string) => {
+    // data validation — direct entry only (paste bypasses, like Excel)
+    if (raw.trim() !== "" && !raw.trimStart().startsWith("=")) {
+      for (const v of validationsAt(sheet, ref)) {
+        if (v.type === "any") continue;
+        const parsed = parseInput(raw);
+        const ok = validateValue(parsed.v, v, v.type === "list" ? listItems(v, wb, sheet.name) : null);
+        if (!ok) {
+          toast(v.errorMsg || `"${raw}" doesn't match the validation for ${ref}`);
+          if (v.errorStyle !== "warn") return;
+        }
+      }
+    }
     mutateSheet((s) => {
       if (raw.trim() === "") {
         const style = s.cells[ref]?.s;
@@ -269,7 +314,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       }
       s.cells[ref] = { s: s.cells[ref]?.s, ...parseInput(raw) };
     });
-  }, [mutateSheet]);
+  }, [mutateSheet, sheet, wb, toast]);
 
   const clearCells = useCallback((refs: string[]) => {
     mutateSheet((s) => refs.forEach((r) => { if (s.cells[r]) s.cells[r] = { s: s.cells[r].s }; }));
@@ -317,11 +362,39 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const fillHandle = useCallback((src: Range, dst: Range) => {
     mutateSheet((s) => {
       const sw = src.c2 - src.c1 + 1, sh = src.r2 - src.r1 + 1;
+      const ev = evaluateSheetIn(wb, s.name);
+      const vertical = dst.r2 > src.r2 || dst.r1 < src.r1;
+      const horiz = dst.c2 > src.c2 || dst.c1 < src.c1;
+      // seed lines for series detection (one per column for vertical fills, per row for horizontal)
+      const seriesOf = (axis: "row" | "col", line: number) => {
+        const refs = axis === "row"
+          ? Array.from({ length: sh }, (_, i) => toA1(line, src.r1 + i))
+          : Array.from({ length: sw }, (_, i) => toA1(src.c1 + i, line));
+        if (refs.some((r) => s.cells[r]?.f)) return null; // formulas fill by shifting, not by series
+        return detectSeries(refs.map((r) => {
+          const c = s.cells[r];
+          return c ? (ev.get(r)?.value ?? c.v) : null;
+        }));
+      };
       for (const ref of rangeRefs(dst)) {
         const p = parseA1(ref)!;
         if (p.col >= src.c1 && p.col <= src.c2 && p.row >= src.r1 && p.row <= src.r2) continue;
         const sr = toA1(src.c1 + ((p.col - src.c1) % sw + sw) % sw, src.r1 + ((p.row - src.r1) % sh + sh) % sh);
         const srcCell = s.cells[sr];
+        // series: vertical fill → per-column seeds; horizontal → per-row
+        if (vertical && !horiz) {
+          const ser = seriesOf("row", p.col);
+          if (ser) {
+            s.cells[ref] = { v: seriesValue(ser, p.row - src.r1), s: srcCell?.s };
+            continue;
+          }
+        } else if (horiz && !vertical) {
+          const ser = seriesOf("col", p.row);
+          if (ser) {
+            s.cells[ref] = { v: seriesValue(ser, p.col - src.c1), s: srcCell?.s };
+            continue;
+          }
+        }
         if (srcCell) {
           const copy = structuredClone(srcCell);
           if (copy.f) copy.f = shiftForFill(copy.f, p.col - (parseA1(sr)!.col), p.row - (parseA1(sr)!.row));
@@ -329,7 +402,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         }
       }
     });
-  }, [mutateSheet]);
+  }, [mutateSheet, wb]);
 
   // sort selected rows by anchor column; formula refs pointing into the
   // sorted block are remapped to the rows' new positions (Excel semantics)
@@ -555,17 +628,39 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     setSelection(range);
   }, [wb, sheet.name, setSelection, toast]);
 
-  // Ctrl+G → Go To (focus the name box)
+  const pasteSpecial = useCallback((mode: PasteMode, op: PasteOp) => {
+    const buf = getCopyBuffer();
+    if (!buf) return toast("Nothing copied yet — copy a range first");
+    mutateSheet((s) => {
+      pasteCells(s.cells, { col: selection.c1, row: selection.r1 }, buf, mode, op, evals);
+    });
+    setPasteSpec(false);
+    toast("Pasted");
+  }, [mutateSheet, selection, evals, toast]);
+
+  // Ctrl+G → Go To (focus the name box); Ctrl+Alt+V / Ctrl+Shift+V → Paste Special
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "g") {
         e.preventDefault();
         nameBoxRef.current?.focus();
+      } else if (k === "v" && (e.altKey || e.shiftKey) && canEdit) {
+        e.preventDefault();
+        if (getCopyBuffer()) setPasteSpec(true);
+        else toast("Nothing copied yet — copy a range first");
+      } else if (k === "f") {
+        e.preventDefault();
+        setFindDlg({ replace: false });
+      } else if (k === "h" && canEdit) {
+        e.preventDefault();
+        setFindDlg({ replace: true });
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, []);
+  }, [canEdit, toast]);
 
   const rename = useCallback(async (name: string) => {
     await api.patch(`/api/drive/${item.id}`, { name });
@@ -646,6 +741,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
           <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
           <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
+          <button className="rb" title="Data validation — lists, ranges, rules" onClick={() => setValDlg(true)}>✓⃞</button>
+          <button className="rb" title="Paste Special — values/formats/formulas/transpose/operations (Ctrl+Alt+V)"
+            onClick={() => getCopyBuffer() ? setPasteSpec(true) : toast("Nothing copied yet")}>⧉</button>
           <button className="rb" title="Name Manager — define named ranges" onClick={() => setNameMgr(true)}>📛</button>
           <button className={`rb ${audit === "pre" ? "on" : ""}`} title="Trace precedents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
             onClick={() => setAudit(audit === "pre" ? null : "pre")}>⇠Pre</button>
@@ -685,6 +783,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           }}
           onBlur={() => fxValue !== cellEditText(anchorCell) && commitCell(fxAnchor.current, fxValue)} />
         <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt)}` : ""}</span>
+        {anchorInputMsg && <span className="fx-val" style={{ color: "#7A6A5C", fontStyle: "italic" }} title="Input message">{anchorInputMsg}</span>}
       </div>
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
@@ -692,6 +791,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
           audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
           selections={selections} selection={selection} setSelection={setSelection}
           addSelection={addSelection} extendSelection={extendSelection}
+          invalid={invalidCells}
+          noted={notedCells}
+          onCellMenu={(ref, x, y) => setCellMenu({ ref, x, y })}
+          listDrop={canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined}
           onCommit={commitCell} onClear={clearCells} onPaste={pasteTsv} onFillHandle={fillHandle}
           onGeom={onGeom} onHeader={onHeader} />
         {(sheet.charts ?? []).map((c) => (
@@ -798,6 +901,57 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
       {/* conditional format dialog */}
       {cfOpen && <CfDialog selection={rangeToA1(selection)} onAdd={addCF} onClose={() => setCfOpen(false)} />}
+      {pasteSpec && <PasteSpecialDialog onPick={pasteSpecial} onClose={() => setPasteSpec(false)} />}
+      {cellMenu && (
+        <div className="ctx-back" onMouseDown={() => setCellMenu(null)} onContextMenu={(e) => e.preventDefault()}>
+          <div className="hmenu" style={{ left: cellMenu.x, top: cellMenu.y, position: "fixed" }}
+            onMouseDown={(e) => e.stopPropagation()}>
+            <div className="hmenu-item" onMouseDown={() => {
+              setNoteEdit({ ref: cellMenu.ref, text: sheet.notes?.[cellMenu.ref] ?? "" });
+              setCellMenu(null);
+            }}>{sheet.notes?.[cellMenu.ref] ? "Edit note" : "Add note"}</div>
+            {sheet.notes?.[cellMenu.ref] && (
+              <div className="hmenu-item" onMouseDown={() => {
+                mutateSheet((s) => { delete s.notes?.[cellMenu.ref]; });
+                setCellMenu(null);
+              }}>Delete note</div>
+            )}
+          </div>
+        </div>
+      )}
+      {noteEdit && (
+        <div className="dlg-back" onClick={() => setNoteEdit(null)}>
+          <div className="dlg" onClick={(e) => e.stopPropagation()}>
+            <h3>Note — {noteEdit.ref}</h3>
+            <textarea autoFocus className="inp" style={{ minHeight: 90, marginTop: 12, resize: "vertical", fontFamily: "inherit" }}
+              value={noteEdit.text} placeholder="Note text…"
+              onChange={(e) => setNoteEdit({ ...noteEdit, text: e.target.value })} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button className="btn-ghost btn-sm" onClick={() => setNoteEdit(null)}>Cancel</button>
+              <button className="btn-primary btn-sm" onClick={() => {
+                mutateSheet((s) => {
+                  s.notes = { ...(s.notes ?? {}) };
+                  if (noteEdit.text.trim()) s.notes[noteEdit.ref] = noteEdit.text.trim();
+                  else delete s.notes[noteEdit.ref];
+                });
+                setNoteEdit(null);
+              }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {valDlg && (
+        <ValidationDialog sheet={sheet} selection={rangeToA1(selection)}
+          onMutate={mutateSheet} onClose={() => setValDlg(false)} />
+      )}
+      {findDlg && (
+        <FindDialog wb={wb} replace={findDlg.replace} canEdit={canEdit}
+          onMutate={mutate} onJump={(hit) => {
+            const si = wb.sheets.findIndex((s) => s.name === hit.sheet);
+            if (si >= 0) { setActive(si); setSelection({ c1: parseA1(hit.ref)!.col, r1: parseA1(hit.ref)!.row, c2: parseA1(hit.ref)!.col, r2: parseA1(hit.ref)!.row }); }
+          }}
+          toast={toast} onClose={() => setFindDlg(null)} />
+      )}
       {nameMgr && (
         <NameManager wb={wb} sheetName={sheet.name} selection={rangeToA1(selection)}
           onMutate={mutate} onClose={() => setNameMgr(false)} toast={toast} />
@@ -844,6 +998,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   );
 }
 
+// ---------- fill series detection (S3.3) — helpers live in model.ts ----------
+
 function CfDialog({ selection, onAdd, onClose }: {
   selection: string;
   onAdd: (op: string, value: number, bg: string) => void;
@@ -874,6 +1030,237 @@ function CfDialog({ selection, onAdd, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn-primary btn-sm" onClick={() => onAdd(op, Number(value) || 0, bg)}>Apply</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Paste Special (S3.1) ----------
+
+function PasteSpecialDialog({ onPick, onClose }: {
+  onPick: (mode: PasteMode, op: PasteOp) => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<PasteMode>("all");
+  const [op, setOp] = useState<PasteOp>("none");
+  const MODES: [PasteMode, string][] = [
+    ["all", "All"], ["values", "Values"], ["formats", "Formats"], ["formulas", "Formulas"], ["transpose", "Transpose"],
+  ];
+  const OPS: [PasteOp, string][] = [
+    ["none", "None"], ["add", "Add"], ["sub", "Subtract"], ["mul", "Multiply"], ["div", "Divide"],
+  ];
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+        <h3>Paste Special</h3>
+        <p style={{ fontSize: 12, color: "#8B8480", margin: "6px 0 0" }}>Paste</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+          {MODES.map(([m, label]) => (
+            <label key={m} className={`ps-opt ${mode === m ? "on" : ""}`}>
+              <input type="radio" name="ps-mode" checked={mode === m} onChange={() => setMode(m)} hidden />
+              {label}
+            </label>
+          ))}
+        </div>
+        <p style={{ fontSize: 12, color: "#8B8480", margin: "14px 0 0" }}>Operation</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+          {OPS.map(([o, label]) => (
+            <label key={o} className={`ps-opt ${op === o ? "on" : ""}`}>
+              <input type="radio" name="ps-op" checked={op === o} onChange={() => setOp(o)} hidden />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn-primary btn-sm" onClick={() => onPick(mode, op)}>Paste</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Find & Replace (S3.2) ----------
+
+function FindDialog({ wb, replace, canEdit, onMutate, onJump, toast, onClose }: {
+  wb: Workbook;
+  replace: boolean;
+  canEdit: boolean;
+  onMutate: (fn: (wb: Workbook) => void) => void;
+  onJump: (hit: FindHit) => void;
+  toast: (m: string) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [rep, setRep] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [inFormulas, setInFormulas] = useState(false);
+  const [hits, setHits] = useState<FindHit[]>([]);
+  const [searched, setSearched] = useState(false);
+  const [cursor, setCursor] = useState(0);
+
+  const run = () => {
+    const h = findInWorkbook(wb, q, { matchCase, inFormulas });
+    setHits(h);
+    setSearched(true);
+    setCursor(0);
+    if (h[0]) onJump(h[0]);
+  };
+  const next = (dir: 1 | -1) => {
+    if (!hits.length) return;
+    const i = (cursor + dir + hits.length) % hits.length;
+    setCursor(i);
+    onJump(hits[i]);
+  };
+  const doReplace = (all: boolean) => {
+    if (!q) return;
+    let n = 0;
+    const targets = all ? hits : hits.slice(cursor, cursor + 1);
+    const bySheet = new Map<string, Set<string>>();
+    for (const h of targets) {
+      if (!bySheet.has(h.sheet)) bySheet.set(h.sheet, new Set());
+      bySheet.get(h.sheet)!.add(h.ref);
+    }
+    onMutate((w) => {
+      for (const s of w.sheets) {
+        const refs = bySheet.get(s.name);
+        if (!refs) continue;
+        for (const ref of refs) {
+          const cell = s.cells[ref];
+          if (cell && replaceInCell(cell, q, rep, matchCase)) n++;
+        }
+      }
+    });
+    toast(n ? `Replaced ${n} cell${n > 1 ? "s" : ""}` : "Nothing replaced");
+    setHits([]);
+    setSearched(false);
+  };
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 380 }}>
+        <h3>{replace ? "Find and Replace" : "Find"}</h3>
+        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+          <input autoFocus value={q} placeholder="Find what…" className="inp"
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && (hits.length ? next(1) : run())} />
+          {replace && (
+            <input value={rep} placeholder="Replace with…" className="inp"
+              onChange={(e) => setRep(e.target.value)} />
+          )}
+          <div style={{ display: "flex", gap: 14, fontSize: 12 }}>
+            <label><input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Match case</label>
+            <label><input type="checkbox" checked={inFormulas} onChange={(e) => setInFormulas(e.target.checked)} /> Look in formulas</label>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
+          <button className="btn-ghost btn-sm" onClick={() => next(-1)} disabled={!hits.length}>↑ Prev</button>
+          <button className="btn-ghost btn-sm" onClick={() => next(1)} disabled={!hits.length}>Next ↓</button>
+          <button className="btn-primary btn-sm" onClick={run}>Find all</button>
+          {replace && canEdit && (
+            <>
+              <button className="btn-ghost btn-sm" onClick={() => doReplace(false)} disabled={!hits.length}>Replace</button>
+              <button className="btn-ghost btn-sm" onClick={() => doReplace(true)} disabled={!searched}>Replace all</button>
+            </>
+          )}
+        </div>
+        {searched && (
+          <div style={{ marginTop: 10, maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+            {hits.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "#8B8480" }}>No matches</div>}
+            {hits.map((h, i) => (
+              <button key={`${h.sheet}!${h.ref}`} className={`find-row ${i === cursor ? "on" : ""}`}
+                onClick={() => { setCursor(i); onJump(h); }}>
+                <b>{h.sheet}!{h.ref}</b>
+                <span>{h.text.length > 60 ? h.text.slice(0, 60) + "…" : h.text}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Data validation (S3.4) ----------
+
+function ValidationDialog({ sheet, selection, onMutate, onClose }: {
+  sheet: SheetData;
+  selection: string;
+  onMutate: (fn: (s: SheetData) => void) => void;
+  onClose: () => void;
+}) {
+  const [range, setRange] = useState(selection);
+  const [type, setType] = useState<Validation["type"]>("list");
+  const [list, setList] = useState("");
+  const [op, setOp] = useState<NonNullable<Validation["op"]>>("between");
+  const [min, setMin] = useState("");
+  const [max, setMax] = useState("");
+  const [inputMsg, setInputMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [errorStyle, setErrorStyle] = useState<"stop" | "warn">("stop");
+  const rules = sheet.validations ?? [];
+
+  const add = () => {
+    const v: Validation = { range: range.trim() || selection, type, inputMsg: inputMsg || undefined, errorMsg: errorMsg || undefined, errorStyle };
+    if (type === "list") v.list = list;
+    else { v.op = op; v.min = min; v.max = max; }
+    onMutate((s) => { s.validations = [...(s.validations ?? []), v]; });
+  };
+
+  return (
+    <div className="dlg-back" onClick={onClose}>
+      <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 420 }}>
+        <h3>Data validation</h3>
+        {rules.length > 0 && (
+          <div style={{ marginTop: 10, border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+            {rules.map((r, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: i < rules.length - 1 ? "1px solid var(--line)" : "none", fontSize: 12 }}>
+                <b>{r.range}</b>
+                <span style={{ color: "#8B8480" }}>
+                  {r.type === "list" ? `list: ${r.list}` : `${r.type} ${r.op ?? ""} ${r.min ?? ""}${r.max ? `–${r.max}` : ""}`}
+                  {r.errorStyle === "warn" ? " (warn)" : ""}
+                </span>
+                <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+                  onClick={() => onMutate((s) => { s.validations = (s.validations ?? []).filter((_, j) => j !== i); })}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input className="inp" value={range} onChange={(e) => setRange(e.target.value)} placeholder="Range (A1:C9)" style={{ flex: 1 }} />
+            <select className="rb-sel" value={type} onChange={(e) => setType(e.target.value as Validation["type"])}>
+              <option value="list">List</option>
+              <option value="number">Number</option>
+              <option value="date">Date</option>
+              <option value="text_len">Text length</option>
+            </select>
+          </div>
+          {type === "list" ? (
+            <input className="inp" value={list} onChange={(e) => setList(e.target.value)}
+              placeholder="Items — Red,Green,Blue or a range =Sheet1!A1:A5 or a name" />
+          ) : (
+            <div style={{ display: "flex", gap: 8 }}>
+              <select className="rb-sel" value={op} onChange={(e) => setOp(e.target.value as typeof op)}>
+                {["between", "notbetween", ">", "<", ">=", "<=", "=", "!="].map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+              <input className="inp" value={min} onChange={(e) => setMin(e.target.value)} placeholder="Min / value" style={{ flex: 1 }} />
+              {(op === "between" || op === "notbetween") && (
+                <input className="inp" value={max} onChange={(e) => setMax(e.target.value)} placeholder="Max" style={{ flex: 1 }} />
+              )}
+            </div>
+          )}
+          <input className="inp" value={inputMsg} onChange={(e) => setInputMsg(e.target.value)} placeholder="Input message (shown when the cell is selected)" />
+          <input className="inp" value={errorMsg} onChange={(e) => setErrorMsg(e.target.value)} placeholder="Error message (shown on invalid entry)" />
+          <label style={{ fontSize: 12 }}>
+            <input type="checkbox" checked={errorStyle === "warn"} onChange={(e) => setErrorStyle(e.target.checked ? "warn" : "stop")} />
+            {" "}Warn only (allow invalid values, flag them)
+          </label>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
+          <button className="btn-primary btn-sm" onClick={add}>Add rule</button>
         </div>
       </div>
     </div>

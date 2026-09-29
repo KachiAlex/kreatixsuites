@@ -3,7 +3,7 @@ import type { SheetData, Range, Ref, Workbook } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
-import { rangeToTSV } from "./io";
+import { rangeToTSV, rangeToCells, setCopyBuffer } from "./io";
 import { FxInput } from "./FxInput";
 
 const HEADER_H = 26;
@@ -32,17 +32,28 @@ interface GridProps {
   onGeom?: (axis: "col" | "row", index: number, size: number) => void;
   /** insert/delete/hide/unhide from the header context menu */
   onHeader?: (action: "ins" | "del" | "hide" | "unhide", axis: "col" | "row", index: number) => void;
+  /** refs violating a validation rule → red triangle marker */
+  invalid?: Set<string>;
+  /** list-validation dropdown for the anchor cell */
+  listDrop?: { ref: string; items: string[] };
+  /** cell with a note → marker (S3.5) */
+  noted?: Set<string>;
+  /** right-click a body cell → context menu (notes etc.) */
+  onCellMenu?: (ref: string, x: number, y: number) => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState({ r0: 0, r1: 80, c0: 0, c1: 26 });
   const [resizePrev, setResizePrev] = useState<{ axis: "col" | "row"; i: number; size: number } | null>(null);
   const [hMenu, setHMenu] = useState<{ x: number; y: number; axis: "col" | "row"; index: number } | null>(null);
+  const [listOpen, setListOpen] = useState(false);
+  const listRef = useRef(listDrop?.ref);
+  if (listRef.current !== listDrop?.ref) { listRef.current = listDrop?.ref; setListOpen(false); }
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -244,11 +255,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     if (editing) return;
     e.preventDefault();
     e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection, wb));
+    setCopyBuffer({ cells: rangeToCells(sheet, selection, wb), w: selection.c2 - selection.c1 + 1, h: selection.r2 - selection.r1 + 1,
+      origin: { col: selection.c1, row: selection.r1 } });
   };
   const onCut = (e: ClipboardEvent) => {
     if (editing) return;
     e.preventDefault();
     e.clipboardData.setData("text/plain", rangeToTSV(sheet, selection, wb));
+    setCopyBuffer({ cells: rangeToCells(sheet, selection, wb), w: selection.c2 - selection.c1 + 1, h: selection.r2 - selection.r1 + 1,
+      origin: { col: selection.c1, row: selection.r1 } });
     if (canEdit) onClear([...rangeRefs(selection)]);
   };
   const onPasteCb = (e: ClipboardEvent) => {
@@ -372,9 +387,13 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         }}
         onMouseDown={(e) => cellMouse(c, r, e)}
         onMouseEnter={(e) => cellMouse(c, r, e)}
-        onDoubleClick={(e) => cellMouse(c, r, e)}>
+        onDoubleClick={(e) => cellMouse(c, r, e)}
+        title={sheet.notes?.[ref] ? `${sheet.notes[ref]}` : undefined}
+        onContextMenu={(e) => { if (onCellMenu) { e.preventDefault(); if (!inSel(c, r)) setSelection({ c1: c, r1: r, c2: c, r2: r }); onCellMenu(ref, e.clientX, e.clientY); } }}>
         {editing?.ref.col === c && editing.ref.row === r ? null
           : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt)}
+        {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
+        {noted?.has(ref) && <span className="cell-flag note" />}
       </td>
     );
   };
@@ -505,6 +524,29 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         {/* freeze split indicators */}
         {fz.cols > 0 && <div className="freeze-v" style={{ left: frozenLeft }} />}
         {fz.rows > 0 && <div className="freeze-h" style={{ top: frozenTop }} />}
+
+        {/* list-validation dropdown on the anchor cell */}
+        {listDrop && canEdit && !editing && (() => {
+          const p = parseA1(listDrop.ref);
+          if (!p || colW(p.col) === 0 || rowH(p.row) === 0) return null;
+          const x = HEADER_W + colX[p.col], y = HEADER_H + rowY[p.row];
+          return (
+            <>
+              <button className="list-drop-btn"
+                style={{ left: x + colW(p.col) - 19, top: y + Math.max(0, (rowH(p.row) - 18) / 2) }}
+                title="List"
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setListOpen((v) => !v); }}>▾</button>
+              {listOpen && (
+                <div className="list-drop" style={{ left: x, top: y + rowH(p.row), minWidth: Math.max(120, colW(p.col)) }}>
+                  {listDrop.items.map((it) => (
+                    <button key={it} onMouseDown={(e) => { e.preventDefault(); onCommit(listDrop.ref, it); setListOpen(false); }}>{it}</button>
+                  ))}
+                  {!listDrop.items.length && <span style={{ padding: 8, fontSize: 12, color: "#8B8480" }}>Empty list</span>}
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* header context menu — insert/delete/hide/unhide */}
         {hMenu && (

@@ -434,7 +434,7 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .grid-table .col-h{height:26px;background:#F4F1ED;font-size:10px;font-weight:600;color:#8B8480;text-align:center;user-select:none;cursor:pointer;border-bottom:1px solid #D8D2CC}
 .grid-table .col-h.sel,.grid-table .row-h.sel{background:#D9EFE4;color:#14714A}
 .grid-table .row-h{width:42px;min-width:42px;background:#F4F1ED;font-size:10px;color:#8B8480;text-align:center;user-select:none;cursor:pointer;border-right:1px solid #D8D2CC}
-.grid-table .cell{background:#fff;font-size:12px;padding:0 5px;white-space:nowrap;overflow:hidden;cursor:cell;user-select:none}
+.grid-table .cell{background:#fff;font-size:12px;padding:0 5px;white-space:nowrap;overflow:hidden;cursor:cell;user-select:none;position:relative}
 .grid-table .cell.in-sel{background:rgba(31,157,102,.08) !important}
 .grid-table .cell.err{color:#C12E42 !important;font-weight:600}
 .sel-frame{position:absolute;border:2px solid var(--sheets);pointer-events:none;z-index:18;box-sizing:border-box}
@@ -477,6 +477,27 @@ footer{text-align:center;color:#A49C96;font-size:10px;margin-top:26px}
 .hmenu{position:fixed;z-index:80;min-width:190px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(23,18,15,.2);padding:4px}
 .hmenu-item{padding:6px 10px;border-radius:7px;font-size:12px;cursor:pointer;color:#26221F;white-space:nowrap}
 .hmenu-item:hover{background:#F1EDE9}
+
+/* --- sheets: S3 editing depth --- */
+.inp{height:32px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font:inherit;font-size:13px;background:#fff;color:#26221F;box-sizing:border-box}
+.inp:focus{outline:none;border-color:var(--k-orange)}
+textarea.inp{padding:8px 10px;height:auto}
+.ps-opt{padding:5px 12px;border:1px solid var(--line);border-radius:8px;font-size:12px;cursor:pointer;background:#fff;color:#26221F}
+.ps-opt.on{border-color:var(--k-orange);background:rgba(242,120,46,.1);color:#B34E12;font-weight:600}
+.ctx-back{position:fixed;inset:0;z-index:70}
+.find-row{display:flex;align-items:center;gap:10px;width:100%;padding:6px 10px;border:0;background:transparent;font:inherit;font-size:12px;text-align:left;cursor:pointer;border-bottom:1px solid #F1EDE9}
+.find-row:last-child{border-bottom:0}
+.find-row b{color:var(--k-orange);min-width:76px;font-weight:600}
+.find-row span{color:#6B6560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.find-row.on,.find-row:hover{background:rgba(242,120,46,.08)}
+.cell-flag{position:absolute;width:0;height:0;pointer-events:none}
+.cell-flag.inv{left:0;bottom:0;border-left:7px solid transparent;border-bottom:7px solid #D64545}
+.cell-flag.note{right:0;top:0;border-right:7px solid var(--k-orange);border-top:7px solid var(--k-orange)}
+.list-drop-btn{position:absolute;z-index:35;width:18px;height:18px;border:1px solid var(--line);border-radius:4px;background:#fff;color:#8B8480;font-size:9px;line-height:1;cursor:pointer;padding:0}
+.list-drop-btn:hover{border-color:var(--k-orange);color:var(--k-orange)}
+.list-drop{position:absolute;z-index:75;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(23,18,15,.2);padding:3px;max-height:200px;overflow-y:auto;display:flex;flex-direction:column}
+.list-drop button{border:0;background:transparent;padding:6px 10px;font:inherit;font-size:12px;text-align:left;cursor:pointer;border-radius:5px;color:#26221F}
+.list-drop button:hover{background:#F1EDE9}
 
 /* sheets status bar */
 .sheet-status{display:flex;align-items:center;gap:10px;padding:3px 14px;border-top:1px solid var(--line);background:#FBF9F7;font-size:11px;color:#6E6862;user-select:none}

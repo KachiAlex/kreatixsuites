@@ -1,9 +1,9 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula } from "./src/sheets/engine";
-import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs } from "./src/sheets/model";
-import type { Workbook } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook } from "./src/sheets/io";
+import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
+import type { Workbook, SheetData, CellData } from "./src/sheets/model";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems } from "./src/sheets/io";
 
 let passed = 0, failed = 0;
 const check = (name: string, cond: boolean) => {
@@ -337,6 +337,94 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("audit finds quoted range", refs.some((r) => r.sheet === "My Sheet" && r.range.c2 === 4));
   check("audit skips strings", refsInFormula('"A1"+1').length === 0);
   check("audit skips fn names", !refsInFormula("SUM(A1)").some((r) => r.range.r1 === -1));
+}
+
+// ---------- S3.1 Paste Special ----------
+{
+  const dst: Record<string, CellData> = { C1: { v: 100 }, C2: { v: 10 } };
+  const buf = {
+    cells: [
+      [{ v: 1, s: { b: true }, eval: 1 }, { v: 2, eval: 2 }],
+      [{ v: 3, eval: 3 }, { f: "A1+1", eval: 4 }],
+    ],
+    w: 2, h: 2, origin: { col: 0, row: 0 },
+  };
+  // transpose
+  pasteCells(dst, { col: 4, row: 0 }, buf, "transpose");
+  check("transpose writes E1=1", dst["E1"]?.v === 1);
+  check("transpose writes E2=2", dst["E2"]?.v === 2);
+  check("transpose writes F1=3", dst["F1"]?.v === 3);
+  check("transpose translates formula", dst["F2"]?.f === "E1+1");
+  // values mode
+  pasteCells(dst, { col: 7, row: 0 }, buf, "values");
+  check("values drops formula", dst["I2"]?.v === 4 && !dst["I2"]?.f);
+  // formats mode — style only
+  pasteCells(dst, { col: 2, row: 0 }, buf, "formats");
+  check("formats applies style", dst["C1"]?.s?.b === true && dst["C1"]?.v === 100);
+  // add op
+  pasteCells(dst, { col: 2, row: 0 }, buf, "all", "add");
+  check("add op", dst["C1"]?.v === 101);
+  // formulas mode — shift refs relative to origin delta
+  const dst2: Record<string, CellData> = {};
+  pasteCells(dst2, { col: 5, row: 5 }, buf, "formulas");
+  check("formulas shift refs", dst2["G7"]?.f === "F6+1");
+}
+
+// ---------- S3.2 Find & Replace ----------
+{
+  const wb: Workbook = {
+    sheets: [
+      { name: "S1", cells: { A1: { v: "Hello World" }, B1: { f: "SUM(A2:A3)" }, A2: { v: 5 }, A3: { v: 7 } } },
+      { name: "S2", cells: { C1: { v: "hello there" } } },
+    ],
+  };
+  let hits = findInWorkbook(wb, "hello");
+  check("find case-insensitive across sheets", hits.length === 2);
+  hits = findInWorkbook(wb, "hello", { matchCase: true });
+  check("find match case", hits.length === 1 && hits[0].sheet === "S2");
+  hits = findInWorkbook(wb, "SUM", { inFormulas: true });
+  check("find in formulas", hits.length === 1 && hits[0].ref === "B1");
+  const c: CellData = { v: "hello there" };
+  check("replace in value", replaceInCell(c, "hello", "bye", false) && c.v === "bye there");
+  const cf: CellData = { f: "SUM(A1:A9)" };
+  check("replace in formula", replaceInCell(cf, "A9", "A20", false) && cf.f === "SUM(A1:A20)");
+}
+
+// ---------- S3.3 Fill series ----------
+{
+  check("series num pair", (() => { const s = detectSeries([1, 2]); return s?.kind === "num" && seriesValue(s, 3) === 4; })());
+  check("series single num", (() => { const s = detectSeries([10]); return s?.kind === "num" && seriesValue(s, 2) === 12; })());
+  check("series step 5", (() => { const s = detectSeries([5, 10]); return s?.kind === "num" && seriesValue(s, 3) === 20; })());
+  check("series text+num", (() => { const s = detectSeries(["Item1"]); return s?.kind === "text" && seriesValue(s, 2) === "Item3"; })());
+  check("series month", (() => { const s = detectSeries(["Jan"]); return s?.kind === "list" && seriesValue(s, 1) === "Feb" && seriesValue(s, 12) === "Jan"; })());
+  check("series day", (() => { const s = detectSeries(["Monday"]); return s?.kind === "list" && seriesValue(s, 4) === "Friday"; })());
+  check("series date", (() => { const s = detectSeries(["2024-01-30"]); return s?.kind === "date" && seriesValue(s, 2) === "2024-02-01"; })());
+  check("series gap → null", detectSeries([1, null, 3]) === null);
+}
+
+// ---------- S3.4 Data validation ----------
+{
+  const sh: SheetData = { name: "S", cells: {}, validations: [{ range: "A1:A5", type: "number", op: "between", min: "1", max: "10" }] };
+  check("validationsAt hit", validationsAt(sh, "A3").length === 1);
+  check("validationsAt miss", validationsAt(sh, "B1").length === 0);
+  const rule = sh.validations![0];
+  check("validate in range", validateValue(5, rule));
+  check("validate out of range", !validateValue(50, rule));
+  check("validate blank passes", validateValue(null, rule));
+  check("validate non-number", !validateValue("abc", rule));
+  const listRule = { range: "B1:B3", type: "list" as const, list: "Red,Green" };
+  check("list validate", validateValue("green", listRule, ["Red", "Green"]));
+  check("list reject", !validateValue("blue", listRule, ["Red", "Green"]));
+  // listItems: literal + range + name
+  const wb: Workbook = { sheets: [{ name: "S", cells: { D1: { v: "x" }, D2: { v: "y" } } }], names: { Ds: "S!D1:D2" } };
+  check("listItems literal", JSON.stringify(listItems({ range: "A1", type: "list", list: "a,b,c" }, wb, "S")) === '["a","b","c"]');
+  check("listItems range", JSON.stringify(listItems({ range: "A1", type: "list", list: "=D1:D2" }, wb, "S")) === '["x","y"]');
+  check("listItems named", JSON.stringify(listItems({ range: "A1", type: "list", list: "Ds" }, wb, "S")) === '["x","y"]');
+  // validations shift on row insert
+  const s2: SheetData = { name: "S", cells: { A1: { v: 1 } }, validations: [{ range: "A3:A4", type: "number", op: ">", min: "0" }], notes: { B2: "hi" } };
+  adjustForRowsCols(s2, "row", 0, 1);
+  check("validation range shifts on insert", s2.validations![0].range === "A4:A5");
+  check("note follows cell on insert", s2.notes?.["B3"] === "hi");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
