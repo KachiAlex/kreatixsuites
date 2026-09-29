@@ -1,9 +1,9 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
-import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula } from "./src/sheets/engine";
+import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator } from "./src/sheets/engine";
 import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects } from "./src/sheets/io";
 import { formatValue } from "./src/sheets/format";
 
 let passed = 0, failed = 0;
@@ -503,6 +503,53 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("table range shifts", s.tables![0].range === "A2:C11");
   adjustForRowsCols(s, "col", 0, 1);
   check("table totals col shifts", s.tables![0].totals?.[2] === "sum");
+}
+
+// ---------- S6 conditional formatting ----------
+{
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { v: 10 }, A2: { v: 50 }, A3: { v: 90 },
+    B1: { v: "error: disk" }, B2: { v: "ok" }, B3: { f: "A2*2" },
+  } }] };
+  const ev = evaluateSheetIn(wb, "S");
+  const fx = (rules: SheetData["cf"]) => cfEffects({ name: "S", cells: wb.sheets[0].cells, cf: rules }, ev, createSheetEvaluator(wb, "S").evalFormula);
+  // legacy value rule
+  let m = fx([{ range: "A1:A3", op: ">", value: 40, bg: "#F00" }]);
+  check("cf legacy value", m.get("A2")?.bg === "#F00" && m.get("A3")?.bg === "#F00" && !m.get("A1"));
+  // text contains
+  m = fx([{ range: "B1:B2", type: "text", textOp: "contains", text: "error", bg: "#FF0" }]);
+  check("cf text contains", m.get("B1")?.bg === "#FF0" && !m.get("B2"));
+  // top-1 / bottom-1
+  m = fx([{ range: "A1:A3", type: "topn", n: 1, bg: "#0F0" }, { range: "A1:A3", type: "topn", n: 1, bottom: true, bg: "#00F" }]);
+  check("cf top1", m.get("A3")?.bg === "#0F0");
+  check("cf bottom1", m.get("A1")?.bg === "#00F");
+  // databar: min→~2%, max→100%
+  m = fx([{ range: "A1:A3", type: "databar", bar: "#123456" }]);
+  check("cf databar max", m.get("A3")?.bar?.pct === 100);
+  check("cf databar min", m.get("A1")?.bar?.pct === 2);
+  check("cf databar color", m.get("A2")?.bar?.color === "#123456");
+  // colorscale 2-stop: min→minColor, max→maxColor
+  m = fx([{ range: "A1:A3", type: "colorscale", minColor: "#000000", maxColor: "#FFFFFF" }]);
+  check("cf scale lo", m.get("A1")?.bg === "rgb(0,0,0)");
+  check("cf scale hi", m.get("A3")?.bg === "rgb(255,255,255)");
+  check("cf scale mid lerps", /^rgb\(/.test(m.get("A2")?.bg ?? ""));
+  // 3-stop: mid value hits midColor
+  m = fx([{ range: "A1:A3", type: "colorscale", minColor: "#FF0000", midColor: "#00FF00", maxColor: "#0000FF" }]);
+  check("cf scale3 mid", m.get("A2")?.bg === "rgb(0,255,0)");
+  // iconset: lo/mid/hi thirds
+  m = fx([{ range: "A1:A3", type: "iconset", icons: "arrows" }]);
+  check("cf icon lo", m.get("A1")?.icon?.endsWith("▼"));
+  check("cf icon hi", m.get("A3")?.icon?.endsWith("▲"));
+  // formula rule — refs relative to top-left shift per cell
+  m = fx([{ range: "A1:A3", type: "formula", f: "A1>40", bg: "#0FF" }]);
+  check("cf formula shifts", !m.get("A1") && m.get("A2")?.bg === "#0FF" && m.get("A3")?.bg === "#0FF");
+  // first rule wins for bg
+  m = fx([{ range: "A1:A3", op: ">", value: 0, bg: "#111" }, { range: "A1:A3", op: ">", value: 80, bg: "#222" }]);
+  check("cf first-wins", m.get("A3")?.bg === "#111");
+  // rule ranges survive structural edits (already remap-tested; spot-check cf)
+  const s: SheetData = { name: "S", cells: {}, cf: [{ range: "A2:A4", type: "databar" }] };
+  adjustForRowsCols(s, "row", 0, 1);
+  check("cf range shifts", s.cf![0].range === "A3:A5");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

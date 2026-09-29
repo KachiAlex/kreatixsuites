@@ -375,7 +375,7 @@ export interface SheetEval {
  * Evaluate the whole workbook (all sheets, cross-sheet refs resolved,
  * named ranges substituted). Returns sheetName → ref → result.
  */
-export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResult>> {
+function makeEvaluator(wb: Workbook) {
   const caches = new Map<string, Map<string, EvalResult>>();
   const visiting = new Set<string>();
   /** current-sheet context for INDIRECT-style functions */
@@ -519,8 +519,24 @@ export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResu
     }
   }
 
-  for (const sheet of wb.sheets) for (const ref of Object.keys(sheet.cells)) evalIn(sheet.name, ref, 0);
-  return caches;
+  return { caches, evalIn, runFormula };
+}
+
+export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResult>> {
+  const e = makeEvaluator(wb);
+  for (const sheet of wb.sheets) for (const ref of Object.keys(sheet.cells)) e.evalIn(sheet.name, ref, 0);
+  return e.caches;
+}
+
+/** Prime the workbook once, then allow ad-hoc formula evaluation in a sheet's
+ *  context — used by conditional-format formula rules and future features. */
+export function createSheetEvaluator(wb: Workbook, sheetName: string) {
+  const e = makeEvaluator(wb);
+  for (const sheet of wb.sheets) for (const ref of Object.keys(sheet.cells)) e.evalIn(sheet.name, ref, 0);
+  return {
+    values: e.caches.get(sheetName) ?? new Map<string, EvalResult>(),
+    evalFormula: (f: string) => e.runFormula(f, sheetName, 0),
+  };
 }
 
 /** Back-compat single-sheet eval (no cross-sheet refs resolve). */

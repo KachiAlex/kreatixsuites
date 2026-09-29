@@ -35,9 +35,27 @@ export interface CellData {
 
 export interface CondFormat {
   range: string;
-  op: ">" | "<" | ">=" | "<=" | "=" | "!=";
-  value: number;
-  bg: string;
+  /** default "value" — legacy {op,value,bg} threshold rules keep working */
+  type?: "value" | "text" | "topn" | "formula" | "databar" | "colorscale" | "iconset";
+  op?: ">" | "<" | ">=" | "<=" | "=" | "!=";
+  value?: number;
+  bg?: string;
+  /** type "text": match the displayed text */
+  textOp?: "contains" | "notcontains" | "starts" | "ends" | "=";
+  text?: string;
+  /** type "topn": top (or bottom) N values */
+  n?: number;
+  bottom?: boolean;
+  /** type "formula": refs relative to range top-left, shifted per cell */
+  f?: string;
+  /** type "databar": bar fill color */
+  bar?: string;
+  /** type "colorscale": 2- or 3-stop scale (midColor optional) */
+  minColor?: string;
+  midColor?: string;
+  maxColor?: string;
+  /** type "iconset" */
+  icons?: "arrows" | "traffic" | "stars";
 }
 
 export interface ChartSpec {

@@ -1,7 +1,7 @@
 import type * as XLSX from "xlsx";
 import type { CellData, SheetData, Workbook, Validation } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill } from "./model";
-import { evaluateSheet, evaluateSheetIn } from "./engine";
+import { evaluateSheet, evaluateSheetIn, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -331,6 +331,115 @@ export function computeFilteredRows(sheet: SheetData, wb: Workbook): number[] {
     }
   }
   return [...hidden];
+}
+
+// ---------- conditional formatting (S6) ----------
+
+export interface CfEffect { bg?: string; bar?: { pct: number; color: string }; icon?: string }
+
+/** Resolve a sheet's CF rules into per-cell visual effects.
+ *  value/text/topn/formula → bg; databar → in-cell bar; colorscale → lerped
+ *  fill; iconset → "color|glyph". First matching bg rule wins per cell. */
+export function cfEffects(
+  sheet: SheetData,
+  evals: Map<string, EvalResult>,
+  evalFormula?: (f: string) => EvalResult,
+): Map<string, CfEffect> {
+  const map = new Map<string, CfEffect>();
+  const lerp = (a: string, b: string, t: number) => {
+    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    const m = (sh: number) => Math.round(((pa >> sh) & 255) + (((pb >> sh) & 255) - ((pa >> sh) & 255)) * t);
+    return `rgb(${m(16)},${m(8)},${m(0)})`;
+  };
+  const ICONS: Record<string, [string, string, string]> = {
+    arrows: ["#C12E42|▼", "#B8860B|▬", "#1E8E3E|▲"],
+    traffic: ["#C12E42|●", "#B8860B|●", "#1E8E3E|●"],
+    stars: ["#A19A95|★", "#B8860B|★★", "#1E8E3E|★★★"],
+  };
+  const cellVal = (ref: string) => {
+    const cell = sheet.cells[ref];
+    return cell?.f ? evals.get(ref)?.value : cell?.v;
+  };
+  for (const rule of sheet.cf ?? []) {
+    const range = parseRange(rule.range);
+    if (!range) continue;
+    const type = rule.type ?? "value";
+    if (type === "databar" || type === "colorscale" || type === "iconset" || type === "topn") {
+      const nums = new Map<string, number>();
+      for (const ref of rangeRefs(range)) {
+        const v = Number(cellVal(ref));
+        if (!isNaN(v)) nums.set(ref, v);
+      }
+      if (!nums.size) continue;
+      const vals = [...nums.values()];
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      const span = hi - lo || 1;
+      if (type === "databar") {
+        for (const [ref, v] of nums) {
+          const e = map.get(ref) ?? {};
+          e.bar = { pct: Math.max(2, Math.round(((v - lo) / span) * 100)), color: rule.bar ?? "#3574E0" };
+          map.set(ref, e);
+        }
+      } else if (type === "colorscale") {
+        const c0 = rule.minColor ?? "#F8696B", c2 = rule.maxColor ?? "#63BE7B";
+        const c1 = rule.midColor;
+        for (const [ref, v] of nums) {
+          const t = (v - lo) / span;
+          const e = map.get(ref) ?? {};
+          e.bg = c1 ? (t < 0.5 ? lerp(c0, c1, t * 2) : lerp(c1, c2, (t - 0.5) * 2)) : lerp(c0, c2, t);
+          map.set(ref, e);
+        }
+      } else if (type === "iconset") {
+        const set = ICONS[rule.icons ?? "arrows"];
+        for (const [ref, v] of nums) {
+          const t = (v - lo) / span;
+          const [color, glyph] = set[t < 1 / 3 ? 0 : t < 2 / 3 ? 1 : 2].split("|");
+          const e = map.get(ref) ?? {};
+          e.icon = `${color}|${glyph}`;
+          map.set(ref, e);
+        }
+      } else {
+        const n = Math.max(1, rule.n ?? 10);
+        const sorted = [...vals].sort((a, b) => a - b);
+        const cut = rule.bottom ? sorted[Math.min(n, sorted.length) - 1] : sorted[Math.max(0, sorted.length - n)];
+        for (const [ref, v] of nums) {
+          if (rule.bottom ? v <= cut : v >= cut) {
+            const e = map.get(ref) ?? {};
+            if (!e.bg) e.bg = rule.bg ?? "#D4F5E2";
+            map.set(ref, e);
+          }
+        }
+      }
+      continue;
+    }
+    for (const ref of rangeRefs(range)) {
+      const e = map.get(ref) ?? {};
+      if (e.bg) { map.set(ref, e); continue; }
+      const raw = cellVal(ref);
+      let ok = false;
+      if (type === "text") {
+        const s = String(raw ?? "").toLowerCase(), t = (rule.text ?? "").toLowerCase();
+        ok = rule.textOp === "notcontains" ? !s.includes(t)
+          : rule.textOp === "starts" ? s.startsWith(t)
+          : rule.textOp === "ends" ? s.endsWith(t)
+          : rule.textOp === "=" ? s === t
+          : s.includes(t);
+      } else if (type === "formula" && rule.f && evalFormula) {
+        const at = parseA1(ref)!;
+        const f2 = shiftForFill(rule.f, at.col - range.c1, at.row - range.r1);
+        const res = evalFormula(f2);
+        ok = !!(res.value ?? 0) && !res.error;
+      } else {
+        const v = Number(raw);
+        if (isNaN(v)) continue;
+        ok = rule.op === ">" ? v > rule.value! : rule.op === "<" ? v < rule.value!
+          : rule.op === ">=" ? v >= rule.value! : rule.op === "<=" ? v <= rule.value!
+          : rule.op === "=" ? v === rule.value : v !== rule.value!;
+      }
+      if (ok) { e.bg = rule.bg ?? "#D4F5E2"; map.set(ref, e); }
+    }
+  }
+  return map;
 }
 
 // ---------- find & replace (S3.2) ----------

@@ -10,9 +10,9 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, type Validation, type FilterCrit, type TableSpec } from "./model";
-import { evaluateSheetIn, refsInFormula } from "./engine";
+import { evaluateSheetIn, createSheetEvaluator, refsInFormula } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, computeFilteredRows, filterValues } from "./io";
 import { Grid } from "./Grid";
@@ -116,7 +116,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [, forceUi] = useState(0);
 
   const sheet = wb.sheets[Math.min(active, wb.sheets.length - 1)];
-  const evals = useMemo(() => evaluateSheetIn(wb, sheet.name), [wb, sheet.name]);
+  const evaluator = useMemo(() => createSheetEvaluator(wb, sheet.name), [wb, sheet.name]);
+  const evals = evaluator.values;
   const selRefs = useMemo(() => selections.flatMap((r) => [...rangeRefs(r)]), [selections]);
   const anchorRef = toA1(selection.c1, selection.r1);
 
@@ -717,14 +718,24 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     return () => window.removeEventListener("mousedown", close);
   }, [tabMenu]);
 
-  // ---- conditional formatting ----
-  const addCF = (op: string, value: number, bg: string) => {
+  // ---- conditional formatting (S6: rule manager + rule types) ----
+  const addCF = (rule: Omit<CondFormat, "range">) => {
     mutateSheet((s) => {
-      s.cf = [...(s.cf ?? []), { range: rangeToA1(selection), op: op as never, value, bg }];
+      s.cf = [...(s.cf ?? []), { ...rule, range: rangeToA1(selection) }];
     });
-    setCfOpen(false);
     toast(`Rule added to ${rangeToA1(selection)}`);
   };
+  const moveCF = (i: number, dir: -1 | 1) => {
+    mutateSheet((s) => {
+      const cf = [...(s.cf ?? [])];
+      const j = i + dir;
+      if (j < 0 || j >= cf.length) return;
+      [cf[i], cf[j]] = [cf[j], cf[i]];
+      s.cf = cf;
+    });
+  };
+  const delCF = (i: number) => mutateSheet((s) => { s.cf = s.cf?.filter((_, j) => j !== i); });
+  const clearCF = () => mutateSheet((s) => { s.cf = undefined; });
 
   // ---- charts ----
   const addChart = (type: ChartSpec["type"]) => {
@@ -1043,6 +1054,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
         <Grid sheet={dispSheet} evals={evals} canEdit={canEdit} wb={wb}
+          evalFormula={evaluator.evalFormula}
           audit={auditRefs ? { refs: auditRefs, kind: audit! } : undefined}
           selections={selections} selection={selection} setSelection={selWithPaint}
           addSelection={addSelection} extendSelection={extWithPaint}
@@ -1156,7 +1168,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       )}
 
       {/* conditional format dialog */}
-      {cfOpen && <CfDialog selection={rangeToA1(selection)} onAdd={addCF} onClose={() => setCfOpen(false)} />}
+      {cfOpen && <CfManager sheet={sheet} selection={rangeToA1(selection)}
+        onAdd={addCF} onMove={moveCF} onDelete={delCF} onClear={clearCF}
+        onClose={() => setCfOpen(false)} />}
       {pasteSpec && <PasteSpecialDialog onPick={pasteSpecial} onClose={() => setPasteSpec(false)} />}
       {cellMenu && (
         <div className="ctx-back" onMouseDown={() => setCellMenu(null)} onContextMenu={(e) => e.preventDefault()}>
@@ -1286,36 +1300,158 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
 // ---------- fill series detection (S3.3) — helpers live in model.ts ----------
 
-function CfDialog({ selection, onAdd, onClose }: {
+type CFType = NonNullable<CondFormat["type"]>;
+const CF_TYPES: [CFType, string][] = [
+  ["value", "Cell value"], ["text", "Text"], ["topn", "Top/bottom N"],
+  ["formula", "Formula"], ["databar", "Data bars"], ["colorscale", "Color scale"], ["iconset", "Icon set"],
+];
+
+function cfRuleSummary(r: CondFormat): string {
+  switch (r.type ?? "value") {
+    case "value": return `cell ${r.op} ${r.value} → ${r.bg}`;
+    case "text": return `text ${r.textOp ?? "contains"} "${r.text}" → ${r.bg}`;
+    case "topn": return `${r.bottom ? "bottom" : "top"} ${r.n ?? 10} → ${r.bg}`;
+    case "formula": return `=${r.f} → ${r.bg}`;
+    case "databar": return `data bars (${r.bar ?? "#3574E0"})`;
+    case "colorscale": return `scale ${r.minColor ?? "#F8696B"}→${r.maxColor ?? "#63BE7B"}`;
+    case "iconset": return `icons (${r.icons ?? "arrows"})`;
+  }
+}
+
+/** Conditional-formatting rule manager (S6.1+S6.2): list, reorder, delete,
+ *  clear-all, and add any of the seven rule types. */
+function CfManager({ sheet, selection, onAdd, onMove, onDelete, onClear, onClose }: {
+  sheet: SheetData;
   selection: string;
-  onAdd: (op: string, value: number, bg: string) => void;
+  onAdd: (rule: Omit<CondFormat, "range">) => void;
+  onMove: (i: number, dir: -1 | 1) => void;
+  onDelete: (i: number) => void;
+  onClear: () => void;
   onClose: () => void;
 }) {
-  const [op, setOp] = useState(">");
+  const rules = sheet.cf ?? [];
+  const [adding, setAdding] = useState(rules.length === 0);
+  const [type, setType] = useState<CFType>("value");
+  const [op, setOp] = useState<NonNullable<CondFormat["op"]>>(">");
   const [value, setValue] = useState("0");
   const [bg, setBg] = useState(CF_COLORS[0]);
+  const [textOp, setTextOp] = useState<NonNullable<CondFormat["textOp"]>>("contains");
+  const [text, setText] = useState("");
+  const [n, setN] = useState("10");
+  const [bottom, setBottom] = useState(false);
+  const [f, setF] = useState("");
+  const [bar, setBar] = useState("#3574E0");
+  const [minColor, setMinColor] = useState("#F8696B");
+  const [midColor, setMidColor] = useState("");
+  const [maxColor, setMaxColor] = useState("#63BE7B");
+  const [icons, setIcons] = useState<NonNullable<CondFormat["icons"]>>("arrows");
+
+  const sel: CSSProperties = { height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px", fontSize: 12, fontFamily: "inherit" };
+  const inp: CSSProperties = { ...sel, flex: 1, minWidth: 0 };
+  const swatch = (val: string, set: (v: string) => void, colors: string[]) => (
+    <div style={{ display: "flex", gap: 6 }}>
+      {colors.map((c) => (
+        <button key={c} onClick={() => set(c)}
+          style={{ width: 24, height: 24, borderRadius: 6, background: c, border: val === c ? "2px solid #171717" : "1px solid var(--line)" }} />
+      ))}
+      <input type="color" value={val} onChange={(e) => set(e.target.value)} style={{ width: 26, height: 24, padding: 0, border: "none", background: "none" }} />
+    </div>
+  );
+
+  const build = (): Omit<CondFormat, "range"> => {
+    switch (type) {
+      case "value": return { type, op, value: Number(value) || 0, bg };
+      case "text": return { type, textOp, text, bg };
+      case "topn": return { type, n: Math.max(1, Number(n) || 1), bottom, bg };
+      case "formula": return { type, f: f.replace(/^=/, ""), bg };
+      case "databar": return { type, bar };
+      case "colorscale": return { type, minColor, midColor: midColor || undefined, maxColor };
+      case "iconset": return { type, icons };
+    }
+  };
+
   return (
     <div className="dlg-back" onClick={onClose}>
-      <div className="dlg" onClick={(e) => e.stopPropagation()}>
-        <h3>Conditional format — {selection}</h3>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-          <span style={{ fontSize: 12 }}>Highlight cells</span>
-          <select value={op} onChange={(e) => setOp(e.target.value)}
-            style={{ height: 30, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px" }}>
-            {[">", "<", ">=", "<=", "=", "!="].map((o) => <option key={o}>{o}</option>)}
-          </select>
-          <input value={value} onChange={(e) => setValue(e.target.value)} type="number"
-            style={{ height: 30, width: 90, border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px" }} />
-        </div>
+      <div className="dlg" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
+        <h3>Conditional formatting</h3>
+        {rules.length > 0 && (
+          <div style={{ maxHeight: 180, overflowY: "auto", marginTop: 10 }}>
+            {rules.map((r, i) => (
+              <div key={i} className="frow" style={{ justifyContent: "space-between" }}>
+                <span style={{ fontSize: 12 }}>
+                  <b style={{ fontFamily: "monospace", marginRight: 6 }}>{r.range}</b>
+                  {cfRuleSummary(r)}
+                </span>
+                <span style={{ display: "flex", gap: 2 }}>
+                  <button className="btn-ghost btn-sm" disabled={i === 0} onClick={() => onMove(i, -1)}>↑</button>
+                  <button className="btn-ghost btn-sm" disabled={i === rules.length - 1} onClick={() => onMove(i, 1)}>↓</button>
+                  <button className="btn-ghost btn-sm" onClick={() => onDelete(i)}>✕</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          {CF_COLORS.map((c) => (
-            <button key={c} onClick={() => setBg(c)}
-              style={{ width: 28, height: 28, borderRadius: 8, background: c, border: bg === c ? "2px solid #171717" : "1px solid var(--line)" }} />
-          ))}
+          <button className="btn-ghost btn-sm" onClick={() => setAdding(!adding)}>{adding ? "Hide" : "＋ New rule"}</button>
+          {rules.length > 0 && <button className="btn-ghost btn-sm" onClick={onClear}>Clear all rules</button>}
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-          <button className="btn-primary btn-sm" onClick={() => onAdd(op, Number(value) || 0, bg)}>Apply</button>
+        {adding && (
+          <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            <p style={{ fontSize: 11, color: "#8B8480", margin: "0 0 8px" }}>New rule on {selection}</p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select style={sel} value={type} onChange={(e) => setType(e.target.value as CFType)}>
+                {CF_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+              {type === "value" && <>
+                <select style={sel} value={op} onChange={(e) => setOp(e.target.value as NonNullable<CondFormat["op"]>)}>
+                  {[">", "<", ">=", "<=", "=", "!="].map((o) => <option key={o}>{o}</option>)}
+                </select>
+                <input style={{ ...inp, width: 80 }} value={value} onChange={(e) => setValue(e.target.value)} type="number" />
+              </>}
+              {type === "text" && <>
+                <select style={sel} value={textOp} onChange={(e) => setTextOp(e.target.value as NonNullable<CondFormat["textOp"]>)}>
+                  {[["contains", "contains"], ["notcontains", "doesn't contain"], ["starts", "begins with"], ["ends", "ends with"], ["=", "equals"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <input style={{ ...inp, width: 90 }} value={text} onChange={(e) => setText(e.target.value)} placeholder="text" />
+              </>}
+              {type === "topn" && <>
+                <select style={sel} value={bottom ? "b" : "t"} onChange={(e) => setBottom(e.target.value === "b")}>
+                  <option value="t">Top</option><option value="b">Bottom</option>
+                </select>
+                <input style={{ ...inp, width: 60 }} value={n} onChange={(e) => setN(e.target.value)} type="number" />
+              </>}
+              {type === "formula" &&
+                <input style={inp} value={f} onChange={(e) => setF(e.target.value)} placeholder="=A1>100 (relative to top-left)" />}
+              {type === "iconset" &&
+                <select style={sel} value={icons} onChange={(e) => setIcons(e.target.value as NonNullable<CondFormat["icons"]>)}>
+                  <option value="arrows">Arrows</option><option value="traffic">Traffic lights</option><option value="stars">Stars</option>
+                </select>}
+            </div>
+            {(type === "value" || type === "text" || type === "topn" || type === "formula") && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+                <span style={{ fontSize: 11, color: "#8B8480" }}>Fill</span>{swatch(bg, setBg, CF_COLORS)}
+              </div>
+            )}
+            {type === "databar" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+                <span style={{ fontSize: 11, color: "#8B8480" }}>Bar</span>
+                {swatch(bar, setBar, ["#3574E0", "#63BE7B", "#F2782E", "#9334E0"])}
+              </div>
+            )}
+            {type === "colorscale" && (
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 10, fontSize: 11, color: "#8B8480" }}>
+                Min {swatch(minColor, setMinColor, ["#F8696B", "#FFF", "#DCE9FF"])}
+                Mid {swatch(midColor || "#FFFFFF", setMidColor, ["#FFDD71", "#FFF3C4"])}
+                Max {swatch(maxColor, setMaxColor, ["#63BE7B", "#171717", "#F2782E"])}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn-primary btn-sm" onClick={() => { onAdd(build()); setAdding(false); }}>Add rule</button>
+            </div>
+          </div>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

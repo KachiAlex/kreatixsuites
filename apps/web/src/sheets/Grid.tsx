@@ -3,7 +3,7 @@ import type { SheetData, Range, Ref, Workbook } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
-import { rangeToTSV, rangeToCells, setCopyBuffer } from "./io";
+import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects } from "./io";
 import { FxInput } from "./FxInput";
 
 const HEADER_H = 26;
@@ -42,11 +42,13 @@ interface GridProps {
   onCellMenu?: (ref: string, x: number, y: number) => void;
   /** click a filter ▾ on the header row (S5.1) */
   onFilterClick?: (col: number, x: number, y: number) => void;
+  /** evaluate an ad-hoc formula in this sheet's context (CF formula rules) */
+  evalFormula?: (f: string) => EvalResult;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula }: GridProps) {
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -193,24 +195,8 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     return { covered, heads };
   }, [sheet.merges]);
 
-  const cfBg = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const rule of sheet.cf ?? []) {
-      const range = parseRange(rule.range);
-      if (!range) continue;
-      for (const ref of rangeRefs(range)) {
-        const res = evals.get(ref);
-        const cell = sheet.cells[ref];
-        const v = Number(cell?.f ? res?.value : cell?.v);
-        if (isNaN(v)) continue;
-        const ok = rule.op === ">" ? v > rule.value : rule.op === "<" ? v < rule.value
-          : rule.op === ">=" ? v >= rule.value : rule.op === "<=" ? v <= rule.value
-          : rule.op === "=" ? v === rule.value : v !== rule.value;
-        if (ok) map.set(ref, rule.bg);
-      }
-    }
-    return map;
-  }, [sheet.cf, sheet.cells, evals]);
+  // conditional formats (S6): pure computation lives in io.ts → cfEffects
+  const cfFx = useMemo(() => cfEffects(sheet, evals, evalFormula), [sheet, evals, evalFormula]);
 
   const startEdit = (ref: Ref, initial?: string) => {
     if (!canEdit) return;
@@ -403,6 +389,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     // table banding (falls back under direct bg/cf) + totals row (S5.4)
     const band = tableInfo.bands.get(ref);
     const tot = tableInfo.totals.get(r);
+    const cfx = cfFx.get(ref);
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
@@ -438,7 +425,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           fontFamily: s.font, fontSize: s.size ? `${s.size}px` : undefined,
           textDecoration: deco || "none",
           color: s.color ?? (band?.light ? "#fff" : "#26221F"),
-          background: cfBg.get(ref) ?? s.bg ?? band?.bg ?? (tot ? "#F4F1EE" : "#fff"),
+          background: cfx?.bg ?? s.bg ?? band?.bg ?? (tot ? "#F4F1EE" : "#fff"),
           textAlign: s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
           verticalAlign: s.valign ?? (head ? "middle" : undefined),
           paddingLeft: s.indent ? 5 + s.indent * 8 : undefined,
@@ -450,6 +437,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         onDoubleClick={(e) => cellMouse(c, r, e)}
         title={sheet.notes?.[ref] ? `${sheet.notes[ref]}` : undefined}
         onContextMenu={(e) => { if (onCellMenu) { e.preventDefault(); if (!inSel(c, r)) setSelection({ c1: c, r1: r, c2: c, r2: r }); onCellMenu(ref, e.clientX, e.clientY); } }}>
+        {cfx?.bar && (
+          <span className="cf-bar" style={{ width: `${cfx.bar.pct}%`, background: cfx.bar.color }} />
+        )}
+        {cfx?.icon && <span className="cf-icon" style={{ color: cfx.icon.split("|")[0] }}>{cfx.icon.split("|")[1]}</span>}
         {s.rotate ? (
           <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
         ) : s.shrink ? (
