@@ -7,7 +7,7 @@ const HANDLE = 8;
 
 export interface ObjPatch { id: string; patch: Partial<SlideObject> }
 
-export function SlideCanvas({ slide, theme, scale, interactive, selection, onSelect, onPatch, onTextCommit, onTableCommit, onObjDblClick, canEdit, animStep, onEditingChange, cropId, onCropChange }: {
+export function SlideCanvas({ slide, theme, scale, interactive, selection, onSelect, onPatch, onTextCommit, onTableCommit, onObjDblClick, canEdit, animStep, onEditingChange, cropId, onCropChange, under, size }: {
   slide: Slide;
   theme: Theme;
   scale: number;
@@ -23,6 +23,8 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   onEditingChange?: (id: string | null) => void;
   cropId?: string | null;
   onCropChange?: (id: string | null) => void;
+  under?: SlideObject[]; // P2.1 — master/layout objects rendered beneath, non-interactive
+  size?: { w: number; h: number }; // P2.4 — defaults to 960×540
 }) {
   const [editingIdRaw, setEditingIdRaw] = useState<string | null>(null);
   const setEditingId = (id: string | null) => { setEditingIdRaw(id); onEditingChange?.(id); };
@@ -227,7 +229,14 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   });
 
   return (
-    <div ref={boxRef} className="slide-box" style={{ width: SLIDE_W, height: SLIDE_H, transform: `scale(${scale})`, background: slide.bg ?? theme.bg }}
+    <div ref={boxRef} className="slide-box" style={{
+      width: size?.w ?? SLIDE_W, height: size?.h ?? SLIDE_H, transform: `scale(${scale})`,
+      background: slide.bg ?? theme.bg,
+      // P2.5 — `bg` may be a gradient string; bgImage layers a picture over it
+      backgroundImage: slide.bgImage ? `url(${slide.bgImage})` : undefined,
+      backgroundSize: slide.bgImage ? "cover" : undefined,
+      backgroundPosition: slide.bgImage ? "center" : undefined,
+    }}
       onPointerDown={interactive ? (e) => { if (e.target === e.currentTarget) { onSelect?.(new Set(), false); onCropChange?.(null); } } : undefined}
       onPointerMove={interactive ? onMove : undefined}
       onPointerUp={interactive ? onUp : undefined}>
@@ -239,6 +248,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
           </marker>
         </defs>
       </svg>
+      {under?.map((o) => <ObjView key={`u${o.id}`} o={o} theme={theme} />)}
       {objs.map((o0) => {
         // connector bbox derives from resolved endpoints so it tracks
         // attached objects even when the stored box is stale

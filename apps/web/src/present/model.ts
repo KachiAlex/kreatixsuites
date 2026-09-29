@@ -78,13 +78,33 @@ export interface Slide {
   bg?: string;
   layout?: string;
   transition?: { type: TransitionType; duration?: number };
+  hidden?: boolean;        // P2.3 — skipped during presentation
+  sectionStart?: string;   // P2.2 — this slide heads a named section
+  bgImage?: string;        // P2.5 — picture background (data URL), layered over `bg`
 }
 
 export interface Deck {
   theme?: string;
   customTheme?: Theme; // set when a file brings its own palette (e.g. PPTX import)
   slides: Slide[];
+  // P2.1 — slide master: objects rendered beneath EVERY slide (logo, footer…)
+  master?: SlideObject[];
+  // P2.1 — live-linked custom layouts: slides whose `layout` names a key here
+  // render these objects beneath their own (edit once → all slides update)
+  layouts?: Record<string, SlideObject[]>;
+  // P2.4 — slide canvas size (default 960×540 = 16:9)
+  slideW?: number;
+  slideH?: number;
+  // P2.6 — per-deck saved theme variants (apply via deck.customTheme)
+  themeVariants?: Theme[];
 }
+
+export const deckSize = (deck: Deck): { w: number; h: number } =>
+  ({ w: deck.slideW ?? SLIDE_W, h: deck.slideH ?? SLIDE_H });
+
+export const masterObjects = (deck: Deck): SlideObject[] => deck.master ?? [];
+export const layoutObjects = (deck: Deck, slide: Slide): SlideObject[] =>
+  slide.layout ? deck.layouts?.[slide.layout] ?? [] : [];
 
 export const chartSeries = (c: NonNullable<SlideObject["chart"]>): { name: string; values: number[] }[] =>
   c.series ?? [{ name: "Series 1", values: c.values ?? [] }];

@@ -600,6 +600,16 @@ textarea.inp{padding:8px 10px;height:auto}
 .guide-v{position:absolute;top:0;bottom:0;width:1px;background:#E85D9E;z-index:49;pointer-events:none}
 .guide-h{position:absolute;left:0;right:0;height:1px;background:#E85D9E;z-index:49;pointer-events:none}
 .s-cropbar{position:absolute;background:#26221F;border:1.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);border-radius:2px;z-index:52;touch-action:none}
+.rail-sec{display:flex;align-items:center;gap:4px;padding:4px 8px;font-size:11px;font-weight:600;color:#7A726B;border-top:1px solid var(--line);margin-top:6px;position:sticky;top:0;background:var(--panel,#fff);z-index:5}
+.rail-sec button{border:0;background:transparent;cursor:pointer;color:#A19A95;font-size:10px;padding:1px 3px;border-radius:3px}
+.rail-sec button:hover{background:var(--soft,#F4F1EE);color:#26221F}
+.rail-sec-caret{font-size:11px!important;color:#26221F!important}
+.rail-sec-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default}
+.rail-sec-count{color:#C9C2BB;font-weight:400}
+.rail-slide.hidden .rail-thumb{opacity:.35;filter:grayscale(.6)}
+.rail-hbadge{position:absolute;right:4px;top:4px;font-size:10px;color:#7A726B}
+.rail-slide{position:relative}
+.pv-thumb.hidden{opacity:.4}
 
 .presenter-full{position:fixed;inset:0;background:#000;z-index:300;display:grid;place-items:center;cursor:pointer}
 .presenter-full .blank{position:absolute;inset:0}

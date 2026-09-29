@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Deck, Theme } from "./model";
-import { SLIDE_W, SLIDE_H } from "./model";
+import { masterObjects, layoutObjects, deckSize } from "./model";
 import { SlideCanvas } from "./SlideCanvas";
 
 /** Fullscreen slideshow + Presenter View (KBS-PRESENT-015) */
@@ -26,12 +26,24 @@ export function Presenter({ deck, theme, startIndex, presenterView, onClose }: {
     setBlank("none");
     if (d > 0) {
       if (step < maxStep) setStep(step + 1);
-      else { setStep(0); setIdx((i) => Math.min(slides.length - 1, i + 1)); }
+      else {
+        setStep(0);
+        // P2.3 — skip hidden slides in normal navigation
+        setIdx((i) => {
+          let n = i + 1;
+          while (n < slides.length - 1 && slides[n].hidden) n++;
+          return Math.min(slides.length - 1, n);
+        });
+      }
     } else {
       setStep(Infinity);
-      setIdx((i) => Math.max(0, i - 1));
+      setIdx((i) => {
+        let n = i - 1;
+        while (n > 0 && slides[n].hidden) n--;
+        return Math.max(0, n);
+      });
     }
-  }, [slides.length, maxStep, step]);
+  }, [slides, maxStep, step]);
 
   const jump = useCallback((i: number) => { setIdx(i); setStep(0); }, []);
 
@@ -59,19 +71,21 @@ export function Presenter({ deck, theme, startIndex, presenterView, onClose }: {
   const ss = String(elapsed % 60).padStart(2, "0");
   const next = slides[idx + 1];
 
-  // scale to fit available box
-  const scaleFor = (w: number, h: number) => Math.min(w / SLIDE_W, h / SLIDE_H);
+  // scale to fit available box — deck-level slide size (P2.4)
+  const dims = deckSize(deck);
+  const scaleFor = (w: number, h: number) => Math.min(w / dims.w, h / dims.h);
   const mainScale = presenterView ? scaleFor(window.innerWidth * 0.62, window.innerHeight * 0.72) : scaleFor(window.innerWidth, window.innerHeight);
 
   const renderSlide = (s: typeof slide, scale: number, withAnim = false) => (
     <div className={`pres-slide ${withAnim && s?.transition && s.transition.type !== "none" ? `anim-${s.transition.type}` : ""}`}
       key={s?.id}
       style={{
-        width: SLIDE_W * scale, height: SLIDE_H * scale, overflow: "hidden", position: "relative",
+        width: dims.w * scale, height: dims.h * scale, overflow: "hidden", position: "relative",
         boxShadow: "0 12px 40px rgba(0,0,0,.45)",
         animationDuration: `${(s?.transition?.duration ?? 500) / 1000}s`,
       }}>
-      <SlideCanvas slide={s} theme={theme} scale={scale} selection={new Set()}
+      <SlideCanvas slide={s} theme={theme} scale={scale} selection={new Set()} size={dims}
+        under={s ? [...masterObjects(deck), ...layoutObjects(deck, s)] : undefined}
         animStep={withAnim ? Math.min(step, maxStep) : undefined} />
     </div>
   );
@@ -99,8 +113,9 @@ export function Presenter({ deck, theme, startIndex, presenterView, onClose }: {
         {blank !== "none" ? <div className="blank" style={{ background: blank === "black" ? "#000" : "#fff", flex: 1 }} /> : renderSlide(slide, mainScale, true)}
         <div className="pv-thumbs">
           {slides.map((s, i) => (
-            <div key={s.id} className={`pv-thumb ${i === idx ? "active" : ""}`} onClick={() => jump(i)}>
-              <SlideCanvas slide={s} theme={theme} scale={0.08} selection={new Set()} />
+            <div key={s.id} className={`pv-thumb ${i === idx ? "active" : ""} ${s.hidden ? "hidden" : ""}`} onClick={() => jump(i)}>
+              <SlideCanvas slide={s} theme={theme} scale={0.08} selection={new Set()} size={dims}
+                under={[...masterObjects(deck), ...layoutObjects(deck, s)]} />
               <span>{i + 1}</span>
             </div>
           ))}

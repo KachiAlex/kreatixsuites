@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
@@ -12,8 +12,8 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Deck, Slide, SlideObject, TransitionType } from "./model";
-import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint } from "./model";
+import type { Deck, Slide, SlideObject, Theme, TransitionType } from "./model";
+import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint, masterObjects, layoutObjects, deckSize } from "./model";
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
@@ -41,6 +41,11 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const [cropId, setCropId] = useState<string | null>(null); // P1.6 — image in crop mode
   const [paintArmed, setPaintArmed] = useState(false); // P1.8 — format painter armed
   const fmtCopy = useRef<Partial<SlideObject> | null>(null);
+  // P2.1 — "off" | "master" | `layout:${key}` (live-linked layout editing)
+  const [masterView, setMasterView] = useState<string>("off");
+  const [bgMenu, setBgMenu] = useState(false); // P2.5 — background panel
+  const [grad, setGrad] = useState({ c1: "#FFFFFF", c2: "#F2782E", angle: 135 });
+  const bgImageRef = useRef<HTMLInputElement>(null);
   const [chartDlg, setChartDlg] = useState<{ id: string | null } | null>(null);
   const [shapeMenu, setShapeMenu] = useState(false);
   const [tableDlg, setTableDlg] = useState<{ id: string | null } | null>(null);
@@ -63,8 +68,23 @@ export function PresentEditor({ item, initialDoc, permission }: {
   const pptxRef = useRef<HTMLInputElement>(null);
 
   const theme = themeOf(deck);
+  const dims = deckSize(deck);
   const slide = deck.slides[Math.min(slideIdx, deck.slides.length - 1)];
-  const selObjs = slide.objects.filter((o) => selection.has(o.id));
+  // P2.2 — contiguous section spans for the rail
+  const railSections: { name: string; headId: string; idxs: number[] }[] = [];
+  const railPreface: number[] = [];
+  deck.slides.forEach((s, i) => {
+    if (s.sectionStart) railSections.push({ name: s.sectionStart, headId: s.id, idxs: [i] });
+    else if (railSections.length) railSections[railSections.length - 1].idxs.push(i);
+    else railPreface.push(i);
+  });
+  const [collapsedSecs, setCollapsedSecs] = useState<Set<string>>(new Set());
+  // P2.1 — what the main canvas edits: the slide, the deck master, or a custom layout
+  const editSlide: Slide = masterView === "master" ? { id: "__master", objects: deck.master ?? [] }
+    : masterView.startsWith("layout:") ? { id: masterView.slice(7), objects: deck.layouts?.[masterView.slice(7)] ?? [] }
+    : slide;
+  const underObjs = (s: Slide) => [...masterObjects(deck), ...layoutObjects(deck, s)];
+  const selObjs = editSlide.objects.filter((o) => selection.has(o.id));
   const firstSel = selObjs[0];
 
   // ---- collab: per-slide keys + deck meta in a shared Y.Map ----
@@ -164,8 +184,18 @@ export function PresentEditor({ item, initialDoc, permission }: {
   }, []);
 
   const mutateSlide = useCallback((fn: (s: Slide) => void, actionKey?: string) => {
-    mutate((d) => fn(d.slides[slideIdx]), actionKey);
-  }, [mutate, slideIdx]);
+    mutate((d) => {
+      if (masterView === "master") {
+        const s: Slide = { id: "__master", objects: (d.master ??= []) };
+        fn(s); d.master = s.objects;
+      } else if (masterView.startsWith("layout:")) {
+        const key = masterView.slice(7);
+        d.layouts ??= {};
+        const s: Slide = { id: key, objects: (d.layouts[key] ??= []) };
+        fn(s); d.layouts[key] = s.objects;
+      } else fn(d.slides[slideIdx]);
+    }, actionKey);
+  }, [mutate, slideIdx, masterView]);
 
   // ---- AI ops (tool-constrained; routed through mutate → undo/autosave/collab) ----
   const aiSerialize = useCallback(() => deck.slides.map((s, i) =>
@@ -520,12 +550,80 @@ export function PresentEditor({ item, initialDoc, permission }: {
     mutate((deck) => { const [s] = deck.slides.splice(slideIdx, 1); deck.slides.splice(j, 0, s); });
     setSlideIdx(j);
   };
+  // P2.3 — hide/unhide the current slide (skipped during presentation)
+  const toggleHidden = () => mutate((d) => { const s = d.slides[slideIdx]; s.hidden = !s.hidden; });
+  // P2.2 — section ops: flag the current slide as a section head; rename/remove/move blocks
+  const startSection = () => {
+    const name = prompt("Section name:", slide.sectionStart ?? `Section ${railSections.length + 1}`);
+    if (name === null) return;
+    mutate((d) => { d.slides[slideIdx].sectionStart = name || undefined; });
+  };
+  const renameSection = (headId: string, cur: string) => {
+    const name = prompt("Rename section:", cur);
+    if (name === null) return;
+    mutate((d) => { const s = d.slides.find((x) => x.id === headId); if (s) s.sectionStart = name || undefined; });
+  };
+  const moveSection = (headId: string, dir: -1 | 1) => {
+    mutate((d) => {
+      const blocks: { headId: string | null; idxs: number[] }[] = [];
+      let cur: { headId: string | null; idxs: number[] } = { headId: null, idxs: [] };
+      d.slides.forEach((s, i) => {
+        if (s.sectionStart) { blocks.push(cur); cur = { headId: s.id, idxs: [i] }; }
+        else cur.idxs.push(i);
+      });
+      blocks.push(cur);
+      const k = blocks.findIndex((b) => b.headId === headId);
+      const j = k + dir;
+      if (k < 0 || j < 0 || j >= blocks.length) return;
+      [blocks[k], blocks[j]] = [blocks[j], blocks[k]];
+      d.slides = blocks.flatMap((b) => b.idxs.map((i) => d.slides[i]));
+    });
+  };
+  // P2.4 — slide size presets + custom
+  const setSlideSize = (w: number, h: number) => mutate((d) => { d.slideW = w; d.slideH = h; });
+  // P2.5 — slide background: flat color, gradient string, or picture layer
+  const setBg = (v?: string) => mutate((d) => { d.slides[slideIdx].bg = v; });
+  const applyBgToAll = () => mutate((d) => {
+    const { bg, bgImage } = d.slides[slideIdx];
+    d.slides.forEach((s) => { s.bg = bg; s.bgImage = bgImage; });
+  });
+  const pickSlideSize = (v: string) => {
+    if (v === "custom") {
+      const raw = prompt("Slide size WxH (px):", `${dims.w}x${dims.h}`);
+      const m = raw?.match(/^(\d+)\s*[x×]\s*(\d+)$/i);
+      if (m) setSlideSize(+m[1], +m[2]);
+      return;
+    }
+    const [w, h] = v.split("x").map(Number);
+    setSlideSize(w, h);
+  };
   const setLayout = (layoutId: string) => {
-    mutate((d) => { d.slides[slideIdx] = applyLayout(d.slides[slideIdx], layoutId, theme); });
+    mutate((d) => {
+      if (deck.layouts?.[layoutId]) {
+        // live-linked custom layout — keeps the slide's own objects as overrides
+        d.slides[slideIdx].layout = layoutId;
+      } else {
+        d.slides[slideIdx] = applyLayout(d.slides[slideIdx], layoutId, theme);
+      }
+    });
   };
   const setTheme = (themeId: string) => {
     if (themeId === "imported") return; // reselecting the active custom theme is a no-op
+    if (themeId.startsWith("variant:")) { // P2.6 — apply a saved per-deck variant
+      const v = deck.themeVariants?.find((t) => `variant:${t.id}` === themeId);
+      if (v) mutate((d) => { d.customTheme = { ...v }; });
+      return;
+    }
     mutate((d) => { d.theme = themeId; d.customTheme = undefined; d.slides.forEach((s) => { s.bg = THEMES.find((t) => t.id === themeId)?.bg ?? s.bg; }); });
+  };
+  // P2.6 — theme editor: live-edits deck.customTheme, "save variant" persists it
+  const [themeEd, setThemeEd] = useState<Theme | null>(null);
+  const applyThemeEd = (t: Theme) => { setThemeEd(t); mutate((d) => { d.customTheme = { ...t }; }); };
+  const saveVariant = () => {
+    if (!themeEd) return;
+    const name = prompt("Variant name:", themeEd.name) ?? themeEd.name;
+    mutate((d) => { (d.themeVariants ??= []).push({ ...themeEd, id: newId(), name }); });
+    setThemeEd(null);
   };
 
   // ---- comments ----
@@ -635,13 +733,112 @@ export function PresentEditor({ item, initialDoc, permission }: {
             {LAYOUTS.filter((l) => l.id !== "blank").map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
           <button className="rb" title="Presenter view" style={{ fontSize: 11 }} onClick={() => setPresenting("presenter")}>🖥</button>
-          <select className="rb-sel" value={slide.layout ?? "blank"} onChange={(e) => setLayout(e.target.value)} title="Layout (replaces objects)">
+          <select className="rb-sel" value={masterView !== "off" ? "__mv" : slide.layout ?? "blank"} onChange={(e) => setLayout(e.target.value)} title="Layout (built-ins replace objects; custom layouts render live-linked)" disabled={masterView !== "off"}>
             {LAYOUTS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {Object.keys(deck.layouts ?? {}).map((k) => <option key={k} value={k}>◆ {k}</option>)}
+            {masterView !== "off" && <option value="__mv">— editing master —</option>}
           </select>
-          <select className="rb-sel" value={deck.customTheme ? "imported" : deck.theme ?? "kreatix"} onChange={(e) => setTheme(e.target.value)} title="Theme">
-            {deck.customTheme && <option value="imported">Imported ({deck.customTheme.name})</option>}
+          <select className="rb-sel" title="Theme" disabled={masterView !== "off"}
+            value={deck.customTheme ? (deck.themeVariants?.some((v) => v.id === deck.customTheme!.id) ? `variant:${deck.customTheme.id}` : "imported") : deck.theme ?? "kreatix"}
+            onChange={(e) => setTheme(e.target.value)}>
+            {deck.customTheme && !deck.themeVariants?.some((v) => v.id === deck.customTheme!.id) && <option value="imported">Imported ({deck.customTheme.name})</option>}
             {THEMES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {(deck.themeVariants?.length ?? 0) > 0 && (
+              <optgroup label="Deck variants">
+                {deck.themeVariants!.map((v) => <option key={v.id} value={`variant:${v.id}`}>◆ {v.name}</option>)}
+              </optgroup>
+            )}
           </select>
+          <button className="rb" title="Edit theme colors" disabled={masterView !== "off"}
+            onClick={() => setThemeEd(themeEd ? null : { ...theme })}>🎨</button>
+          {themeEd && (
+            <div className="shape-menu" style={{ gridTemplateColumns: "1fr", width: 200, gap: 6 }}>
+              <input className="rb-sel" value={themeEd.name} style={{ fontSize: 12 }}
+                onChange={(e) => applyThemeEd({ ...themeEd, name: e.target.value })} />
+              {(["bg", "ink", "accent", "soft"] as const).map((k) => (
+                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, textTransform: "capitalize" }}>
+                  {k}
+                  <input type="color" value={themeEd[k]} style={{ marginLeft: "auto" }}
+                    onChange={(e) => applyThemeEd({ ...themeEd, [k]: e.target.value })} />
+                </label>
+              ))}
+              <select className="rb-sel" value={themeEd.font}
+                onChange={(e) => applyThemeEd({ ...themeEd, font: e.target.value })}>
+                {["Inter", "Georgia", "Garamond", "Trebuchet MS", "Courier New"].map((f) => <option key={f}>{f}</option>)}
+              </select>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="rb" style={{ flex: 1, fontSize: 11 }} onClick={saveVariant}>Save variant</button>
+                <button className="rb" style={{ fontSize: 11 }} onClick={() => setThemeEd(null)}>Done</button>
+              </div>
+            </div>
+          )}
+          <button className={`rb ${masterView !== "off" ? "on" : ""}`} title="Master view — objects here render under every slide (P2.1)"
+            onClick={() => { setMasterView(masterView === "off" ? "master" : "off"); setSelection(new Set()); setEditingObj(null); }}>◈</button>
+          {masterView !== "off" && (
+            <>
+              <select className="rb-sel" value={masterView} title="Edit target"
+                onChange={(e) => { setMasterView(e.target.value); setSelection(new Set()); }}>
+                <option value="master">Slide master</option>
+                {Object.keys(deck.layouts ?? {}).map((k) => <option key={k} value={`layout:${k}`}>Layout: {k}</option>)}
+              </select>
+              <button className="rb" title="New live-linked layout"
+                onClick={() => {
+                  const name = prompt("Layout name:");
+                  if (!name) return;
+                  mutate((d) => { (d.layouts ??= {})[name] ??= []; });
+                  setMasterView(`layout:${name}`);
+                }}>＋</button>
+              <button className="rb" title="Exit master view" onClick={() => setMasterView("off")}>Done</button>
+            </>
+          )}
+          <select className="rb-sel" value={`${dims.w}x${dims.h}`} title="Slide size (P2.4)" disabled={masterView !== "off"}
+            onChange={(e) => { if (e.target.value) pickSlideSize(e.target.value); e.target.value = `${dims.w}x${dims.h}`; }}>
+            <option value={`${dims.w}x${dims.h}`} hidden>{dims.w}×{dims.h}</option>
+            <option value="960x540">16:9 widescreen</option>
+            <option value="720x540">4:3 standard</option>
+            <option value="540x960">9:16 portrait</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <div style={{ position: "relative" }}>
+            <button className={`rb ${bgMenu ? "on" : ""}`} title="Slide background" disabled={masterView !== "off"}
+              onClick={() => setBgMenu((v) => !v)}>BG ▾</button>
+            {bgMenu && (
+              <div className="shape-menu" style={{ gridTemplateColumns: "1fr", width: 210, gap: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#7A726B" }}>BACKGROUND</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
+                  Flat
+                  <input type="color" defaultValue={/^#/.test(slide.bg ?? "") ? slide.bg! : theme.bg}
+                    onChange={(e) => setBg(e.target.value)} />
+                </label>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#7A726B", marginTop: 2 }}>GRADIENT</div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="color" value={grad.c1} onChange={(e) => { const g = { ...grad, c1: e.target.value }; setGrad(g); setBg(`linear-gradient(${g.angle}deg, ${g.c1}, ${g.c2})`); }} />
+                  <input type="color" value={grad.c2} onChange={(e) => { const g = { ...grad, c2: e.target.value }; setGrad(g); setBg(`linear-gradient(${g.angle}deg, ${g.c1}, ${g.c2})`); }} />
+                  <select className="rb-sel" value={grad.angle} style={{ flex: 1 }}
+                    onChange={(e) => { const g = { ...grad, angle: Number(e.target.value) }; setGrad(g); setBg(`linear-gradient(${g.angle}deg, ${g.c1}, ${g.c2})`); }}>
+                    {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => <option key={a} value={a}>{a}°</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  <button className="rb" style={{ flex: 1 }} title="Picture background" onClick={() => bgImageRef.current?.click()}>🖼 Picture</button>
+                  {slide.bgImage && <button className="rb" title="Remove picture" onClick={() => mutate((d) => { d.slides[slideIdx].bgImage = undefined; })}>✕</button>}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="rb" style={{ flex: 1, fontSize: 11 }} onClick={applyBgToAll}>Apply to all</button>
+                  <button className="rb" style={{ fontSize: 11 }} onClick={() => { setBg(undefined); mutate((d) => { d.slides[slideIdx].bgImage = undefined; }); }}>Reset</button>
+                </div>
+              </div>
+            )}
+          </div>
+          <input ref={bgImageRef} type="file" accept="image/*" hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const r = new FileReader();
+              r.onload = () => mutate((d) => { d.slides[slideIdx].bgImage = String(r.result); });
+              r.readAsDataURL(f);
+              e.target.value = "";
+            }} />
           <div className="rb-sep" />
           <button className="rb" title="Text box" onClick={insertText}>T</button>
           <div style={{ position: "relative" }}>
@@ -831,23 +1028,54 @@ export function PresentEditor({ item, initialDoc, permission }: {
       )}
 
       <div className="present-body" style={{ marginRight: panel !== "none" ? 330 : 0 }}>
-        {/* slide rail */}
+        {/* slide rail — P2.2 section headers group contiguous slides; P2.3 hidden slides dim */}
         <div className="slide-rail">
-          {deck.slides.map((s, i) => (
-            <div key={s.id} className={`rail-slide ${i === slideIdx ? "active" : ""}`}
-              onClick={() => { setSlideIdx(i); setSelection(new Set()); setEditingObj(null); setCropId(null); }}>
-              <span className="rail-num">{i + 1}</span>
-              <div className="rail-thumb" style={{ width: SLIDE_W * thumbScale, height: SLIDE_H * thumbScale }}>
-                <SlideCanvas slide={s} theme={theme} scale={thumbScale} selection={new Set()} />
+          {(() => {
+            const thumb = (s: Slide, i: number) => (
+              <div key={s.id} className={`rail-slide ${i === slideIdx ? "active" : ""} ${s.hidden ? "hidden" : ""}`}
+                onClick={() => { setSlideIdx(i); setSelection(new Set()); setEditingObj(null); setCropId(null); }}>
+                <span className="rail-num">{i + 1}</span>
+                <div className="rail-thumb" style={{ width: dims.w * thumbScale, height: dims.h * thumbScale }}>
+                  <SlideCanvas slide={s} theme={theme} scale={thumbScale} selection={new Set()} under={underObjs(s)} size={dims} />
+                </div>
+                {s.hidden && <span className="rail-hbadge">∅</span>}
               </div>
-            </div>
-          ))}
+            );
+            const secHead = (sec: { name: string; headId: string; idxs: number[] }) => (
+              <div className="rail-sec" key={`sec-${sec.headId}`}>
+                <button className="rail-sec-caret" title="Collapse/expand"
+                  onClick={() => setCollapsedSecs((c) => { const n = new Set(c); n.has(sec.headId) ? n.delete(sec.headId) : n.add(sec.headId); return n; })}>
+                  {collapsedSecs.has(sec.headId) ? "▸" : "▾"}
+                </button>
+                <span className="rail-sec-name" title="Double-click to rename" onDoubleClick={() => renameSection(sec.headId, sec.name)}>{sec.name}</span>
+                <span className="rail-sec-count">{sec.idxs.length}</span>
+                <button title="Move section up" onClick={() => moveSection(sec.headId, -1)}>↑</button>
+                <button title="Move section down" onClick={() => moveSection(sec.headId, 1)}>↓</button>
+                <button title="Rename" onClick={() => renameSection(sec.headId, sec.name)}>✎</button>
+                <button title="Remove section (keeps slides)"
+                  onClick={() => mutate((d) => { const s = d.slides.find((x) => x.id === sec.headId); if (s) s.sectionStart = undefined; })}>✕</button>
+              </div>
+            );
+            return (
+              <>
+                {railPreface.map((i) => thumb(deck.slides[i], i))}
+                {railSections.map((sec) => (
+                  <Fragment key={sec.headId}>
+                    {secHead(sec)}
+                    {!collapsedSecs.has(sec.headId) && sec.idxs.map((i) => thumb(deck.slides[i], i))}
+                  </Fragment>
+                ))}
+              </>
+            );
+          })()}
           {canEdit && (
             <div className="rail-ops">
               <button title="Add slide" onClick={() => addSlide()}>＋</button>
               <button title="Duplicate" onClick={dupSlide}>⧉</button>
               <button title="Move up" disabled={slideIdx === 0} onClick={() => moveSlide(-1)}>↑</button>
               <button title="Move down" disabled={slideIdx === deck.slides.length - 1} onClick={() => moveSlide(1)}>↓</button>
+              <button title={slide.sectionStart ? "Edit/remove section start" : "Start section here"} onClick={startSection}>§</button>
+              <button title={slide.hidden ? "Unhide slide" : "Hide slide (skipped in show)"} onClick={toggleHidden}>👁</button>
               <button title="Delete slide" onClick={delSlide}>✕</button>
             </div>
           )}
@@ -856,8 +1084,9 @@ export function PresentEditor({ item, initialDoc, permission }: {
         {/* canvas + notes */}
         <div className="canvas-col">
           <div className="canvas-wrap" ref={canvasWrap}>
-            <div style={{ width: SLIDE_W * zoom, height: SLIDE_H * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
-              <SlideCanvas slide={slide} theme={theme} scale={zoom} interactive
+            <div style={{ width: dims.w * zoom, height: dims.h * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
+              <SlideCanvas slide={editSlide} theme={theme} scale={zoom} interactive size={dims}
+                under={masterView === "off" ? underObjs(slide) : undefined}
                 canEdit={canEdit} selection={selection} onSelect={handleSelect}
                 onPatch={onPatch} onTextCommit={onTextCommit}
                 onTableCommit={onTableCommit} onObjDblClick={onObjDblClick}
@@ -875,8 +1104,8 @@ export function PresentEditor({ item, initialDoc, permission }: {
       {printing && createPortal(
         <div className="print-deck">
           {deck.slides.map((s) => (
-            <div key={s.id} className="print-slide" style={{ width: SLIDE_W, height: SLIDE_H, position: "relative", overflow: "hidden" }}>
-              <SlideCanvas slide={s} theme={theme} scale={1} selection={new Set()} />
+            <div key={s.id} className="print-slide" style={{ width: dims.w, height: dims.h, position: "relative", overflow: "hidden" }}>
+              <SlideCanvas slide={s} theme={theme} scale={1} selection={new Set()} under={underObjs(s)} size={dims} />
             </div>
           ))}
         </div>,
