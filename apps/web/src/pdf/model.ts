@@ -6,7 +6,7 @@ export type AnnType =
   | "freehand" | "polyline"
   | "rect" | "ellipse" | "line" | "arrow" | "callout" | "cloud"
   | "note" | "textbox" | "stamp"
-  | "sign";
+  | "sign" | "image" | "whiteout";
 
 export interface PdfAnn {
   id: string;

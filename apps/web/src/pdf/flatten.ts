@@ -144,6 +144,11 @@ export async function buildFlattenedPdf(
           }
           break;
         }
+        case "whiteout": {
+          const [x, y, w, h] = a.rects![0];
+          page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1) });
+          break;
+        }
         case "rect": {
           const [x, y, w, h] = a.rects![0];
           page.drawRectangle({ x, y, width: w, height: h, borderColor: col, borderWidth: bw });
@@ -185,8 +190,9 @@ export async function buildFlattenedPdf(
           }
           break;
         }
-        case "sign": {
-          // PDF-2 — embed the signature PNG
+        case "sign":
+        case "image": {
+          // PDF-2 signature / PDF-4 placed image — embed the PNG/JPEG
           const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(a.img ?? "");
           if (!m) break;
           const img = m[1] === "png" ? await src.embedPng(m[2]) : await src.embedJpg(m[2]);

@@ -29,7 +29,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox" | "measure";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext";
 const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "comments" | "versions" | "ai" | "organize";
 type Rect4 = [number, number, number, number];
@@ -49,13 +49,16 @@ const TOOLS: { id: Tool; ico: string; label: string }[] = [
   { id: "callout", ico: "🗨", label: "Callout — box with a tail to the point you drag from" },
   { id: "cloud", ico: "☁", label: "Cloud" },
   { id: "measure", ico: "📏", label: "Measure — drag to measure distance" },
+  { id: "edittext", ico: "✎T", label: "Edit text — drag over a text block to retype it" },
+  { id: "image", ico: "🖼", label: "Insert image — drag a box, then pick a file" },
+  { id: "whiteout", ico: "▨", label: "White-out — erase content under a white block" },
   { id: "note", ico: "💬", label: "Sticky note" },
   { id: "textbox", ico: "T", label: "Text box" },
   { id: "stamp", ico: "✅", label: "Stamp" },
   { id: "sign", ico: "✍", label: "Signature — draw or type, then click the page to place" },
 ];
 const MARKUP_COLORS = ["#FFD23F", "#F2782E", "#D84B57", "#1F9D66", "#3578E5", "#8E6BC8"];
-const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure"]);
+const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout"]);
 
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
@@ -126,6 +129,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const pwCbRef = useRef<((pw: string) => void) | null>(null);
   const loadTaskRef = useRef<{ destroy: () => void } | null>(null);
   const mergeRef = useRef<HTMLInputElement>(null);
+  const imgFileRef = useRef<HTMLInputElement>(null);
+  const imgPending = useRef<{ page: number; rect: Rect4 } | null>(null);
   const session = useCollabSession(item.id);
 
   // ---------- load ----------
@@ -624,7 +629,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             {STAMPS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         )}
-        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && (
+        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && (
           <div className="rb-colors">
             {MARKUP_COLORS.map((c) => (
               <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
@@ -667,6 +672,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
           </>
         )}
+        <input ref={imgFileRef} type="file" accept="image/png,image/jpeg" hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]; const pend = imgPending.current; e.target.value = "";
+            if (!f || !pend) return;
+            const fr = new FileReader();
+            fr.onload = () => addAnn(pend.page, { type: "image", rects: [pend.rect], img: String(fr.result) });
+            fr.readAsDataURL(f);
+            imgPending.current = null;
+          }} />
       </div>
 
       <div className="work">
@@ -766,7 +780,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 onAdd={(a) => addAnn(p, a)}
                 onMove={moveAnn}
                 onPatch={patchAnn}
-                onZoomTo={zoomToRect} />
+                onZoomTo={zoomToRect}
+                onPickImage={(r) => { imgPending.current = { page: p, rect: r }; imgFileRef.current?.click(); }} />
             </div>
           ))}
           {viewMode !== "cont" && doc && (
@@ -1008,7 +1023,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, canEdit, searchRects, viewRot, dark, onAdd, onMove, onPatch, onZoomTo, onPickImage }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -1023,6 +1038,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   onMove: (id: string, dx: number, dy: number) => void;
   onPatch: (id: string, p: Partial<PdfAnn>, key?: string) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
+  onPickImage?: (rect: Rect4) => void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1227,6 +1243,9 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onAdd({ type: "callout", rects: [rect], points: [[tx, ty]], color: toolColor, text: "" });
       return;
     }
+    if (tool === "whiteout") { onAdd({ type: "whiteout", rects: [rect] }); return; }
+    if (tool === "image") { onPickImage?.(rect); return; }
+    if (tool === "edittext") { void editTextAt(rect); return; }
     if (tool === "line" || tool === "arrow") {
       const [ax, ay] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
       const [bx, by] = vp()!.convertToPdfPoint(d.x, d.y) as [number, number];
@@ -1234,6 +1253,40 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     } else {
       onAdd({ type: tool as AnnType, rects: [rect], color: toolColor, text: tool === "textbox" ? "" : undefined });
     }
+  };
+
+  // PDF-4 — edit-text approximation: white-out the block, prefill a textbox
+  // with the text that was under it
+  const editTextAt = async (rect: Rect4) => {
+    const pg = pageRef.current;
+    if (!pg) return;
+    let text = "";
+    try {
+      const tc = await pg.getTextContent();
+      const vp1 = pg.getViewport({ scale: 1 });
+      const hits: { str: string; x: number; y: number }[] = [];
+      for (const it of tc.items) {
+        if (!("str" in it) || !it.str.trim() || !("transform" in it)) continue;
+        const tx = pdfjs.Util.transform(vp1.transform, it.transform);
+        const fh = Math.max(2, Math.hypot(tx[2], tx[3]));
+        const [px, py] = vp1.convertToPdfPoint(tx[4], tx[5]);
+        const iw = it.width * vp1.scale;
+        const [rx, ry, rw, rh] = rect;
+        if (px + iw < rx || px > rx + rw || py - fh * 0.25 > ry + rh || py + fh < ry) continue;
+        hits.push({ str: it.str, x: px, y: py });
+      }
+      hits.sort((a, b) => b.y - a.y || a.x - b.x);
+      const lines: string[] = [];
+      let curY = NaN, cur = "";
+      for (const hIt of hits) {
+        if (isNaN(curY) || Math.abs(hIt.y - curY) < 3) { cur += hIt.str; curY = isNaN(curY) ? hIt.y : curY; }
+        else { lines.push(cur); cur = hIt.str; curY = hIt.y; }
+      }
+      if (cur) lines.push(cur);
+      text = lines.join("\n");
+    } catch { /* extraction is best-effort */ }
+    onAdd({ type: "whiteout", rects: [rect] });
+    onAdd({ type: "textbox", rects: [rect], color: "#171717", text });
   };
 
   // text-selection → highlight/underline/strikeout
@@ -1319,7 +1372,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       )}
       {readout && <div className="pdf-measure">📏 {readout}</div>}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout").map((a) => {
+      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image").map((a) => {
         const sel = selAnn === a.id;
         if (a.type === "callout") {
           const [x, y, w2, h2] = vpRect(a.rects![0]);
@@ -1346,6 +1399,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
                 </div>
               )}
             </div>
+          );
+        }
+        if (a.type === "image") {
+          const [x, y, w2, h2] = vpRect(a.rects![0]);
+          return (
+            <img key={a.id} src={a.img} alt="inserted" draggable={false}
+              className={`ann-sign ${sel ? "sel" : ""}`}
+              style={{ left: x, top: y, width: w2, height: h2 }}
+              onPointerDown={(e) => startMove(e, a)} />
           );
         }
         if (a.type === "sign") {
@@ -1442,6 +1504,10 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
     case "freehand":
       return <polyline points={(a.points ?? []).map(([px, py]) => { const [x, y] = toVp(px, py); return `${x},${y}`; }).join(" ")}
         fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+    case "whiteout": {
+      const [x, y, w, h] = vpRect(a.rects![0]);
+      return <rect x={x} y={y} width={w} height={h} fill="#fff" stroke="#ddd" strokeWidth={0.6} style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+    }
     case "rect": {
       const [x, y, w, h] = vpRect(a.rects![0]);
       return <rect x={x} y={y} width={w} height={h} fill="none" stroke={color} strokeWidth={sw} style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
@@ -1576,7 +1642,13 @@ function PrintDeck({ doc, anns, onDone }: { doc: PDFDocumentProxy | null; anns: 
               t2.textContent = a.text.slice(0, 90);
               svg.appendChild(t2);
             }
-          } else if (a.type === "sign" && a.img) {
+          } else if (a.type === "whiteout" && a.rects?.length) {
+            const [x, y, w, h] = vpR(a.rects[0]);
+            const el = document.createElementNS(svgNS, "rect");
+            el.setAttribute("x", `${x}`); el.setAttribute("y", `${y}`); el.setAttribute("width", `${w}`); el.setAttribute("height", `${h}`);
+            el.setAttribute("fill", "#fff");
+            svg.appendChild(el);
+          } else if ((a.type === "sign" || a.type === "image") && a.img) {
             const [x, y, w, h] = vpR(a.rects![0]);
             const el = document.createElementNS(svgNS, "image");
             el.setAttribute("x", `${x}`); el.setAttribute("y", `${y}`);
