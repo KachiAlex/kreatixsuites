@@ -554,6 +554,20 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     mutateSheet((s) => { s.cells[ref] = { ...s.cells[ref], img: dataUrl, h }; });
   }, [mutateSheet, anyLocked, stamp]);
 
+  // S18.1 — rich data type: an entity cell whose fields formulas read as A1.Prop
+  const insertEntity = () => {
+    const kind = prompt("Entity kind (Stock, Geography, Product…):")?.trim();
+    if (!kind) return;
+    const name = prompt("Entity name:")?.trim();
+    if (!name) return;
+    let props: Record<string, unknown> = {};
+    const raw = prompt('Fields as JSON, e.g. {"Price":420,"Change":1.2}:');
+    if (raw?.trim()) { try { props = JSON.parse(raw); } catch { toast("Invalid JSON"); return; } }
+    if (anyLocked(selRefs)) return;
+    const h = stamp();
+    mutateSheet((s) => selRefs.forEach((r) => { s.cells[r] = { ent: { kind, name, props }, h }; }));
+  };
+
   const setStyle = useCallback((patch: CellStyle) => {
     if (anyLocked(selRefs)) return;
     mutateSheet((s) => selRefs.forEach((r) => {
@@ -1375,6 +1389,8 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => setSubtotalDlg(true)}>Σ↓</button>
           <button className="rb" title="Insert slicer — filter column values with a visual picker"
             onClick={() => setSlicerDlg(true)}>⊟</button>
+          <button className="rb" title="Insert data-type entity — fields usable as A1.Prop in formulas"
+            disabled={!canEdit} onClick={insertEntity}>▣</button>
           <div className="rb-sep" />
           <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
           <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>

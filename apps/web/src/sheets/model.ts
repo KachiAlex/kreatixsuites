@@ -35,6 +35,9 @@ export interface CellData {
   h?: { by: string; at: number };
   /** S17.2 — pasted/inserted image (data URL) rendered inside the cell */
   img?: string;
+  /** S18.1 — rich data type (stock/geography-style entity). Formulas read
+   *  fields via `A1.Prop`; the cell displays `name` with a kind glyph. */
+  ent?: { kind: string; name: string; props: Record<string, unknown> };
 }
 
 export interface CondFormat {

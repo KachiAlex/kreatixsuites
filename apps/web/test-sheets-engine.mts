@@ -1367,5 +1367,44 @@ t("S17.3 extern formulas evaluate inside the cached book", () => {
   assertEq(evaluateWorkbook(wb).get("Main")!.get("A1")?.value, 21);
 });
 
+// ---------- S18.1 IMAGE() + rich data types ----------
+t("S18.1 IMAGE returns the source URL", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { f: 'IMAGE("https://x/cat.png")' },
+    A2: { f: 'IMAGE("")' },
+  } }] };
+  const res = evaluateWorkbook(wb).get("S")!;
+  assertEq(res.get("A1")?.value, "https://x/cat.png");
+  assertEq(res.get("A2")?.error ?? res.get("A2")?.value, "#VALUE!");
+});
+
+t("S18.1 entity field access A1.Prop", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: {
+    A1: { ent: { kind: "Stock", name: "MSFT", props: { Price: 420, Change: 1.5 } } },
+    B1: { f: "A1.Price" },
+    B2: { f: "A1.price*2" },          // case-insensitive prop lookup
+    B3: { f: "A1.Missing" },
+    B4: { f: "C1.Price" },            // non-entity cell
+  } }] };
+  const res = evaluateWorkbook(wb).get("S")!;
+  assertEq(res.get("B1")?.value, 420);
+  assertEq(res.get("B2")?.value, 840);
+  assertEq(res.get("B3")?.error ?? res.get("B3")?.value, "#FIELD!");
+  assertEq(res.get("B4")?.error ?? res.get("B4")?.value, "#FIELD!");
+});
+
+t("S18.1 entity field across sheets", () => {
+  const wb: Workbook = { sheets: [
+    { name: "Ents", cells: { A1: { ent: { kind: "Geo", name: "France", props: { Population: 68 } } } } },
+    { name: "R", cells: { A1: { f: "Ents!A1.Population" } } },
+  ] };
+  assertEq(evaluateWorkbook(wb).get("R")!.get("A1")?.value, 68);
+});
+
+t("S18.1 decimal literals unaffected by prop rewrite", () => {
+  const wb: Workbook = { sheets: [{ name: "S", cells: { A1: { f: "1.5+2.25" } } }] };
+  assertEq(evaluateWorkbook(wb).get("S")!.get("A1")?.value, 3.75);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

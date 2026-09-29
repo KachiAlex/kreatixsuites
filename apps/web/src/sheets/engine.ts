@@ -150,6 +150,15 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
           ? `KXAT("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}")`
           : `KXAT("","${uref.replace(/\$/g, "")}")`,
     );
+    // entity field access (S18.1) — Sheet!A1.Prop / A1.Prop → KXPROP.
+    // Prop must start with a letter so decimals (1.5) are untouched.
+    s = s.replace(
+      /(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+)\.([A-Za-z_]\w*)|(?<![\w$!:.'\]"(])(\$?[A-Za-z]{1,3}\$?\d+)\.([A-Za-z_]\w*)/g,
+      (_m, qs: string | undefined, ps: string | undefined, qref: string, qprop: string, uref: string, uprop: string) =>
+        qref !== undefined
+          ? `KXPROP("${(qs ?? ps)!.replace(/"/g, '""')}","${qref.replace(/\$/g, "")}","${qprop}")`
+          : `KXPROP("","${uref.replace(/\$/g, "")}","${uprop}")`,
+    );
     // external workbook refs (S17.3) — [Book.xlsx]Sheet!A1 → KXEXT; must run
     // before the plain qualified-ref rewrite below
     s = s.replace(
@@ -804,6 +813,13 @@ export function extraFunctions(
       // through hfp; handled by KXFORMULATEXT rewrite if needed. Fallback:
       return typeof p[0] === "string" ? p[0] : "#N/A";
     },
+    // S18.1 — in-cell image. Returns the source URL; Grid renders the image
+    // when the formula is IMAGE(). Args mirror Excel: (src, alt, sizing, h, w).
+    IMAGE: (p) => {
+      const src = String(p[0] ?? "");
+      if (!src) return "#VALUE!";
+      return src;
+    },
   };
 }
 
@@ -937,6 +953,16 @@ function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, Eva
       if (rr) return extRange(book, sn, rr[0], rr[1], depth + 1);
       const r = extEval(book, sn, ref.toUpperCase(), depth + 1);
       return r.error ?? r.value;
+    });
+    // A1.Prop — rich-data field access (S18.1); #FIELD! when absent
+    parser.setFunction("KXPROP", (p) => {
+      const sn = String(p[0]) || ctx.sheet;
+      const ref = String(p[1]).replace(/\$/g, "").toUpperCase();
+      const prop = String(p[2]);
+      const ent = sheetOf(sn)[ref]?.ent;
+      if (!ent) return "#FIELD!";
+      const v = ent.props[prop] ?? ent.props[Object.keys(ent.props).find((k) => k.toLowerCase() === prop.toLowerCase()) ?? ""];
+      return v === undefined ? "#FIELD!" : (v as string | number | boolean | null);
     });
     // lazy error catchers — arg was stashed as base64 text by the rewriter.
     // hfp surfaces errors either as `error` or as an error-typed value.

@@ -477,7 +477,9 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const rawV = cell?.f || (!cell && res) ? res?.value : cell?.v;
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt);
-    if (spark || cell?.img) content = null;
+    // IMAGE() renders its result URL as an in-cell image (S18.1)
+    const isImgFn = /^IMAGE\s*\(/i.test(cell?.f ?? "");
+    if (spark || cell?.img || cell?.ent || (isImgFn && typeof res?.value === "string")) content = null;
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
       if (c === tot.range.c1) content = "Totals";
       else {
@@ -535,6 +537,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         {cell?.img && (
           <img className="cell-img" src={cell.img} alt=""
             style={{ maxWidth: colW(c) - 4, maxHeight: rowH(r) - 4 }} />
+        )}
+        {isImgFn && typeof res?.value === "string" && !res.error && (
+          <img className="cell-img" src={res.value} alt=""
+            style={{ maxWidth: colW(c) - 4, maxHeight: rowH(r) - 4 }} />
+        )}
+        {cell?.ent && (
+          <span className="cell-ent" title={`${cell.ent.kind} — fields: ${Object.keys(cell.ent.props).join(", ")}`}>
+            <span className="ent-ico">▣</span>{cell.ent.name}
+          </span>
         )}
         {s.rotate ? (
           <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
