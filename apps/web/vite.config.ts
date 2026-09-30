@@ -17,6 +17,9 @@ export default defineConfig({
         // precache the whole app — office suites tolerate a few MB for full
         // offline editing (pdf.worker ~1.3MB is the largest chunk)
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        // OCR runtime (~7MB) fetches lazily on first use and caches in IDB —
+        // no point precaching it into the SW
+        globIgnores: ["tesseract/**"],
         cleanupOutdatedCaches: true,
         // never cache API or realtime endpoints at runtime
         runtimeCaching: [],

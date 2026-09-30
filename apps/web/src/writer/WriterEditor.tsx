@@ -73,7 +73,8 @@ import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, Sty
 import { KxStyles, serializeStyles, loadStyleDefs, allStyleDefs, type StyleDef } from "./extensions/styles";
 import { StyleDialog } from "./StyleDialog";
 import { Ruler } from "./Ruler";
-import { applyDocxImport, exportDocx, importDocx } from "./docx";
+// DOCX machinery (mammoth + docx lib ~600KB) loads on first import/export, not editor open
+const docxMod = () => import("./docx");
 import { ensureDocFonts } from "./fonts";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
@@ -802,7 +803,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       const ext = f.name.split(".").pop()?.toLowerCase();
       let other: string;
       if (ext === "docx") {
-        const res = await importDocx(f);
+        const res = await (await docxMod()).importDocx(f);
         const d = document.createElement("div");
         d.innerHTML = res.html;
         other = d.innerText;
@@ -1038,6 +1039,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const onImport = async (f: File) => {
     if (!canMutate) { toast("You don't have edit access"); return; }
     try {
+      const { importDocx, applyDocxImport } = await docxMod();
       const res = await importDocx(f);
       editor?.commands.setContent(res.html);
       editor?.commands.fixTables(); // repair any malformed table geometry post-import
@@ -1089,7 +1091,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       if (fmt === "docx") {
         const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
           .then((r) => r.comments).catch(() => [] as Comment[]);
-        return exportDocx(json, name, {
+        return (await docxMod()).exportDocx(json, name, {
           comments,
           docProps: docPropsRef.current,
           styles: serializeStyles(editor),

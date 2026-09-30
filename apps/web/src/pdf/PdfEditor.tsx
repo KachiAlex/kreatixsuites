@@ -444,7 +444,6 @@ export function PdfEditor({ item, initialDoc, permission }: {
     if (!digId || !pdfDataRef.current || !doc) return;
     setSaveState("saving");
     try {
-      const { embedIntoPdf } = await import("./embed");
       const rasters = await rasterizeRedacted();
       const { bytes, doc: next } = await embedIntoPdf(pdfDataRef.current.slice(0), annDoc, formValues(), doc, rasters);
       const { signPdf } = await import("./sign");
@@ -475,7 +474,6 @@ export function PdfEditor({ item, initialDoc, permission }: {
     const name = /\.pdf$/i.test(title) ? title : `${title}.pdf`;
     try {
       const rasters = await rasterizeRedacted();
-      const { embedIntoPdf } = await import("./embed");
       const { bytes } = await embedIntoPdf(b.slice(0), annDoc, formValues(), doc, rasters);
       downloadPdf(bytes, name);
       toast("Downloaded — annotations and fields are embedded in the file");
@@ -696,6 +694,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setOcrBusy(true);
     try {
       const { recognize } = await import("tesseract.js");
+      // self-hosted runtime (public/tesseract/) — worker/core/lang never hit a CDN,
+      // which keeps the CSP free of script/connect exceptions
+      const tessBase = `${window.location.origin}/tesseract`;
+      const tessOpts = {
+        workerPath: `${tessBase}/worker.min.js`,
+        workerBlobURL: false,
+        corePath: `${tessBase}/tesseract-core-simd-lstm.wasm.js`,
+        langPath: tessBase,
+      };
       const page = await doc.getPage(curPage);
       const S = 2;
       const vp = page.getViewport({ scale: S });
@@ -704,7 +711,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
       const ctx = cv.getContext("2d");
       if (!ctx) throw new Error("no canvas ctx");
       await page.render({ canvasContext: ctx, canvas: cv, viewport: vp }).promise;
-      const res = await recognize(cv, "eng");
+      const res = await recognize(cv, "eng", tessOpts);
       // tesseract bbox is top-left canvas px; convert to bottom-left pdf units
       const words: OcrWord[] = ((res.data as { words?: { bbox: { x0: number; y0: number; x1: number; y1: number }; text: string }[] }).words ?? [])
         .map((w) => ({

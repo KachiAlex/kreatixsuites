@@ -74,6 +74,8 @@ async function main() {
   if (existsSync(join(webDist, "index.html"))) {
     await app.register(fastifyStatic, {
       root: webDist,
+      // explicit GET / route below picks index-landing vs index
+      index: false,
       setHeaders(res, path) {
         // hashed bundles under /assets are immutable — cache forever;
         // everything else (index.html, manifest, icons) revalidates
@@ -81,6 +83,12 @@ async function main() {
           ? "public, max-age=31536000, immutable"
           : "no-cache");
       },
+    });
+    // `/` serves the prerendered landing page (real HTML for crawlers/no-JS);
+    // React mounts over it — identical markup for guests, redirect for auth.
+    app.get("/", (_req, reply) => {
+      const landing = existsSync(join(webDist, "index-landing.html"));
+      return reply.header("Cache-Control", "no-cache").sendFile(landing ? "index-landing.html" : "index.html");
     });
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api/")) return reply.code(404).send({ error: "not_found" });

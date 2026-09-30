@@ -4,13 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node scripts/copy-tesseract.mjs && vite",
+    "build": "node scripts/copy-tesseract.mjs && tsc -b && vite build && tsx --tsconfig tsconfig.app.json scripts/prerender-landing.mts",
     "lint": "oxlint",
     "typecheck": "tsc -b --noEmit",
     "test:roundtrip": "tsx test-roundtrip.mts",
     "test:collab": "tsx test-collab-suggest.mts",
     "perf:budget": "node scripts/perf-budget.mjs",
+    "lighthouse": "tsx scripts/lighthouse.mts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -83,6 +84,8 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "chrome-launcher": "^1.2.2",
+    "lighthouse": "^13.5.0",
     "linkedom": "^0.18.13",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
