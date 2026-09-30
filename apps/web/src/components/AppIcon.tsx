@@ -68,42 +68,18 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
   }
 }
 
-/** Kreatix Suites logo lockup per the brand board.
- *  `light` = the official on-dark artwork (public/brand PNG); otherwise a
- *  type-rendered equivalent for light surfaces (Kreatix ink / Suites orange
- *  italic / divider / PRODUCTIVITY SUITE). */
-export function BrandLockup({ light, size = 40, tagline = true, style }: {
+/** Kreatix Suites logo lockup — the official artwork (public/brand PNGs,
+ *  background cut to alpha). `light` = white-wordmark variant for dark
+ *  surfaces; default = ink-wordmark variant for light surfaces. */
+export function BrandLockup({ light, size = 40, style }: {
   light?: boolean;
   size?: number;
-  tagline?: boolean;
   style?: CSSProperties;
 }) {
-  if (light) {
-    return (
-      <img src="/brand/kreatix-suites-dark.png" alt="Kreatix Suites" draggable={false}
-        style={{ height: size, width: "auto", display: "block", ...style }} />
-    );
-  }
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: size * 0.28, ...style }}>
-      <AppIcon kind="suites" size={size} />
-      <div style={{ lineHeight: 1.08, fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
-        <div style={{ fontSize: size * 0.4, fontWeight: 800, letterSpacing: "-0.02em", color: "var(--ink)" }}>
-          Kreatix
-        </div>
-        <div style={{ fontSize: size * 0.27, fontWeight: 800, fontStyle: "italic", color: "var(--k-orange)" }}>
-          Suites
-        </div>
-        {tagline && (
-          <div style={{
-            fontSize: size * 0.14, fontWeight: 700, letterSpacing: ".15em", color: "#9A918B",
-            borderTop: "1px solid var(--line)", marginTop: size * 0.08, paddingTop: size * 0.06,
-          }}>
-            PRODUCTIVITY SUITE
-          </div>
-        )}
-      </div>
-    </div>
+    <img src={light ? "/brand/kreatix-suites-dark.png" : "/brand/kreatix-suites-light.png"}
+      alt="Kreatix Suites" draggable={false}
+      style={{ height: size, width: "auto", display: "block", ...style }} />
   );
 }
 
