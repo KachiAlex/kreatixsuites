@@ -5,6 +5,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import type { Awareness } from "y-protocols/awareness";
 import { getToken } from "../lib/api";
+import { API_BASE } from "../lib/platform";
 import type { User } from "@kreatix/shared";
 
 export const PEER_COLORS = ["#F2782E", "#3578E5", "#1F9D66", "#8E6BC8", "#D84B57", "#C2941B", "#0FA3A3", "#B3478C"];
@@ -35,9 +36,11 @@ export function colorFor(id: string): string {
 
 export function createCollabSession(fileId: string, user: User): CollabSession {
   const ydoc = new Y.Doc();
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const wsBase = API_BASE
+    ? `${API_BASE.replace(/^http/, "ws")}/api/collab`
+    : `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/collab`;
   const provider = new WebsocketProvider(
-    `${proto}//${location.host}/api/collab`,
+    wsBase,
     fileId,
     ydoc,
     { params: { token: getToken() ?? "" } },

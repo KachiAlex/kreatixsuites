@@ -61,12 +61,14 @@ export function authRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/auth/login", async (req, reply) => {
-    const body = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
+    const body = z.object({ email: z.string().email(), password: z.string(), client: z.string().optional() }).parse(req.body);
     const row = await one<UserRow>("SELECT * FROM users WHERE email = $1", [body.email]);
     if (!row || !verifyPassword(body.password, row.password_hash)) {
       return reply.code(401).send({ error: "unauthorized", message: "Invalid email or password" });
     }
-    return { token: await signToken(row.id), user: toUser(row) };
+    // desktop sessions get 30d — the 14-day offline grace must not strand
+    // a logged-in desktop user mid-offline-period
+    return { token: await signToken(row.id, body.client === "desktop" ? "30d" : "7d"), user: toUser(row) };
   });
 
   app.get("/api/auth/me", { preHandler: requireAuth }, async (req) => {

@@ -8,6 +8,13 @@ const secret = new TextEncoder().encode(
   process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production",
 );
 
+// Separate key for desktop offline entitlements — this one is embedded in the
+// desktop build, so it must NOT be the auth secret (a forged entitlement only
+// unlocks offline editing; the server write-gate still governs sync).
+const entitlementSecret = new TextEncoder().encode(
+  process.env.KREATIX_ENTITLEMENT_SECRET ?? "kreatix-entitlement-dev-secret",
+);
+
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(password, salt, 64).toString("hex");
@@ -20,12 +27,32 @@ export function verifyPassword(password: string, stored: string): boolean {
   return timingSafeEqual(Buffer.from(hash, "hex"), candidate);
 }
 
-export async function signToken(userId: string): Promise<string> {
+export async function signToken(userId: string, ttl = "7d"): Promise<string> {
   return new SignJWT({ sub: userId })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("7d")
+    .setExpirationTime(ttl)
     .sign(secret);
+}
+
+/** Offline entitlement for the desktop app — signed subscription state the
+ *  client can verify without connectivity (14-day offline grace). */
+export async function signEntitlement(claims: {
+  org: string; status: string; seats: number; periodEnd?: string | null;
+}): Promise<string> {
+  return new SignJWT({ ...claims })
+    .setProtectedHeader({ alg: "HS256" })
+    .setAudience("kreatix-desktop")
+    .setIssuedAt()
+    .setExpirationTime("14d")
+    .sign(entitlementSecret);
+}
+
+export async function verifyToken(token: string): Promise<{ sub?: string } | null> {
+  try {
+    const { payload } = await jwtVerify(token, secret);
+    return payload as { sub?: string };
+  } catch { return null; }
 }
 
 export interface AuthedRequest extends FastifyRequest {
@@ -38,7 +65,8 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const header = req.headers.authorization;
   const cookieToken = (req.headers.cookie ?? "")
     .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
+  const queryToken = (req.query as Record<string, unknown> | undefined)?.t as string | undefined;
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : (cookieToken ?? queryToken);
   if (!token) {
     return reply.code(401).send({ error: "unauthorized", message: "Missing token" });
   }

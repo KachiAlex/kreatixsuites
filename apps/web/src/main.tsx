@@ -9,9 +9,16 @@ import "@fontsource/inter/latin-600.css";
 import "@fontsource/inter/latin-700.css";
 import "@fontsource/inter/latin-800.css";
 import { registerSW } from "virtual:pwa-register";
+import { installDesktopMediaRewrite } from "./lib/platform";
 
-// PWA — precached app shell + offline navigation (API calls stay live)
-if (import.meta.env.PROD) registerSW({ immediate: true });
+installDesktopMediaRewrite();
+
+// PWA — precached app shell + offline navigation (API calls stay live).
+// Skipped in the Electron shell: the bundle is already local and the kx://
+// scheme has no SW support.
+if (import.meta.env.PROD && !(window as unknown as { kxDesktop?: unknown }).kxDesktop) {
+  registerSW({ immediate: true });
+}
 
 createRoot(document.getElementById("root")!, {
   onRecoverableError: (error) => {

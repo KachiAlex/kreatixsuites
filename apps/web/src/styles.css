@@ -134,7 +134,8 @@ main{padding:19px 28px 50px;min-width:0}
 .hero-actions{display:flex;gap:9px;margin-top:19px}
 .btn-primary{background:var(--k-orange);color:#fff;border:0;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}
 .btn-primary:hover{background:var(--k-orange-dark)}
-.btn-secondary{background:#272727;color:#fff;border:1px solid #3A3A3A;border-radius:12px;padding:10px 14px;font-weight:750;cursor:pointer}
+.btn-secondary{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-weight:750;cursor:pointer}
+.btn-secondary:hover{background:var(--subtle)}
 .btn-ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer;font-size:12px}
 .btn-ghost:hover{background:var(--subtle)}
 .btn-sm{padding:7px 11px;font-size:11px;border-radius:10px}
@@ -1750,3 +1751,10 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .billing-banner.locked{background:#fde2e2;color:#a02020;font-weight:600}
 .billing-banner button{margin-left:auto;padding:4px 14px;border-radius:8px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer}
 .billing-banner button:hover{opacity:.8}
+
+/* Desktop offline-grace gate */
+.entitlement-gate{position:fixed;inset:0;z-index:2000;background:var(--bg);display:flex;align-items:center;justify-content:center}
+.entitlement-card{max-width:440px;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:34px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.08)}
+.entitlement-card h2{margin:0 0 12px;font-size:22px}
+.entitlement-card p{color:var(--muted);font-size:14px;line-height:1.6;margin:0 0 20px}
+.entitlement-card .btn-primary{width:100%}

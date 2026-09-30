@@ -1,0 +1,110 @@
+// Offline API fallback — used by request() when fetch throws (desktop only).
+// GETs serve the local mirror; mutations update the mirror and queue an
+// outbox op for replay. Unknown paths rethrow the original network error.
+import { isDesktop } from "../platform";
+import { enqueue } from "./sync";
+import { b64, store, type CachedFile } from "./store";
+
+const fileIdOf = (path: string, re: RegExp) => re.exec(path)?.[1];
+
+const localId = () => `local:${crypto.randomUUID()}`;
+
+/**
+ * Handle a failed network request offline. Returns a synthetic result matching
+ * the endpoint's shape, or rethrows when the path isn't mirrorable.
+ */
+export async function offlineFallback<T>(path: string, init: RequestInit, cause: unknown): Promise<T> {
+  if (!isDesktop) throw cause;
+  const method = (init.method ?? "GET").toUpperCase();
+
+  // ---------- reads ----------
+  if (method === "GET") {
+    if (/^\/api\/drive(\?|$)/.test(path)) {
+      const items = await store.files.all();
+      return { items } as T;
+    }
+    const id = fileIdOf(path, /^\/api\/files\/([^/]+)\/content/);
+    if (id) {
+      const b = await store.blobs.get(id);
+      if (!b) throw cause;
+      if (b.binary) return new Blob([b64.from(b.data)], { type: b.mime }) as T;
+      return { version: 0, content: JSON.parse(b.data), offline: true } as T;
+    }
+    const rawId = fileIdOf(path, /^\/api\/files\/([^/]+)\/(raw|pdf-bytes)/);
+    if (rawId) {
+      const b = await store.blobs.get(rawId);
+      if (!b || !b.binary) throw cause;
+      return new Blob([b64.from(b.data)], { type: b.mime ?? "application/octet-stream" }) as T;
+    }
+    if (path.startsWith("/api/auth/me")) {
+      const user = await store.meta.get("me");
+      if (!user) throw cause;
+      return { user } as T;
+    }
+    if (path.startsWith("/api/billing/summary")) {
+      const s = await store.meta.get("billingSummary");
+      if (!s) throw cause;
+      return s as T;
+    }
+    if (path.startsWith("/api/drive/")) {
+      const f = await store.files.get(path.split("/")[3]);
+      if (!f) throw cause;
+      return { item: f } as T;
+    }
+    throw cause;
+  }
+
+  // ---------- writes → mirror + queue ----------
+  if (method === "PUT" && path.match(/^\/api\/files\/[^/]+\/content/)) {
+    const id = fileIdOf(path, /^\/api\/files\/([^/]+)\/content/)!;
+    const body = init.body as string;
+    await store.blobs.put({ fileId: id, data: body.startsWith("{") ? body : JSON.stringify(JSON.parse(body).content), binary: false, updatedAt: Date.now() });
+    await enqueue({ method, path, body: JSON.parse(body), fileId: id });
+    return {} as T;
+  }
+  if (method === "PUT" && path.match(/^\/api\/files\/[^/]+\/pdf-bytes/)) {
+    const id = fileIdOf(path, /^\/api\/files\/([^/]+)\/pdf-bytes/)!;
+    const buf = await (init.body as Blob).arrayBuffer();
+    await store.blobs.put({ fileId: id, data: b64.to(buf), binary: true, mime: "application/pdf", updatedAt: Date.now() });
+    await enqueue({ method, path, blob: b64.to(buf), contentType: "application/pdf", fileId: id });
+    return {} as T;
+  }
+  if (method === "POST" && path.startsWith("/api/drive/upload")) {
+    const url = new URL(path, "http://x");
+    const name = url.searchParams.get("name") ?? "file";
+    const kind = url.searchParams.get("kind") ?? "file";
+    const buf = await (init.body as Blob).arrayBuffer();
+    const id = localId();
+    const item: CachedFile = {
+      id, name, kind, mimeType: (init.body as Blob).type, synced: false,
+      updatedAt: new Date().toISOString(), parentId: null,
+    };
+    await store.files.put(item);
+    await store.blobs.put({ fileId: id, data: b64.to(buf), binary: true, mime: (init.body as Blob).type, updatedAt: Date.now() });
+    await enqueue({ method, path, blob: b64.to(buf), contentType: (init.body as Blob).type, localFileId: id, name });
+    return { item } as T;
+  }
+  if (method === "PATCH" && path.startsWith("/api/drive/")) {
+    const id = path.split("/")[3];
+    const f = await store.files.get(id);
+    if (f) await store.files.put({ ...f, ...(init.body ? JSON.parse(init.body as string) : {}) });
+    await enqueue({ method, path, body: JSON.parse(init.body as string), fileId: id });
+    return {} as T;
+  }
+  if (method === "DELETE" && path.startsWith("/api/drive/")) {
+    const id = path.split("/")[3];
+    const f = await store.files.get(id);
+    if (f) await store.files.put({ ...f, trashed: true });
+    await enqueue({ method, path, fileId: id });
+    return {} as T;
+  }
+  if (method === "POST" && path === "/api/drive") {
+    const body = JSON.parse(init.body as string);
+    const id = localId();
+    const item = { id, name: body.name, kind: body.kind, synced: false, updatedAt: new Date().toISOString(), parentId: body.parentId ?? null } as CachedFile;
+    await store.files.put(item);
+    await enqueue({ method, path, body, localFileId: id, name: body.name });
+    return { item } as T;
+  }
+  throw cause;
+}

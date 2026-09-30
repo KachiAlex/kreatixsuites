@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { User } from "@kreatix/shared";
 import { api, getToken, setToken } from "./api";
+import { isDesktop } from "./platform";
+import { clearEntitlement, refreshEntitlement } from "./offline/license";
 
 interface AuthState {
   user: User | null;
@@ -26,9 +28,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const r = await api.post<{ token: string; user: User }>("/api/auth/login", { email, password });
+    // desktop sessions get a 30d token so the 14-day offline grace can't
+    // strand a signed-in user mid-offline-period
+    const r = await api.post<{ token: string; user: User }>("/api/auth/login",
+      { email, password, ...(isDesktop ? { client: "desktop" } : {}) });
     setToken(r.token);
     setUser(r.user);
+    if (isDesktop) void refreshEntitlement();
   };
 
   const register = async (email: string, password: string, displayName: string, orgName?: string, invite?: string) => {
@@ -37,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     setToken(r.token);
     setUser(r.user);
+    if (isDesktop) void refreshEntitlement();
   };
 
   /** SSO: server already issued a token — store it and resolve the user. */
@@ -49,6 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setToken(null);
     setUser(null);
+    if (isDesktop) void clearEntitlement();
   };
 
   return <Ctx.Provider value={{ user, loading, login, register, loginWithToken, logout }}>{children}</Ctx.Provider>;

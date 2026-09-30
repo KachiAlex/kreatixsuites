@@ -9,13 +9,14 @@ import { Drive } from "./pages/Drive";
 import { Editor } from "./pages/Editor";
 import { SharedLink } from "./pages/SharedLink";
 import { Admin } from "./pages/Admin";
+import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
 import type { ReactNode } from "react";
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="auth-wrap"><div className="empty">Loading workspace…</div></div>;
   if (!user) return <Navigate to="/login" replace />;
-  return children;
+  return <EntitlementGate>{children}</EntitlementGate>;
 }
 
 /** Keeps document.title in sync with the route (editors overwrite it with
@@ -49,6 +50,7 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <TitleSync />
+        <DesktopBootstrap />
         <Routes>
           <Route path="/" element={<LandingOrHome />} />
           <Route path="/login" element={<Login mode="login" />} />

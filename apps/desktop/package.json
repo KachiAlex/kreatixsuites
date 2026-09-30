@@ -1,0 +1,90 @@
+{
+  "name": "@kreatix/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/main.js",
+  "description": "Kreatix Business Suite — Windows desktop shell (Electron)",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
+    "dev": "pnpm build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "electron .",
+    "dist": "pnpm build && electron-builder",
+    "dist:dir": "pnpm build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.kreatixtech.suites",
+    "productName": "Kreatix Suites",
+    "asar": true,
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "protocols": [
+      {
+        "name": "Kreatix Suites",
+        "schemes": [
+          "kx"
+        ]
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": "docx",
+        "name": "Word Document",
+        "role": "Editor"
+      },
+      {
+        "ext": "xlsx",
+        "name": "Excel Spreadsheet",
+        "role": "Editor"
+      },
+      {
+        "ext": "pptx",
+        "name": "PowerPoint Presentation",
+        "role": "Editor"
+      },
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "role": "Editor"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "appx"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "appx": {
+      "identityName": "KreatixTechnologies.KreatixSuites",
+      "publisherDisplayName": "Kreatix Technologies",
+      "applicationId": "KreatixSuites"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "electron": "^43.7.4",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.27.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,49 @@
+name: Desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "apps/web/**"
+      - "packages/**"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # VITE_KX_ENTITLEMENT_KEY must equal the server's KREATIX_ENTITLEMENT_SECRET —
+      # the desktop verifies offline-entitlement signatures with it locally.
+      - name: Build web bundle (desktop target)
+        env:
+          VITE_KX_ENTITLEMENT_KEY: ${{ secrets.KX_ENTITLEMENT_KEY }}
+        run: pnpm --filter @kreatix/web build
+
+      - name: Build desktop main + preload
+        run: pnpm --filter @kreatix/desktop build
+
+      - name: Smoke test (kx:// shell loads the app)
+        env:
+          KX_SMOKE: "1"
+        run: pnpm --filter @kreatix/desktop exec electron . --no-sandbox
+
+      # Validates electron-builder config end-to-end without full installer time
+      - name: Package (unpacked dir)
+        run: pnpm --filter @kreatix/desktop dist:dir

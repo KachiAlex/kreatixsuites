@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
-import { requireAuth, type AuthedRequest } from "../auth.js";
+import { requireAuth, signEntitlement, type AuthedRequest } from "../auth.js";
 import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig } from "../billing.js";
 
 async function requireOrgAdmin(req: FastifyRequest, reply: FastifyReply) {
@@ -22,6 +22,21 @@ export function billingRoutes(app: FastifyInstance) {
   app.get("/api/billing/summary", async (req) => {
     const { user } = req as AuthedRequest;
     return summary(user.orgId);
+  });
+
+  /**
+   * Signed offline entitlement for the desktop app — a JWT snapshot of the
+   * workspace's subscription state the client can verify without connectivity
+   * (14-day offline grace). The server-side write gate stays authoritative;
+   * this only gates the client's local edit surface.
+   */
+  app.get("/api/billing/entitlement", async (req) => {
+    const { user } = req as AuthedRequest;
+    const s = await summary(user.orgId);
+    const token = await signEntitlement({
+      org: user.orgId, status: s.state, seats: s.seats, periodEnd: s.periodEnd ?? null,
+    });
+    return { token, subscription: s };
   });
 
   /** Full billing view (status, seats, price, payment history) — owner/admin. */
