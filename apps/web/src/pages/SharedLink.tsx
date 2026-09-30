@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
-import { AppIcon } from "../components/AppIcon";
+import { AppIcon, BrandLockup } from "../components/AppIcon";
 
 /** Public share-link landing page (KBS-SHARED-008) */
 export function SharedLink() {
@@ -32,7 +32,7 @@ export function SharedLink() {
     return (
       <div className="auth-wrap">
         <div className="auth-card" style={{ textAlign: "center" }}>
-          <div className="brand-mark"><AppIcon kind="suites" /></div>
+          <BrandLockup size={44} style={{ margin: "0 auto 14px", width: "fit-content" }} />
           <h1>Link unavailable</h1>
           <p>{error}</p>
         </div>

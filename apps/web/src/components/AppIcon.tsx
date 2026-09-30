@@ -62,6 +62,34 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
   }
 }
 
+/** Kreatix Suites logo lockup — tile + "Kreatix / SUITES / PRODUCTIVITY SUITE"
+ *  wordmark, per the brand board. `light` = white wordmark for dark surfaces. */
+export function BrandLockup({ light, size = 40, tagline = true, style }: {
+  light?: boolean;
+  size?: number;
+  tagline?: boolean;
+  style?: CSSProperties;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: size * 0.28, ...style }}>
+      <AppIcon kind="suites" size={size} />
+      <div style={{ lineHeight: 1.12, fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: size * 0.42, fontWeight: 800, letterSpacing: "-0.02em", color: light ? "#fff" : "var(--ink)" }}>
+          Kreatix
+        </div>
+        <div style={{ fontSize: size * 0.21, fontWeight: 800, letterSpacing: ".14em", color: "var(--k-orange)", marginTop: size * 0.04 }}>
+          SUITES
+        </div>
+        {tagline && (
+          <div style={{ fontSize: size * 0.15, fontWeight: 600, letterSpacing: ".16em", color: light ? "rgba(255,255,255,.55)" : "#9A918B", marginTop: size * 0.07 }}>
+            PRODUCTIVITY SUITE
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Brand app tile (per Kreatix brand board) — rounded square + white glyph.
  *  Renders inline SVG; pass `size` for a fixed tile or omit to fill the parent. */
 export function AppIcon({ kind, size, style, className }: {

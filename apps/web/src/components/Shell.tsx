@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
 import { CommandPalette, renderSnippet } from "./CommandPalette";
-import { AppIcon } from "./AppIcon";
+import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { useToast } from "../pages/Home";
 
@@ -123,8 +123,7 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
   return (
     <aside className="sidebar" style={{ position: "sticky" }}>
       <div className="brand-name">
-        <div className="mini-logo"><AppIcon kind="suites" /></div>
-        <div><h3>Kreatix Suites</h3><p style={{ textTransform: "uppercase", letterSpacing: ".08em" }}>Productivity suite</p></div>
+        <BrandLockup size={34} />
       </div>
       <div ref={menuRef} style={{ position: "relative" }}>
         <button className="create" onClick={() => setMenuOpen((v) => !v)} disabled={creating}>

@@ -130,7 +130,7 @@ export function Home() {
 
       <div className="brand-strip">
         <div className="mini-logo"><AppIcon kind="suites" /></div>
-        <div><strong>Kreatix Business Suite</strong><br /><span>Built around one clear visual identity: Kreatix orange, clean white space and confident black.</span></div>
+        <div><strong>Kreatix Suites</strong><br /><span>Built around one clear visual identity: Kreatix orange, clean white space and confident black.</span></div>
       </div>
       <footer>Kreatix Business Suite · Writer · Sheets · Present · PDF · Drive · AI</footer>
 

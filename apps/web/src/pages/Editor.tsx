@@ -4,7 +4,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
 import { KIND_META, timeAgo } from "../lib/format";
-import { AppIcon } from "../components/AppIcon";
+import { AppIcon, BrandLockup } from "../components/AppIcon";
 
 // Each editor is a separate chunk — only fetched when its file type opens
 // (or when prefetched via pages/editors.ts on Drive list idle / row hover).
@@ -62,7 +62,7 @@ export function Editor() {
     return (
       <div className="auth-wrap">
         <div className="auth-card" style={{ textAlign: "center" }}>
-          <div className="brand-mark"><AppIcon kind="suites" /></div>
+          <BrandLockup size={44} style={{ margin: "0 auto 14px", width: "fit-content" }} />
           <h1>Cannot open file</h1>
           <p>{error}</p>
           <button className="btn-primary" onClick={() => navigate("/")}>Back to home</button>
