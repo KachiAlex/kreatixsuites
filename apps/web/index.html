@@ -9,13 +9,7 @@
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#F2782E" />
     <meta name="color-scheme" content="light" />
-    <script>
-      // theme before first paint — default light, persisted in localStorage
-      try {
-        document.documentElement.dataset.theme =
-          localStorage.getItem("kx_theme") === "dark" ? "dark" : "light";
-      } catch { document.documentElement.dataset.theme = "light"; }
-    </script>
+    <script src="/theme-init.js"></script>
     <link rel="canonical" href="https://suites.kreatixtech.com/" />
 
     <!-- Open Graph -->

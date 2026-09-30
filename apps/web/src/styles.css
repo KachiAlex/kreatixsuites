@@ -11,6 +11,7 @@
   --bg:#F8F7F5;
   --surface:#FFFFFF;
   --sidebar:#F4F1ED;
+  --rail:#EFEAE4;
   --writer:#3578E5;
   --sheets:#1F9D66;
   --present:#7C5CD6;
@@ -32,6 +33,7 @@ html[data-theme="dark"] {
   --surface:#221E1A;
   --subtle:#2C2722;
   --sidebar:#1C1915;
+  --rail:#161311;
   --k-orange-soft:#3A2410;
   --k-orange-pale:#241811;
   --k-orange-dark:#F0914E;
@@ -71,12 +73,13 @@ button,input,textarea,select{font:inherit}
 a{color:var(--k-orange-dark)}
 .shell{display:grid;grid-template-columns:76px 252px minmax(0,1fr);min-height:100vh}
 .rail{
-  background:#161616;color:#fff;padding:14px 12px 18px;display:flex;flex-direction:column;
+  background:var(--rail);color:var(--ink);padding:14px 12px 18px;display:flex;flex-direction:column;
   align-items:center;gap:9px;position:sticky;top:0;height:100vh;z-index:10;
+  border-right:1px solid var(--line);
 }
 .brand-mark{width:48px;height:48px;border-radius:15px;overflow:hidden;box-shadow:0 9px 25px rgba(242,120,46,.28);margin:4px 0 10px;background:var(--k-orange);display:grid;place-items:center;color:#fff;font-weight:900;font-size:22px}
 .rail-btn{width:48px;height:48px;border:0;border-radius:14px;background:transparent;color:var(--muted);font-size:18px;display:grid;place-items:center;cursor:pointer;transition:.18s ease;text-decoration:none}
-.rail-btn:hover{background:#272727;color:white}
+.rail-btn:hover{background:var(--subtle);color:var(--ink)}
 .rail-btn.active{background:var(--k-orange);color:white;box-shadow:0 8px 20px rgba(242,120,46,.2)}
 .spacer{flex:1}
 .sidebar{
