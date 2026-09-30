@@ -22,6 +22,7 @@ import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./mo
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
 import { SUBTYPE, PDFJS_TYPE, annotRectOf, pdfjsIdsOf } from "./embed";
+import { verifySignatures, type SigReport } from "./sigs";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -37,7 +38,7 @@ type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "f
 // tools that stay enabled for read-only viewers
 const VIEW_TOOLS = new Set<Tool>(["select", "pan", "zoombox", "loupe", "snapshot"]);
 const SIG_KEY = "kx.signature";
-type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "layers" | "attach" | "access" | "comments" | "versions" | "ai" | "organize" | "compare";
+type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "layers" | "attach" | "access" | "comments" | "versions" | "ai" | "organize" | "compare" | "sigs";
 type Rect4 = [number, number, number, number];
 
 // Tools grouped by task — the ribbon renders each group as a labeled dropdown
@@ -200,6 +201,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
     }, t);
   };
   const zoomAnchor = useRef<{ fx: number; fy: number; ratio: number; sl: number; st: number } | null>(null);
+  // pinch-zoom — live touch points + gesture start distance/scale
+  const touchPts = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ d0: number; s0: number; last: number } | null>(null);
   const didInitView = useRef(false);
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
@@ -207,6 +211,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [pdfOpts, setPdfOpts] = useState<{ pageNumbers: boolean; watermark: string; header: string; footer: string; sanitize: boolean; optimize: boolean; batesPrefix: string; batesStart: number }>
     ({ pageNumbers: false, watermark: "", header: "", footer: "", sanitize: false, optimize: false, batesPrefix: "", batesStart: 1 });
   const [speaking, setSpeaking] = useState(false);
+  // read-aloud settings — persisted voice + rate
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [tts, setTts] = useState<{ voice?: string; rate?: number }>(() => { try { return JSON.parse(localStorage.getItem("kx:tts") ?? "{}"); } catch { return {}; } });
+  // View ▸ Rulers & grids
+  const [showRulers, setShowRulers] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
+  // digital-signature integrity report (filled after load)
+  const [sigs, setSigs] = useState<SigReport[] | null>(null);
   const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
   // shared tool picker — ribbon dropdowns and the menubar route through here
   const pickTool = (t: Tool) => {
@@ -293,6 +305,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
         d.getOutline().then((o) => !dead && setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
         // logical page labels (i, ii, 1, A-1…) when the doc defines them
         (d.getPageLabels?.() ?? Promise.resolve(null)).then((l) => !dead && setPageLabels(l)).catch(() => {});
+        // digital signatures — verify byte-range integrity + signer identity
+        setSigs(null);
+        verifySignatures(bytes).then((s) => !dead && setSigs(s)).catch(() => {});
         // honor the document's initial view — unless we remember a position from before
         const hasSavedPos = (() => { try { return !!localStorage.getItem(`kx:pdfpos:${item.id}`); } catch { return false; } })();
         if (!hasSavedPos) {
@@ -1094,6 +1109,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       const t = tc.items.map((i) => ("str" in i ? i.str : "")).join(" ").replace(/\s+/g, " ").trim();
       if (!t) { toast("No text on this page to read"); return; }
       const u = new SpeechSynthesisUtterance(t);
+      u.rate = tts.rate || 1;
+      const v = voices.find((x) => x.voiceURI === tts.voice);
+      if (v) u.voice = v;
       u.onend = () => setSpeaking(false);
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
@@ -1101,6 +1119,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
     } catch { toast("Read-aloud failed"); }
   };
   useEffect(() => () => speechSynthesis.cancel(), []);
+  // speech voices arrive asynchronously in most browsers
+  useEffect(() => {
+    const load = () => setVoices(speechSynthesis.getVoices());
+    load();
+    speechSynthesis.addEventListener("voiceschanged", load);
+    return () => speechSynthesis.removeEventListener("voiceschanged", load);
+  }, []);
+  useEffect(() => { try { localStorage.setItem("kx:tts", JSON.stringify(tts)); } catch { /* private mode */ } }, [tts]);
 
   const runCompare = async (f: File) => {
     if (!doc) return;
@@ -1590,6 +1616,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             { label: "Annotations", checked: panel === "anns", onClick: () => setPanel(panel === "anns" ? "none" : "anns") },
             { label: "Layers", checked: panel === "layers", disabled: !ocg.length, onClick: () => setPanel(panel === "layers" ? "none" : "layers") },
             { label: "Attachments", checked: panel === "attach", onClick: () => setPanel(panel === "attach" ? "none" : "attach") },
+            { label: "Signatures", checked: panel === "sigs", onClick: () => setPanel(panel === "sigs" ? "none" : "sigs") },
             { label: "Accessibility check", checked: panel === "access", onClick: () => { setPanel("access"); if (!accessReport) void runAccessCheck(); } },
             { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
             { label: "AI assistant", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
@@ -1609,6 +1636,21 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Automatically scroll", icon: "⏬", checked: autoScroll > 0,
             onClick: () => { const on = !autoScroll; setAutoScroll(on ? 1.1 : 0); if (on) { setViewMode("cont"); toast("Auto-scrolling — ↑ faster · ↓ slower · Esc stops"); } } },
           { label: "Read mode — hide all toolbars", icon: "📖", shortcut: "Ctrl+H", checked: readMode, onClick: () => setReadMode((v) => !v) },
+          { divider: true },
+          { label: "Rulers & grids", icon: "📐", submenu: [
+            { label: "Rulers — page edges, inches", checked: showRulers, onClick: () => setShowRulers((v) => !v) },
+            { label: "Grid — 1in lines over pages", checked: showGrid, onClick: () => setShowGrid((v) => !v) },
+          ]},
+          { label: "Read aloud", icon: "🔊", submenu: [
+            { label: speaking ? "Stop reading" : "Read this page", checked: speaking, onClick: () => void speakPage() },
+            { divider: true },
+            ...[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => ({ label: `Speed ${r}×`, checked: (tts.rate || 1) === r, onClick: () => setTts((t) => ({ ...t, rate: r })) })),
+            { divider: true },
+            ...(voices.length ? voices.slice(0, 12).map((v) => ({
+              label: v.name.length > 34 ? v.name.slice(0, 33) + "…" : v.name,
+              checked: tts.voice === v.voiceURI, onClick: () => setTts((t) => ({ ...t, voice: v.voiceURI })),
+            })) : [{ label: "System default voice", onClick: () => setTts((t) => ({ ...t, voice: undefined })) }]),
+          ]},
           { divider: true },
           { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
         ]},
@@ -1984,6 +2026,43 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 ))}
               </div>
             )}
+            {panel === "sigs" && (
+              <div className="pdf-annlist">
+                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Digital signatures</div>
+                {!sigs?.length && <div className="empty">No digital signatures in this document</div>}
+                {sigs?.map((s, i) => {
+                  const ok = s.digestOk === true && s.sigOk !== false;
+                  const bad = s.digestOk === false || s.sigOk === false;
+                  return (
+                    <div key={`sig${i}`} className="pdf-annrow">
+                      <div className="pdf-annrow-top">
+                        <span className="pdf-annrow-ico" style={{ borderColor: bad ? "#d33" : ok ? "#4a4" : "#e9a13b" }}>
+                          {bad ? "✗" : ok ? "✓" : "?"}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div className="pdf-annrow-label">{s.field || `Signature ${i + 1}`}</div>
+                          <div className="pdf-annrow-meta">{s.signer}</div>
+                        </div>
+                      </div>
+                      <div className="pdf-annrow-detail">
+                        <div className="pdf-annreply">
+                          {s.digestOk === true ? "Document integrity: unchanged since signing"
+                            : s.digestOk === false ? "Document integrity: CONTENT CHANGED after signing"
+                            : "Document integrity: could not be verified"}
+                        </div>
+                        {s.sigOk !== null && (
+                          <div className="pdf-annreply">Signature value: {s.sigOk ? "cryptographically valid" : "INVALID"}</div>
+                        )}
+                        <div className="pdf-annreply">Digest: {s.digestAlgo} · Issuer: {s.issuer}</div>
+                        {s.signedAt && <div className="pdf-annreply">Signed: {s.signedAt}</div>}
+                        {s.trailingBytes && <div className="pdf-annreply">⚠ Data appended after the signed range (incremental update)</div>}
+                        <div className="pdf-annreply" style={{ opacity: 0.7 }}>Certificate chain not checked against a trust store</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {panel === "anns" && (
               <div className="pdf-annlist">
                 <div style={{ display: "flex", gap: 6, padding: "0 2px" }}>
@@ -2016,6 +2095,22 @@ export function PdfEditor({ item, initialDoc, permission }: {
           </div>
         )}
 
+        <div className="pdf-doccol">
+        {/* Acrobat-style signature status banner */}
+        {doc && sigs !== null && sigs.length > 0 && !readMode && (() => {
+          const anyBad = sigs.some((s) => s.digestOk === false || s.sigOk === false);
+          const anyWarn = sigs.some((s) => s.digestOk === null || s.sigOk === null || s.trailingBytes);
+          const cls = anyBad ? "bad" : anyWarn ? "warn" : "ok";
+          const msg = anyBad ? "Signed — signature validity problems found"
+            : anyWarn ? "Signed — unverified (modified after signing or unsupported algorithm)"
+            : "Signed — all signatures verified, document unchanged";
+          return (
+            <div className={`pdf-sigbanner ${cls}`} onClick={() => setPanel("sigs")} title="Open the Signatures panel">
+              <b>🔏 {msg}</b>
+              <span>{sigs.length} signature{sigs.length === 1 ? "" : "s"} · open Signature panel →</span>
+            </div>
+          );
+        })()}
         {panel === "organize" && doc ? (
           <div className="pages pdf-org">
             {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
@@ -2051,6 +2146,31 @@ export function PdfEditor({ item, initialDoc, permission }: {
             window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
             setPanning(true);
           }}
+          onPointerDown={(e) => {
+            if (e.pointerType !== "touch") return;
+            touchPts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (touchPts.current.size === 2) {
+              const [a, b] = [...touchPts.current.values()];
+              pinchRef.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, s0: scale, last: scale };
+            }
+          }}
+          onPointerMove={(e) => {
+            const pinch = pinchRef.current;
+            if (e.pointerType !== "touch" || !pinch || !touchPts.current.has(e.pointerId)) return;
+            touchPts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            const [a, b] = [...touchPts.current.values()];
+            const d = Math.hypot(a.x - b.x, a.y - b.y);
+            const ns = Math.min(4, Math.max(0.4, +(pinch.s0 * (d / pinch.d0)).toFixed(3)));
+            if (ns === pinch.last) return;
+            // keep the gesture midpoint fixed under the fingers while zooming
+            const el = scrollRef.current!;
+            const r = el.getBoundingClientRect();
+            zoomAnchor.current = { fx: (a.x + b.x) / 2 - r.left, fy: (a.y + b.y) / 2 - r.top, ratio: ns / pinch.last, sl: el.scrollLeft, st: el.scrollTop };
+            pinch.last = ns;
+            setScale(ns);
+          }}
+          onPointerUp={(e) => { touchPts.current.delete(e.pointerId); if (touchPts.current.size < 2) pinchRef.current = null; }}
+          onPointerCancel={(e) => { touchPts.current.delete(e.pointerId); if (touchPts.current.size < 2) pinchRef.current = null; }}
           onScroll={(e) => {
             const el = e.currentTarget;
             const kids = [...el.querySelectorAll<HTMLElement>("[data-page]")];
@@ -2077,7 +2197,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 anns={annDoc.annotations.filter((a) => a.page === p)}
                 selAnn={selAnn} setSelAnn={setSelAnn}
                 tool={canEdit || VIEW_TOOLS.has(tool) ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
-                showAnns={showAnns}
+                showAnns={showAnns} showGrid={showGrid} showRulers={showRulers}
                 onSnapshot={(ok) => toast(ok ? "Snapshot copied to clipboard" : "Clipboard blocked — snapshot downloaded instead")}
                 tbFont={tbFont} tbSize={tbSize} ocrWords={annDoc.ocr?.[String(p)]}
                 canEdit={canEdit} viewRot={viewRot} dark={dark}
@@ -2108,6 +2228,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           )}
         </div>
         )}
+        </div>
       </div>
 
       {doc && (
@@ -2507,7 +2628,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, onSnapshot }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, showGrid = false, showRulers = false, onSnapshot }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -2527,6 +2648,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   setFocusAnn?: (id: string | null) => void;
   onDelAnn?: (id: string) => void;
   showAnns?: boolean;
+  showGrid?: boolean;
+  showRulers?: boolean;
   onSnapshot?: (ok: boolean) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
@@ -2998,6 +3121,39 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
       <div ref={textRef} />
       <div ref={formRef} />
+      {/* View ▸ Rulers — inch rulers hanging off the page edges, scale-aware */}
+      {showRulers && v && size.w > 0 && (() => {
+        const inch = 72 * scale;
+        const every = inch >= 48 ? 1 : inch >= 24 ? 2 : inch >= 12 ? 4 : 8;
+        const hx: React.ReactNode[] = [], vy: React.ReactNode[] = [];
+        for (let i = 0; ; i++) {
+          let stop = true;
+          for (let q = 0; q < 4; q++) {
+            const x = (i + q / 4) * inch;
+            if (x <= size.w) { stop = false; hx.push(<line key={`h${i}.${q}`} x1={x} y1={q === 0 ? 3 : 10} x2={x} y2={15} stroke="#8a8378" strokeWidth={0.6} />); }
+          }
+          if (i % every === 0 && i * inch <= size.w) hx.push(<text key={`hl${i}`} x={i * inch + 2} y={8} fontSize={7} fill="#6b6459">{i}</text>);
+          if (stop) break;
+        }
+        for (let i = 0; ; i++) {
+          let stop = true;
+          for (let q = 0; q < 4; q++) {
+            const y = (i + q / 4) * inch;
+            if (y <= size.h) { stop = false; vy.push(<line key={`v${i}.${q}`} x1={q === 0 ? 3 : 10} y1={y} x2={15} y2={y} stroke="#8a8378" strokeWidth={0.6} />); }
+          }
+          if (i % every === 0 && i * inch <= size.h) vy.push(<text key={`vl${i}`} x={9} y={i * inch - 2} fontSize={7} fill="#6b6459" transform={`rotate(-90 9 ${i * inch - 2})`}>{i}</text>);
+          if (stop) break;
+        }
+        return (<>
+          <div className="pdf-ruler pdf-ruler-h" style={{ top: -16, left: 0, width: size.w, height: 16 }}>
+            <svg width={size.w} height={16}>{hx}</svg>
+          </div>
+          <div className="pdf-ruler pdf-ruler-v" style={{ top: 0, left: -16, width: 16, height: size.h }}>
+            <svg width={16} height={size.h}>{vy}</svg>
+          </div>
+          <div className="pdf-ruler pdf-ruler-c" style={{ top: -16, left: -16, width: 16, height: 16 }} />
+        </>);
+      })()}
       {/* PDF-8.3 — OCR words: invisible but selectable/copyable over scans */}
       {v && ocrWords?.map((w, i) => {
         const [x, y, w2, h2] = vpRect([w.x, w.y, w.w, w.h]);
@@ -3025,6 +3181,17 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       {/* annotation overlay */}
       {v && (
         <svg className="ann-layer" width={size.w} height={size.h} style={{ pointerEvents: "none" }}>
+          {/* View ▸ Grid — 1in major lines, ¼in minor */}
+          {showGrid && (() => {
+            const inch = 72 * scale;
+            const minor = inch / 4;
+            const lines: React.ReactNode[] = [];
+            for (let x = 0; x <= size.w + minor; x += minor) lines.push(
+              <line key={`gv${x}`} x1={x} y1={0} x2={x} y2={size.h} stroke={x % inch < 1 ? "rgba(80,110,180,.45)" : "rgba(80,110,180,.18)"} strokeWidth={x % inch < 1 ? 1 : 0.5} />);
+            for (let y = 0; y <= size.h + minor; y += minor) lines.push(
+              <line key={`gh${y}`} x1={0} y1={y} x2={size.w} y2={y} stroke={y % inch < 1 ? "rgba(80,110,180,.45)" : "rgba(80,110,180,.18)"} strokeWidth={y % inch < 1 ? 1 : 0.5} />);
+            return <g>{lines}</g>;
+          })()}
           {penPts.length > 1 && (
             <polyline points={penPts.map(([x, y]) => `${x},${y}`).join(" ")} fill="none" stroke={toolColor} strokeWidth={2.2} strokeLinecap="round" />
           )}

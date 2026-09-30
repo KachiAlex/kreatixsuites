@@ -838,7 +838,17 @@ textarea.inp{padding:8px 10px;height:auto}
 .editor{display:flex;flex-direction:column;height:100vh;min-height:0;overflow:hidden}
 .editor .work{flex:1;display:flex;min-height:0;overflow:hidden}
 .editor .work>.pages{flex:1;min-width:0}
-.pdf-pages{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:22px;padding:26px;background:#E9E4DE}
+.pdf-pages{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:22px;padding:26px;background:#E9E4DE;touch-action:pan-x pan-y}
+.pdf-doccol{flex:1;min-width:0;display:flex;flex-direction:column}
+.pdf-sigbanner{display:flex;align-items:center;gap:10px;padding:7px 14px;font-size:12px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,.12);flex:none}
+.pdf-sigbanner.ok{background:#d8ecff;color:#0a4f8a}
+.pdf-sigbanner.warn{background:#fdf0d5;color:#8a5a00}
+.pdf-sigbanner.bad{background:#fde2e2;color:#a02020}
+.pdf-sigbanner span{opacity:.75;font-size:11px}
+.pdf-ruler{position:absolute;background:#f4f1ec;border-color:#cfc9c0;z-index:3;pointer-events:none;overflow:hidden}
+.pdf-ruler-h{border-bottom:1px solid #cfc9c0}
+.pdf-ruler-v{border-right:1px solid #cfc9c0}
+.pdf-ruler-c{background:#ece8e1;border-right:1px solid #cfc9c0;border-bottom:1px solid #cfc9c0}
 .pdf-page-wrap{flex:none}
 /* paged view modes — page(s) centered as a spread; margin-block:auto keeps
    oversized pages scrollable from the top instead of clipping */
