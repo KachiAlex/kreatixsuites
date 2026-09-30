@@ -168,6 +168,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [curDims, setCurDims] = useState<{ w: number; h: number } | null>(null);
   const [pageLabels, setPageLabels] = useState<string[] | null>(null); // logical labels (i, ii, 1, A-1)
   const [showAnns, setShowAnns] = useState(true);   // global show/hide comments & markup
+  const [autoScroll, setAutoScroll] = useState(0);  // px/frame — 0 = off
+  const [readMode, setReadMode] = useState(false);  // chrome-free reading view
+  const [searchBm, setSearchBm] = useState(false);  // search bookmarks/outline titles
+  const [searchCm, setSearchCm] = useState(false);  // search comment contents
   const [propsOpen, setPropsOpen] = useState(false);
   const [docProps, setDocProps] = useState<{ k: string; v: string }[] | null>(null);
   // Acrobat-style view history: Alt+←/→ jumps back/forward through navigations
@@ -231,7 +235,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [query, setQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
-  const [matches, setMatches] = useState<{ page: number; snippet: string; rects: Rect4[] }[]>([]);
+  const [matches, setMatches] = useState<{ page: number; snippet: string; rects: Rect4[]; kind?: "text" | "bookmark" | "comment"; dest?: unknown; annId?: string }[]>([]);
   const [matchIdx, setMatchIdx] = useState(-1);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -289,6 +293,27 @@ export function PdfEditor({ item, initialDoc, permission }: {
         d.getOutline().then((o) => !dead && setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
         // logical page labels (i, ii, 1, A-1…) when the doc defines them
         (d.getPageLabels?.() ?? Promise.resolve(null)).then((l) => !dead && setPageLabels(l)).catch(() => {});
+        // honor the document's initial view — unless we remember a position from before
+        const hasSavedPos = (() => { try { return !!localStorage.getItem(`kx:pdfpos:${item.id}`); } catch { return false; } })();
+        if (!hasSavedPos) {
+          d.getPageLayout?.().then((l) => {
+            if (dead) return;
+            if (l === "SinglePage") setViewMode("single");
+            else if (l === "TwoPageRight") { setViewMode("two"); setCover(true); }
+            else if (l === "TwoPageLeft" || l === "TwoColumnLeft" || l === "TwoColumnRight") setViewMode("two");
+          }).catch(() => {});
+          d.getPageMode?.().then((m) => {
+            if (dead) return;
+            if (m === "UseOutlines") setPanel("outline");
+            else if (m === "UseThumbs") setPanel("thumbs");
+            else if (m === "UseAttachments") setPanel("attach");
+          }).catch(() => {});
+          d.getOpenAction?.().then((a) => {
+            if (dead || !a) return;
+            const dest = (a as Map<string, unknown>).get?.("dest") ?? (a as Map<string, unknown>).get?.("D");
+            if (dest != null) void resolveDest(dest).then((p) => { if (p && !dead) setTimeout(() => scrollToPage(p), 400); });
+          }).catch(() => {});
+        }
         // PDF-11.1 — optional content groups for the layers pane
         d.getOptionalContentConfig?.().then((cfg) => {
           if (dead || !cfg) return;
@@ -888,9 +913,30 @@ export function PdfEditor({ item, initialDoc, permission }: {
       }
       if (out.length >= 200) break;
     }
+    // Acrobat's "Include bookmarks" — outline titles become jump-to results
+    if (searchBm && out.length < 200) {
+      const walk = (nodes: OutlineNode[]) => nodes.forEach((n) => {
+        re.lastIndex = 0;
+        if (re.test(n.title)) out.push({ page: 0, snippet: n.title, rects: [], kind: "bookmark", dest: n.dest });
+        if (n.items?.length) walk(n.items);
+      });
+      walk(outline);
+    }
+    // "Include comments" — annotation contents + replies
+    if (searchCm && out.length < 200) {
+      for (const a of annDoc.annotations) {
+        re.lastIndex = 0;
+        if (a.text && re.test(a.text)) out.push({ page: a.page, snippet: a.text.slice(0, 90), rects: [], kind: "comment", annId: a.id });
+        for (const r of a.replies ?? []) {
+          re.lastIndex = 0;
+          if (re.test(r.text)) out.push({ page: a.page, snippet: `↳ ${r.by}: ${r.text}`, rects: [], kind: "comment", annId: a.id });
+        }
+        if (out.length >= 200) break;
+      }
+    }
     setMatches(out);
     setMatchIdx(out.length ? 0 : -1);
-    if (out.length) scrollToPage(out[0].page);
+    if (out.length) scrollToPage(out[0].page || 1);
   };
 
   const scrollToPage = (p: number) => {
@@ -913,6 +959,38 @@ export function PdfEditor({ item, initialDoc, permission }: {
     const pg = await doc.getPage(curPage);
     const v = pg.getViewport({ scale: 1, rotation: (pg.rotate + viewRot) % 360 });
     setScale(Math.min(4, Math.max(0.4, +(Math.min((scrollRef.current.clientWidth - 56) / v.width, (scrollRef.current.clientHeight - 40) / v.height)).toFixed(2))));
+  };
+  // Acrobat "Fit Visible" — zoom to the content bounding box, ignoring margins
+  const fitVisible = async () => {
+    if (!doc || !scrollRef.current) return;
+    const pg = await doc.getPage(curPage);
+    const S = 0.3;
+    const vp0 = pg.getViewport({ scale: S, rotation: (pg.rotate + viewRot) % 360 });
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.ceil(vp0.width));
+    c.height = Math.max(1, Math.ceil(vp0.height));
+    try { await pg.render({ canvas: c, viewport: vp0 }).promise; }
+    catch { return void fitWidth(); }
+    const data = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+    let minX = c.width, minY = c.height, maxX = 0, maxY = 0, found = false;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const i = (y * c.width + x) * 4;
+      if (data[i] < 246 || data[i + 1] < 246 || data[i + 2] < 246) {
+        found = true;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    if (!found || maxX - minX < 6) return void fitWidth();
+    const bw = (maxX - minX) / S;                 // content width in pt
+    const ns = Math.min(4, Math.max(0.4, +(((scrollRef.current.clientWidth - 48) / bw)).toFixed(2)));
+    setScale(ns);
+    setTimeout(() => {
+      const el = scrollRef.current; const wrap = pageRefs.current.get(curPage);
+      if (!el || !wrap) return;
+      el.scrollLeft = (minX / S) * ns - (el.clientWidth - bw * ns) / 2;
+      el.scrollTop = wrap.offsetTop + (minY / S) * ns - 12;
+    }, 100);
   };
   // marquee zoom — PdfPage reports the dragged rect in viewport px
   const zoomToRect = (r: { x: number; y: number; w: number; h: number }, pageEl: HTMLElement) => {
@@ -1152,9 +1230,12 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
       else if ((e.key === "Delete" || e.key === "Backspace") && selAnn && canEdit) { e.preventDefault(); delAnn(selAnn); setSelAnn(null); }
       else if ((e.key === "Delete" || e.key === "Backspace") && selField && canEdit) { e.preventDefault(); delField(selField); setSelField(null); }
-      else if (e.key === "Escape") { setSelAnn(null); setSelField(null); if (tool !== "select") setTool("select"); }
+      else if (e.key === "Escape") { setSelAnn(null); setSelField(null); if (tool !== "select") setTool("select"); if (autoScroll) setAutoScroll(0); if (readMode) setReadMode(false); }
       else if (e.key === " " && !e.repeat) { e.preventDefault(); setSpaceDown(true); }
       else if (e.key === "?") { e.preventDefault(); setShowKeys((v) => !v); }
+      // auto-scroll speed — Acrobat-style ↑ faster / ↓ slower
+      else if (autoScroll && e.key === "ArrowUp") { e.preventDefault(); setAutoScroll((s) => Math.min(8, +(s * 1.35).toFixed(2))); }
+      else if (autoScroll && e.key === "ArrowDown") { e.preventDefault(); setAutoScroll((s) => Math.max(0.25, +(s / 1.35).toFixed(2))); }
       // Acrobat view history — Alt+← back, Alt+→ forward
       else if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); navStep(-1); }
       else if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); navStep(1); }
@@ -1171,6 +1252,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "d") { e.preventDefault(); void openDocProps(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key === "h") { e.preventDefault(); setReadMode((v) => !v); }
     };
     window.addEventListener("keydown", onKey);
     const onKeyUp = (e: KeyboardEvent) => { if (e.key === " ") setSpaceDown(false); };
@@ -1241,6 +1323,29 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setDocProps(rows);
   };
 
+  // Acrobat's "Export Form Data" — authored + native field values → .fdf
+  const exportFormData = async () => {
+    if (!doc) return;
+    const rows: { name: string; value: string | boolean | string[] }[] = [];
+    for (const f of annDoc.fields ?? []) {
+      const v = f.value ?? f.defaultValue;
+      if (v != null && v !== "" && v !== false) rows.push({ name: f.name, value: v as string });
+    }
+    try {
+      const fo = await doc.getFieldObjects();
+      if (fo) for (const [name, kids] of fo) {
+        const kidsArr = kids as { id?: string; value?: unknown }[];
+        const kid = kidsArr.find((k) => k.id) ?? kidsArr[0];
+        if (!kid) continue;
+        const cur = kid.id ? doc.annotationStorage.getValue(kid.id, { value: kid.value }) as { value?: unknown } : null;
+        const v = cur?.value ?? kid.value;
+        if (v != null && v !== "" && v !== false && v !== "Off") rows.push({ name, value: v as string });
+      }
+    } catch { /* non-form docs */ }
+    if (!rows.length) { toast("No form values to export"); return; }
+    void import("./fdf").then(({ exportFormFdf }) => exportFormFdf(rows, title));
+  };
+
   const pasteClipboard = async (cd: DataTransfer, file: File | null, page: number) => {
     if (file?.type === "application/pdf" || file?.name.toLowerCase().endsWith(".pdf")) {
       await orgMerge(file);
@@ -1290,6 +1395,22 @@ export function PdfEditor({ item, initialDoc, permission }: {
     window.addEventListener("drop", drop);
     return () => { window.removeEventListener("dragover", over); window.removeEventListener("drop", drop); };
   });
+
+  // auto-scroll — rAF-driven smooth scroll, ↑/↓ adjust speed, stops at the end
+  useEffect(() => {
+    if (!autoScroll) return;
+    let raf = 0; let last = performance.now();
+    const step = (t: number) => {
+      const dt = Math.min(50, t - last); last = t;
+      const el = scrollRef.current;
+      if (!el) return;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 4) { setAutoScroll(0); toast("End of document"); return; }
+      el.scrollTop += autoScroll * (dt / 16.7);
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [autoScroll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ctrl+wheel zoom centered on the cursor — non-passive so we can preventDefault
   useEffect(() => {
@@ -1350,7 +1471,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const saveLabel = { saved: "Saved", saving: "Saving…", unsaved: "Unsaved", error: "Save failed" }[saveState];
 
   return (
-    <div className="editor">
+    <div className={`editor${readMode ? " read-mode" : ""}`}>
       <div className="topbar">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
         <AppIcon kind="pdf" size={34} />
@@ -1450,6 +1571,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Fit width", onClick: () => void fitWidth() },
           { label: "Fit page", onClick: () => void fitPage() },
+          { label: "Fit visible — zoom to content, ignoring margins", onClick: () => void fitVisible() },
           { label: "100%", onClick: () => setScale(1) },
           { label: "Zoom in", onClick: () => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2))) },
           { label: "Zoom out", onClick: () => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2))) },
@@ -1481,6 +1603,12 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Previous view", shortcut: "Alt+←", onClick: () => navStep(-1), disabled: navHist.current.idx <= 0 },
           { label: "Next view", shortcut: "Alt+→", onClick: () => navStep(1), disabled: navHist.current.idx >= navHist.current.stack.length - 1 },
+          { label: "First page", icon: "⏮", onClick: () => scrollToPage(1), disabled: curPage <= 1 },
+          { label: "Last page", icon: "⏭", onClick: () => scrollToPage(numPages), disabled: curPage >= numPages },
+          { divider: true },
+          { label: "Automatically scroll", icon: "⏬", checked: autoScroll > 0,
+            onClick: () => { const on = !autoScroll; setAutoScroll(on ? 1.1 : 0); if (on) { setViewMode("cont"); toast("Auto-scrolling — ↑ faster · ↓ slower · Esc stops"); } } },
+          { label: "Read mode — hide all toolbars", icon: "📖", shortcut: "Ctrl+H", checked: readMode, onClick: () => setReadMode((v) => !v) },
           { divider: true },
           { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
         ]},
@@ -1526,6 +1654,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Annotation list", icon: "📋", onClick: () => setPanel("anns") },
           { label: "Export comments (.fdf)", onClick: () => void import("./fdf").then(({ exportFdf }) => exportFdf(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
           { label: "Import comments (.fdf)…", onClick: () => fdfRef.current?.click(), disabled: !canEdit },
+          { label: "Summarize comments — printable PDF report", icon: "🖨", onClick: () => void import("./summarize").then(({ summarizeComments }) => summarizeComments(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
         ]},
         { label: "Fill & Sign", items: [
           { label: "Typewriter — type anywhere", icon: "T", checked: tool === "textbox", onClick: () => pickTool("textbox"), disabled: !canEdit },
@@ -1544,6 +1673,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Auto-detect fields on this PDF", icon: "⚡", onClick: () => void detectFields(), disabled: !canEdit },
           { divider: true },
+          { label: "Export form data (.fdf)", icon: "📤", onClick: () => void exportFormData() },
           { label: "Clear form — reset all entered values", icon: "⟲", onClick: () => {
             if (!confirm("Clear all entered form values? Fields keep their layout.")) return;
             mutate((d) => {
@@ -1753,11 +1883,20 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Case sensitive
                   <input type="checkbox" checked={wholeWord} onChange={(e) => setWholeWord(e.target.checked)} style={{ marginLeft: 10 }} /> Whole word
                 </label>
+                <label style={{ display: "flex", gap: 6, fontSize: 11, color: "#8B8480", marginTop: 4 }}>
+                  Include:
+                  <input type="checkbox" checked={searchBm} onChange={(e) => setSearchBm(e.target.checked)} /> bookmarks
+                  <input type="checkbox" checked={searchCm} onChange={(e) => setSearchCm(e.target.checked)} /> comments
+                </label>
                 <div className="pdf-results">
                   {matches.map((m, i) => (
                     <div key={i} className={`pdf-match ${i === matchIdx ? "on" : ""}`}
-                      onClick={() => { setMatchIdx(i); scrollToPage(m.page); }}>
-                      <b>p.{m.page}</b> {m.snippet.slice(0, 70)}
+                      onClick={() => {
+                        setMatchIdx(i);
+                        if (m.kind === "bookmark") void resolveDest(m.dest).then((p) => { if (p) scrollToPage(p); });
+                        else { scrollToPage(m.page); if (m.kind === "comment" && m.annId) setSelAnn(m.annId); }
+                      }}>
+                      <b>{m.kind === "bookmark" ? "🔖" : m.kind === "comment" ? "💬" : `p.${m.page}`}</b> {m.snippet.slice(0, 70)}
                     </div>
                   ))}
                   {query && !matches.length && <div className="empty">No matches</div>}
@@ -2138,6 +2277,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 ["Ctrl+scroll", "Zoom at cursor"],
                 ["Space+drag", "Pan the page"],
                 ["Ctrl+D", "Document properties"],
+                ["Ctrl+H", "Read mode — hide toolbars"],
                 ["Ctrl+V", "Paste image/text/PDF onto the page"],
                 ["Alt+← / Alt+→", "Back / forward through visited views"],
                 ["Tab / Shift+Tab", "Cycle through form fields"],
@@ -2154,6 +2294,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
             </div>
           </div>
         </div>
+      )}
+
+      {readMode && (
+        <button className="pdf-readmode-exit" onClick={() => setReadMode(false)}
+          title="Exit read mode (Ctrl+H or Esc)">✕ Exit read mode</button>
       )}
 
       {/* Document Properties */}

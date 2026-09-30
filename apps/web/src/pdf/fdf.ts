@@ -119,3 +119,29 @@ export function parseFdf(text: string): PdfAnn[] {
   }
   return out;
 }
+
+/**
+ * FDF form-data export — Acrobat's "Export Form Data". Emits the /Fields
+ * array with each field's /T name and /V value; Acrobat can import this to
+ * fill the same form fields in another copy of the document.
+ */
+export function exportFormFdf(
+  fields: { name: string; value: string | boolean | string[] }[],
+  fileName: string,
+): void {
+  const rows = fields
+    .filter((f) => f.value !== undefined && f.value !== null && f.value !== "" && f.value !== false)
+    .map((f) => {
+      const v = f.value === true ? "/Yes"
+        : Array.isArray(f.value) ? `[${f.value.map((s) => `(${esc(s)})`).join(" ")}]`
+        : `(${esc(String(f.value))})`;
+      return `<< /T (${esc(f.name)}) /V ${v} >>`;
+    });
+  const fdf = `%FDF-1.2\n1 0 obj\n<< /FDF << /Fields [\n${rows.join("\n")}\n] >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n`;
+  const url = URL.createObjectURL(new Blob([fdf], { type: "application/vnd.fdf" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName.replace(/\.pdf$/i, "") + "-formdata.fdf";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}

@@ -866,6 +866,12 @@ textarea.inp{padding:8px 10px;height:auto}
 /* status bar + selection popup + shortcuts overlay + field highlight */
 .pdf-status{display:flex;align-items:center;gap:14px;padding:4px 14px;font-size:11px;color:#8B8480;background:#FBF8F5;border-top:1px solid var(--line);flex:none}
 .pdf-status .save-state{margin-left:0}
+/* read mode — hide all chrome, keep only the page strip */
+.editor.read-mode .topbar,.editor.read-mode .menubar,.editor.read-mode .ribbon,
+.editor.read-mode .pdf-status,.editor.read-mode .pdf-rail,.editor.read-mode .side-panel{display:none}
+.pdf-readmode-exit{position:fixed;right:16px;bottom:16px;z-index:80;border:0;border-radius:10px;
+  background:#26221F;color:#F7F4F0;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;
+  box-shadow:0 6px 22px rgba(0,0,0,.25)}
 .sel-pop{position:absolute;z-index:8;display:flex;gap:2px;background:#241F1B;border-radius:8px;padding:3px;box-shadow:0 6px 20px rgba(0,0,0,.3)}
 .sel-pop button{border:0;background:transparent;color:#fff;font-size:12px;min-width:26px;height:24px;border-radius:5px;cursor:pointer;display:grid;place-items:center}
 .sel-pop button:hover{background:rgba(255,255,255,.15)}
