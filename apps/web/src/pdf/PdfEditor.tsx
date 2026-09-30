@@ -833,11 +833,18 @@ export function PdfEditor({ item, initialDoc, permission }: {
     }, `move:${id}`);
 
   // ---------- PDF-6: form fields ----------
-  const addField = (page: number, rect: Rect4) =>
+  const addField = (page: number, rect: Rect4, clicked?: boolean) =>
     mutate((d) => {
       d.fields ??= [];
+      // click-placement: use a kind-appropriate default size centered on the point
+      const rr: Rect4 = clicked
+        ? fieldKind === "checkbox" || fieldKind === "radio" ? [rect[0] - 7, rect[1] - 7, 14, 14]
+          : fieldKind === "signature" ? [rect[0] - 80, rect[1] - 20, 160, 40]
+          : fieldKind === "barcode" ? [rect[0] - 70, rect[1] - 20, 140, 40]
+          : [rect[0] - 70, rect[1] - 11, 140, 22]
+        : rect;
       const n = d.fields.filter((f) => f.kind === fieldKind).length + 1;
-      d.fields.push({ id: crypto.randomUUID().slice(0, 8), page, kind: fieldKind, rect,
+      d.fields.push({ id: crypto.randomUUID().slice(0, 8), page, kind: fieldKind, rect: rr,
         name: `${fieldKind}_${n}`, group: fieldKind === "radio" ? "radio_1" : undefined,
         options: fieldKind === "dropdown" || fieldKind === "list" ? ["Option 1", "Option 2"] : undefined });
     });
@@ -2253,7 +2260,18 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 selAnn={selAnn} setSelAnn={setSelAnn}
                 tool={canEdit || VIEW_TOOLS.has(tool) ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
                 showAnns={showAnns} showGrid={showGrid} showRulers={showRulers}
-                markSize={markSize} onDigSign={(x, y) => void cryptoSignAt(p, x, y)}
+                markSize={markSize} onDigSign={(x, y) => { if (!digId) { setDigSignDlg(true); return; } void cryptoSignAt(p, x, y); }}
+                onNeedSig={() => setSigPadOpen(true)} onInfo={toast}
+                onZoomStep={(dir, cx, cy) => {
+                  const el = scrollRef.current; if (!el) return;
+                  const r = el.getBoundingClientRect();
+                  const fx = cx - r.left, fy = cy - r.top;
+                  setScale((s) => {
+                    const ns = Math.min(4, Math.max(0.4, +(s * (dir > 0 ? 1.25 : 1 / 1.25)).toFixed(3)));
+                    if (ns !== s) zoomAnchor.current = { fx, fy, ratio: ns / s, sl: el.scrollLeft, st: el.scrollTop };
+                    return ns;
+                  });
+                }}
                 onSnapshot={(ok) => toast(ok ? "Snapshot copied to clipboard" : "Clipboard blocked — snapshot downloaded instead")}
                 tbFont={tbFont} tbSize={tbSize} ocrWords={annDoc.ocr?.[String(p)]}
                 canEdit={canEdit} viewRot={viewRot} dark={dark}
@@ -2269,7 +2287,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 fieldApi={{
                   fields: (annDoc.fields ?? []).filter((f) => f.page === p),
                   sel: selField, select: setSelField,
-                  add: (r) => addField(p, r), move: moveField, patch: patchField,
+                  add: (r, clicked) => addField(p, r, clicked), move: moveField, patch: patchField,
                   del: delField, checkRadio, reorder: reorderField, signField,
                 }} />
             </div>
@@ -2742,7 +2760,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, showGrid = false, showRulers = false, onSnapshot, markSize = 18, onDigSign }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onZoomStep, onPickImage, onNeedSig, onInfo, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, showGrid = false, showRulers = false, onSnapshot, markSize = 18, onDigSign }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -2768,12 +2786,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   onDigSign?: (x: number, y: number) => void;
   onSnapshot?: (ok: boolean) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
+  onZoomStep?: (dir: 1 | -1, cx: number, cy: number) => void;
   onPickImage?: (rect: Rect4) => void;
+  onNeedSig?: () => void;
+  onInfo?: (msg: string) => void;
   ocgCfg?: { getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null;
   ocgRev?: number;
   fieldApi?: {
     fields: PdfField[]; sel: string | null;
-    add: (rect: Rect4) => void;
+    add: (rect: Rect4, clicked?: boolean) => void;
     select: (id: string | null) => void;
     move: (id: string, dx: number, dy: number) => void;
     patch: (id: string, p: Partial<PdfField>, key?: string) => void;
@@ -2964,9 +2985,12 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       else { setPlPts((p) => [...p, [x, y]]); setPlCur([x, y]); }
       return;
     }
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    // text-markup tools rely on native selection — pointer capture would suppress it
+    const isTextMarkup = tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly" || tool === "replace";
+    if (!isTextMarkup) (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     if (tool === "note") {
-      onAdd({ type: "note", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
+      const id = onAdd({ type: "note", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
+      setSelAnn(id); setEditText(id); // open the note editor immediately, like Acrobat
       return;
     }
     if (tool === "stamp") {
@@ -2975,13 +2999,14 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       return;
     }
     if (tool === "sign") {
-      if (!sigImg) return; // pad opens from the toolbar; nothing to place yet
+      if (!sigImg) { onNeedSig?.(); return; } // no signature yet — reopen the pad instead of a silent no-op
       const [px, py] = toPdf(e.clientX, e.clientY);
       onAdd({ type: "sign", rects: [[px - 80, py - 20, 160, 40]], img: sigImg });
       return;
     }
     if (tool === "caret") {
-      onAdd({ type: "caret", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
+      const id = onAdd({ type: "caret", points: [toPdf(e.clientX, e.clientY)], color: toolColor, text: "" });
+      setSelAnn(id); setEditText(id);
       return;
     }
     if (tool === "check" || tool === "cross") {
@@ -3046,7 +3071,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     const b = boxRef.current!.getBoundingClientRect();
     setPlCur([e.clientX - b.left, e.clientY - b.top]);
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
     if (!d || d.kind !== "draw" || !vp()) return;
@@ -3061,8 +3086,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     const { x, y, w, h } = preview;
     setPreview(null);
     if (w < 4 && h < 4) {
-      // click, not drag — typewriter drops an insertion box, edit-text
-      // targets the text line under the point
+      // click, not drag — several tools have a useful click action
       const [px, py] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
       if (tool === "textbox") {
         const sz = tbSize ?? 9;
@@ -3072,7 +3096,26 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           color: toolColor, text: "", font: tbFont ?? "helv", fontSize: sz });
         setSelAnn(id); setFocusAnn?.(id);
       } else if (tool === "edittext") {
-        void editLineAt(px, py);
+        void editLineAt(px, py).then((hit) => { if (!hit) onInfo?.("No editable text at that point"); });
+      } else if (tool === "zoombox") {
+        onZoomStep?.(e.altKey ? -1 : 1, e.clientX, e.clientY); // Acrobat: click = step zoom at point
+      } else if (tool === "image") {
+        onPickImage?.([px - 70, py - 50, 140, 100]); // click = default-size image
+      } else if (tool === "field") {
+        fieldApi?.add([px, py, 140, 22], true); // click = default-size field, sized per kind
+      } else if (tool === "rect") {
+        onAdd({ type: "rect", rects: [[px - 40, py - 25, 80, 50]], color: toolColor });
+      } else if (tool === "ellipse") {
+        onAdd({ type: "ellipse", rects: [[px - 40, py - 25, 80, 50]], color: toolColor });
+      } else if (tool === "callout") {
+        const id = onAdd({ type: "callout", rects: [[px, py - 46, 140, 36]], points: [[px, py]], color: toolColor, text: "" });
+        setSelAnn(id); setFocusAnn?.(id);
+      } else if (tool === "cloud") {
+        onAdd({ type: "cloud", rects: [[px - 40, py - 25, 80, 50]], color: toolColor });
+      } else if (tool === "whiteout") {
+        onAdd({ type: "whiteout", rects: [[px - 40, py - 10, 80, 20]] });
+      } else if (tool === "redact") {
+        onAdd({ type: "redact", rects: [[px - 40, py - 10, 80, 20]] });
       }
       return;
     }
@@ -3094,7 +3137,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     if (tool === "callout") {
       // tail tip = the point you dragged from; box sits where you released
       const [tx, ty] = vp()!.convertToPdfPoint(d.sx, d.sy) as [number, number];
-      onAdd({ type: "callout", rects: [rect], points: [[tx, ty]], color: toolColor, text: "" });
+      const id = onAdd({ type: "callout", rects: [rect], points: [[tx, ty]], color: toolColor, text: "" });
+      setSelAnn(id); setFocusAnn?.(id);
       return;
     }
     if (tool === "whiteout") { onAdd({ type: "whiteout", rects: [rect] }); return; }
@@ -3150,9 +3194,9 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
 
   // edit-text on a bare click: find the text item under the point, expand to
   // its line, then run the same whiteout+retype flow as a dragged rectangle
-  const editLineAt = async (px: number, py: number) => {
+  const editLineAt = async (px: number, py: number): Promise<boolean> => {
     const pg = pageRef.current;
-    if (!pg) return;
+    if (!pg) return false;
     try {
       const tc = await pg.getTextContent();
       const vp1 = pg.getViewport({ scale: 1 });
@@ -3165,14 +3209,15 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         items.push({ x: ix, y: iy, w: it.width, h: fh });
       }
       const hit = items.find((i) => px >= i.x - 1 && px <= i.x + i.w + 1 && py >= i.y - i.h * 0.3 && py <= i.y + i.h);
-      if (!hit) return;
+      if (!hit) return false;
       const row = items.filter((i) => Math.abs(i.y - hit.y) < Math.max(2, hit.h * 0.35));
       const x0 = Math.min(...row.map((i) => i.x));
       const x1 = Math.max(...row.map((i) => i.x + i.w));
       const y0 = Math.min(...row.map((i) => i.y - i.h * 0.3));
       const y1 = Math.max(...row.map((i) => i.y + i.h));
       await editTextAt([x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2]);
-    } catch { /* no text under point */ }
+      return true;
+    } catch { return false; /* no text under point */ }
   };
 
   // text-selection → highlight/underline/strikeout
@@ -3191,7 +3236,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     }
     if (!rects.length) { setSelPop(null); return; }
     if (canEdit && (tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly" || tool === "replace")) {
-      onAdd({ type: tool, rects, color: toolColor, text: tool === "replace" ? "" : undefined });
+      const id = onAdd({ type: tool, rects, color: toolColor, text: tool === "replace" ? "" : undefined });
+      if (tool === "replace") { setSelAnn(id); setEditText(id); } // open the suggestion box right away
       sel.removeAllRanges();
       return;
     }
@@ -3401,9 +3447,13 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           const [x, y, w2, h2] = vpRect(a.rects![0]);
           return (
             <div key={a.id} className={`ann-callout ${sel ? "sel" : ""}`}
+              ref={(el) => { if (el && a.id === focusAnn && !el.dataset.focused) { el.dataset.focused = "1"; el.focus(); setFocusAnn?.(null); } }}
               style={{ left: x, top: y, width: w2, minHeight: h2, borderColor: a.color === "#FFD23F" ? "#F2782E" : a.color }}
-              contentEditable={canEdit && tool === "select" && sel} suppressContentEditableWarning
-              onPointerDown={(e) => { if (tool === "select" && !sel) startMove(e, a); }}
+              contentEditable={canEdit && sel && (tool === "select" || tool === "callout")} suppressContentEditableWarning
+              onPointerDown={(e) => {
+                if (tool === "callout") { e.stopPropagation(); setSelAnn(a.id); return; } // edit this one, don't start another
+                if (tool === "select" && !sel) startMove(e, a);
+              }}
               onClick={() => setSelAnn(a.id)}
               onBlur={(e) => onPatch(a.id, { text: (e.target as HTMLElement).innerText }, `co:${a.id}`)}>{a.text}</div>
           );
