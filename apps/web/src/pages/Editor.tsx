@@ -74,7 +74,7 @@ export function Editor() {
           <BrandLockup size={44} style={{ margin: "0 auto 14px", width: "fit-content" }} />
           <h1>Cannot open file</h1>
           <p>{error}</p>
-          <button className="btn-primary" onClick={() => navigate("/")}>Back to home</button>
+          <button className="btn-primary" onClick={() => navigate("/home")}>Back to home</button>
         </div>
       </div>
     );

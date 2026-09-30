@@ -144,7 +144,7 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
       </div>
 
       <div className="section-label">Workspace</div>
-      <NavLink to="/" end className={navCls}><span className="dot" />Home</NavLink>
+      <NavLink to="/home" end className={navCls}><span className="dot" />Home</NavLink>
       <NavLink to="/drive" className={navCls}><span className="dot" />Recent</NavLink>
       <NavLink to="/drive/starred" className={navCls}><span className="dot" />Starred</NavLink>
       <NavLink to="/drive/all" className={navCls}><span className="dot" />Kreatix Drive</NavLink>

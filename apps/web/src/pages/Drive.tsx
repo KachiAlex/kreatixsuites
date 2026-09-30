@@ -30,7 +30,7 @@ export function Drive() {
   return (
     <>
       <div className="crumbs">
-        <Link to="/">Home</Link> <span>/</span>
+        <Link to="/home">Home</Link> <span>/</span>
         {folderId ? <><Link to="/drive/all">Kreatix Drive</Link> <span>/</span> <b>Folder</b></> : <b>{TITLES[view] ?? view}</b>}
       </div>
       <div className="section-head" style={{ marginTop: 0 }}>

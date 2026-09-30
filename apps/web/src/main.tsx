@@ -8,6 +8,10 @@ import "@fontsource/inter/latin-500.css";
 import "@fontsource/inter/latin-600.css";
 import "@fontsource/inter/latin-700.css";
 import "@fontsource/inter/latin-800.css";
+import { registerSW } from "virtual:pwa-register";
+
+// PWA — precached app shell + offline navigation (API calls stay live)
+if (import.meta.env.PROD) registerSW({ immediate: true });
 
 createRoot(document.getElementById("root")!, {
   onRecoverableError: (error) => {
