@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import compress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
@@ -26,6 +27,10 @@ async function main() {
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
   await app.register(cors, { origin: true, credentials: true });
+  // br/gzip for JSON API + statics — the host nginx has no brotli module, so
+  // compression lives in the app layer. SSE routes use reply.hijack() +
+  // reply.raw, which bypasses compress hooks entirely.
+  await app.register(compress, { encodings: ["br", "gzip", "deflate"], threshold: 1024 });
   await app.register(websocket);
 
   // Binary uploads arrive as raw buffers (JSON keeps the default parser)

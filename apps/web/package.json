@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --noEmit",
     "test:roundtrip": "tsx test-roundtrip.mts",
     "test:collab": "tsx test-collab-suggest.mts",
+    "perf:budget": "node scripts/perf-budget.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

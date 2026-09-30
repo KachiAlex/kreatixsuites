@@ -242,6 +242,7 @@ export function aiRoutes(app: FastifyInstance) {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
       connection: "keep-alive",
+      "x-no-compression": "true",
     });
     const send = (obj: Record<string, unknown>) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
     const done = () => { reply.raw.end(); };

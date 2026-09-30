@@ -21,7 +21,7 @@ import { AppIcon } from "../components/AppIcon";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
-import { SUBTYPE, PDFJS_TYPE, annotRectOf, pdfjsIdsOf } from "./embed";
+import { SUBTYPE, PDFJS_TYPE, annotRectOf, pdfjsIdsOf, embedIntoPdf } from "./embed";
 import { verifySignatures, type SigReport } from "./sigs";
 import type { CertSource } from "./sign";
 const flattenMod = () => import("./flatten");
@@ -418,7 +418,6 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setSaveState("saving");
     try {
       const rasters = await rasterizeRedacted();
-      const { embedIntoPdf } = await import("./embed");
       const { bytes, doc: next } = await embedIntoPdf(
         pdfDataRef.current.slice(0), annDoc, formValues(), doc, rasters);
       const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;

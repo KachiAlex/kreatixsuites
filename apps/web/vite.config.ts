@@ -29,18 +29,9 @@ export default defineConfig({
   build: {
     // lazily-loaded vendor chunks top out at ~770KB (mammoth/docx) — only fetched
     // when a Writer doc is opened; the main entry is the real budget concern.
+    // NOTE: no manual chunk groups — rolldown parks shared helpers in them,
+    // which turns them into eager entry deps (modulepreloaded on every route).
     chunkSizeWarningLimit: 800,
-    // split the heavy writer-only libs into a vendor chunk cached separately
-    rolldownOptions: {
-      output: {
-        advancedChunks: {
-          groups: [
-            { name: "writer-vendor", test: /katex|lowlight|tiptap-pagination-plus|tiptap-track-changes/ },
-            { name: "ooxml", test: /docx|mammoth|jszip/ },
-          ],
-        },
-      },
-    },
   },
   server: {
     port: 5173,
