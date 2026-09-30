@@ -11,7 +11,8 @@ COPY apps/web/package.json apps/web/
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm -r build
+# desktop is built/packaged separately (CI) — not part of the server image
+RUN pnpm --filter @kreatix/shared --filter @kreatix/web --filter @kreatix/api build
 
 FROM node:24-bookworm-slim
 RUN corepack enable
