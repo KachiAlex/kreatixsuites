@@ -855,7 +855,7 @@ textarea.inp{padding:8px 10px;height:auto}
 .pdf-pages.paged{flex-direction:row;flex-wrap:wrap;justify-content:center;align-content:center;gap:26px}
 .pdf-pages.paged>.pdf-page-wrap{margin-block:auto}
 .pdf-page{position:relative;background:#fff;box-shadow:0 10px 34px rgba(23,18,15,.22)}
-.pdf-page.draw{cursor:crosshair}
+.pdf-page.draw{cursor:crosshair;touch-action:none} /* a finger draws while a tool is armed instead of scrolling */
 /* per-tool cursors */
 .pdf-page[data-tool="textbox"],.pdf-page[data-tool="edittext"]{cursor:text}
 .pdf-page[data-tool="check"],.pdf-page[data-tool="cross"],.pdf-page[data-tool="note"],
@@ -1506,3 +1506,36 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .pdf-reflowpage.dark{background:#1c1b1a;border-color:#333;color:#e8e4e0}
 .pdf-reflowpage-no{font-size:11px;color:#8B8480;text-align:center;margin-bottom:14px;letter-spacing:.06em}
 .pdf-reflowpage p{margin:0 0 6px;line-height:1.55}
+
+/* ---------- mobile / small screens ---------- */
+@media (max-width: 900px) {
+  /* rail becomes an overlay drawer instead of squeezing the document */
+  .editor .work{position:relative}
+  .pdf-rail{position:absolute;inset:0 auto 0 0;z-index:30;width:196px;min-width:196px;box-shadow:10px 0 32px rgba(0,0,0,.22)}
+  .side-panel{width:min(330px,96vw)}
+  .dlg{max-width:calc(100vw - 24px)!important;max-height:calc(100dvh - 32px);overflow-y:auto}
+  .modal-card{max-width:calc(100vw - 24px)}
+  /* chrome rows scroll horizontally instead of overflowing */
+  .menubar,.editor .topbar{overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap}
+  .menubar::-webkit-scrollbar,.editor .topbar::-webkit-scrollbar{display:none}
+  .editor .topbar{gap:7px;margin-bottom:0;padding:7px 10px}
+  .editor .doc-title{min-width:0;flex:0 1 160px}
+  .pdf-status{gap:9px;overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+  .pdf-status::-webkit-scrollbar{display:none}
+  .pdf-sigbanner{flex-wrap:wrap;row-gap:2px}
+  .ann-pop{width:min(190px,72vw)}
+  .menu-drop,.rb-drop-menu{max-width:calc(100vw - 16px)}
+  .pdf-pages{gap:16px;padding:16px 12px}
+}
+@media (max-width: 560px) {
+  /* touch-friendly targets */
+  .rb{min-width:36px;width:36px;height:36px}
+  .rb-sep{margin:0 3px}
+  .rb-sel{height:34px}
+  .sel-pop button{min-width:32px;height:30px;font-size:14px}
+  .pdf-vmnav{position:sticky;bottom:8px}
+  .pdf-loupe{display:none} /* pinch-zoom covers magnification on touch devices */
+  .pdf-ruler{display:none} /* rulers are desktop-oriented; keep pages clean */
+  .editor .topbar .btn-ghost{padding:4px 7px}
+  .presence-label{display:none}
+}
