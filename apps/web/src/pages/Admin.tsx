@@ -72,6 +72,7 @@ export function Admin() {
   const { user } = useAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [inviteEmail, setInviteEmail] = useState("");
   const [billing, setBilling] = useState<{ subscription: BillingSub; payments: Payment[] } | null>(null);
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
@@ -147,12 +148,18 @@ export function Admin() {
     }
   };
 
-  const createInvite = async () => {
+  const createInvite = async (email?: string) => {
     try {
-      const r = await api.post<{ id: string; token: string }>("/api/admin/invites", {});
-      const url = `${location.origin}/register?invite=${r.token}`;
-      try { await navigator.clipboard.writeText(url); } catch { /* clipboard blocked */ }
-      toast("Invite link created — copied to clipboard");
+      const r = await api.post<{ id: string; token: string; emailed?: boolean }>(
+        "/api/admin/invites", email ? { email } : {});
+      if (r.emailed) {
+        toast(`Invite emailed to ${email}`);
+      } else {
+        const url = `${location.origin}/register?invite=${r.token}`;
+        try { await navigator.clipboard.writeText(url); } catch { /* clipboard blocked */ }
+        toast("Invite link created — copied to clipboard");
+      }
+      setInviteEmail("");
       void load();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Invite failed");
@@ -379,6 +386,11 @@ export function Admin() {
         <h2>Members</h2>
         <div className="audit-bar" style={{ marginBottom: 10 }}>
           <button className="btn-secondary" onClick={() => void createInvite()}>+ Invite link</button>
+          <input style={{ width: 220 }} placeholder="invite by email…"
+            value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && inviteEmail.trim()) void createInvite(inviteEmail.trim()); }} />
+          <button className="btn-secondary" disabled={!inviteEmail.trim()}
+            onClick={() => void createInvite(inviteEmail.trim())}>Email invite</button>
           {invites.map((i) => (
             <span key={i.id} className="role-badge" title={`${i.uses}/${i.max_uses} uses`}>
               {location.origin}/register?invite={i.token.slice(0, 8)}…

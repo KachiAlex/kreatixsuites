@@ -275,6 +275,9 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
+  // email-notice bookkeeping — prevents the daily sweep from re-sending
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);
   // seed the default billing config row (idempotent)
   await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
 }

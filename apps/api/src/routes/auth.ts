@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { one, run, now } from "../db.js";
 import { hashPassword, verifyPassword, signToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
+import { sendMailSafe, tpl } from "../email.js";
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -31,28 +32,29 @@ export function authRoutes(app: FastifyInstance) {
     // invite → join an existing workspace as a member; no invite → new workspace + owner
     let orgId: string;
     let role = "owner";
+    let orgName = body.orgName ?? `${body.displayName}'s workspace`;
     if (body.invite) {
-      const inv = await one<{ id: string; org_id: string }>(
-        `SELECT id, org_id FROM org_invites
-         WHERE token = $1 AND (expires_at IS NULL OR expires_at > $2) AND uses < max_uses`,
+      const inv = await one<{ id: string; org_id: string; name: string }>(
+        `SELECT i.id, i.org_id, o.name FROM org_invites i JOIN orgs o ON o.id = i.org_id
+         WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
         [body.invite, now()]);
       if (!inv) return reply.code(400).send({ error: "bad_invite", message: "Invite link is expired or invalid" });
       await run("UPDATE org_invites SET uses = uses + 1 WHERE id = $1", [inv.id]);
       orgId = inv.org_id;
+      orgName = inv.name;
       role = "member";
     } else {
       orgId = randomUUID();
-      await run("INSERT INTO orgs (id, name, created_at) VALUES ($1,$2,$3)", [
-        orgId,
-        body.orgName ?? `${body.displayName}'s workspace`,
-        now(),
-      ]);
+      await run("INSERT INTO orgs (id, name, created_at) VALUES ($1,$2,$3)", [orgId, orgName, now()]);
     }
     const userId = randomUUID();
     await run(
       "INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
       [userId, orgId, body.email, hashPassword(body.password), body.displayName, initials(body.displayName), role, now()],
     );
+
+    const t = body.invite ? tpl.joinedWorkspace(body.displayName, orgName) : tpl.welcome(body.displayName, orgName);
+    sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...t });
 
     const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
     return { token: await signToken(userId), user };

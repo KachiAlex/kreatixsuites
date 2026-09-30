@@ -8,6 +8,7 @@ import {
   getConfig, setConfig, ensureSubscription, confirmPayment, seatCount,
   monthlyAmount, effectiveState,
 } from "../billing.js";
+import { mailEnabled, sendMail, tpl } from "../email.js";
 
 async function requireSuper(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
@@ -97,6 +98,14 @@ export function superadminRoutes(app: FastifyInstance) {
     const id = (req.params as { id: string }).id;
     await run("UPDATE payments SET status = 'rejected', confirmed_by = $2 WHERE id = $1 AND status = 'pending'", [id, (req as AuthedRequest).user.id]);
     return { ok: true };
+  });
+
+  /** Send a test transactional email — verifies Brevo wiring end-to-end. */
+  app.post("/api/superadmin/test-email", async (req, reply) => {
+    if (!mailEnabled()) return reply.code(503).send({ error: "disabled", message: "KREATIX_BREVO_API_KEY not set" });
+    const { to } = z.object({ to: z.string().email() }).parse(req.body);
+    const r = await sendMail({ to, ...tpl.welcome("there", "Test Workspace") });
+    return { ok: r.ok, messageId: r.messageId };
   });
 
   /** Per-workspace subscription control — comp time, extend trial, cancel. */

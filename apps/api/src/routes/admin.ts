@@ -10,6 +10,7 @@ import { encryptionEnabled, decryptField } from "../crypto.js";
 import { metrics } from "../metrics.js";
 import { activeCollabRooms, collabPeers } from "../collab.js";
 import { ssoEnabled } from "./sso.js";
+import { sendMailSafe, tpl } from "../email.js";
 
 const policiesSchema = z.object({
   blockPublicLinksForConfidential: z.boolean().optional(),
@@ -97,6 +98,7 @@ export function adminRoutes(app: FastifyInstance) {
     const body = z.object({
       maxUses: z.number().int().min(1).max(500).default(25),
       expiresDays: z.number().int().min(1).max(90).default(14),
+      email: z.string().email().optional(),      // also mail the link to this address
     }).parse(req.body ?? {});
     const id = randomUUID();
     const token = randomBytes(18).toString("base64url");
@@ -105,7 +107,14 @@ export function adminRoutes(app: FastifyInstance) {
       "INSERT INTO org_invites (id, org_id, token, created_by, max_uses, expires_at, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [id, user.orgId, token, user.id, body.maxUses, expires, now()],
     );
-    return { id, token, expiresAt: expires };
+    if (body.email) {
+      const org = await one<{ name: string }>("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
+      sendMailSafe(app.log, {
+        to: body.email,
+        ...tpl.invite(org?.name ?? "a workspace", user.displayName, token),
+      });
+    }
+    return { id, token, expiresAt: expires, emailed: !!body.email };
   });
 
   app.delete("/api/admin/invites/:id", async (req) => {

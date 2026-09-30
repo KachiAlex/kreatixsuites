@@ -18,7 +18,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
 import { billingRoutes } from "./routes/billing.js";
 import { superadminRoutes } from "./routes/superadmin.js";
-import { ensureSubscription, effectiveState, ensureSuperAdmin } from "./billing.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices } from "./billing.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
@@ -146,11 +146,14 @@ async function main() {
     "security posture",
   );
 
-  // trash-retention sweep: at boot, then daily
+  // trash-retention sweep + billing notices (trial-ending / locked emails): daily
   const sweep = () => {
     sweepRetention()
       .then((purged) => { if (purged) app.log.info({ purged }, "retention sweep purged trashed items"); })
       .catch((e) => app.log.warn(e, "retention sweep failed"));
+    billingNotices(app.log)
+      .then((n) => { if (n.warned || n.locked) app.log.info(n, "billing notices sent"); })
+      .catch((e) => app.log.warn(e, "billing notice sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

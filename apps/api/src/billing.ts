@@ -3,8 +3,9 @@
 // States: trialing → active → past_due → locked (writes blocked, reads open).
 // A superadmin `override_until` comp/extension wins over every other state.
 import { randomUUID } from "node:crypto";
-import { one, run, now } from "./db.js";
+import { one, run, now, q } from "./db.js";
 import { hashPassword } from "./auth.js";
+import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
 
 export interface BillingConfig {
   id: string;
@@ -147,10 +148,57 @@ export async function confirmPayment(paymentId: string, confirmedBy: string | nu
     [p.id, confirmedBy, start, end]);
   await run(
     `UPDATE subscriptions SET status = 'active', period_start = $2, period_end = $3,
-       amount_ngn = $4, seats = $5, updated_at = $6 WHERE org_id = $1`,
+       amount_ngn = $4, seats = $5, locked_notified_at = NULL, updated_at = $6 WHERE org_id = $1`,
     [p.org_id, start, end, p.amount_ngn, p.seats, now()],
   );
+
+  // receipt to the workspace admins — fire-and-forget
+  if (mailEnabled()) {
+    const org = await one<{ name: string }>("SELECT name FROM orgs WHERE id = $1", [p.org_id]);
+    const t = tpl.paymentReceipt(org?.name ?? "your workspace", p.amount_ngn, p.seats, p.months, end);
+    for (const r of await orgAdminRecipients(p.org_id)) {
+      sendMail({ to: r.email, toName: r.name, ...t }).catch(() => {});
+    }
+  }
   return ensureSubscription(p.org_id);
+}
+
+/**
+ * Daily notice sweep — emails workspace admins when (a) the trial has ≤7 days
+ * left (once), or (b) the workspace just locked (once per lock). Flags live on
+ * the subscription row; `confirmPayment` clears locked_notified_at so a later
+ * lock notifies again.
+ */
+export async function billingNotices(log?: { warn: (o: unknown, m: string) => void }): Promise<{ warned: number; locked: number }> {
+  const out = { warned: 0, locked: 0 };
+  if (!mailEnabled()) return out;
+  const cfg = await getConfig();
+  const subs = await q<Subscription & { trial_warned_at: string | null; locked_notified_at: string | null; name: string }>(
+    `SELECT s.*, o.name FROM subscriptions s JOIN orgs o ON o.id = s.org_id`);
+  for (const sub of subs) {
+    const { state, until } = effectiveState(sub);
+    const amount = monthlyAmount(cfg, sub.seats || 1);
+    const t =
+      state === "trialing" && until && !sub.trial_warned_at &&
+        new Date(until).getTime() - Date.now() < 7 * DAY
+        ? tpl.trialEnding(sub.name, Math.ceil((new Date(until).getTime() - Date.now()) / DAY), amount)
+      : state === "locked" && !sub.locked_notified_at
+        ? tpl.workspaceLocked(sub.name, amount)
+      : null;
+    if (!t) continue;
+    try {
+      for (const r of await orgAdminRecipients(sub.org_id)) {
+        await sendMail({ to: r.email, toName: r.name, ...t });
+      }
+      await run(
+        `UPDATE subscriptions SET ${state === "locked" ? "locked_notified_at" : "trial_warned_at"} = $2 WHERE org_id = $1`,
+        [sub.org_id, now()]);
+      if (state === "locked") out.locked++; else out.warned++;
+    } catch (e) {
+      log?.warn({ err: String(e), org: sub.org_id }, "billing notice email failed");
+    }
+  }
+  return out;
 }
 
 /** Create a pending payment row for the org's next period. */
