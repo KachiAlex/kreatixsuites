@@ -910,6 +910,11 @@ textarea.inp{padding:8px 10px;height:auto}
 .rb-colors{display:flex;gap:4px;align-items:center;padding:0 4px}
 .rb-colors .sw{width:16px;height:16px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
 .rb-colors .sw.on{border-color:#171717}
+.sw-custom{width:18px;height:18px;padding:0;border:1px solid var(--line);border-radius:50%;background:none;cursor:pointer;overflow:hidden}
+.sw-custom::-webkit-color-swatch-wrapper{padding:0}
+.sw-custom::-webkit-color-swatch{border:none;border-radius:50%}
+.rb-size{display:flex;align-items:center;gap:2px;padding:0 4px}
+.rb-size .rb-sz{font-size:10px;min-width:24px;text-align:center;color:var(--muted)}
 .rb.on{background:#FFE4D3;color:#D84B57}
 .print-pdf-page{position:relative;margin:0 auto 14px;background:#fff}
 @media print{

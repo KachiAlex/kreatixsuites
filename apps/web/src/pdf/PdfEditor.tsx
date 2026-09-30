@@ -23,6 +23,7 @@ import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
 import { SUBTYPE, PDFJS_TYPE, annotRectOf, pdfjsIdsOf } from "./embed";
 import { verifySignatures, type SigReport } from "./sigs";
+import type { CertSource } from "./sign";
 const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
@@ -34,7 +35,7 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe" | "snapshot";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe" | "snapshot" | "cryptosign";
 // tools that stay enabled for read-only viewers
 const VIEW_TOOLS = new Set<Tool>(["select", "pan", "zoombox", "loupe", "snapshot"]);
 const SIG_KEY = "kx.signature";
@@ -66,6 +67,7 @@ const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: strin
     { id: "check", ico: "✔", label: "Check mark — click to tick a checkbox" },
     { id: "cross", ico: "✖", label: "Cross mark — click to place ✖" },
     { id: "sign", ico: "✍", label: "Signature — draw or type, then click to place" },
+    { id: "cryptosign", ico: "🖋", label: "Digital signature — cryptographically sign with a certificate" },
     { id: "note", ico: "💬", label: "Sticky note" },
     { id: "stamp", ico: "✅", label: "Stamp (APPROVED / DRAFT / …)" },
   ]},
@@ -219,11 +221,21 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [showGrid, setShowGrid] = useState(false);
   // digital-signature integrity report (filled after load)
   const [sigs, setSigs] = useState<SigReport[] | null>(null);
+  // check/cross mark size + custom color; digital-signature identity dialog
+  const [markSize, setMarkSize] = useState(18);
+  const [digSignDlg, setDigSignDlg] = useState(false);
+  const [digId, setDigId] = useState<{ name: string; reason: string; location: string; cert: CertSource } | null>(null);
+  const [digMode, setDigMode] = useState<"self" | "p12">("self");
+  const [digName, setDigName] = useState(""); const [digEmail, setDigEmail] = useState(""); const [digOrg, setDigOrg] = useState("");
+  const [digReason, setDigReason] = useState(""); const [digLoc, setDigLoc] = useState("");
+  const [digPw, setDigPw] = useState(""); const [digP12, setDigP12] = useState<Uint8Array | null>(null);
+  const digP12Ref = useRef<HTMLInputElement>(null);
   const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
   // shared tool picker — ribbon dropdowns and the menubar route through here
   const pickTool = (t: Tool) => {
     setTool(t);
     if (t === "sign" && !sigImg) setSigPadOpen(true);
+    if (t === "cryptosign" && !digId) setDigSignDlg(true);
   };
   const cmpRef = useRef<HTMLInputElement>(null);
   const openFileRef = useRef<HTMLInputElement>(null);
@@ -423,6 +435,36 @@ export function PdfEditor({ item, initialDoc, permission }: {
       setSaveState("error");
       toast("Could not write into the PDF — saved annotation layer only");
       void flushSave();
+    }
+  };
+
+  /** Cryptographic signing — embeds current work, writes a real /Sig field at the
+   *  click point, and produces a detached-PKCS#7 signed file. Terminal-ish:
+   *  saving again rewrites the bytes and invalidates the signature. */
+  const cryptoSignAt = async (page: number, x: number, y: number) => {
+    if (!digId || !pdfDataRef.current || !doc) return;
+    setSaveState("saving");
+    try {
+      const { embedIntoPdf } = await import("./embed");
+      const rasters = await rasterizeRedacted();
+      const { bytes, doc: next } = await embedIntoPdf(pdfDataRef.current.slice(0), annDoc, formValues(), doc, rasters);
+      const { signPdf } = await import("./sign");
+      const w = 220, h = 48;
+      const signed = await signPdf(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
+        page: page - 1, rect: [x - w / 2, y - h / 2, w, h],
+        name: digId.name, reason: digId.reason, location: digId.location, cert: digId.cert,
+      });
+      const buf = signed.buffer.slice(signed.byteOffset, signed.byteOffset + signed.byteLength) as ArrayBuffer;
+      setAnnDoc(next);
+      await persistBytes(buf, "Digitally signed");
+      await reloadPdf(buf);
+      setSaveState("saved");
+      setTool("select");
+      toast("Digitally signed — another save rewrites the file and invalidates the signature; Download keeps a signed copy");
+    } catch (e) {
+      console.error(e);
+      setSaveState("error");
+      toast("Signing failed — check the certificate file and password");
     }
   };
 
@@ -1705,6 +1747,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Place signature", icon: "✍", checked: tool === "sign", onClick: () => pickTool("sign"), disabled: !canEdit },
           { label: "Create / edit signature…", onClick: () => setSigPadOpen(true), disabled: !canEdit },
+          { divider: true },
+          { label: "Digital signature — sign with certificate…", icon: "🖋", checked: tool === "cryptosign",
+            onClick: () => (digId ? pickTool("cryptosign") : setDigSignDlg(true)), disabled: !canEdit },
+          { label: "Digital ID settings…", onClick: () => setDigSignDlg(true), disabled: !canEdit },
         ]},
         { label: "Forms", items: [
           { label: "Place a field", icon: "▣", checked: tool === "field", onClick: () => pickTool("field"), disabled: !canEdit },
@@ -1809,6 +1855,15 @@ export function PdfEditor({ item, initialDoc, permission }: {
             {MARKUP_COLORS.map((c) => (
               <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
             ))}
+            <input type="color" className="sw-custom" title="Custom color" value={toolColor}
+              onChange={(e) => setToolColor(e.target.value)} />
+          </div>
+        )}
+        {(tool === "check" || tool === "cross") && (
+          <div className="rb-size" title="Mark size (points)">
+            <button className="rb" onClick={() => setMarkSize((s) => Math.max(8, s - 4))}>−</button>
+            <span className="rb-sz">{markSize}</span>
+            <button className="rb" onClick={() => setMarkSize((s) => Math.min(96, s + 4))}>+</button>
           </div>
         )}
         <div className="rb-sep" />
@@ -2198,6 +2253,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 selAnn={selAnn} setSelAnn={setSelAnn}
                 tool={canEdit || VIEW_TOOLS.has(tool) ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
                 showAnns={showAnns} showGrid={showGrid} showRulers={showRulers}
+                markSize={markSize} onDigSign={(x, y) => void cryptoSignAt(p, x, y)}
                 onSnapshot={(ok) => toast(ok ? "Snapshot copied to clipboard" : "Clipboard blocked — snapshot downloaded instead")}
                 tbFont={tbFont} tbSize={tbSize} ocrWords={annDoc.ocr?.[String(p)]}
                 canEdit={canEdit} viewRot={viewRot} dark={dark}
@@ -2291,6 +2347,64 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 <button type="submit" className="btn-primary" style={{ height: 34, padding: "0 18px" }}>Open</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {digSignDlg && (
+        <div className="dlg-back" onClick={() => setDigSignDlg(false)}>
+          <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h3>Digital signature</h3>
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 12px" }}>
+              Cryptographically sign this document (CMS/PKCS#7). Choose a digital ID — import a .p12/.pfx
+              certificate, or generate a self-signed ID.
+            </p>
+            <div style={{ display: "flex", gap: 14, marginBottom: 12, fontSize: 12 }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="radio" checked={digMode === "self"} onChange={() => setDigMode("self")} /> Generate self-signed ID
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="radio" checked={digMode === "p12"} onChange={() => setDigMode("p12")} /> Import .p12 / .pfx
+              </label>
+            </div>
+            {digMode === "p12" ? (<>
+              <input type="file" ref={digP12Ref} accept=".p12,.pfx" style={{ fontSize: 12, marginBottom: 8 }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void f.arrayBuffer().then((b) => setDigP12(new Uint8Array(b)));
+                }} />
+              <input type="password" value={digPw} placeholder="Certificate password" autoComplete="off"
+                onChange={(e) => setDigPw(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+              <input value={digName} placeholder="Signer name shown on the signature" onChange={(e) => setDigName(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+            </>) : (<>
+              <input value={digName} placeholder="Your name (required)" onChange={(e) => setDigName(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+              <input value={digEmail} placeholder="Email (optional)" onChange={(e) => setDigEmail(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+              <input value={digOrg} placeholder="Organization (optional)" onChange={(e) => setDigOrg(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+            </>)}
+            <input value={digReason} placeholder="Reason (optional, e.g. Approved)" onChange={(e) => setDigReason(e.target.value)}
+              style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+            <input value={digLoc} placeholder="Location (optional)" onChange={(e) => setDigLoc(e.target.value)}
+              style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 12, boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn-ghost" onClick={() => setDigSignDlg(false)}>Cancel</button>
+              <button className="btn-primary" onClick={() => {
+                if (digMode === "p12") {
+                  if (!digP12) { toast("Choose a .p12/.pfx certificate file"); return; }
+                  setDigId({ name: digName.trim() || "Signer", reason: digReason.trim(), location: digLoc.trim(), cert: { kind: "p12", data: digP12, password: digPw } });
+                } else {
+                  if (!digName.trim()) { toast("Enter your name for the self-signed ID"); return; }
+                  setDigId({ name: digName.trim(), reason: digReason.trim(), location: digLoc.trim(),
+                    cert: { kind: "self", name: digName.trim(), email: digEmail.trim() || undefined, org: digOrg.trim() || undefined } });
+                }
+                setDigSignDlg(false);
+                setTool("cryptosign");
+                toast("Digital ID ready — click on the page to place the signature");
+              }}>Continue</button>
+            </div>
           </div>
         </div>
       )}
@@ -2628,7 +2742,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, showGrid = false, showRulers = false, onSnapshot }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, showGrid = false, showRulers = false, onSnapshot, markSize = 18, onDigSign }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -2650,6 +2764,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   showAnns?: boolean;
   showGrid?: boolean;
   showRulers?: boolean;
+  markSize?: number;
+  onDigSign?: (x: number, y: number) => void;
   onSnapshot?: (ok: boolean) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
@@ -2870,7 +2986,13 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     }
     if (tool === "check" || tool === "cross") {
       const [px, py] = toPdf(e.clientX, e.clientY);
-      onAdd({ type: tool, rects: [[px - 9, py - 8, 18, 16]], color: toolColor === "#FFD23F" ? "#1F9D66" : toolColor });
+      const s = markSize;
+      onAdd({ type: tool, rects: [[px - s / 2, py - s * 0.44, s, s * 0.88]], color: toolColor === "#FFD23F" ? "#1F9D66" : toolColor });
+      return;
+    }
+    if (tool === "cryptosign") {
+      const [px, py] = toPdf(e.clientX, e.clientY);
+      onDigSign?.(px, py);
       return;
     }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };

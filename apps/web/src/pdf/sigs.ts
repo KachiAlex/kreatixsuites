@@ -165,7 +165,9 @@ export async function verifySignatures(pdf: ArrayBuffer): Promise<SigReport[]> {
       // ContentInfo → signedData → SignedData
       const ci = tlv(cms, 0);
       const ciKids = [...kids(cms, ci)];
-      if (!ciKids[0] || oidStr(cms, ciKids[0]) !== "1.2.840.113549.1.2.1") { reports.push(rep); continue; }
+      // ContentInfo must be signedData (1.7.2); also accept authenticatedData (1.9.16.1.23)
+      const ciOid = ciKids[0] ? oidStr(cms, ciKids[0]) : "";
+      if (ciOid !== "1.2.840.113549.1.7.2" && ciOid !== "1.2.840.113549.1.9.16.1.23") { reports.push(rep); continue; }
       const sd = tlv(cms, ciKids[1].val); // [0] → SignedData SEQ
       const sdKids = [...kids(cms, sd)];
       // version INTEGER, digestAlgs SET, contentInfo SEQ, [0] certs?, [1] crls?, signerInfos SET
@@ -211,14 +213,21 @@ export async function verifySignatures(pdf: ArrayBuffer): Promise<SigReport[]> {
 
       // integrity: byte-range hash vs messageDigest signed attribute
       const hashName = rep.digestAlgo;
-      if (msgDigest && hashName !== "MD5" && hashName in HASH) {
+      if (msgDigest && ["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(hashName)) {
         const h = new Uint8Array(await crypto.subtle.digest(hashName, signed));
         rep.digestOk = eq(h, msgDigest);
       }
 
       // cryptographic signature verify (RSA/ECDSA via WebCrypto)
       const sigAlgOid = sigAlgT ? oidStr(cms, tlv(cms, sigAlgT.val)) : "";
-      const alg = SIGALG[sigAlgOid];
+      // some producers write the bare key type (rsaEncryption/ecPublicKey) —
+      // fall back to the signerInfo's digestAlgorithm for the hash
+      let alg = SIGALG[sigAlgOid];
+      const bareKeyHash = ["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(rep.digestAlgo) ? rep.digestAlgo : null;
+      if (!alg && bareKeyHash) {
+        if (sigAlgOid === "1.2.840.113549.1.1.1") alg = { kind: "rsa", hash: bareKeyHash };
+        else if (sigAlgOid === "1.2.840.10045.2.1") alg = { kind: "ec", hash: bareKeyHash };
+      }
       const sigBytes = sigT ? bytes(cms, sigT) : null;
       if (alg && signer && sigBytes && tbs) {
         try {
