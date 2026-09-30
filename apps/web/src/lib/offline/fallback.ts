@@ -57,9 +57,9 @@ export async function offlineFallback<T>(path: string, init: RequestInit, cause:
   // ---------- writes → mirror + queue ----------
   if (method === "PUT" && path.match(/^\/api\/files\/[^/]+\/content/)) {
     const id = fileIdOf(path, /^\/api\/files\/([^/]+)\/content/)!;
-    const body = init.body as string;
-    await store.blobs.put({ fileId: id, data: body.startsWith("{") ? body : JSON.stringify(JSON.parse(body).content), binary: false, updatedAt: Date.now() });
-    await enqueue({ method, path, body: JSON.parse(body), fileId: id });
+    const body = JSON.parse(init.body as string) as { content: unknown };
+    await store.blobs.put({ fileId: id, data: JSON.stringify(body.content), binary: false, updatedAt: Date.now() });
+    await enqueue({ method, path, body, fileId: id });
     return {} as T;
   }
   if (method === "PUT" && path.match(/^\/api\/files\/[^/]+\/pdf-bytes/)) {

@@ -49,9 +49,11 @@ async function sha256hex(s: string): Promise<string> {
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-export function SheetsEditor({ item, initialDoc, permission }: {
+export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
   item: DriveItem;
   initialDoc: unknown;
+  /** Native binary upload (xlsx/ods) — auto-imported on mount. */
+  sourceFile?: File | null;
   permission: string;
 }) {
   const navigate = useNavigate();
@@ -1300,13 +1302,22 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const onXlsxImport = async (f: File) => {
     try {
       const imported = await xlsxToWorkbook(f);
-      mutate((w) => { w.sheets = imported.sheets; });
+      mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); });
       setActive(0);
       toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}`);
     } catch {
       toast("Could not read that workbook");
     }
   };
+  // Native-binary item opened from Drive/desktop — run the import once so the
+  // docx/xlsx a user double-clicks opens as a real workbook, not a blank grid.
+  const autoImported = useRef(false);
+  useEffect(() => {
+    if (!sourceFile || autoImported.current) return;
+    autoImported.current = true;
+    void onXlsxImport(sourceFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceFile]);
   // S17.3 — external workbook links: a file becomes a cached snapshot under
   // wb.externs so formulas like [Book.xlsx]Sheet!A1 resolve locally
   const linkRef = useRef<HTMLInputElement>(null);

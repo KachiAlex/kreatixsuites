@@ -86,9 +86,11 @@ import "katex/dist/katex.min.css";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Panel = "none" | "comments" | "versions" | "ai" | "outline" | "suggest";
 
-export function WriterEditor({ item, initialDoc, permission }: {
+export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
   item: DriveItem;
   initialDoc: unknown;
+  /** Native binary upload (docx/odt) — auto-imported once the editor is live. */
+  sourceFile?: File | null;
   permission: string;
 }) {
   const navigate = useNavigate();
@@ -1080,6 +1082,17 @@ export function WriterEditor({ item, initialDoc, permission }: {
       toast("Could not import that file");
     }
   };
+
+  // Native-binary item opened from Drive/desktop — run the import once so a
+  // double-clicked .docx opens as a real document, not a blank page.
+  const autoImported = useRef(false);
+  useEffect(() => {
+    if (!editor || !sourceFile || autoImported.current) return;
+    autoImported.current = true;
+    const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
+    void (["txt", "md", "html", "htm"].includes(ext) ? onTextImport(sourceFile) : onImport(sourceFile));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, sourceFile]);
 
   const onImage = (f: File) => void uploadImage(f);
 

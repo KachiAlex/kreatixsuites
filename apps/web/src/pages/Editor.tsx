@@ -23,6 +23,7 @@ export function Editor() {
   const navigate = useNavigate();
   const [item, setItem] = useState<DriveItem | null>(null);
   const [content, setContent] = useState<unknown>(null);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [ready, setReady] = useState(false);
@@ -34,10 +35,17 @@ export function Editor() {
         setItem(meta.item);
         if (meta.item.kind === "folder") { setReady(true); return; }
         const [c, d] = await Promise.all([
-          api.get<{ content: unknown }>(`/api/files/${id}/content`).catch(() => null),
+          api.get<{ content: unknown } | Blob>(`/api/files/${id}/content`).catch(() => null),
           getDraft(id!),
         ]);
-        setContent(c?.content ?? null);
+        // Native binary upload (docx/xlsx/pptx — mime isn't x-kreatix-*):
+        // hand the bytes to the editor as a File; it runs its normal import
+        // path on mount and the first save flips the item to canonical JSON.
+        if (c instanceof Blob) {
+          setSourceFile(new File([c], meta.item.name, { type: meta.item.mimeType }));
+        } else {
+          setContent(c?.content ?? null);
+        }
         // A staged draft newer than the last server save = unsaved work
         // (crash or offline close). Offer to restore it.
         if (d && d.savedAt > Date.parse(meta.item.updatedAt)) setDraft(d);
@@ -91,13 +99,13 @@ export function Editor() {
 
   const inner = (() => {
     if (item.kind === "writer") {
-      return <WriterEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+      return <WriterEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
     }
     if (item.kind === "sheets") {
-      return <SheetsEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+      return <SheetsEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
     }
     if (item.kind === "present") {
-      return <PresentEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+      return <PresentEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
     }
     if (item.kind === "pdf") {
       return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;

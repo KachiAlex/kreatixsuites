@@ -59,7 +59,28 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const ct = res.headers.get("content-type") ?? "";
   const data = (ct.includes("json") ? res.json() : res.blob()) as Promise<T>;
   if (init.method === undefined || init.method === "GET") void warmMirror(path, data);
+  else if (API_BASE) void mirrorWrite(path, init);
   return data;
+}
+
+/** Successful writes update the offline mirror too, so a later offline open
+ *  sees the canonical doc — not the stale binary it was imported from. */
+async function mirrorWrite(path: string, init: RequestInit): Promise<void> {
+  try {
+    const { cacheBlob } = await import("./offline/sync");
+    const { store } = await import("./offline/store");
+    const content = /^\/api\/files\/([^/]+)\/content/.exec(path);
+    if (init.method === "PUT" && content && typeof init.body === "string")
+      await cacheBlob(content[1], JSON.stringify(JSON.parse(init.body).content), false);
+    const pdfBytes = /^\/api\/files\/([^/]+)\/pdf-bytes/.exec(path);
+    if (init.method === "PUT" && pdfBytes && init.body instanceof Blob)
+      await cacheBlob(pdfBytes[1], b64encode(await init.body.arrayBuffer()), true, "application/pdf");
+    const driveItem = /^\/api\/drive\/([^/]+)/.exec(path);
+    if (init.method === "DELETE" && driveItem) {
+      const f = await store.files.get(driveItem[1]);
+      if (f) await store.files.put({ ...f, trashed: true });
+    }
+  } catch { /* mirror is best-effort */ }
 }
 
 /** Keep the desktop offline mirror warm from successful GETs. */

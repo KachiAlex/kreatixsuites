@@ -175,6 +175,12 @@ export function contentRoutes(app: FastifyInstance) {
       [randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now()],
     );
     await run("UPDATE items SET size = $1 WHERE id = $2", [size, item.id]);
+    // An uploaded native file (docx/xlsx/pptx) keeps its office mime until the
+    // first canonical-JSON save — then it becomes a kreatix doc so opens stop
+    // re-importing the original binary (which would clobber edits).
+    if (["writer", "sheets", "present"].includes(item.kind) && !item.mime.startsWith("application/x-kreatix-")) {
+      await run("UPDATE items SET mime = $2 WHERE id = $1", [item.id, `application/x-kreatix-${item.kind}`]);
+    }
     void indexFile(item.id, item.kind, body.content).catch(() => { /* best-effort */ });
     void touchItem(item.id);
     return { version: next };

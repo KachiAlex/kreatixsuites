@@ -23,9 +23,11 @@ import { importPptx, importOdp } from "./import";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
-export function PresentEditor({ item, initialDoc, permission }: {
+export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
   item: DriveItem;
   initialDoc: unknown;
+  /** Native binary upload (pptx/odp) — auto-imported on mount. */
+  sourceFile?: File | null;
   permission: string;
 }) {
   const navigate = useNavigate();
@@ -459,6 +461,15 @@ export function PresentEditor({ item, initialDoc, permission }: {
       toast(`Could not read ${f.name}`);
     }
   };
+  // Native-binary item opened from Drive/desktop — import once so a
+  // double-clicked .pptx opens as slides, not a blank deck.
+  const autoImported = useRef(false);
+  useEffect(() => {
+    if (!sourceFile || autoImported.current) return;
+    autoImported.current = true;
+    void onImportPptx(sourceFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceFile]);
 
   const setTransition = (type: TransitionType, dir?: string) => {
     mutateSlide((s) => {
