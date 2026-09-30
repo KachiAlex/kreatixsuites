@@ -3,6 +3,7 @@
 // the local copy is preserved as "name (conflict copy)".
 import { api, getToken } from "../api";
 import { API_BASE, isDesktop } from "../platform";
+import { isAnonymous } from "./trial";
 import { refreshEntitlement } from "./license";
 import { b64, store, type CachedFile, type OutboxOp } from "./store";
 
@@ -73,14 +74,17 @@ const runOp = async (op: OutboxOp): Promise<void> => {
 
 /** Push queued ops then refresh the mirror. Safe to call repeatedly. */
 export async function syncNow(): Promise<void> {
-  if (!isDesktop || running) return;
+  if (running) return;
   running = true;
   try {
-    // ---- push ----
-    for (const op of await store.outbox.all()) {
-      await runOp(op); // throws on network failure → abort, retry later
-      if (op.id != null) await store.outbox.del(op.id);
-      await emit();
+    // ---- push (needs a token — anonymous outbox ops wait for sign-in;
+    // draining untokened would eat every op as a 401 and lose the work) ----
+    if (getToken()) {
+      for (const op of await store.outbox.all()) {
+        await runOp(op); // throws on network failure → abort, retry later
+        if (op.id != null) await store.outbox.del(op.id);
+        await emit();
+      }
     }
     // ---- pull ----
     const { items } = await api.get<{ items: CachedFile[] }>("/api/drive?view=recent");
@@ -115,9 +119,11 @@ export async function cacheBlob(fileId: string, data: string, binary: boolean, m
   await store.blobs.put({ fileId, data, binary, mime, updatedAt: Date.now() });
 }
 
-/** Background loop — sync on reconnect, window focus, and every 60s. */
+/** Background loop — sync on reconnect, window focus, and every 60s.
+ *  Runs for the desktop shell and anonymous sessions; signed-in browser
+ *  users call syncNow() once after login to replay any anonymous work. */
 export function startSyncLoop(): () => void {
-  if (!isDesktop) return () => {};
+  if (!isDesktop && !isAnonymous()) return () => {};
   const tick = () => { if (navigator.onLine) void syncNow().catch(() => {}); };
   const onOnline = () => tick();
   window.addEventListener("online", onOnline);

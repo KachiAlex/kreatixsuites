@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { startAnonymousSession } from "../lib/offline/trial";
 import { BrandLockup } from "../components/AppIcon";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
@@ -86,6 +87,10 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         {sso && mode === "login" && (
           <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
         )}
+        <button type="button" className="btn-ghost anon-btn"
+          onClick={() => { void startAnonymousSession().then(() => navigate("/home")); }}>
+          Continue without an account — 14 days free
+        </button>
         <div className="auth-switch">
           {mode === "login"
             ? <>New to Kreatix? <Link to="/register">Create an account</Link></>

@@ -8,6 +8,7 @@ import { CommandPalette, renderSnippet } from "./CommandPalette";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { useToast } from "../pages/Home";
+import { AnonBanner } from "./Desktop";
 
 export function Shell() {
   const [palette, setPalette] = useState(false);
@@ -42,6 +43,7 @@ export function Shell() {
       <Sidebar onTemplates={() => setTemplates(true)} />
       <main>
         <Topbar onPalette={() => setPalette(true)} />
+        <AnonBanner />
         <BillingBanner />
         <Outlet />
       </main>

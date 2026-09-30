@@ -1,4 +1,8 @@
-import { API_BASE } from "./platform";
+import { API_BASE, isDesktop } from "./platform";
+import { isAnonymous } from "./offline/trial";
+
+/** The offline mirror is active for the desktop shell and anonymous sessions. */
+const offlineActive = () => isDesktop || isAnonymous();
 
 const TOKEN_KEY = "kreatix.token";
 
@@ -38,6 +42,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.authorization = `Bearer ${token}`;
   if (init.body && typeof init.body === "string") headers["content-type"] = "application/json";
 
+  // Anonymous sessions never hit the network (auth endpoints excepted — those
+  // are how the anonymous user converts to an account).
+  if (isAnonymous() && !path.startsWith("/api/auth/")) {
+    const { offlineFallback } = await import("./offline/fallback");
+    return offlineFallback<T>(path, init, new Error("anonymous session"));
+  }
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
@@ -59,7 +69,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const ct = res.headers.get("content-type") ?? "";
   const data = (ct.includes("json") ? res.json() : res.blob()) as Promise<T>;
   if (init.method === undefined || init.method === "GET") void warmMirror(path, data);
-  else if (API_BASE) void mirrorWrite(path, init);
+  else if (offlineActive()) void mirrorWrite(path, init);
   return data;
 }
 
@@ -85,7 +95,7 @@ async function mirrorWrite(path: string, init: RequestInit): Promise<void> {
 
 /** Keep the desktop offline mirror warm from successful GETs. */
 async function warmMirror<T>(path: string, data: Promise<T>): Promise<void> {
-  if (!API_BASE) return; // browser — no offline mirror
+  if (!offlineActive()) return;
   const { cacheBlob, cacheFileList } = await import("./offline/sync");
   const { store } = await import("./offline/store");
   const d = await data;

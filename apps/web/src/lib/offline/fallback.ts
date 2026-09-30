@@ -2,6 +2,7 @@
 // GETs serve the local mirror; mutations update the mirror and queue an
 // outbox op for replay. Unknown paths rethrow the original network error.
 import { isDesktop } from "../platform";
+import { isAnonymous } from "./trial";
 import { enqueue } from "./sync";
 import { b64, store, type CachedFile } from "./store";
 
@@ -14,7 +15,7 @@ const localId = () => `local:${crypto.randomUUID()}`;
  * the endpoint's shape, or rethrows when the path isn't mirrorable.
  */
 export async function offlineFallback<T>(path: string, init: RequestInit, cause: unknown): Promise<T> {
-  if (!isDesktop) throw cause;
+  if (!isDesktop && !isAnonymous()) throw cause;
   const method = (init.method ?? "GET").toUpperCase();
 
   // ---------- reads ----------
