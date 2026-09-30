@@ -238,6 +238,34 @@ export async function paystackVerify(reference: string): Promise<{ ok: boolean; 
   return { ok, amountNgn: (json.data?.amount ?? 0) / 100 };
 }
 
+/**
+ * Confirm pending Paystack payments without a webhook — the hosted Paystack
+ * dashboard only allows one webhook URL per business, and another product on
+ * this account owns it. The sweep re-verifies pending references server-side
+ * (authoritative) and confirms anything settled >3min ago, giving up at 48h.
+ */
+export async function sweepPendingPaystack(log?: { warn: (o: unknown, m: string) => void }): Promise<{ confirmed: number }> {
+  if (!process.env.KREATIX_PAYSTACK_SECRET) return { confirmed: 0 };
+  const rows = await q<{ id: string; reference: string; amount_ngn: number; months: number }>(
+    `SELECT id, reference, amount_ngn, months FROM payments
+     WHERE status = 'pending' AND method = 'paystack' AND reference IS NOT NULL
+       AND created_at < $1 AND created_at > $2`,
+    [new Date(Date.now() - 3 * 60_000).toISOString(), new Date(Date.now() - 48 * 3600_000).toISOString()]);
+  let confirmed = 0;
+  for (const p of rows) {
+    try {
+      const v = await paystackVerify(p.reference!);
+      if (v.ok && v.amountNgn >= p.amount_ngn * p.months) {
+        await confirmPayment(p.id, null);
+        confirmed++;
+      }
+    } catch (e) {
+      log?.warn({ err: String(e), ref: p.reference }, "paystack verify failed");
+    }
+  }
+  return { confirmed };
+}
+
 /** Seeded superadmin — credentials come from env, never from source. */
 export async function ensureSuperAdmin(): Promise<void> {
   const email = process.env.KREATIX_SUPERADMIN_EMAIL || "admin@kreatixtech.com";

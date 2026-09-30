@@ -18,7 +18,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
 import { billingRoutes } from "./routes/billing.js";
 import { superadminRoutes } from "./routes/superadmin.js";
-import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify } from "./billing.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack } from "./billing.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
@@ -175,6 +175,15 @@ async function main() {
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();
+
+  // pending-Paystack sweep every 5min — stands in for a shared webhook slot
+  const paySweep = () => {
+    sweepPendingPaystack(app.log)
+      .then((n) => { if (n.confirmed) app.log.info(n, "paystack payments confirmed"); })
+      .catch((e) => app.log.warn(e, "paystack sweep failed"));
+  };
+  setTimeout(paySweep, 30_000).unref();
+  setInterval(paySweep, 5 * 60 * 1000).unref();
 }
 
 main().catch((err) => {
