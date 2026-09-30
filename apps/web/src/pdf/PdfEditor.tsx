@@ -1989,11 +1989,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
                     onKeyDown={(e) => e.key === "Enter" && void runSearch()} />
                   <button className="btn-primary btn-sm" onClick={() => void runSearch()}>Go</button>
                 </div>
-                <label style={{ display: "flex", gap: 6, fontSize: 11, color: "#8B8480", marginTop: 8 }}>
+                <label style={{ display: "flex", gap: 6, fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
                   <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Case sensitive
                   <input type="checkbox" checked={wholeWord} onChange={(e) => setWholeWord(e.target.checked)} style={{ marginLeft: 10 }} /> Whole word
                 </label>
-                <label style={{ display: "flex", gap: 6, fontSize: 11, color: "#8B8480", marginTop: 4 }}>
+                <label style={{ display: "flex", gap: 6, fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
                   Include:
                   <input type="checkbox" checked={searchBm} onChange={(e) => setSearchBm(e.target.checked)} /> bookmarks
                   <input type="checkbox" checked={searchCm} onChange={(e) => setSearchCm(e.target.checked)} /> comments
@@ -2015,7 +2015,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             )}
             {panel === "layers" && (
               <div className="pdf-annlist">
-                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Optional content groups in this document</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", padding: "0 2px" }}>Optional content groups in this document</div>
                 {ocg.map((g) => (
                   <label key={g.id} className="pdf-annrow" style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
                     <input type="checkbox" checked={g.on} onChange={(e) => {
@@ -2030,7 +2030,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             )}
             {panel === "attach" && (
               <div className="pdf-annlist">
-                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Embedded files</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", padding: "0 2px" }}>Embedded files</div>
                 {canEdit && (
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     <button className="btn-ghost btn-sm" onClick={() => attachRef.current?.click()}>Attach file…</button>
@@ -2042,7 +2042,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
                       onChange={(e) => { void attachFiles(e.target.files, true); e.target.value = ""; }} />
                   </div>
                 )}
-                {!attachments.length && <div style={{ fontSize: 11, color: "#8B8480" }}>No embedded files</div>}
+                {!attachments.length && <div style={{ fontSize: 11, color: "var(--muted)" }}>No embedded files</div>}
                 {attachments.map((a) => (
                   <div key={a.name} className="pdf-annrow">
                     <div className="pdf-annrow-top">
@@ -2061,7 +2061,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             )}
             {panel === "access" && (
               <div className="pdf-annlist">
-                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Accessibility report</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", padding: "0 2px" }}>Accessibility report</div>
                 {(accessReport ?? [{ ok: true, label: "Checking…" }]).map((r, i) => (
                   <div key={i} className="pdf-annrow"><div className="pdf-annrow-top">
                     <span className="pdf-annrow-ico" style={{ borderColor: r.ok ? "#4a4" : "#d33" }}>{r.ok ? "✓" : "✗"}</span>
@@ -2073,7 +2073,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             )}
             {panel === "compare" && (
               <div className="pdf-annlist">
-                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Text comparison vs the other PDF</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", padding: "0 2px" }}>Text comparison vs the other PDF</div>
                 {!cmp?.length && <div className="empty">Pick another PDF to compare</div>}
                 {cmp?.map((r) => (
                   <div key={r.page} className="pdf-annrow" onClick={() => scrollToPage(r.page)}>
@@ -2096,7 +2096,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
             )}
             {panel === "sigs" && (
               <div className="pdf-annlist">
-                <div style={{ fontSize: 11, color: "#8B8480", padding: "0 2px" }}>Digital signatures</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", padding: "0 2px" }}>Digital signatures</div>
                 {!sigs?.length && <div className="empty">No digital signatures in this document</div>}
                 {sigs?.map((s, i) => {
                   const ok = s.digestOk === true && s.sigOk !== false;
@@ -2474,7 +2474,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
               </p>
             )}
             <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: "#8B8480", marginBottom: 6 }}>Also export as:</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Also export as:</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="btn-ghost btn-sm" disabled={!doc} onClick={() => {
                   setExportDlg(false);
@@ -2605,7 +2605,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
               <div className="keys-list" style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: 8, marginBottom: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>{redactScan.length} match{redactScan.length === 1 ? "" : "es"} found{redactScan.length >= 500 ? " (showing first 500)" : ""}</div>
                 {[...new Set(redactScan.map((r) => r.text))].slice(0, 12).map((t) => (
-                  <div key={t} style={{ fontSize: 11, color: "#555", padding: "1px 0", fontFamily: "monospace" }}>{t}</div>
+                  <div key={t} style={{ fontSize: 11, color: "var(--ink)", padding: "1px 0", fontFamily: "monospace" }}>{t}</div>
                 ))}
               </div>
             )}
@@ -3194,7 +3194,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       text = lines.join("\n");
     } catch { /* extraction is best-effort */ }
     onAdd({ type: "whiteout", rects: [rect] });
-    const id = onAdd({ type: "textbox", rects: [rect], color: "#171717", text });
+    const id = onAdd({ type: "textbox", rects: [rect], color: "var(--ink)", text });
     setSelAnn(id); setFocusAnn?.(id);
   };
 

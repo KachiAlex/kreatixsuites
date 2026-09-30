@@ -38,7 +38,7 @@ const CELL_STYLES: [string, string, CellStyle][] = [
   ["neutral", "Neutral", { bg: "#FFF3C4", color: "#713F12" }],
   ["warning", "Warning", { bg: "#FCE4D6", color: "#9C3D0F" }],
   ["input", "Input", { bg: "#DCE9FF", color: "#1E3A8A" }],
-  ["heading1", "Heading 1", { b: true, size: 16, borders: { bottom: { w: 2, style: "solid", color: "#26221F" } } }],
+  ["heading1", "Heading 1", { b: true, size: 16, borders: { bottom: { w: 2, style: "solid", color: "var(--ink)" } } }],
   ["accent", "Accent", { bg: "#F2782E", color: "#FFFFFF", b: true }],
 ];
 const fmtStat = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
@@ -106,7 +106,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [audit, setAudit] = useState<"pre" | "dep" | null>(null);
   const [zoom, setZoom] = useState(1);
   const [borderMenu, setBorderMenu] = useState(false);
-  const [borderStyle, setBorderStyle] = useState<{ w: 1 | 2 | 3; style: "solid" | "dashed" | "dotted" | "double"; color: string }>({ w: 1, style: "solid", color: "#26221F" });
+  const [borderStyle, setBorderStyle] = useState<{ w: 1 | 2 | 3; style: "solid" | "dashed" | "dotted" | "double"; color: string }>({ w: 1, style: "solid", color: "var(--ink)" });
   const [painter, setPainter] = useState<{ s: CellStyle } | null>(null);
   const csvRef = useRef<HTMLInputElement>(null);
   const xlsxRef = useRef<HTMLInputElement>(null);
@@ -1418,7 +1418,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       <div className="editor-shell sheets-shell" style={{ alignItems: "center", justifyContent: "center", display: "flex" }}>
         <div className="dlg" style={{ width: 320 }}>
           <h3>🔒 {item.name}</h3>
-          <p style={{ fontSize: 12, color: "#8B8480" }}>This workbook is password protected.</p>
+          <p style={{ fontSize: 12, color: "var(--muted)" }}>This workbook is password protected.</p>
           <input className="inp" type="password" placeholder="Password" autoFocus value={pwTry}
             style={{ width: "100%", marginTop: 8 }}
             onChange={(e) => { setPwTry(e.target.value); setPwErr(false); }}
@@ -1695,7 +1695,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             <span className="rb warn" title={`Uncached external refs: ${missingLinks.join(", ")} — link the file to resolve`}
               style={{ color: "#B3560E" }}>⚠ {missingLinks.length} link{missingLinks.length > 1 ? "s" : ""}</span>
           )}
-          <span style={{ marginLeft: "auto", fontSize: 10, color: "#A19A95" }}>{usedRangeA1(sheet.cells)}</span>
+          <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--muted)" }}>{usedRangeA1(sheet.cells)}</span>
         </div>
       )}
 
@@ -1863,19 +1863,19 @@ export function SheetsEditor({ item, initialDoc, permission }: {
                 <div className="hmenu-item" style={{ color: "#D84B57" }}
                   onMouseDown={() => { delSheet(tabMenu.i); setTabMenu(null); }}>Delete</div>
               )}
-              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "#A19A95" }}>Tab color</div>
+              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "var(--muted)" }}>Tab color</div>
               <div style={{ display: "flex", gap: 6, padding: "0 10px 8px" }}>
                 {["#F2782E", "#3578E5", "#1F9D66", "#D84B57", "#8E6BC8", "#E9B44C"].map((c) => (
                   <button key={c} onMouseDown={() => { mutate((w) => { w.sheets[tabMenu.i].tabColor = c; }); setTabMenu(null); }}
                     style={{ width: 16, height: 16, borderRadius: 4, background: c, border: "none", cursor: "pointer" }} />
                 ))}
                 <button title="No color" onMouseDown={() => { mutate((w) => { w.sheets[tabMenu.i].tabColor = undefined; }); setTabMenu(null); }}
-                  style={{ width: 16, height: 16, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 9 }}>✕</button>
+                  style={{ width: 16, height: 16, border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", fontSize: 9 }}>✕</button>
               </div>
             </>
           ) : (
             <>
-              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "#A19A95" }}>Hidden sheets</div>
+              <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "var(--muted)" }}>Hidden sheets</div>
               {wb.sheets.map((s, i) => s.hidden && (
                 <div key={i} className="hmenu-item"
                   onMouseDown={() => { mutate((w) => { w.sheets[i].hidden = undefined; }); setActive(i); setTabMenu(null); }}>
@@ -2307,7 +2307,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <div className="dlg-back" onClick={() => setChartOpen(false)}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
             <h3>Chart from {rangeToA1(selection)}</h3>
-            <p style={{ fontSize: 12, color: "#8B8480" }}>First column = labels (or X for scatter), other columns = series. Combo = bars + last series as line.</p>
+            <p style={{ fontSize: 12, color: "var(--muted)" }}>First column = labels (or X for scatter), other columns = series. Combo = bars + last series as line.</p>
             <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
               {CHART_TYPES.map(([t, l]) => (
                 <button key={t} className="btn-ghost btn-sm"
@@ -2444,7 +2444,7 @@ function CfManager({ sheet, selection, onAdd, onMove, onDelete, onClear, onClose
         </div>
         {adding && (
           <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-            <p style={{ fontSize: 11, color: "#8B8480", margin: "0 0 8px" }}>New rule on {selection}</p>
+            <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>New rule on {selection}</p>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <select style={sel} value={type} onChange={(e) => setType(e.target.value as CFType)}>
                 {CF_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -2476,17 +2476,17 @@ function CfManager({ sheet, selection, onAdd, onMove, onDelete, onClear, onClose
             </div>
             {(type === "value" || type === "text" || type === "topn" || type === "formula") && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
-                <span style={{ fontSize: 11, color: "#8B8480" }}>Fill</span>{swatch(bg, setBg, CF_COLORS)}
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Fill</span>{swatch(bg, setBg, CF_COLORS)}
               </div>
             )}
             {type === "databar" && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
-                <span style={{ fontSize: 11, color: "#8B8480" }}>Bar</span>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Bar</span>
                 {swatch(bar, setBar, ["#3574E0", "#63BE7B", "#F2782E", "#9334E0"])}
               </div>
             )}
             {type === "colorscale" && (
-              <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 10, fontSize: 11, color: "#8B8480" }}>
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
                 Min {swatch(minColor, setMinColor, ["#F8696B", "#FFF", "#DCE9FF"])}
                 Mid {swatch(midColor || "#FFFFFF", setMidColor, ["#FFDD71", "#FFF3C4"])}
                 Max {swatch(maxColor, setMaxColor, ["#63BE7B", "#171717", "#F2782E"])}
@@ -2523,7 +2523,7 @@ function PasteSpecialDialog({ onPick, onClose }: {
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()}>
         <h3>Paste Special</h3>
-        <p style={{ fontSize: 12, color: "#8B8480", margin: "6px 0 0" }}>Paste</p>
+        <p style={{ fontSize: 12, color: "var(--muted)", margin: "6px 0 0" }}>Paste</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
           {MODES.map(([m, label]) => (
             <label key={m} className={`ps-opt ${mode === m ? "on" : ""}`}>
@@ -2532,7 +2532,7 @@ function PasteSpecialDialog({ onPick, onClose }: {
             </label>
           ))}
         </div>
-        <p style={{ fontSize: 12, color: "#8B8480", margin: "14px 0 0" }}>Operation</p>
+        <p style={{ fontSize: 12, color: "var(--muted)", margin: "14px 0 0" }}>Operation</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
           {OPS.map(([o, label]) => (
             <label key={o} className={`ps-opt ${op === o ? "on" : ""}`}>
@@ -2640,7 +2640,7 @@ function FindDialog({ wb, replace, canEdit, user, onMutate, onJump, toast, onClo
         </div>
         {searched && (
           <div style={{ marginTop: 10, maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
-            {hits.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "#8B8480" }}>No matches</div>}
+            {hits.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "var(--muted)" }}>No matches</div>}
             {hits.map((h, i) => (
               <button key={`${h.sheet}!${h.ref}`} className={`find-row ${i === cursor ? "on" : ""}`}
                 onClick={() => { setCursor(i); onJump(h); }}>
@@ -2690,7 +2690,7 @@ function ValidationDialog({ sheet, selection, onMutate, onClose }: {
             {rules.map((r, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: i < rules.length - 1 ? "1px solid var(--line)" : "none", fontSize: 12 }}>
                 <b>{r.range}</b>
-                <span style={{ color: "#8B8480" }}>
+                <span style={{ color: "var(--muted)" }}>
                   {r.type === "list" ? `list: ${r.list}` : `${r.type} ${r.op ?? ""} ${r.min ?? ""}${r.max ? `–${r.max}` : ""}`}
                   {r.errorStyle === "warn" ? " (warn)" : ""}
                 </span>
@@ -2785,7 +2785,7 @@ function NameManager({ wb, sheetName, selection, onMutate, onClose, toast }: {
         <h3>Name Manager</h3>
         <div style={{ maxHeight: 240, overflowY: "auto", marginTop: 8 }}>
           {Object.entries(names).length === 0 && (
-            <p style={{ fontSize: 12, color: "#8B8480" }}>No named ranges yet. Names work in any formula — e.g. <code>=SUM(Sales)</code>.</p>
+            <p style={{ fontSize: 12, color: "var(--muted)" }}>No named ranges yet. Names work in any formula — e.g. <code>=SUM(Sales)</code>.</p>
           )}
           {Object.entries(names).map(([nm, ref]) => (
             <div key={nm} style={row}>
@@ -2799,7 +2799,7 @@ function NameManager({ wb, sheetName, selection, onMutate, onClose, toast }: {
                 </>
               ) : (
                 <>
-                  <span style={{ flex: 1, fontSize: 12, fontFamily: "monospace", color: "#6E6862" }}>{ref}</span>
+                  <span style={{ flex: 1, fontSize: 12, fontFamily: "monospace", color: "var(--muted)" }}>{ref}</span>
                   <button className="btn-ghost btn-sm" onClick={() => { setEditKey(nm); setEditRef(ref); setErr(null); }}>Edit</button>
                   <button className="btn-ghost btn-sm" onClick={() => onMutate((w) => { const n = { ...w.names }; delete n[nm]; w.names = n; })}>✕</button>
                 </>
@@ -3002,7 +3002,7 @@ function DedupeDialog({ range, onApply, onClose }: {
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()}>
         <h3>Remove duplicates — {rangeToA1(range)}</h3>
-        <p style={{ fontSize: 12, color: "#8B8480" }}>Rows are compared on the checked columns; later duplicates are removed.</p>
+        <p style={{ fontSize: 12, color: "var(--muted)" }}>Rows are compared on the checked columns; later duplicates are removed.</p>
         <div style={{ marginTop: 8 }}>
           {allCols.map((c) => (
             <label key={c} className="frow">
@@ -3031,7 +3031,7 @@ function T2CDialog({ onApply, onClose }: { onApply: (delim: string) => void; onC
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()}>
         <h3>Text to Columns</h3>
-        <p style={{ fontSize: 12, color: "#8B8480" }}>Split each selected cell into columns at the delimiter.</p>
+        <p style={{ fontSize: 12, color: "var(--muted)" }}>Split each selected cell into columns at the delimiter.</p>
         <div style={{ marginTop: 8 }}>
           {opts.map(([v, l]) => (
             <label key={l} className="frow">
@@ -3081,7 +3081,7 @@ function TableDialog({ range, onApply, onClose }: {
             <option value="plain">Plain</option>
           </select>
         </div>
-        <p style={{ fontSize: 12, color: "#8B8480", marginTop: 12 }}>Totals row — pick an aggregation per column (optional):</p>
+        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 12 }}>Totals row — pick an aggregation per column (optional):</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginTop: 6 }}>
           {cols.map((c) => (
             <label key={c} style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12 }}>
@@ -3377,7 +3377,7 @@ function ProtectDialog({ sheet, wb, onSave, onClose }: {
           Lock all cells (editing, formatting, structural changes)
         </label>
         <div style={{ marginTop: 8 }}>
-          <span style={{ fontSize: 12, color: "#8B8480" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>
             Editable ranges — comma-separated; scope to users or roles with <code>|</code>, e.g.{" "}
             <code>B2:D10 | ana@x.com</code>, <code>F2 | role:admin</code>
           </span>
@@ -3390,7 +3390,7 @@ function ProtectDialog({ sheet, wb, onSave, onClose }: {
           <input type="checkbox" checked={track} onChange={(e) => setTrack(e.target.checked)} />
           Track changes on this sheet (records edits for accept/reject review)
         </label>
-        <h4 style={{ margin: "16px 0 6px", fontSize: 12, color: "#8B8480", textTransform: "uppercase", letterSpacing: 0.5 }}>Workbook</h4>
+        <h4 style={{ margin: "16px 0 6px", fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Workbook</h4>
         <label className="frow">
           <input type="checkbox" checked={structure} onChange={(e) => setStructure(e.target.checked)} />
           Protect structure (no sheet add / delete / rename / reorder / hide)
@@ -3434,7 +3434,7 @@ function ViewsDialog({ wb, sheet, onSaveView, onApply, onDelete, onClose }: {
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()}>
         <h3>Custom views</h3>
-        <p style={{ fontSize: 12, color: "#8B8480" }}>Captures hidden rows/cols, freeze, split and zoom for <b>{sheet.name}</b>.</p>
+        <p style={{ fontSize: 12, color: "var(--muted)" }}>Captures hidden rows/cols, freeze, split and zoom for <b>{sheet.name}</b>.</p>
         <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
           <input className="inp" style={{ flex: 1 }} placeholder="View name" value={name} onChange={(e) => setName(e.target.value)} />
           <button className="btn-ghost btn-sm" disabled={!name.trim()} onClick={() => { onSaveView(name.trim()); setName(""); }}>Save current</button>
@@ -3442,7 +3442,7 @@ function ViewsDialog({ wb, sheet, onSaveView, onApply, onDelete, onClose }: {
         <div style={{ marginTop: 10 }}>
           {views.map((v) => (
             <div key={v.name} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F0ECE8" }}>
-              <span style={{ flex: 1, fontSize: 12 }}>{v.name} <span style={{ color: "#A19A95" }}>({v.sheet})</span></span>
+              <span style={{ flex: 1, fontSize: 12 }}>{v.name} <span style={{ color: "var(--muted)" }}>({v.sheet})</span></span>
               <button className="btn-ghost btn-sm" onClick={() => onApply(v)}>Apply</button>
               <button className="chip-x" onClick={() => onDelete(v.name)}>×</button>
             </div>
@@ -3471,8 +3471,8 @@ function ReviewDialog({ sheet, onReject, onRejectAll, onAcceptAll, onClose }: {
     <div className="dlg-back" onClick={onClose}>
       <div className="dlg" onClick={(e) => e.stopPropagation()} style={{ minWidth: 480 }}>
         <h3>Track changes — {sheet.name}</h3>
-        {!sheet.trackChanges && <p style={{ fontSize: 12, color: "#8B8480" }}>Tracking is off — enable it in 🔒 Protect.</p>}
-        {sheet.trackChanges && !log.length && <p style={{ fontSize: 12, color: "#8B8480" }}>No pending changes.</p>}
+        {!sheet.trackChanges && <p style={{ fontSize: 12, color: "var(--muted)" }}>Tracking is off — enable it in 🔒 Protect.</p>}
+        {sheet.trackChanges && !log.length && <p style={{ fontSize: 12, color: "var(--muted)" }}>No pending changes.</p>}
         <div style={{ maxHeight: 300, overflowY: "auto", marginTop: 8 }}>
           {log.map((e, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F0ECE8", fontSize: 12 }}>
@@ -3480,7 +3480,7 @@ function ReviewDialog({ sheet, onReject, onRejectAll, onAcceptAll, onClose }: {
               <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 <s style={{ color: "#B0574A" }}>{cellText(e.prev)}</s> → <b>{cellText(e.next)}</b>
               </span>
-              <span style={{ color: "#A19A95", fontSize: 10, whiteSpace: "nowrap" }}>
+              <span style={{ color: "var(--muted)", fontSize: 10, whiteSpace: "nowrap" }}>
                 {e.by ?? ""} {new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </span>
               <button className="chip-x" title="Reject — restore previous value" onClick={() => onReject(i)}>↩</button>
@@ -3618,7 +3618,7 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
 
   const Area = ({ title, items, area }: { title: string; items: string[]; area: "rows" | "cols" | "vals" }) => (
     <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>{title}</div>
       <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
         {items.map((f) => (
           <span key={f} className="pv-chip">
@@ -3676,7 +3676,7 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
         </div>
         {!!unassigned.length && (
           <div style={{ margin: "10px 0 4px" }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Fields — click to assign:</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>Fields — click to assign:</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               {unassigned.map((f) => (
                 <span key={f} className="pv-chip pv-un">
@@ -3695,7 +3695,7 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
           <Area title="Columns" items={cols} area="cols" />
           <Area title="Values" items={vals.map((v) => v.field)} area="vals" />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Filters</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>Filters</div>
             <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
               {filters.map((ft) => (
                 <span key={ft.field} className="pv-chip" onClick={() => setEditFilter(editFilter === ft.field ? null : ft.field)} style={{ cursor: "pointer" }}>
@@ -3724,7 +3724,7 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
           </div>
         </div>
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#8B8480", marginBottom: 4 }}>Calculated fields</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>Calculated fields</div>
           {calcFields.map((cf, i) => (
             <span key={cf.name} className="pv-chip" style={{ marginRight: 4 }}>
               {cf.name} = {cf.formula}
@@ -4135,7 +4135,7 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
               style={{ fontFamily: "monospace", fontSize: 12, minHeight: 200, resize: "vertical" }} />
             {err && <div style={{ color: "#D64545", fontSize: 12 }}>{err}</div>}
             {out !== null && (
-              <pre style={{ background: "#F4F1EE", padding: 8, borderRadius: 6, fontSize: 11, maxHeight: 120, overflow: "auto", margin: 0 }}>
+              <pre style={{ background: "var(--subtle)", padding: 8, borderRadius: 6, fontSize: 11, maxHeight: 120, overflow: "auto", margin: 0 }}>
                 {out.length ? out.join("\n") : "(no output)"}
               </pre>
             )}
@@ -4244,7 +4244,7 @@ function QueryDialog({ wb, onPreview, onLoad, onSave, onDelete, onClose }: {
                     ))}
                   </tbody>
                 </table>
-                {preview.rows.length > 12 && <div style={{ fontSize: 10, color: "#A19A95", padding: 4 }}>…{preview.rows.length - 12} more rows</div>}
+                {preview.rows.length > 12 && <div style={{ fontSize: 10, color: "var(--muted)", padding: 4 }}>…{preview.rows.length - 12} more rows</div>}
               </div>
             )}
           </div>

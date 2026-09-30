@@ -11,7 +11,7 @@ import { refsInRangeText, runDataTable, runSolver, type SolverConstraint } from 
 import type { ReactNode } from "react";
 
 const inp: CSSProperties = { width: "100%", padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, boxSizing: "border-box" };
-const sel: CSSProperties = { padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, background: "#fff" };
+const sel: CSSProperties = { padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, background: "var(--surface)" };
 const Back = ({ onClose, children, width }: { onClose: () => void; children: ReactNode; width?: number }) => (
   <div className="dlg-back" onClick={onClose}>
     <div className="dlg" style={width ? { width } : undefined} onClick={(e) => e.stopPropagation()}>{children}</div>
@@ -92,11 +92,11 @@ export function CommentDialog({ cellRef, thread, me, canEdit, onReply, onResolve
       <h3>Comments — {cellRef}</h3>
       {thread?.resolved && <p style={{ fontSize: 11, color: "#1E7B3C", margin: "0 0 6px" }}>✓ Resolved</p>}
       <div style={{ maxHeight: 260, overflowY: "auto" }}>
-        {replies.length === 0 && <p style={{ fontSize: 12, color: "#8B8480" }}>No comments yet — start the thread below.</p>}
+        {replies.length === 0 && <p style={{ fontSize: 12, color: "var(--muted)" }}>No comments yet — start the thread below.</p>}
         {replies.map((r, i) => (
           <div key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--line,#EEE)" }}>
-            <div style={{ fontSize: 10, color: "#8B8480" }}>
-              <b style={{ color: "#555" }}>{r.by || "Anonymous"}</b> · {new Date(r.at).toLocaleString()}
+            <div style={{ fontSize: 10, color: "var(--muted)" }}>
+              <b style={{ color: "var(--ink)" }}>{r.by || "Anonymous"}</b> · {new Date(r.at).toLocaleString()}
             </div>
             <div style={{ fontSize: 12, marginTop: 2, whiteSpace: "pre-wrap" }}>{r.text}</div>
           </div>
@@ -246,7 +246,7 @@ export function RichTextDialog({ cell, onSave, onClose }: {
       <div ref={ref} contentEditable suppressContentEditableWarning
         style={{ minHeight: 70, marginTop: 10, padding: 8, border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 13, outline: "none", whiteSpace: "pre-wrap" }}
         dangerouslySetInnerHTML={{ __html: html }} />
-      <p style={{ fontSize: 11, color: "#8B8480", margin: "6px 0 0" }}>
+      <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0 0" }}>
         Select text, then apply formatting — saves as rich runs on the cell.
       </p>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
@@ -382,16 +382,16 @@ export function FunctionWizard({ wb: _wb, initial, onInsert, onClose }: {
             <div key={f} className={`fx-wiz-fn ${fn === f ? "on" : ""}`}
               onClick={() => setFn(f)} onDoubleClick={() => setFn(f)}>{f}</div>
           ))}
-          {!list.length && <div style={{ padding: 10, fontSize: 12, color: "#8B8480" }}>No matching functions</div>}
+          {!list.length && <div style={{ padding: 10, fontSize: 12, color: "var(--muted)" }}>No matching functions</div>}
         </div>
       </div>
       <div style={{ margin: "12px 0 6px", fontSize: 12 }}>
         <b>{meta?.sig ?? `${fn}(…)`}</b>
-        {meta && <div style={{ color: "#8B8480", marginTop: 2 }}>{meta.desc}</div>}
+        {meta && <div style={{ color: "var(--muted)", marginTop: 2 }}>{meta.desc}</div>}
       </div>
       {sigArgs.map((a, i) => (
         <div key={a + i} className="frow" style={{ marginTop: 6 }}>
-          <span style={{ width: 150, fontSize: 12, color: "#555" }}>{a}</span>
+          <span style={{ width: 150, fontSize: 12, color: "var(--ink)" }}>{a}</span>
           <input style={inp} value={argVals[i] ?? ""} placeholder="value or range"
             onChange={(e) => setArgVals((v) => { const n = [...v]; n[i] = e.target.value; return n; })} />
         </div>
@@ -462,12 +462,12 @@ export function ScenarioDialog({ sheet, selection, onAdd, onShow, onDelete, onCl
   return (
     <Back onClose={onClose} width={420}>
       <h3>Scenario Manager</h3>
-      {scenarios.length === 0 && <p style={{ fontSize: 12, color: "#8B8480" }}>No scenarios yet. Select the input cells you want to vary, then add a scenario.</p>}
+      {scenarios.length === 0 && <p style={{ fontSize: 12, color: "var(--muted)" }}>No scenarios yet. Select the input cells you want to vary, then add a scenario.</p>}
       {scenarios.map((sc) => (
         <div key={sc.name} className="frow" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--line,#EEE)", padding: "6px 0" }}>
           <span style={{ fontSize: 12 }}>
             <b>{sc.name}</b>
-            <span style={{ color: "#8B8480", marginLeft: 8 }}>{Object.keys(sc.cells).join(", ")}</span>
+            <span style={{ color: "var(--muted)", marginLeft: 8 }}>{Object.keys(sc.cells).join(", ")}</span>
           </span>
           <span style={{ display: "flex", gap: 4 }}>
             <button className="btn-ghost btn-sm" onClick={() => onShow(sc)}>Show</button>
@@ -476,7 +476,7 @@ export function ScenarioDialog({ sheet, selection, onAdd, onShow, onDelete, onCl
         </div>
       ))}
       <div style={{ borderTop: "1px solid var(--line,#EEE)", marginTop: 10, paddingTop: 10 }}>
-        <p style={{ fontSize: 11, color: "#8B8480", margin: "0 0 6px" }}>New scenario over {selection}</p>
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 6px" }}>New scenario over {selection}</p>
         <div style={{ display: "flex", gap: 8 }}>
           <input style={{ ...inp, flex: 1 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="Scenario name (e.g. Best case)" />
           <button className="btn-primary btn-sm" disabled={!name.trim()} onClick={() => { onAdd(name.trim()); setName(""); }}>Add</button>
@@ -525,7 +525,7 @@ export function DataTableDialog({ wb, sheetName, onApply, onClose }: {
   return (
     <Back onClose={onClose} width={440}>
       <h3>Data Table</h3>
-      <p style={{ fontSize: 11, color: "#8B8480", margin: "0 0 10px" }}>
+      <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 10px" }}>
         Re-evaluates a formula while substituting input values — the what-if
         sensitivity grid. Two-var tables also emit a header row/column.
       </p>
@@ -541,7 +541,7 @@ export function DataTableDialog({ wb, sheetName, onApply, onClose }: {
           <input style={inp} value={vals1} onChange={(e) => setVals1(e.target.value)} placeholder="e.g. 2,4,6,8" /></label>
       </div>
       <div className="frow" style={{ gap: 8, marginTop: 8 }}>
-        <label style={{ flex: 1, fontSize: 12 }}>Input cell 2 <span style={{ color: "#8B8480" }}>(optional)</span>
+        <label style={{ flex: 1, fontSize: 12 }}>Input cell 2 <span style={{ color: "var(--muted)" }}>(optional)</span>
           <input style={inp} value={in2} onChange={(e) => setIn2(e.target.value)} placeholder="e.g. B3" /></label>
         <label style={{ flex: 1.4, fontSize: 12 }}>Values (comma-sep)
           <input style={inp} value={vals2} onChange={(e) => setVals2(e.target.value)} placeholder="e.g. 10,20,30" /></label>
@@ -603,7 +603,7 @@ export function SolverDialog({ wb, sheetName, anchorRef, onApply, onClose }: {
         {sense === "value" && <input style={{ ...inp, width: 80 }} type="number" value={tval} onChange={(e) => setTval(e.target.value)} />}
       </div>
       <label className="frow" style={{ display: "block", fontSize: 12 }}>
-        By changing variable cells <span style={{ color: "#8B8480" }}>(refs or ranges, comma-sep)</span>
+        By changing variable cells <span style={{ color: "var(--muted)" }}>(refs or ranges, comma-sep)</span>
         <input style={inp} value={changing} onChange={(e) => setChanging(e.target.value)} placeholder="e.g. B4:D4" />
       </label>
       <div style={{ margin: "8px 0 4px", fontSize: 12 }}>Subject to constraints:</div>
@@ -623,7 +623,7 @@ export function SolverDialog({ wb, sheetName, anchorRef, onApply, onClose }: {
           onClick={() => { setCons([...cons, { lhs: nlhs.trim().toUpperCase(), op: nop, rhs: Number(nrhs) }]); setNlhs(""); setNrhs(""); }}>Add</button>
       </div>
       <label className="frow" style={{ display: "block", fontSize: 12, marginTop: 8 }}>
-        Integer cells <span style={{ color: "#8B8480" }}>(subset of changing cells)</span>
+        Integer cells <span style={{ color: "var(--muted)" }}>(subset of changing cells)</span>
         <input style={inp} value={ints} onChange={(e) => setInts(e.target.value)} placeholder="e.g. B4:D4" />
       </label>
       <label className="frow" style={{ fontSize: 12, marginTop: 8 }}>
@@ -663,12 +663,12 @@ export function SpellPanel({ sheet, onFix, onJump, onClose }: {
   return (
     <Back onClose={onClose} width={400}>
       <h3>Spelling</h3>
-      {!misses.length && <p style={{ fontSize: 12, color: "#8B8480" }}>Spell check complete — no issues found.</p>}
+      {!misses.length && <p style={{ fontSize: 12, color: "var(--muted)" }}>Spell check complete — no issues found.</p>}
       {cur && (
         <>
           <p style={{ fontSize: 13 }}>
             <b style={{ color: "#C0392B", textDecoration: "underline wavy" }}>{cur.word}</b>
-            <span style={{ color: "#8B8480", marginLeft: 8 }}>in {cur.ref} · {sel + 1} of {misses.length}</span>
+            <span style={{ color: "var(--muted)", marginLeft: 8 }}>in {cur.ref} · {sel + 1} of {misses.length}</span>
           </p>
           <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--line,#EEE)", borderRadius: 6 }}>
             {suggest(cur.word, docVocabulary(cur.text), 6).map((s) => (
@@ -676,7 +676,7 @@ export function SpellPanel({ sheet, onFix, onJump, onClose }: {
                 {s}
               </div>
             ))}
-            {!suggest(cur.word, docVocabulary(cur.text), 6).length && <div style={{ padding: 10, fontSize: 12, color: "#8B8480" }}>No suggestions</div>}
+            {!suggest(cur.word, docVocabulary(cur.text), 6).length && <div style={{ padding: 10, fontSize: 12, color: "var(--muted)" }}>No suggestions</div>}
           </div>
           <div className="frow" style={{ gap: 8, marginTop: 10 }}>
             <button className="btn-ghost btn-sm" onClick={() => setSel(sel + 1)}>Ignore</button>

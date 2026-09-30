@@ -504,10 +504,10 @@ const rowRules = (w: number, c: string): CellBorders => ({
 const booktabs = (x: PresetCtx): CellBorders => {
   const out: CellBorders = {};
   if (x.top === 0) {
-    out.top = { style: "solid", width: 2, color: "#3A3633" };
+    out.top = { style: "solid", width: 2, color: "var(--ink)" };
     out.bottom = { style: "solid", width: 1, color: "#6B645E" };
   }
-  if (x.bottom === x.H) out.bottom = { style: "solid", width: 2, color: "#3A3633" };
+  if (x.bottom === x.H) out.bottom = { style: "solid", width: 2, color: "var(--ink)" };
   return out;
 };
 

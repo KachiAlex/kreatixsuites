@@ -969,13 +969,13 @@ export function PresentEditor({ item, initialDoc, permission }: {
               onClick={() => setBgMenu((v) => !v)}>BG ▾</button>
             {bgMenu && (
               <div className="shape-menu" style={{ gridTemplateColumns: "1fr", width: 210, gap: 6 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#7A726B" }}>BACKGROUND</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>BACKGROUND</div>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
                   Flat
                   <input type="color" defaultValue={/^#/.test(slide.bg ?? "") ? slide.bg! : theme.bg}
                     onChange={(e) => setBg(e.target.value)} />
                 </label>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#7A726B", marginTop: 2 }}>GRADIENT</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginTop: 2 }}>GRADIENT</div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <input type="color" value={grad.c1} onChange={(e) => { const g = { ...grad, c1: e.target.value }; setGrad(g); setBg(`linear-gradient(${g.angle}deg, ${g.c1}, ${g.c2})`); }} />
                   <input type="color" value={grad.c2} onChange={(e) => { const g = { ...grad, c2: e.target.value }; setGrad(g); setBg(`linear-gradient(${g.angle}deg, ${g.c1}, ${g.c2})`); }} />
@@ -1089,7 +1089,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
                 <button key={c} className="rb" title={`Text ${c}`} style={{ padding: 4 }}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => runCmd("foreColor", c)}>
-                  <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: 3, background: c, border: "1px solid #D8D2CC" }} />
+                  <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: 3, background: c, border: "1px solid var(--line)" }} />
                 </button>
               ))}
               <div className="rb-sep" />
@@ -1446,7 +1446,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
                 <SlideCanvas slide={s} theme={theme} scale={0.55} selection={new Set()} under={underObjs(s)} size={dims} />
               </div>
               <div className="pn-num">Slide {i + 1}</div>
-              <div className="pn-notes">{s.notes || <i style={{ color: "#A19A95" }}>No speaker notes</i>}</div>
+              <div className="pn-notes">{s.notes || <i style={{ color: "var(--muted)" }}>No speaker notes</i>}</div>
             </div>
           ))}
           {printLayout.startsWith("handout") && (() => {
@@ -1577,7 +1577,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
                 <span className="obj-anim" title={`Order ${o.anim!.order}`}>✦{o.anim!.order}</span>
                 <span className="obj-name">
                   {animKind(o.anim!.type) === "exit" ? "↗" : animKind(o.anim!.type) === "emphasis" ? "◎" : animKind(o.anim!.type) === "path" ? "⤳" : "➤"} {o.anim!.type}
-                  <span style={{ color: "#A19A95", fontWeight: 400 }}> · {objName(o, editSlide.objects.indexOf(o))}</span>
+                  <span style={{ color: "var(--muted)", fontWeight: 400 }}> · {objName(o, editSlide.objects.indexOf(o))}</span>
                 </span>
                 <span className="obj-ops" onClick={(e) => e.stopPropagation()}>
                   <button title="Move earlier" onClick={() => moveAnim(o.id, -1)}>↑</button>
@@ -1803,7 +1803,7 @@ function ShowsDialog({ deck, mutate, onPlay, onClose }: {
         {shows.map((s, i) => (
           <div key={i} className="obj-row" style={{ marginBottom: 4 }}>
             <span className="obj-name">{s.name}</span>
-            <span style={{ fontSize: 11, color: "#A19A95" }}>{s.slides.length} slides</span>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>{s.slides.length} slides</span>
             <span className="obj-ops">
               <button title="Present this show" onClick={() => onPlay(s.slides)}>▶</button>
               <button title="Delete show" onClick={() => mutate((d) => { d.shows!.splice(i, 1); })}>✕</button>

@@ -218,7 +218,7 @@ export function FormulaDialog({ editor, onClose }: { editor: Editor; onClose: ()
               <option value="$#,##0.00">$#,##0.00</option>
             </select>
           </label>
-          <div className="ps-hint" style={{ fontSize: 11, color: "#8A7F76" }}>
+          <div className="ps-hint" style={{ fontSize: 11, color: "var(--muted)" }}>
             Functions: SUM, AVERAGE, COUNT, MIN, MAX, PRODUCT, ABS, ROUND, MOD.
             Args: ABOVE / BELOW / LEFT / RIGHT, cell refs (B2), ranges (A1:B3).
           </div>

@@ -48,7 +48,7 @@ export function DocPropsDialog({ initial, stats, onApply, onClose }: {
             <input value={p.comments ?? ""} onChange={(e) => set("comments", e.target.value)} /></label>
         </div>
         <h4 className="ps-section">Statistics</h4>
-        <div className="ps-row" style={{ fontSize: 12, color: "#6B625C" }}>
+        <div className="ps-row" style={{ fontSize: 12, color: "var(--ink)" }}>
           <span>{stats.words} words</span><span>·</span>
           <span>{stats.paras} paragraphs</span><span>·</span>
           <span>{stats.chars} characters</span>

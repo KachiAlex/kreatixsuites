@@ -623,7 +623,7 @@ export async function importOdp(file: File): Promise<Deck> {
         const html = odpTextHtml(box);
         const ph = el.getAttribute("presentation:class");
         if (!html.trim() && !ph) continue;
-        objects.push({ id: newId(), type: "text", ...geom(el), z: objects.length, fontSize: 20, color: "#171717", ...textFields(st, html) });
+        objects.push({ id: newId(), type: "text", ...geom(el), z: objects.length, fontSize: 20, color: "var(--ink)", ...textFields(st, html) });
       } else if (tag === "draw:custom-shape" || tag === "draw:rect" || tag === "draw:ellipse" || tag === "draw:circle" || tag === "draw:path" || tag === "draw:polygon") {
         const html = odpTextHtml(el);
         const shape = tag === "draw:ellipse" || tag === "draw:circle" ? "ellipse" : "rect";

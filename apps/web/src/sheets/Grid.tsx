@@ -953,7 +953,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                   {listDrop.items.map((it) => (
                     <button key={it} onMouseDown={(e) => { e.preventDefault(); onCommit(listDrop.ref, it); setListOpen(false); }}>{it}</button>
                   ))}
-                  {!listDrop.items.length && <span style={{ padding: 8, fontSize: 12, color: "#8B8480" }}>Empty list</span>}
+                  {!listDrop.items.length && <span style={{ padding: 8, fontSize: 12, color: "var(--muted)" }}>Empty list</span>}
                 </div>
               )}
             </>

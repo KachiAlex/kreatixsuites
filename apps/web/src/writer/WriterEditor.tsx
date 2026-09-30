@@ -1368,7 +1368,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     { label: "Borders…", onClick: () => setBordersPos(pos ?? { x: window.innerWidth / 2 - 140, y: 160 }) },
     {
       label: "Cell shading", submenu: ["#ffffff", "#F5F1ED", "#FBF3EC", "#FFE9DA", "#F2782E", "#3A3633"].map((c) => ({
-        label: c, icon: <span className="sw" style={{ background: c, border: "1px solid #DDD" }} />,
+        label: c, icon: <span className="sw" style={{ background: c, border: "1px solid var(--line)" }} />,
         onClick: () => ed.chain().focus().setCellAttributes({ backgroundColor: c === "#ffffff" ? null : c }).run(),
       })),
     },
@@ -2164,7 +2164,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       )}
 
       {findOpen && (
-        <div className="ribbon" style={{ background: "#FBF9F7" }}>
+        <div className="ribbon" style={{ background: "var(--subtle)" }}>
           <input autoFocus placeholder="Find in document…" value={query}
             onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && jump(1)}
             style={{ height: 30, border: "1px solid var(--line)", borderRadius: 9, padding: "0 10px", fontSize: 12, width: 220 }} />
@@ -2177,7 +2177,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           <label title="Wildcards: * any run, ? any char" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
             <input type="checkbox" checked={findWild} onChange={(e) => setFindWild(e.target.checked)} /> *?
           </label>
-          <span style={{ fontSize: 11, color: "#A19A95" }}>{matches.length} match{matches.length === 1 ? "" : "es"}</span>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>{matches.length} match{matches.length === 1 ? "" : "es"}</span>
           <button className="rb" onClick={() => jump(-1)}>↑</button>
           <button className="rb" onClick={() => jump(1)}>↓</button>
           {canMutate && (
