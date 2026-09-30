@@ -8,7 +8,14 @@
     <meta name="author" content="Kreatix" />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#F2782E" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // theme before first paint — default light, persisted in localStorage
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem("kx_theme") === "dark" ? "dark" : "light";
+      } catch { document.documentElement.dataset.theme = "light"; }
+    </script>
     <link rel="canonical" href="https://suites.kreatixtech.com/" />
 
     <!-- Open Graph -->
@@ -46,6 +53,7 @@
     <style>
       /* first-paint splash — replaced by React on mount */
       .boot-wrap { display: grid; place-items: center; min-height: 100vh; background: #FFF9F4; }
+      html[data-theme="dark"] .boot-wrap { background: #161311; }
       .boot { width: 56px; height: 56px; border-radius: 14px; background: #F2782E;
         display: grid; place-items: center; margin: 0 auto 14px;
         animation: boot-pulse 1.1s ease-in-out infinite alternate; }

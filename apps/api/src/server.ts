@@ -18,7 +18,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
 import { billingRoutes } from "./routes/billing.js";
 import { superadminRoutes } from "./routes/superadmin.js";
-import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices } from "./billing.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify } from "./billing.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
@@ -90,6 +90,24 @@ async function main() {
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
+
+  /**
+   * Paystack webhook — lives outside billingRoutes' requireAuth so Paystack can
+   * reach it. Trust comes from re-verifying the transaction server-side rather
+   * than the payload (a forged body just triggers a verify of a real ref).
+   */
+  app.post("/api/billing/paystack/webhook", async (req, reply) => {
+    if (!process.env.KREATIX_PAYSTACK_SECRET) return reply.code(404).send({ error: "not_found" });
+    const body = req.body as { event?: string; data?: { reference?: string } };
+    const reference = body?.event === "charge.success" ? body.data?.reference : undefined;
+    if (!reference) return { ok: true };
+    const payment = await one<{ id: string; status: string }>(
+      "SELECT id, status FROM payments WHERE reference = $1", [reference]);
+    if (!payment || payment.status === "confirmed") return { ok: true };
+    const v = await paystackVerify(reference);
+    if (v.ok) await confirmPayment(payment.id, null);
+    return { ok: true };
+  });
 
   app.register(authRoutes);
   app.register(driveRoutes);

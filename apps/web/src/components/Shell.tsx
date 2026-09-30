@@ -283,7 +283,16 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
   const [results, setResults] = useState<SearchItem[]>([]);
   const [open, setOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
   const boxRef = useRef<HTMLDivElement>(null);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
+    setTheme(next);
+  };
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -309,7 +318,7 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
   return (
     <div className="topbar">
       <div className="search" ref={boxRef} style={{ position: "relative" }}>
-        <span style={{ color: "#8A817B" }}>⌕</span>
+        <span style={{ color: "var(--muted)" }}>⌕</span>
         <input
           placeholder="Search your workspace or ask Kreatix AI…"
           aria-label="Search your workspace"
@@ -324,14 +333,16 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
           <div className="file-menu" style={{ top: 50, left: 0, right: 0, minWidth: 0 }}>
             {results.map((it) => (
               <button key={it.id} onClick={() => { setOpen(false); setQ(""); navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`); }}>
-                <b>{it.name}</b> <small style={{ color: "#A19A95" }}> · {KIND_META[it.kind]?.label}</small>
+                <b>{it.name}</b> <small style={{ color: "var(--muted)" }}> · {KIND_META[it.kind]?.label}</small>
                 {it.snippet && <span className="srch-snip">{renderSnippet(it.snippet)}</span>}
               </button>
             ))}
           </div>
         )}
       </div>
-      <button className="iconbtn" title="Toggle theme" aria-label="Toggle theme">☼</button>
+      <button className="iconbtn" onClick={toggleTheme}
+        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        aria-label="Toggle theme">{theme === "dark" ? "☾" : "☼"}</button>
       <MentionsBell />
       <div style={{ position: "relative" }}>
         <button className="user" aria-label="Account menu" aria-haspopup="menu" aria-expanded={userMenu}

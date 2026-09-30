@@ -50,7 +50,7 @@ export function SharedLink() {
         <div className="crumbs" style={{ justifyContent: "center", marginBottom: 18 }}>
           <span className="perm-badge">{perm} access via link</span>
         </div>
-        <div className="file" style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 16 }}>
+        <div className="file" style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 16 }}>
           <div className={`thumb ${meta.cls}`}><AppIcon kind={item.kind} /></div>
           <div><h4>{item.name}</h4><p>{meta.label} · shared publicly</p></div>
           <div />

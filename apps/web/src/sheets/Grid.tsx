@@ -491,7 +491,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
       : inSel(c, r);
     const deco = [s.u ? "underline" : "", s.st ? "line-through" : ""].filter(Boolean).join(" ");
     const borderCss = (e?: { w?: number; style?: string; color?: string }) =>
-      e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "#26221F"}` : undefined;
+      e ? `${e.w ?? 1}px ${e.style ?? "solid"} ${e.color ?? "var(--ink)"}` : undefined;
     // table banding (falls back under direct bg/cf) + totals row (S5.4)
     const band = tableInfo.bands.get(ref);
     const tot = tableInfo.totals.get(r);
@@ -558,8 +558,8 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           fontWeight: band?.header || tot ? 600 : s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
           fontFamily: s.font, fontSize: s.size ? `${s.size}px` : undefined,
           textDecoration: deco || "none",
-          color: s.color ?? (band?.light ? "#fff" : "#26221F"),
-          background: cfx?.bg ?? s.bg ?? band?.bg ?? (tot ? "#F4F1EE" : "#fff"),
+          color: s.color ?? (band?.light ? "#fff" : "var(--ink)"),
+          background: cfx?.bg ?? s.bg ?? band?.bg ?? (tot ? "var(--subtle)" : "var(--surface)"),
           textAlign: s.align === "justify" || s.align === "distributed" ? "justify" as const
             : s.align === "centerAcross" || s.align === "fill" ? "left" as const
             : s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
@@ -671,7 +671,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                 {run.gapBefore > 0 && (
                   <tr style={{ height: rowY[run.start] - rowY[run.start - run.gapBefore] }}>
                     <td className="row-h" style={{ position: "sticky", left: 0, zIndex: 15 }} />
-                    <td colSpan={cols} style={{ background: "#fff", border: 0 }} />
+                    <td colSpan={cols} style={{ background: "var(--surface)", border: 0 }} />
                   </tr>
                 )}
                 {Array.from({ length: run.end - run.start + 1 }).map((_, i) => {
@@ -693,7 +693,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                       {colRuns.map((cr) => (
                         <Fragment key={cr.start}>
                           {cr.gapBefore > 0 && (
-                            <td style={{ width: colX[cr.start] - colX[cr.start - cr.gapBefore], border: 0, background: "#fff" }} />
+                            <td style={{ width: colX[cr.start] - colX[cr.start - cr.gapBefore], border: 0, background: "var(--surface)" }} />
                           )}
                           {Array.from({ length: cr.end - cr.start + 1 }).map((__, ci) => renderCell(cr.start + ci, r))}
                         </Fragment>
