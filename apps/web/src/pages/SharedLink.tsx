@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
+import { AppIcon } from "../components/AppIcon";
 
 /** Public share-link landing page (KBS-SHARED-008) */
 export function SharedLink() {
@@ -31,7 +32,7 @@ export function SharedLink() {
     return (
       <div className="auth-wrap">
         <div className="auth-card" style={{ textAlign: "center" }}>
-          <div className="brand-mark">K</div>
+          <div className="brand-mark"><AppIcon kind="suites" /></div>
           <h1>Link unavailable</h1>
           <p>{error}</p>
         </div>
@@ -50,7 +51,7 @@ export function SharedLink() {
           <span className="perm-badge">{perm} access via link</span>
         </div>
         <div className="file" style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 16 }}>
-          <div className={`thumb ${meta.cls}`}>{meta.short}</div>
+          <div className={`thumb ${meta.cls}`}><AppIcon kind={item.kind} /></div>
           <div><h4>{item.name}</h4><p>{meta.label} · shared publicly</p></div>
           <div />
           <div />

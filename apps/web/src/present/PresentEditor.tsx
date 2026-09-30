@@ -8,6 +8,7 @@ import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { writeKx, readKx } from "../lib/clipboard";
+import { AppIcon } from "../components/AppIcon";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -848,7 +849,7 @@ export function PresentEditor({ item, initialDoc, permission }: {
     <div className="editor-shell present-shell">
       <div className="editor-top">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
-        <div className="app-ico present" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>P</div>
+        <AppIcon kind="present" size={34} />
         <input className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)}
           onBlur={() => title.trim() && title !== item.name && rename(title.trim())}

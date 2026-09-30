@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { AppIcon } from "../components/AppIcon";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
   const { login, register, loginWithToken } = useAuth();
@@ -53,9 +54,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <div className="brand-mark">K</div>
+        <div className="brand-mark"><AppIcon kind="suites" /></div>
         <h1>{mode === "login" ? "Welcome back" : "Create your workspace"}</h1>
-        <p>Kreatix Business Suite · Writer · Sheets · Present · PDF</p>
+        <p>Kreatix Suites · Writer · Sheets · Present · PDF</p>
         {error && <div className="auth-error">{error}</div>}
         {mode === "register" && (
           <>

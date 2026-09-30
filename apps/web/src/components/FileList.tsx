@@ -3,6 +3,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { KIND_META, timeAgo } from "../lib/format";
 import { api } from "../lib/api";
 import { prefetchEditor } from "../pages/editors";
+import { AppIcon } from "./AppIcon";
 
 interface Props {
   items: DriveItem[];
@@ -69,7 +70,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
             onMouseEnter={() => prefetchEditor(it.kind)} onFocus={() => prefetchEditor(it.kind)}>
             <div className={`thumb ${meta.cls}`} onClick={() => onOpen(it)} role="button" tabIndex={0}
               aria-label={`Open ${it.name}`}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(it); } }}>{meta.short}</div>
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(it); } }}><AppIcon kind={it.kind} /></div>
             <div onClick={() => onOpen(it)}>
               {renaming === it.id ? (
                 <input

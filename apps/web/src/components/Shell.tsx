@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
 import { CommandPalette, renderSnippet } from "./CommandPalette";
+import { AppIcon } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { useToast } from "../pages/Home";
 
@@ -63,7 +64,7 @@ function Rail() {
   ];
   return (
     <aside className="rail">
-      <div className="brand-mark">K</div>
+      <div className="brand-mark"><AppIcon kind="suites" /></div>
       {items.map((i) => (
         <NavLink key={i.to} to={i.to} end={i.to === "/"} title={i.title}
           className={`rail-btn ${pathname === i.to ? "active" : ""}`}>{i.icon}</NavLink>
@@ -122,8 +123,8 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
   return (
     <aside className="sidebar" style={{ position: "sticky" }}>
       <div className="brand-name">
-        <div className="mini-logo">K</div>
-        <div><h3>Kreatix Business Suite</h3><p>Business workspace</p></div>
+        <div className="mini-logo"><AppIcon kind="suites" /></div>
+        <div><h3>Kreatix Suites</h3><p style={{ textTransform: "uppercase", letterSpacing: ".08em" }}>Productivity suite</p></div>
       </div>
       <div ref={menuRef} style={{ position: "relative" }}>
         <button className="create" onClick={() => setMenuOpen((v) => !v)} disabled={creating}>
@@ -131,12 +132,12 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
         </button>
         {menuOpen && (
           <div className="create-menu">
-            <button onClick={() => createFile("writer")}><span className="cm-ico writer">W</span>Kreatix Writer</button>
-            <button onClick={() => createFile("sheets")}><span className="cm-ico sheets">S</span>Kreatix Sheets</button>
-            <button onClick={() => createFile("present")}><span className="cm-ico present">P</span>Kreatix Present</button>
+            <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Kreatix Writer</button>
+            <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>
+            <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>
             <hr />
-            <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico">▣</span>New folder</button>
-            <button onClick={() => fileInput.current?.click()}><span className="cm-ico file-ico">↑</span>Upload file / PDF</button>
+            <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>New folder</button>
+            <button onClick={() => fileInput.current?.click()}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>Upload file / PDF</button>
           </div>
         )}
         <input ref={fileInput} type="file" hidden
@@ -152,10 +153,10 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
       <NavLink to="/drive/trash" className={navCls}><span className="dot" />Recycle bin</NavLink>
 
       <div className="section-label">Applications</div>
-      <button type="button" className="nav" onClick={() => createFile("writer")}><span style={{ color: "var(--writer)", fontWeight: 900 }}>W</span>Writer</button>
-      <button type="button" className="nav" onClick={() => createFile("sheets")}><span style={{ color: "var(--sheets)", fontWeight: 900 }}>S</span>Sheets</button>
-      <button type="button" className="nav" onClick={() => createFile("present")}><span style={{ color: "var(--present)", fontWeight: 900 }}>P</span>Present</button>
-      <button type="button" className="nav" onClick={() => fileInput.current?.click()}><span style={{ color: "var(--pdf)", fontWeight: 900, fontSize: 9 }}>PDF</span>PDF</button>
+      <button type="button" className="nav" onClick={() => createFile("writer")}><AppIcon kind="writer" size={18} />Writer</button>
+      <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />Sheets</button>
+      <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />Present</button>
+      <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
 
       <div className="section-label">Workspace tools</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />Templates</button>

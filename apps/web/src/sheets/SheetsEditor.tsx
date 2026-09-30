@@ -8,6 +8,7 @@ import { useAuth } from "../lib/auth";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
+import { AppIcon } from "../components/AppIcon";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
@@ -1197,7 +1198,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     <div className="editor-shell sheets-shell">
       <div className="editor-top">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
-        <div className="app-ico sheets" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>S</div>
+        <AppIcon kind="sheets" size={34} />
         <input className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)}
           onBlur={() => title.trim() && title !== item.name && rename(title.trim())}

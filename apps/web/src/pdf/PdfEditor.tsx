@@ -17,6 +17,7 @@ import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
 import { MenuBar } from "../writer/MenuBar";
+import { AppIcon } from "../components/AppIcon";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
 import { remapAnns, reorganizePdf, mergePdf, extractPages, splitPdf, downloadPdf, appendImagePages, attachFilesToPdf, makePortfolio, webTextToPdf } from "./pages";
@@ -1196,7 +1197,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
     <div className="editor">
       <div className="topbar">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
-        <div className="app-ico pdf" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>P</div>
+        <AppIcon kind="pdf" size={34} />
         <input className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)} onBlur={rename} />
         <button className="btn-ghost btn-sm" disabled={!canEdit}

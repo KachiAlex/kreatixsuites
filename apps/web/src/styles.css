@@ -13,7 +13,7 @@
   --sidebar:#F4F1ED;
   --writer:#3578E5;
   --sheets:#1F9D66;
-  --present:#E96A2C;
+  --present:#7C5CD6;
   --pdf:#D84B57;
   --danger:#C0392B;
   --shadow:0 18px 50px rgba(42, 31, 23, .08);
@@ -55,6 +55,7 @@ a{color:var(--k-orange-dark)}
 .create-menu button{width:100%;display:flex;align-items:center;gap:10px;border:0;background:transparent;padding:10px;border-radius:11px;cursor:pointer;font-size:13px;font-weight:600;color:#3A3633;text-align:left}
 .create-menu button:hover{background:#F5F1ED}
 .create-menu .cm-ico{width:30px;height:30px;border-radius:9px;color:#fff;display:grid;place-items:center;font-weight:900;font-size:11px}
+.cm-ico,.app-ico,.thumb{overflow:hidden}
 .create-menu hr{border:0;border-top:1px solid var(--line);margin:6px 4px}
 .section-label{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:#A19A95;margin:22px 11px 8px}
 .nav{padding:10px 11px;border-radius:12px;margin:2px 0;display:flex;gap:10px;align-items:center;color:#4E4945;font-size:13px;cursor:pointer;transition:.18s;text-decoration:none}

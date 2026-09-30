@@ -5,6 +5,12 @@ import type { DriveItem, FileKind } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { createDoc } from "../lib/create";
 import { KIND_META } from "../lib/format";
+import { AppIcon } from "./AppIcon";
+
+const KIND_ICON = new Set(["writer", "sheets", "present", "pdf", "file", "folder"]);
+const iconKind = (cls?: string) =>
+  cls ? cls.replace(/-ico$/, "") : "";
+const isKindIcon = (cls?: string) => KIND_ICON.has(iconKind(cls));
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
@@ -119,7 +125,9 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
                   className={`palette-row ${i === activeIdx ? "on" : ""}`}
                   onMouseEnter={() => setIdx(i)}
                   onClick={() => { onClose(); void r.run(); }}>
-                  <span className={`cm-ico ${r.iconCls ?? ""}`}>{r.icon}</span>
+                  <span className={`cm-ico ${r.iconCls ?? ""}`}>
+                    {isKindIcon(r.iconCls) ? <AppIcon kind={iconKind(r.iconCls)} /> : r.icon}
+                  </span>
                   <span className="palette-label">{r.label}</span>
                   {r.hint && <span className="palette-hint">{r.hint}</span>}
                   {(() => {

@@ -76,6 +76,7 @@ import { ensureDocFonts } from "./fonts";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
+import { AppIcon } from "../components/AppIcon";
 import { useToast } from "../pages/Home";
 import "katex/dist/katex.min.css";
 
@@ -1879,7 +1880,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       )}
       <div className="editor-top">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
-        <div className="app-ico writer" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 13 }}>W</div>
+        <AppIcon kind="writer" size={34} />
         <input ref={titleInputRef} className="doc-title" value={title} disabled={!canEdit}
           onChange={(e) => setTitle(e.target.value)}
           onBlur={() => title.trim() && title !== item.name && rename(title.trim())}

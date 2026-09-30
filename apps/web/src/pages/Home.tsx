@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { FileList } from "../components/FileList";
+import { AppIcon } from "../components/AppIcon";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 
@@ -58,10 +59,10 @@ export function Home() {
   };
 
   const apps = [
-    { cls: "writer", s: "W", name: "Kreatix Writer", desc: "Documents & reports", kind: "writer" },
-    { cls: "sheets", s: "S", name: "Kreatix Sheets", desc: "Data & analysis", kind: "sheets" },
-    { cls: "present", s: "P", name: "Kreatix Present", desc: "Slides & storytelling", kind: "present" },
-    { cls: "pdf", s: "PDF", name: "Kreatix PDF", desc: "Read, edit & sign", kind: "pdf" },
+    { cls: "writer", name: "Kreatix Writer", desc: "Documents & reports", kind: "writer" },
+    { cls: "sheets", name: "Kreatix Sheets", desc: "Data & analysis", kind: "sheets" },
+    { cls: "present", name: "Kreatix Present", desc: "Slides & storytelling", kind: "present" },
+    { cls: "pdf", name: "Kreatix PDF", desc: "Read, edit & sign", kind: "pdf" },
   ];
 
   return (
@@ -88,7 +89,7 @@ export function Home() {
               const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[a.kind], kind: a.kind });
               navigate(`/edit/${r.item.id}`);
             }}>
-            <div className={`app-ico ${a.cls}`}>{a.s}</div>
+            <div className={`app-ico ${a.cls}`}><AppIcon kind={a.cls} /></div>
             <div><h4>{a.name}</h4><p>{a.desc}</p></div>
             <div className="launch">›</div>
           </div>
@@ -128,7 +129,7 @@ export function Home() {
       </section>
 
       <div className="brand-strip">
-        <div className="mini-logo">K</div>
+        <div className="mini-logo"><AppIcon kind="suites" /></div>
         <div><strong>Kreatix Business Suite</strong><br /><span>Built around one clear visual identity: Kreatix orange, clean white space and confident black.</span></div>
       </div>
       <footer>Kreatix Business Suite · Writer · Sheets · Present · PDF · Drive · AI</footer>

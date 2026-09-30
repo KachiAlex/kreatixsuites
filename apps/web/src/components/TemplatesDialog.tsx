@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { TEMPLATES, type Template } from "../lib/templates";
 import { createDoc } from "../lib/create";
 import { useState } from "react";
+import { AppIcon } from "./AppIcon";
 
 const KIND_STYLE: Record<string, string> = { writer: "writer", sheets: "sheets", present: "present" };
 const KIND_LABEL: Record<string, string> = { writer: "Writer", sheets: "Sheets", present: "Present" };
@@ -39,7 +40,7 @@ export function TemplatesDialog({ onClose, toast }: { onClose: () => void; toast
             <div className="tpl-grid">
               {g.items.map((t) => (
                 <button key={t.id} className="tpl-card" disabled={busy !== null} onClick={() => void pick(t)}>
-                  <span className={`cm-ico ${KIND_STYLE[g.kind]}`}>{KIND_LABEL[g.kind][0]}</span>
+                  <span className={`cm-ico ${KIND_STYLE[g.kind]}`}><AppIcon kind={g.kind} /></span>
                   <b>{t.name}</b>
                   <span className="tpl-desc">{busy === t.id ? "Creating…" : t.desc}</span>
                 </button>

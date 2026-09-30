@@ -4,6 +4,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
 import { KIND_META, timeAgo } from "../lib/format";
+import { AppIcon } from "../components/AppIcon";
 
 // Each editor is a separate chunk — only fetched when its file type opens
 // (or when prefetched via pages/editors.ts on Drive list idle / row hover).
@@ -61,7 +62,7 @@ export function Editor() {
     return (
       <div className="auth-wrap">
         <div className="auth-card" style={{ textAlign: "center" }}>
-          <div className="brand-mark">K</div>
+          <div className="brand-mark"><AppIcon kind="suites" /></div>
           <h1>Cannot open file</h1>
           <p>{error}</p>
           <button className="btn-primary" onClick={() => navigate("/")}>Back to home</button>
@@ -98,7 +99,7 @@ export function Editor() {
       <div className="auth-wrap">
         <div className="auth-card" style={{ textAlign: "center" }}>
           <div className={`brand-mark ${meta.cls}`} style={{ background: undefined }}>
-            <span className={`app-ico ${meta.cls}`} style={{ width: 48, height: 48, borderRadius: 15 }}>{meta.short}</span>
+            <AppIcon kind={item.kind} size={48} />
           </div>
           <h1>{item.name}</h1>
           <p>{meta.label} editor is on the roadmap — file is safely stored in Kreatix Drive.</p>
