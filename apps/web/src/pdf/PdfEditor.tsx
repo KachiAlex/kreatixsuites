@@ -350,6 +350,24 @@ export function PdfEditor({ item, initialDoc, permission }: {
     }
   };
 
+  // Download the working PDF — embeds current annotations/fields into the
+  // bytes on the fly so the local file matches what you see, saved or not.
+  const downloadCurrent = async () => {
+    const b = pdfDataRef.current;
+    if (!b) return;
+    const name = /\.pdf$/i.test(title) ? title : `${title}.pdf`;
+    try {
+      const rasters = await rasterizeRedacted();
+      const { embedIntoPdf } = await import("./embed");
+      const { bytes } = await embedIntoPdf(b.slice(0), annDoc, formValues(), doc, rasters);
+      downloadPdf(bytes, name);
+      toast("Downloaded — annotations and fields are embedded in the file");
+    } catch {
+      downloadPdf(new Uint8Array(b), name);
+      toast("Downloaded original bytes (annotation embedding failed)");
+    }
+  };
+
   const rename = async () => {
     const t = title.trim();
     if (!t || t === item.name) return;
@@ -1193,6 +1211,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <PresenceBar session={session} />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
+          title="Download this PDF with your annotations embedded"
+          onClick={() => void downloadCurrent()}>⬇ Download</button>
+        <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
           onClick={() => setExportDlg(true)}>Export PDF</button>
         <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print</button>
       </div>
@@ -1207,6 +1228,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
             onClick: () => void saveIntoFile() },
           { label: "Save named version…", icon: "🏷", onClick: () => void saveNamed(), disabled: !canEdit },
           { label: "Make a copy", icon: "⧉", onClick: () => void makeCopy() },
+          { divider: true },
+          { label: "Download a copy (with annotations)", icon: "⬇", onClick: () => void downloadCurrent(), disabled: !pdfDataRef.current },
           { divider: true },
           { label: "Export PDF…", icon: "⤓", onClick: () => setExportDlg(true), disabled: !pdfDataRef.current },
           { label: "Export as", icon: "📤", submenu: [
