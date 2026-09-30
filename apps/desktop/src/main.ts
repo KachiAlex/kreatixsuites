@@ -129,7 +129,7 @@ const createWindow = () => {
     for (const p of pendingFiles.splice(0)) deliverFile(p);
     // KX_SMOKE=1 → headless smoke test: report the loaded doc and quit (CI)
     if (process.env.KX_SMOKE) {
-      mainWindow.webContents
+      mainWindow?.webContents
         .executeJavaScript("document.title + '|' + location.origin")
         .then((r) => { console.log("SMOKE-OK:", r); app.quit(); })
         .catch((e) => { console.error("SMOKE-FAIL:", e); app.exit(1); });
