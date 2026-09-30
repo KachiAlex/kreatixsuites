@@ -1,0 +1,82 @@
+// Workspace billing — subscription status, checkout (Paystack when configured,
+// manual bank-transfer otherwise), payment history. Any member can read the
+// summary (banner); checkout requires owner/admin.
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { q, one, run, now } from "../db.js";
+import { requireAuth, type AuthedRequest } from "../auth.js";
+import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig } from "../billing.js";
+
+async function requireOrgAdmin(req: FastifyRequest, reply: FastifyReply) {
+  const { user } = req as AuthedRequest;
+  if (user.role !== "owner" && user.role !== "admin") {
+    return reply.code(403).send({ error: "forbidden", message: "Workspace owner/admin only" });
+  }
+}
+
+export function billingRoutes(app: FastifyInstance) {
+  app.addHook("preHandler", requireAuth);
+
+  /** Compact summary for the banner — any member can read. */
+  app.get("/api/billing/summary", async (req) => {
+    const { user } = req as AuthedRequest;
+    return summary(user.orgId);
+  });
+
+  /** Full billing view (status, seats, price, payment history) — owner/admin. */
+  app.get("/api/billing", { preHandler: requireOrgAdmin }, async (req) => {
+    const { user } = req as AuthedRequest;
+    const [s, payments] = await Promise.all([
+      summary(user.orgId),
+      q(`SELECT id, amount_ngn, seats, months, method, reference, status,
+                period_start, period_end, created_at
+         FROM payments WHERE org_id = $1 ORDER BY created_at DESC LIMIT 24`, [user.orgId]),
+    ]);
+    return { subscription: s, payments };
+  });
+
+  /**
+   * Start checkout — creates a pending payment for the next month.
+   * With KREATIX_PAYSTACK_SECRET: returns a Paystack authorization URL.
+   * Without it: returns manual/bank-transfer mode and the payment stays
+   * pending until the superadmin confirms.
+   */
+  app.post("/api/billing/checkout", { preHandler: requireOrgAdmin }, async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { months } = z.object({ months: z.number().int().min(1).max(12).default(1) }).parse(req.body ?? {});
+    const p = await createPayment(user.orgId, process.env.KREATIX_PAYSTACK_SECRET ? "paystack" : "manual");
+    const cfg = await getConfig();
+
+    if (process.env.KREATIX_PAYSTACK_SECRET) {
+      const reference = `kx-${p.id}`;
+      await run("UPDATE payments SET reference = $2 WHERE id = $1", [p.id, reference]);
+      const base = process.env.KREATIX_PUBLIC_URL ?? `https://${req.headers.host}`;
+      const { authorization_url } = await paystackInit(user.email, p.amountNgn * months, reference, `${base}/admin?paid=1`);
+      return { mode: "paystack", authorizationUrl: authorization_url, paymentId: p.id, amountNgn: p.amountNgn * months };
+    }
+    return {
+      mode: "manual",
+      paymentId: p.id,
+      amountNgn: p.amountNgn * months,
+      seats: p.seats,
+      currency: cfg.currency,
+      message: "Bank transfer — quote your workspace name. Payment is confirmed by the platform admin within 24h.",
+    };
+  });
+
+  /** Paystack callback → verify reference with Paystack → activate. */
+  app.post("/api/billing/paystack/verify", { preHandler: requireOrgAdmin }, async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { reference } = z.object({ reference: z.string().min(4).max(80) }).parse(req.body);
+    const payment = await one<{ id: string; status: string }>(
+      "SELECT id, status FROM payments WHERE reference = $1 AND org_id = $2", [reference, user.orgId]);
+    if (!payment) return reply.code(404).send({ error: "not_found", message: "Unknown payment reference" });
+    if (payment.status === "confirmed") return { ok: true, already: true };
+
+    const v = await paystackVerify(reference);
+    if (!v.ok) return reply.code(402).send({ error: "payment_failed", message: "Payment not confirmed by Paystack" });
+    await confirmPayment(payment.id, user.id);
+    return { ok: true };
+  });
+}

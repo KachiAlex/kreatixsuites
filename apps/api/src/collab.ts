@@ -20,6 +20,7 @@ interface WebSocket {
 }
 import { one, run } from "./db.js";
 import { permissionFor, hasPermission, type UserRow } from "./auth.js";
+import { ensureSubscription, effectiveState } from "./billing.js";
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
@@ -204,13 +205,17 @@ export async function collabRoutes(app: FastifyInstance) {
           "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
           [fileId],
         );
-        if (!user || !item) throw new Error("unauthorized");
+        if (!user || !item || user.disabled) throw new Error("unauthorized");
         const perm = await permissionFor(user.id, item);
         if (!hasPermission(perm, "viewer")) throw new Error("unauthorized");
+        // locked subscriptions still get the read-only sync handshake;
+        // write payloads are rejected below like a viewer's
+        const subState = effectiveState(await ensureSubscription(user.org_id)).state;
+        const subLocked = subState === "locked";
         // reviewers+ write freely (suggestions are tracked client-side);
         // commenters may only push updates that change comment anchors;
         // viewers are read-only (sync step1 handshake only)
-        const canWrite = hasPermission(perm, "reviewer");
+        const canWrite = hasPermission(perm, "reviewer") && !subLocked;
         const canAnchor = hasPermission(perm, "commenter");
 
         const room = await getRoom(fileId);

@@ -2,7 +2,8 @@
 // All endpoints require owner or admin role.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { q as dbq, one, run } from "../db.js";
+import { randomUUID, randomBytes } from "node:crypto";
+import { q as dbq, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
@@ -34,13 +35,13 @@ export function adminRoutes(app: FastifyInstance) {
   app.get("/api/admin/members", async (req) => {
     const { user } = req as AuthedRequest;
     const rows = await dbq<UserRow>(
-      "SELECT id, email, display_name, initials, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
+      "SELECT id, email, display_name, initials, role, disabled, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
       [user.orgId],
     );
     return {
       members: rows.map((u) => ({
         id: u.id, email: u.email, displayName: u.display_name,
-        initials: u.initials, role: u.role, createdAt: u.created_at,
+        initials: u.initials, role: u.role, disabled: u.disabled, createdAt: u.created_at,
       })),
     };
   });
@@ -62,6 +63,55 @@ export function adminRoutes(app: FastifyInstance) {
     const { role } = roleSchema.parse(req.body);
     await run("UPDATE users SET role = $1 WHERE id = $2", [role, target.id]);
     return { ok: true, role };
+  });
+
+  /** Disable/enable a member — disabled users can't sign in and drop out of the
+   *  billable seat count; their files stay intact (FK-safe deactivation). */
+  app.post("/api/admin/members/:id/disabled", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const target = await one<UserRow>(
+      "SELECT * FROM users WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId],
+    );
+    if (!target) return reply.code(404).send({ error: "not_found" });
+    if (target.id === user.id) return reply.code(400).send({ error: "bad_request", message: "Cannot disable yourself" });
+    if (target.role === "owner") return reply.code(403).send({ error: "forbidden", message: "Cannot disable the owner" });
+    const { disabled } = z.object({ disabled: z.boolean() }).parse(req.body);
+    await run("UPDATE users SET disabled = $1 WHERE id = $2", [disabled, target.id]);
+    return { ok: true, disabled };
+  });
+
+  /** Invite links — anyone with the link joins this workspace as a member. */
+  app.get("/api/admin/invites", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await dbq(
+      `SELECT i.id, i.token, i.max_uses, i.uses, i.expires_at, i.created_at, u.display_name AS created_by_name
+       FROM org_invites i JOIN users u ON u.id = i.created_by
+       WHERE i.org_id = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses
+       ORDER BY i.created_at DESC`, [user.orgId, now()]);
+    return { invites: rows };
+  });
+
+  app.post("/api/admin/invites", async (req) => {
+    const { user } = req as AuthedRequest;
+    const body = z.object({
+      maxUses: z.number().int().min(1).max(500).default(25),
+      expiresDays: z.number().int().min(1).max(90).default(14),
+    }).parse(req.body ?? {});
+    const id = randomUUID();
+    const token = randomBytes(18).toString("base64url");
+    const expires = new Date(Date.now() + body.expiresDays * 86400000).toISOString();
+    await run(
+      "INSERT INTO org_invites (id, org_id, token, created_by, max_uses, expires_at, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [id, user.orgId, token, user.id, body.maxUses, expires, now()],
+    );
+    return { id, token, expiresAt: expires };
+  });
+
+  app.delete("/api/admin/invites/:id", async (req) => {
+    const { user } = req as AuthedRequest;
+    await run("DELETE FROM org_invites WHERE id = $1 AND org_id = $2", [(req.params as { id: string }).id, user.orgId]);
+    return { ok: true };
   });
 
   /** Org policies (DLP + retention) */

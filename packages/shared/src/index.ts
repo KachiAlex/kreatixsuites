@@ -11,6 +11,7 @@ export interface User {
   initials: string;
   orgId: string;
   role: UserRole;
+  isSuper?: boolean;
   createdAt: string;
 }
 

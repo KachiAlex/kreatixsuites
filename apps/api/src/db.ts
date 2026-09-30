@@ -217,9 +217,66 @@ CREATE TABLE IF NOT EXISTS org_policies (
   json JSONB NOT NULL DEFAULT '{}',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- workspace invites — admin-generated links that join an existing org on register
+CREATE TABLE IF NOT EXISTS org_invites (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE,
+  created_by TEXT NOT NULL REFERENCES users(id),
+  max_uses INTEGER NOT NULL DEFAULT 25,
+  uses INTEGER NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- superadmin-editable plan/pricing — a single row ('default'), one plan per workspace
+CREATE TABLE IF NOT EXISTS billing_config (
+  id TEXT PRIMARY KEY,
+  base_price_ngn INTEGER NOT NULL DEFAULT 2000,    -- workspace admin seat / month
+  member_price_ngn INTEGER NOT NULL DEFAULT 1000,  -- each additional member / month
+  trial_months INTEGER NOT NULL DEFAULT 3,
+  currency TEXT NOT NULL DEFAULT 'NGN',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- one subscription per org — trial → active → past_due → locked
+CREATE TABLE IF NOT EXISTS subscriptions (
+  org_id TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'trialing',  -- trialing | active | past_due | canceled
+  trial_ends_at TIMESTAMPTZ,
+  period_start TIMESTAMPTZ,
+  period_end TIMESTAMPTZ,
+  amount_ngn INTEGER,                        -- amount of the last confirmed period
+  seats INTEGER NOT NULL DEFAULT 1,          -- seat count at last pricing
+  override_until TIMESTAMPTZ,                -- superadmin comp/extension, wins over all
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- payment ledger — every charge/confirmation is a row (audit trail)
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  amount_ngn INTEGER NOT NULL,
+  seats INTEGER NOT NULL,
+  months INTEGER NOT NULL DEFAULT 1,
+  method TEXT NOT NULL DEFAULT 'manual',     -- paystack | manual | comp
+  reference TEXT,                            -- paystack reference or bank-transfer note
+  status TEXT NOT NULL DEFAULT 'pending',    -- pending | confirmed | rejected
+  period_start TIMESTAMPTZ,
+  period_end TIMESTAMPTZ,
+  confirmed_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payments_org ON payments(org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 `);
   // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
+  // seed the default billing config row (idempotent)
+  await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
 }
 
 export const now = () => new Date().toISOString();

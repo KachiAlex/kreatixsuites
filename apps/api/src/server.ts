@@ -16,14 +16,18 @@ import { aiRoutes } from "./routes/ai.js";
 import { adminRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { collabRoutes } from "./collab.js";
+import { billingRoutes } from "./routes/billing.js";
+import { superadminRoutes } from "./routes/superadmin.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin } from "./billing.js";
 import { onResponseMetric } from "./metrics.js";
-import { migrate } from "./db.js";
+import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
 
 async function main() {
   await migrate(); // Postgres schema — idempotent, auto-creates the database
+  await ensureSuperAdmin(); // seeds admin@…/env-password if configured
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
   await app.register(cors, { origin: true, credentials: true });
@@ -56,6 +60,35 @@ async function main() {
     done();
   });
 
+  // ---- subscription write-gate ----
+  // Locked workspaces keep read access (data is never held hostage) but all
+  // mutations 402 until billing is settled. Auth/billing/admin paths stay open
+  // — the admin needs them to fix the subscription.
+  const GATE_EXEMPT = /^\/api\/(auth|billing|superadmin|admin)\b/;
+  app.addHook("preHandler", async (req, reply) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return;
+    if (!req.url.startsWith("/api/") || GATE_EXEMPT.test(req.url)) return;
+    const header = req.headers.authorization;
+    const cookieToken = (req.headers.cookie ?? "")
+      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
+    if (!token) return; // requireAuth will handle the 401
+    try {
+      const { jwtVerify } = await import("jose");
+      const { payload } = await jwtVerify(token, new TextEncoder().encode(
+        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
+      const user = await one<{ org_id: string }>("SELECT org_id FROM users WHERE id = $1", [payload.sub as string]);
+      if (!user) return;
+      const sub = await ensureSubscription(user.org_id);
+      if (effectiveState(sub).state === "locked") {
+        return reply.code(402).send({
+          error: "subscription_locked",
+          message: "Workspace subscription has expired — the workspace is read-only until billing is renewed.",
+        });
+      }
+    } catch { /* invalid token → requireAuth 401s downstream */ }
+  });
+
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
 
   app.register(authRoutes);
@@ -67,6 +100,8 @@ async function main() {
   app.register(aiRoutes);
   app.register(adminRoutes);
   app.register(ssoRoutes);
+  app.register(billingRoutes);
+  app.register(superadminRoutes);
   app.register(collabRoutes);
 
   // Production: serve the built SPA with client-side routing fallback

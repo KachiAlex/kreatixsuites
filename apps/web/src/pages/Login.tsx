@@ -15,6 +15,8 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState(false);
+  const [inviteOrg, setInviteOrg] = useState<string | null>(null);
+  const invite = params.get("invite") ?? undefined;
 
   // SSO callback lands here: ?sso=1 (token in HttpOnly cookie) or ?sso_error=<msg>
   useEffect(() => {
@@ -33,6 +35,11 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     api.get<{ enabled: boolean }>("/api/auth/sso/status")
       .then((r) => setSso(r.enabled))
       .catch(() => setSso(false));
+    if (invite) {
+      api.get<{ orgName: string }>(`/api/auth/invite/${invite}`)
+        .then((r) => setInviteOrg(r.orgName))
+        .catch(() => setError("This invite link is expired or invalid"));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -42,7 +49,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     setBusy(true);
     try {
       if (mode === "login") await login(email, password);
-      else await register(email, password, name, org || undefined);
+      else await register(email, password, name, org || undefined, invite);
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -56,15 +63,17 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       <div>
         <div className="auth-brand"><BrandLockup light size={64} /></div>
         <form className="auth-card" onSubmit={submit}>
-        <h1>{mode === "login" ? "Welcome back" : "Create your workspace"}</h1>
+        <h1>{mode === "login" ? "Welcome back" : inviteOrg ? `Join ${inviteOrg}` : "Create your workspace"}</h1>
         <p>Kreatix Suites · Writer · Sheets · Present · PDF</p>
         {error && <div className="auth-error">{error}</div>}
         {mode === "register" && (
           <>
             <div className="field"><label>Full name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Bolanle Johnson" /></div>
-            <div className="field"><label>Organization (optional)</label>
-              <input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="Kreatix Technologies" /></div>
+            {!invite && (
+              <div className="field"><label>Organization (optional)</label>
+                <input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="Kreatix Technologies" /></div>
+            )}
           </>
         )}
         <div className="field"><label>Email</label>

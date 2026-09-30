@@ -1701,3 +1701,11 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .lp-foot a{color:#8B8480;text-decoration:none;font-weight:600}
 .lp-foot a:hover{color:var(--k-orange)}
 @media (max-width:640px){.lp-nav nav{gap:12px}.lp-nav a:not(.lp-cta):nth-child(2){display:none}}
+
+/* workspace billing banner */
+.billing-banner{display:flex;align-items:center;gap:12px;padding:8px 16px;font-size:13px;flex:none;border-bottom:1px solid var(--line,#E4DCD4)}
+.billing-banner.info{background:#eaf3ff;color:#174a7c}
+.billing-banner.warn{background:#fdf0d5;color:#8a5a00}
+.billing-banner.locked{background:#fde2e2;color:#a02020;font-weight:600}
+.billing-banner button{margin-left:auto;padding:4px 14px;border-radius:8px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.billing-banner button:hover{opacity:.8}

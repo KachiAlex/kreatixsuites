@@ -45,7 +45,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { payload } = await jwtVerify(token, secret);
     const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
-    if (!user) throw new Error("unknown user");
+    if (!user || user.disabled) throw new Error("unknown user");
     (req as AuthedRequest).user = toUser(user);
   } catch {
     return reply.code(401).send({ error: "unauthorized", message: "Invalid token" });
@@ -60,6 +60,8 @@ export interface UserRow {
   display_name: string;
   initials: string;
   role: UserRole;
+  is_super: boolean;
+  disabled: boolean;
   created_at: string;
 }
 
@@ -71,6 +73,7 @@ export function toUser(row: UserRow): User {
     displayName: row.display_name,
     initials: row.initials,
     role: row.role,
+    isSuper: row.is_super,
     createdAt: row.created_at,
   };
 }

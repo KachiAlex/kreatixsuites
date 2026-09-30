@@ -42,6 +42,7 @@ export function Shell() {
       <Sidebar onTemplates={() => setTemplates(true)} />
       <main>
         <Topbar onPalette={() => setPalette(true)} />
+        <BillingBanner />
         <Outlet />
       </main>
       <CommandPalette open={palette} onClose={() => setPalette(false)}
@@ -54,6 +55,50 @@ export function Shell() {
       {msg && <div className="toast">{msg}</div>}
     </div>
   );
+}
+
+/** Workspace subscription status — trial countdown, grace, lockout.
+ *  Reads stay open when locked; this banner explains the 402s. */
+function BillingBanner() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [sub, setSub] = useState<{ state: string; daysLeft: number | null } | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    api.get<{ state: string; daysLeft: number | null }>("/api/billing/summary")
+      .then(setSub)
+      .catch(() => setSub(null));
+  }, [user]);
+
+  if (!sub) return null;
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
+  const go = () => navigate("/admin");
+  if (sub.state === "locked") {
+    return (
+      <div className="billing-banner locked">
+        Subscription expired — this workspace is read-only.
+        {isAdmin && <button onClick={go}>Renew subscription</button>}
+      </div>
+    );
+  }
+  if (sub.state === "grace") {
+    return (
+      <div className="billing-banner warn">
+        Payment overdue — {sub.daysLeft ?? 0} day{sub.daysLeft === 1 ? "" : "s"} left before the workspace locks.
+        {isAdmin && <button onClick={go}>Pay now</button>}
+      </div>
+    );
+  }
+  if (sub.state === "trialing" && (sub.daysLeft ?? 99) <= 14) {
+    return (
+      <div className="billing-banner info">
+        Free trial ends in {sub.daysLeft} day{sub.daysLeft === 1 ? "" : "s"}.
+        {isAdmin && <button onClick={go}>Set up billing</button>}
+      </div>
+    );
+  }
+  return null;
 }
 
 function Rail() {
