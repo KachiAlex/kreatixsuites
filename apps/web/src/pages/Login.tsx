@@ -53,8 +53,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
 
   return (
     <div className="auth-wrap">
-      <form className="auth-card" onSubmit={submit}>
-        <BrandLockup size={46} style={{ margin: "0 auto 14px", width: "fit-content" }} />
+      <div>
+        <div className="auth-brand"><BrandLockup light size={64} /></div>
+        <form className="auth-card" onSubmit={submit}>
         <h1>{mode === "login" ? "Welcome back" : "Create your workspace"}</h1>
         <p>Kreatix Suites · Writer · Sheets · Present · PDF</p>
         {error && <div className="auth-error">{error}</div>}
@@ -82,6 +83,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
             : <>Already have an account? <Link to="/login">Sign in</Link></>}
         </div>
       </form>
+      </div>
     </div>
   );
 }

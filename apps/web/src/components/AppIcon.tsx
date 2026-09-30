@@ -15,7 +15,13 @@ const TILE: Record<AppKind, string> = {
 function Glyph({ kind, color }: { kind: AppKind; color: string }) {
   switch (kind) {
     case "suites":
-      return <path d="M18 14v36h8V36l14 14h10L34 33 49 14H39L26 30V14z" fill="#fff" />;
+      // The official mark: vertical bar + left-pointing triangle (the K's arms)
+      return (
+        <g fill="#fff">
+          <rect x="15" y="12" width="10" height="40" rx="5" />
+          <path d="M51 13 30 32 51 51Z" />
+        </g>
+      );
     case "writer":
       // Fountain-pen nib
       return (
@@ -62,26 +68,37 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
   }
 }
 
-/** Kreatix Suites logo lockup — tile + "Kreatix / SUITES / PRODUCTIVITY SUITE"
- *  wordmark, per the brand board. `light` = white wordmark for dark surfaces. */
+/** Kreatix Suites logo lockup per the brand board.
+ *  `light` = the official on-dark artwork (public/brand PNG); otherwise a
+ *  type-rendered equivalent for light surfaces (Kreatix ink / Suites orange
+ *  italic / divider / PRODUCTIVITY SUITE). */
 export function BrandLockup({ light, size = 40, tagline = true, style }: {
   light?: boolean;
   size?: number;
   tagline?: boolean;
   style?: CSSProperties;
 }) {
+  if (light) {
+    return (
+      <img src="/brand/kreatix-suites-dark.png" alt="Kreatix Suites" draggable={false}
+        style={{ height: size, width: "auto", display: "block", ...style }} />
+    );
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", gap: size * 0.28, ...style }}>
       <AppIcon kind="suites" size={size} />
-      <div style={{ lineHeight: 1.12, fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
-        <div style={{ fontSize: size * 0.42, fontWeight: 800, letterSpacing: "-0.02em", color: light ? "#fff" : "var(--ink)" }}>
+      <div style={{ lineHeight: 1.08, fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: size * 0.4, fontWeight: 800, letterSpacing: "-0.02em", color: "var(--ink)" }}>
           Kreatix
         </div>
-        <div style={{ fontSize: size * 0.21, fontWeight: 800, letterSpacing: ".14em", color: "var(--k-orange)", marginTop: size * 0.04 }}>
-          SUITES
+        <div style={{ fontSize: size * 0.27, fontWeight: 800, fontStyle: "italic", color: "var(--k-orange)" }}>
+          Suites
         </div>
         {tagline && (
-          <div style={{ fontSize: size * 0.15, fontWeight: 600, letterSpacing: ".16em", color: light ? "rgba(255,255,255,.55)" : "#9A918B", marginTop: size * 0.07 }}>
+          <div style={{
+            fontSize: size * 0.14, fontWeight: 700, letterSpacing: ".15em", color: "#9A918B",
+            borderTop: "1px solid var(--line)", marginTop: size * 0.08, paddingTop: size * 0.06,
+          }}>
             PRODUCTIVITY SUITE
           </div>
         )}
