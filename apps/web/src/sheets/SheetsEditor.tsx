@@ -12,8 +12,8 @@ import { AppIcon } from "../components/AppIcon";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario } from "./model";
-import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario, RichRun } from "./model";
+import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
@@ -22,7 +22,7 @@ import { runQuery, queryToSheet, type QueryResult } from "./query";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
-import { LinkDialog, SymbolDialog, FunctionWizard, PictureDialog, ScenarioDialog, DataTableDialog, SolverDialog, SpellPanel, CommentDialog } from "./SheetsDialogs";
+import { LinkDialog, SymbolDialog, FunctionWizard, PictureDialog, ScenarioDialog, DataTableDialog, SolverDialog, SpellPanel, CommentDialog, RichTextDialog } from "./SheetsDialogs";
 import { captureScenario } from "./whatif";
 import { spellcheckText } from "../writer/proofing";
 
@@ -98,6 +98,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [spellDlg, setSpellDlg] = useState(false);                  // S19.4 spelling panel
   const [spellOn, setSpellOn] = useState(false);                    // S19.4 underline toggle
   const [commentDlg, setCommentDlg] = useState<string | null>(null); // S19.16 comment thread
+  const [rtDlg, setRtDlg] = useState<string | null>(null);            // S19.10 in-cell rich text
   const [printDlg, setPrintDlg] = useState(false);
   const [propsDlg, setPropsDlg] = useState(false);
   const [protectDlg, setProtectDlg] = useState(false);
@@ -527,7 +528,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     return !!sheet.protected;
   }, [sheet, toast]);
 
-  const commitCell = useCallback((ref: string, raw: string) => {
+  const commitCell = useCallback((ref: string, raw: string, rt?: RichRun[]) => {
     if (anyLocked([ref])) return;
     // data validation — direct entry only (paste bypasses, like Excel)
     if (raw.trim() !== "" && !raw.trimStart().startsWith("=")) {
@@ -547,7 +548,10 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         if (style) s.cells[ref] = { s: style }; else delete s.cells[ref];
         return;
       }
-      s.cells[ref] = { s: s.cells[ref]?.s, ...parseInput(raw), h: stamp() };
+      const parsed = parseInput(raw);
+      // S19.10 — rich runs persist only for plain string values that match
+      const keepRt = rt && !parsed.f && typeof parsed.v === "string" && richRunsMatch(rt, parsed.v) ? rt : undefined;
+      s.cells[ref] = { s: s.cells[ref]?.s, ...parsed, rt: keepRt, link: s.cells[ref]?.link, h: stamp() };
     });
   }, [mutateSheet, sheet, wb, toast, anyLocked, stamp]);
 
@@ -1905,6 +1909,9 @@ export function SheetsEditor({ item, initialDoc, permission }: {
               <div className="hmenu-item" onMouseDown={() => { openLink(sheet.cells[cellMenu.ref]!.link!); setCellMenu(null); }}>Open link</div>
             </>)}
             <div className="hmenu-item" onMouseDown={() => { setLinkDlg(true); setCellMenu(null); }}>Insert link…</div>
+            {!sheet.cells[cellMenu.ref]?.f && (
+              <div className="hmenu-item" onMouseDown={() => { setRtDlg(cellMenu.ref); setCellMenu(null); }}>Format text…</div>
+            )}
             <div className="hmenu-item" onMouseDown={() => { setCommentDlg(cellMenu.ref); setCellMenu(null); }}>
               {sheet.comments?.[cellMenu.ref] ? `Comments (${sheet.comments[cellMenu.ref].replies.length})` : "New comment"}
             </div>
@@ -2159,6 +2166,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             s.comments = Object.keys(next).length ? next : undefined;
           }) : undefined}
           onClose={() => setCommentDlg(null)} />
+      )}
+      {rtDlg && (
+        <RichTextDialog cell={sheet.cells[rtDlg]}
+          onSave={(text, rt) => commitCell(rtDlg, text, rt)}
+          onClose={() => setRtDlg(null)} />
       )}
       {cellShiftDlg && (
         <CellShiftDialog

@@ -5,8 +5,8 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, SheetData, Workbook, Validation, Range, Ref } from "./model";
-import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols, parseInput } from "./model";
+import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, Range, Ref } from "./model";
+import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
@@ -67,13 +67,18 @@ export function csvToSheet(name: string, text: string): SheetData {
 export async function workbookToXLSXBytes(wb: Workbook): Promise<Uint8Array> {
   const XLSX = await xlsxLib();
   const out = buildBook(XLSX, wb);
-  return XLSX.write(out, { type: "array", bookType: "xlsx" }) as Uint8Array;
+  const bytes = XLSX.write(out, { type: "array", bookType: "xlsx" }) as Uint8Array;
+  return patchRichRuns(bytes, wb);
 }
 
 export async function workbookToXLSX(wb: Workbook, filename: string) {
-  const XLSX = await xlsxLib();
-  const out = buildBook(XLSX, wb);
-  XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".xlsx");
+  const bytes = await workbookToXLSXBytes(wb);
+  const blob = new Blob([bytes as unknown as ArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename.replace(/\.[^.]+$/, "") + ".xlsx";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 /** ODS export (S8.4) — same workbook build, ods bookType. */
@@ -185,10 +190,105 @@ function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
   return out;
 }
 
+/** S19.10 — xlsx-js-style drops `cell.r` on write, so rich-text cells are
+ *  patched into the sheet XML post-write as real `<is><r>` inline runs that
+ *  Excel renders as formatted rich text. */
+async function patchRichRuns(bytes: Uint8Array, wb: Workbook): Promise<Uint8Array> {
+  if (!wb.sheets.some((s) => Object.values(s.cells).some((c) => richRunsMatch(c.rt, c.v))))
+    return bytes;
+  const m = await import("jszip");
+  const JSZip = ((m as { default?: unknown }).default ?? m) as {
+    loadAsync: (d: Uint8Array) => Promise<{
+      file: (n: string, d?: string) => { async: (t: string) => Promise<string> } | null;
+      generateAsync: (o: { type: string }) => Promise<Uint8Array>;
+    }>;
+  };
+  const zip = await JSZip.loadAsync(bytes);
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const rPr = (s?: Partial<CellStyle>) => {
+    if (!s) return "";
+    const p = [
+      s.b ? "<b/>" : "", s.i ? "<i/>" : "", s.u ? "<u/>" : "", s.st ? "<strike/>" : "",
+      s.font ? `<rFont val="${esc(s.font)}"/>` : "",
+      s.size ? `<sz val="${s.size}"/>` : "",
+      s.color ? `<color rgb="FF${s.color.replace("#", "").toUpperCase()}"/>` : "",
+    ].join("");
+    return p ? `<rPr>${p}</rPr>` : "";
+  };
+  for (let i = 0; i < wb.sheets.length; i++) {
+    const file = zip.file(`xl/worksheets/sheet${i + 1}.xml`);
+    if (!file) continue;
+    let xml = await file.async("string");
+    let changed = false;
+    for (const [ref, cell] of Object.entries(wb.sheets[i].cells)) {
+      if (!richRunsMatch(cell.rt, cell.v)) continue;
+      const runs = cell.rt!.map((r) =>
+        `<r>${rPr(r.s)}<t xml:space="preserve">${esc(r.t)}</t></r>`).join("");
+      // rewrite the <c> element: keep style attrs, switch to inlineStr
+      const re = new RegExp(`<c r="${ref}"([^/>]*)/>|<c r="${ref}"([^>]*)>.*?</c>`);
+      const mm = re.exec(xml);
+      if (!mm) continue;
+      const attrs = (mm[1] ?? mm[2] ?? "").replace(/\s+t="[^"]*"/, "");
+      xml = xml.slice(0, mm.index) + `<c r="${ref}"${attrs} t="inlineStr"><is>${runs}</is></c>` + xml.slice(mm.index + mm[0].length);
+      changed = true;
+    }
+    if (changed) zip.file(`xl/worksheets/sheet${i + 1}.xml`, xml);
+  }
+  return zip.generateAsync({ type: "uint8array" });
+}
+
+/** S19.10 — the parser surfaces rich text as HTML in `cell.h`; convert the
+ *  simple markup (<b><i><u><s><font><span style>) back into runs. */
+export function richRunsFromHtml(html: string): RichRun[] | undefined {
+  const out: RichRun[] = [];
+  const stack: Partial<CellStyle>[] = [{}];
+  const pushStyle = (tag: string, attrs: string) => {
+    const s: Partial<CellStyle> = { ...stack[stack.length - 1] };
+    const t = tag.toLowerCase();
+    if (t === "b" || t === "strong") s.b = true;
+    if (t === "i" || t === "em") s.i = true;
+    if (t === "u" || t === "ins") s.u = true;
+    if (t === "s" || t === "strike" || t === "del") s.st = true;
+    const color = attrs.match(/color:\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|[a-zA-Z]+)/)?.[1]
+      ?? attrs.match(/\bcolor\s*=\s*"?([^">\s]+)/)?.[1];
+    if (color) s.color = color;
+    const size = attrs.match(/font-size:\s*([\d.]+)/)?.[1];
+    if (size) s.size = parseFloat(size);
+    const font = attrs.match(/font-family:\s*([^;"]+)/)?.[1] ?? attrs.match(/\bface\s*=\s*"?([^">\s]+)/)?.[1];
+    if (font) s.font = font.trim();
+    stack.push(s);
+  };
+  const dec = (t: string) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+  const re = /<\s*(\/?)\s*([a-zA-Z]+)([^>]*)>|([^<]+)/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = re.exec(html))) {
+    if (mm[4] !== undefined) {
+      const t = dec(mm[4]);
+      if (t) out.push({ t, s: richStyleKey(stack[stack.length - 1]) ? { ...stack[stack.length - 1] } : undefined });
+    } else if (mm[1]) {
+      if (stack.length > 1) stack.pop();
+    } else {
+      const tag = mm[2].toLowerCase();
+      if (tag === "br") { out.push({ t: "\n" }); continue; }
+      if ((mm[3] ?? "").trimEnd().endsWith("/")) continue;
+      pushStyle(tag, mm[3] ?? "");
+    }
+  }
+  const merged: RichRun[] = [];
+  for (const r of out) {
+    const last = merged[merged.length - 1];
+    if (last && richStyleKey(last.s) === richStyleKey(r.s)) last.t += r.t;
+    else merged.push(r);
+  }
+  return merged.length && merged.some((r) => r.s) ? merged : undefined;
+}
+
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const XLSX = await xlsxLib();
   const data = await file.arrayBuffer();
-  const wb = XLSX.read(data, { cellFormula: true, cellStyles: true });
+  const wb = XLSX.read(data, { cellFormula: true, cellStyles: true, cellHTML: true });
   const sheets: SheetData[] = wb.SheetNames.map((name) => {
     const ws = wb.Sheets[name];
     const cells: Record<string, CellData> = {};
@@ -203,6 +303,11 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       if (xl) cell.link = /^https?:\/\//i.test(xl) || xl.includes("://") ? xl : `#${xl}`;
       const st = styleFromXLSX(x);
       if (st) cell.s = st;
+      // S19.10 — in-cell rich text via the .h HTML rendering
+      if (!cell.f && typeof cell.v === "string" && typeof x.h === "string") {
+        const rt = richRunsFromHtml(x.h);
+        if (richRunsMatch(rt, cell.v)) cell.rt = rt;
+      }
       if (cell.f || cell.v !== undefined || cell.s) cells[ref] = cell;
     }
     const sheet: SheetData = { name, cells };
@@ -240,7 +345,7 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
 
 /** Internal copy buffer — carries formulas + styles for Paste Special.
  *  (System clipboard only gets TSV; this lives for the session.) */
-export interface CopiedCell { v?: CellData["v"]; f?: string; s?: CellData["s"]; eval?: unknown }
+export interface CopiedCell { v?: CellData["v"]; f?: string; s?: CellData["s"]; rt?: CellData["rt"]; eval?: unknown }
 let copyBuffer: { cells: CopiedCell[][]; w: number; h: number; origin: { col: number; row: number } } | null = null;
 export const setCopyBuffer = (b: typeof copyBuffer) => { copyBuffer = b; };
 export const getCopyBuffer = () => copyBuffer;
@@ -255,7 +360,9 @@ export function rangeToCells(sheet: SheetData, range: { c1: number; r1: number; 
       const ref = toA1(c, r);
       const cell = sheet.cells[ref];
       const res = evals.get(ref);
-      row.push(cell ? { v: cell.v, f: cell.f, s: cell.s ? { ...cell.s } : undefined, eval: res?.value } : { eval: null });
+      row.push(cell ? { v: cell.v, f: cell.f, s: cell.s ? { ...cell.s } : undefined,
+        rt: cell.rt ? cell.rt.map((r) => ({ t: r.t, s: r.s ? { ...r.s } : undefined })) : undefined,
+        eval: res?.value } : { eval: null });
     }
     out.push(row);
   }
@@ -294,12 +401,13 @@ export function pasteCells(
     if (op !== "none") {
       // arithmetic paste — operate on evaluated source value vs dest value
       const base = prev?.f ? evals?.get(ref)?.value ?? prev.v : prev?.v;
-      dst[ref] = { ...prev, v: applyOp(base ?? null, cell.eval), f: undefined };
+      dst[ref] = { ...prev, v: applyOp(base ?? null, cell.eval), f: undefined, rt: undefined };
       return;
     }
-    if (mode === "values") dst[ref] = { ...prev, v: (cell.eval ?? cell.v) as CellData["v"], f: undefined };
-    else if (mode === "formulas") dst[ref] = { v: cell.v, f, s: prev?.s };
-    else dst[ref] = { v: cell.v, f, s: cell.s ? { ...cell.s } : undefined };
+    if (mode === "values") dst[ref] = { ...prev, v: (cell.eval ?? cell.v) as CellData["v"], f: undefined, rt: undefined };
+    else if (mode === "formulas") dst[ref] = { v: cell.v, f, s: prev?.s, rt: cell.rt ? cell.rt.map((r) => ({ ...r })) : undefined };
+    else dst[ref] = { v: cell.v, f, s: cell.s ? { ...cell.s } : undefined,
+      rt: !f && cell.rt ? cell.rt.map((r) => ({ t: r.t, s: r.s ? { ...r.s } : undefined })) : undefined };
   }));
 }
 
@@ -566,6 +674,7 @@ export function replaceInCell(cell: CellData, query: string, replacement: string
   if (cell.v != null && (matchCase ? String(cell.v).includes(query) : String(cell.v).toLowerCase().includes(query.toLowerCase()))) {
     const nv = sub(String(cell.v));
     cell.v = nv !== "" && !isNaN(Number(nv)) ? Number(nv) : nv;
+    cell.rt = undefined;
     return true;
   }
   return false;

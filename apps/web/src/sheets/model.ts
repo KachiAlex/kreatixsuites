@@ -40,6 +40,120 @@ export interface CellData {
   ent?: { kind: string; name: string; props: Record<string, unknown> };
   /** S19.1 — hyperlink target: absolute URL or internal "#Sheet!A1" ref */
   link?: string;
+  /** S19.10 — in-cell rich text: styled runs that concatenate to `v`.
+   *  Only valid when `v` is a plain string; formulas/formatting ignore it. */
+  rt?: RichRun[];
+}
+
+/** A run of cell text with an optional style override (S19.10). */
+export interface RichRun { t: string; s?: Partial<CellStyle>; }
+
+/** Canonical key for a run style — ignores empty/unset values so
+ *  {b:true} merges cleanly with {} and {u:false}. */
+export function richStyleKey(s?: Partial<CellStyle>): string {
+  const e = Object.entries(s ?? {})
+    .filter(([, v]) => v !== undefined && v !== null && v !== false && v !== "")
+    .sort(([a], [b]) => a.localeCompare(b));
+  return e.length ? JSON.stringify(e) : "";
+}
+const cleanStyle = (s: Partial<CellStyle>): Partial<CellStyle> | undefined =>
+  richStyleKey(s) ? s : undefined;
+
+/** Apply `style` to the [from,to) char range of `text`, given existing
+ *  `runs` (may be undefined). Splits runs at the boundaries, overlays the
+ *  style (a false/"" value deletes that property), merges same-style
+ *  neighbours. Returns undefined when everything ends unstyled — callers
+ *  should then drop `rt` to keep the cell lean. */
+export function richStyleRuns(
+  text: string, runs: RichRun[] | undefined,
+  from: number, to: number, style: Partial<CellStyle>,
+): RichRun[] | undefined {
+  const base: RichRun[] = runs?.length && runs.map((r) => r.t).join("") === text
+    ? runs.map((r) => ({ t: r.t, s: r.s ? { ...r.s } : undefined }))
+    : [{ t: text }];
+  const lo = Math.max(0, from), hi = Math.min(text.length, to);
+  const out: RichRun[] = [];
+  let pos = 0;
+  for (const r of base) {
+    const len = r.t.length;
+    // split points of this run relative to the absolute [lo,hi) window
+    const c0 = Math.max(0, Math.min(len, lo - pos));
+    const c1 = Math.max(c0, Math.min(len, hi - pos));
+    for (const [a, b, styled] of [[0, c0, false], [c0, c1, true], [c1, len, false]] as const) {
+      if (b <= a) continue;
+      const merged = styled
+        ? cleanStyle({ ...(r.s ?? {}), ...Object.fromEntries(
+            Object.entries(style).map(([k, v]) => [k, v === false || v === "" || v === undefined
+              ? undefined : v])),
+          })
+        : r.s;
+      out.push({ t: r.t.slice(a, b), s: merged });
+    }
+    pos += len;
+  }
+  // merge adjacent runs with identical styles
+  const merged: RichRun[] = [];
+  for (const r of out) {
+    const last = merged[merged.length - 1];
+    if (last && richStyleKey(last.s) === richStyleKey(r.s)) last.t += r.t;
+    else merged.push(r);
+  }
+  return merged.some((r) => r.s) ? merged : undefined;
+}
+
+/** True when the runs exactly represent `text` (guard for stale rt). */
+export const richRunsMatch = (rt: RichRun[] | undefined, v: unknown): rt is RichRun[] =>
+  !!rt?.length && typeof v === "string" && rt.map((r) => r.t).join("") === v;
+
+/** Re-map runs across a text edit: finds the common prefix/suffix between
+ *  the old and new text and carries run styles across; the inserted/changed
+ *  middle inherits the style at the edit point (Excel extends the run the
+ *  caret sits in). Returns undefined when the runs don't match `oldText`. */
+export function richRunsForEdit(oldText: string, rt: RichRun[] | undefined, newText: string): RichRun[] | undefined {
+  if (!richRunsMatch(rt, oldText)) return undefined;
+  let p = 0;
+  const maxP = Math.min(oldText.length, newText.length);
+  while (p < maxP && oldText.charCodeAt(p) === newText.charCodeAt(p)) p++;
+  let s = 0;
+  const maxS = Math.min(oldText.length - p, newText.length - p);
+  while (s < maxS && oldText.charCodeAt(oldText.length - 1 - s) === newText.charCodeAt(newText.length - 1 - s)) s++;
+  // style at the edit point — the run containing char p-1 falls back to p
+  let insStyle: Partial<CellStyle> | undefined;
+  {
+    let pos = 0;
+    for (const r of rt) {
+      if (p > 0 ? pos <= p - 1 && p - 1 < pos + r.t.length : p < pos + r.t.length) { insStyle = r.s; break; }
+      pos += r.t.length;
+    }
+  }
+  const out: RichRun[] = [];
+  let pos = 0;
+  for (const r of rt) {
+    const a = pos, b = pos + r.t.length;
+    // prefix slice ∩ [0,p) — same chars in the new text
+    if (a < p) out.push({ t: r.t.slice(0, Math.min(r.t.length, p - a)), s: r.s });
+    // suffix slice ∩ [oldLen-s, oldLen) → maps to newLen-s
+    const sufFrom = Math.max(a, oldText.length - s);
+    if (sufFrom < b) {
+      const off = newText.length - oldText.length;
+      out.push({ t: newText.slice(sufFrom + off, b + off), s: r.s });
+    }
+    pos = b;
+  }
+  const mid = newText.slice(p, newText.length - s);
+  // find insertion index: after the prefix runs
+  let idx = 0, acc = 0;
+  while (idx < out.length && acc + out[idx].t.length <= p) { acc += out[idx].t.length; idx++; }
+  if (mid) out.splice(idx, 0, { t: mid, s: insStyle });
+  // merge same-style neighbours
+  const merged: RichRun[] = [];
+  for (const r of out) {
+    const last = merged[merged.length - 1];
+    if (r.t === "") continue;
+    if (last && richStyleKey(last.s) === richStyleKey(r.s)) last.t += r.t;
+    else merged.push(r);
+  }
+  return merged.length && merged.some((r) => r.s) ? merged : undefined;
 }
 
 /** S19.1 — floating object layered over the grid (images for now; the

@@ -1,10 +1,10 @@
 // Kreatix Sheets — dialogs for the Excel-parity batch (S19):
 //   Insert Link, Insert Symbol, Function Wizard, floating Picture,
 //   Scenario Manager, Data Table, Solver, spell-check panel.
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { SUPPORTED_FORMULAS } from "hot-formula-parser";
-import type { CommentThread, Scenario, SheetData, SheetObject, Workbook } from "./model";
-import { parseA1, parseRange } from "./model";
+import type { CellData, CellStyle, CommentThread, RichRun, Scenario, SheetData, SheetObject, Workbook } from "./model";
+import { parseA1, parseRange, richStyleKey } from "./model";
 import { SYMBOL_GROUPS } from "../writer/SpecialChars";
 import { checkWord, suggest, addToDict, getCustomDict, spellcheckText, docVocabulary } from "../writer/proofing";
 import { refsInRangeText, runDataTable, runSolver, type SolverConstraint } from "./whatif";
@@ -139,6 +139,119 @@ export function SymbolDialog({ onPick, onClose }: { onPick: (ch: string) => void
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
         <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+      </div>
+    </Back>
+  );
+}
+
+// ---------- S19.10 In-cell rich text ----------
+
+/** Convert run styles → inline CSS for the editor's initial markup. */
+const runToStyle = (s?: Partial<CellStyle>): string => !s ? "" : [
+  s.b ? "font-weight:700" : "", s.i ? "font-style:italic" : "",
+  s.u || s.st ? `text-decoration:${[s.u ? "underline" : "", s.st ? "line-through" : ""].filter(Boolean).join(" ")}` : "",
+  s.color ? `color:${s.color}` : "", s.bg ? `background:${s.bg}` : "",
+  s.font ? `font-family:${s.font}` : "", s.size ? `font-size:${s.size}px` : "",
+].filter(Boolean).join(";");
+
+const escHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Walk the editor DOM → runs via computed styles, diffed against the
+ *  baseline (the container's own defaults). Deterministic regardless of the
+ *  markup execCommand produced. */
+function domToRuns(root: HTMLElement): RichRun[] {
+  const base = getComputedStyle(root);
+  const out: RichRun[] = [];
+  const walk = (el: Node) => {
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = (node as HTMLElement).tagName;
+        if (tag === "BR") { out.push({ t: "\n" }); continue; }
+        // contentEditable wraps Enter-lines in <div>/<p> — a boundary newline
+        if ((tag === "DIV" || tag === "P") && node.previousSibling) out.push({ t: "\n" });
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = node.textContent ?? "";
+        if (!t) continue;
+        const cs = getComputedStyle(node.parentElement ?? root);
+        const s: Partial<CellStyle> = {};
+        if (Number(cs.fontWeight) >= 600 || cs.fontWeight === "bold") s.b = true;
+        if (cs.fontStyle === "italic") s.i = true;
+        if (cs.textDecorationLine.includes("underline")) s.u = true;
+        if (cs.textDecorationLine.includes("line-through")) s.st = true;
+        if (cs.color !== base.color) s.color = cs.color;
+        if (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent" && cs.backgroundColor !== base.backgroundColor) s.bg = cs.backgroundColor;
+        if (cs.fontFamily !== base.fontFamily) s.font = cs.fontFamily.replace(/^["']|["']$/g, "");
+        if (parseFloat(cs.fontSize) !== parseFloat(base.fontSize)) s.size = parseFloat(cs.fontSize);
+        out.push({ t, s: richStyleKey(s) ? s : undefined });
+      } else walk(node);
+    }
+  };
+  walk(root);
+  // merge adjacent identical runs
+  const merged: RichRun[] = [];
+  for (const r of out) {
+    const last = merged[merged.length - 1];
+    if (last && richStyleKey(last.s) === richStyleKey(r.s)) last.t += r.t;
+    else merged.push(r);
+  }
+  return merged;
+}
+
+export function RichTextDialog({ cell, onSave, onClose }: {
+  cell: CellData | undefined;
+  onSave: (text: string, rt?: RichRun[]) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const html = useMemo(() => {
+    const v = cell?.v;
+    const rt = cell?.rt;
+    if (typeof v !== "string") return escHtml(String(v ?? ""));
+    if (rt?.length && rt.map((r) => r.t).join("") === v)
+      return rt.map((r) => r.s ? `<span style="${runToStyle(r.s)}">${escHtml(r.t)}</span>` : escHtml(r.t)).join("");
+    return escHtml(v);
+  }, [cell]);
+  useEffect(() => { document.execCommand("styleWithCSS", false, "true"); ref.current?.focus(); }, []);
+  const fmt = (cmd: string, val?: string) => { ref.current?.focus(); document.execCommand(cmd, false, val); };
+  const save = () => {
+    const el = ref.current;
+    if (!el) return;
+    const text = el.innerText.replace(/\n$/, "");
+    const rt = domToRuns(el);
+    onSave(text, rt.some((r) => r.s) ? rt : undefined);
+    onClose();
+  };
+  return (
+    <Back onClose={onClose} width={440}>
+      <h3>Format cell text</h3>
+      <div className="frow" style={{ gap: 4, marginTop: 6 }}>
+        <button className="btn-ghost btn-sm" style={{ fontWeight: 700 }} onMouseDown={(e) => e.preventDefault()} onClick={() => fmt("bold")}>B</button>
+        <button className="btn-ghost btn-sm" style={{ fontStyle: "italic" }} onMouseDown={(e) => e.preventDefault()} onClick={() => fmt("italic")}>I</button>
+        <button className="btn-ghost btn-sm" style={{ textDecoration: "underline" }} onMouseDown={(e) => e.preventDefault()} onClick={() => fmt("underline")}>U</button>
+        <button className="btn-ghost btn-sm" style={{ textDecoration: "line-through" }} onMouseDown={(e) => e.preventDefault()} onClick={() => fmt("strikeThrough")}>S</button>
+        <label className="btn-ghost btn-sm" style={{ cursor: "pointer", padding: "3px 8px" }} title="Text color">A
+          <input type="color" style={{ position: "absolute", opacity: 0, width: 0 }} onChange={(e) => fmt("foreColor", e.target.value)} /></label>
+        <label className="btn-ghost btn-sm" style={{ cursor: "pointer", padding: "3px 8px" }} title="Highlight">▨
+          <input type="color" style={{ position: "absolute", opacity: 0, width: 0 }} onChange={(e) => fmt("hiliteColor", e.target.value)} /></label>
+        <select style={sel} onChange={(e) => e.target.value && fmt("fontName", e.target.value)} defaultValue="">
+          <option value="">Font…</option>
+          {["Inter", "Arial", "Calibri", "Cambria", "Consolas", "Courier New", "Georgia", "Segoe UI", "Times New Roman", "Verdana"].map((f) => <option key={f}>{f}</option>)}
+        </select>
+        <select style={sel} onChange={(e) => e.target.value && fmt("fontSize", e.target.value)} defaultValue="">
+          <option value="">Size…</option>
+          {[["1", "8"], ["2", "10"], ["3", "12"], ["4", "14"], ["5", "18"], ["6", "24"], ["7", "32"]].map(([l, px]) => <option key={l} value={l}>{px}px</option>)}
+        </select>
+      </div>
+      <div ref={ref} contentEditable suppressContentEditableWarning
+        style={{ minHeight: 70, marginTop: 10, padding: 8, border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 13, outline: "none", whiteSpace: "pre-wrap" }}
+        dangerouslySetInnerHTML={{ __html: html }} />
+      <p style={{ fontSize: 11, color: "#8B8480", margin: "6px 0 0" }}>
+        Select text, then apply formatting — saves as rich runs on the cell.
+      </p>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+        <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+        <button className="btn-primary btn-sm" onClick={save}>Save</button>
       </div>
     </Back>
   );

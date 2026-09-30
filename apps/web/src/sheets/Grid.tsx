@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type MouseEvent, type CSSProperties } from "react";
-import type { SheetData, Range, Ref, Workbook, SheetObject } from "./model";
-import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden } from "./model";
+import type { SheetData, Range, Ref, Workbook, SheetObject, RichRun, CellStyle } from "./model";
+import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden, richStyleRuns, richRunsMatch, richRunsForEdit } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
 import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects, columnSuggestions } from "./io";
@@ -25,7 +25,7 @@ interface GridProps {
   addSelection?: (r: Range) => void;
   /** drag-extend the most recently added range */
   extendSelection?: (r: Range) => void;
-  onCommit: (ref: string, raw: string) => void;
+  onCommit: (ref: string, raw: string, rt?: RichRun[]) => void;
   onClear: (refs: string[]) => void;
   onPaste: (anchor: Ref, tsv: string, html?: string) => void;
   onPasteImage?: (anchor: Ref, dataUrl: string) => void;
@@ -77,7 +77,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   const [objDrag, setObjDrag] = useState<{ id: string; dx: number; dy: number; x: number; y: number; w: number; h: number; mode: "move" | "size" } | null>(null);
   const [qaOpen, setQaOpen] = useState(false);
   const allSels = selections ?? [selection];
-  const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
+  const [editing, setEditing] = useState<{ ref: Ref; value: string; rt?: RichRun[] } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState({ r0: 0, r1: 80, c0: 0, c1: 26 });
   const [resizePrev, setResizePrev] = useState<{ axis: "col" | "row"; i: number; size: number } | null>(null);
@@ -234,14 +234,19 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const m = mergeMaps.covered.get(toA1(ref.col, ref.row));
     const target = m ? { col: m.c1, row: m.r1 } : ref;
     const cell = sheet.cells[toA1(target.col, target.row)];
-    setEditing({ ref: target, value: initial ?? (cell?.f ? `=${cell.f}` : cell?.v === undefined || cell.v === null ? "" : String(cell.v)) });
+    const seedV = initial ?? (cell?.f ? `=${cell.f}` : cell?.v === undefined || cell.v === null ? "" : String(cell.v));
+    // S19.10 — carry the existing runs into the edit session so Ctrl+B/I/U
+    // can extend them; typing a fresh value drops them (richRunsMatch guard)
+    setEditing({ ref: target, value: seedV, rt: !cell?.f && richRunsMatch(cell?.rt, cell?.v) ? cell!.rt!.map((r) => ({ ...r })) : undefined });
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const commitEdit = (move?: { dc: number; dr: number }) => {
     if (!editing) return;
     if (editing.value.trim() !== "" || sheet.cells[toA1(editing.ref.col, editing.ref.row)]) {
-      onCommit(toA1(editing.ref.col, editing.ref.row), editing.value);
+      // S19.10 — rich runs persist only when they still match the text
+      const rt = richRunsMatch(editing.rt, editing.value) ? editing.rt : undefined;
+      onCommit(toA1(editing.ref.col, editing.ref.row), editing.value, rt);
     }
     setEditing(null);
     if (move) moveSel(editing.ref.col + move.dc, editing.ref.row + move.dr, false);
@@ -506,9 +511,21 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     }
     // S19.1 — link styling + navigation (cell.link or HYPERLINK() result)
     const link = cell?.link ?? res?.link ?? null;
+    // S19.10 — in-cell rich text: styled runs replace the flat content
+    const runs = !cell?.f && richRunsMatch(cell?.rt, cell?.v) ? cell!.rt! : null;
+    const runCss = (rs?: Partial<CellStyle>): CSSProperties => rs ? {
+      fontWeight: rs.b ? 700 : undefined,
+      fontStyle: rs.i ? "italic" : undefined,
+      textDecoration: [rs.u ? "underline" : "", rs.st ? "line-through" : ""].filter(Boolean).join(" ") || undefined,
+      color: rs.color, background: rs.bg, fontFamily: rs.font,
+      fontSize: rs.size ? `${rs.size}px` : undefined,
+    } : {};
     // IMAGE() renders its result URL as an in-cell image (S18.1)
     const isImgFn = /^IMAGE\s*\(/i.test(cell?.f ?? "");
     if (spark || cell?.img || cell?.ent || (isImgFn && typeof res?.value === "string")) content = null;
+    const richContent = runs && content !== null
+      ? <>{runs.map((rr, i) => <span key={i} style={runCss(rr.s)}>{rr.t}</span>)}</>
+      : content;
     if (tot && c >= tot.range.c1 && c <= tot.range.c2) {
       if (c === tot.range.c1) content = "Totals";
       else {
@@ -584,7 +601,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           <span className="cell-link" title={link}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onOpenLink?.(link); }}>
-            {s.rotate ? <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span> : content}
+            {s.rotate ? <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{richContent}</span> : richContent}
           </span>
         ) : s.align === "centerAcross" ? (() => {
           // S19.11 — center the text across the contiguous run of
@@ -592,12 +609,12 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           let e2 = c;
           while (sheet.cells[toA1(e2 + 1, r)]?.s?.align === "centerAcross") e2++;
           const wRun = colX[e2] + colW(e2) - colX[c] - 8;
-          return <span className="cell-ca" style={{ width: wRun }}>{content}</span>;
+          return <span className="cell-ca" style={{ width: wRun }}>{richContent}</span>;
         })() : s.rotate ? (
-          <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
+          <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{richContent}</span>
         ) : s.shrink ? (
-          <span className="cell-shrink">{content}</span>
-        ) : content}
+          <span className="cell-shrink">{richContent}</span>
+        ) : richContent}
         {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
         {noted?.has(ref) && <span className="cell-flag note" />}
         {commented?.has(ref) && <span className="cell-flag cmt" title="Has comment thread" />}
@@ -743,12 +760,31 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
             wrapStyle={{ position: "absolute", left: HEADER_W + colX[editing.ref.col], top: HEADER_H + rowY[editing.ref.row], width: colW(editing.ref.col) + 60, zIndex: 40 }}
             inputStyle={{ position: "relative" }}
             value={editing.value}
-            onValue={(v) => setEditing({ ...editing, value: v })}
+            onValue={(v) => setEditing({ ...editing, value: v, rt: v.startsWith("=") ? undefined : richRunsForEdit(editing.value, editing.rt, v) })}
             onBlur={() => commitEdit()}
             onKeyDown={(e) => {
               if (e.key === "Enter") { e.preventDefault(); commitEdit({ dc: 0, dr: 1 }); }
               else if (e.key === "Tab") { e.preventDefault(); commitEdit({ dc: 1, dr: 0 }); }
               else if (e.key === "Escape") { setEditing(null); containerRef.current?.focus(); }
+              // S19.10 — rich-text shortcuts on the input's selection
+              else if ((e.ctrlKey || e.metaKey) && ["b", "i", "u"].includes(e.key.toLowerCase())
+                && !editing.value.startsWith("=")) {
+                const el = inputRef.current;
+                const from = el?.selectionStart ?? 0, to = el?.selectionEnd ?? 0;
+                if (el && to > from) {
+                  e.preventDefault();
+                  const key = { b: "b", i: "i", u: "u" }[e.key.toLowerCase()] as "b" | "i" | "u";
+                  // toggle: off if the whole range already carries the style
+                  const probe = (editing.rt ?? [{ t: editing.value }]);
+                  let pos = 0, already = true;
+                  for (const r of probe) {
+                    if (pos < to && pos + r.t.length > from && !r.s?.[key]) already = false;
+                    pos += r.t.length;
+                  }
+                  const rt = richStyleRuns(editing.value, editing.rt, from, to, { [key]: !already });
+                  setEditing({ ...editing, rt });
+                }
+              }
             }} />
         )}
         {/* column autocomplete — non-formula text suggests prior column values (S12.6) */}

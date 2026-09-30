@@ -1,10 +1,10 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator, explainFormula, toR1C1 } from "./src/sheets/engine";
-import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline } from "./src/sheets/model";
+import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline, richStyleRuns, richRunsForEdit, richRunsMatch } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
-import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./src/sheets/io";
+import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs, richRunsFromHtml } from "./src/sheets/io";
 import { pivotChartRange } from "./src/sheets/Chart";
 import { formatValue } from "./src/sheets/format";
 
@@ -1595,6 +1595,85 @@ await (async () => {
     assertEq(sc.cells.B2, "low");
     assertEq(sc.cells.B3, null); // formula cells snapshot as null value
   });
+
+  // ---------- S19.10 in-cell rich text ----------
+
+  t("S19.10 richStyleRuns styles a substring", () => {
+    const rt = richStyleRuns("hello world", undefined, 6, 11, { b: true });
+    assertEq(rt, [{ t: "hello " }, { t: "world", s: { b: true } }]);
+    assert(richRunsMatch(rt, "hello world"), "runs concat to v");
+  });
+
+  t("S19.10 styling inside an existing run splits + merges", () => {
+    // bold middle of a red run → 3 runs; then bold the whole → merged
+    const base = [{ t: "abcdef", s: { color: "#f00" } }];
+    const rt = richStyleRuns("abcdef", base, 2, 4, { b: true });
+    assertEq(rt?.length, 3);
+    assertEq(rt?.[1], { t: "cd", s: { color: "#f00", b: true } });
+    const all = richStyleRuns("abcdef", rt, 0, 6, { b: true });
+    assertEq(all, [{ t: "abcdef", s: { color: "#f00", b: true } }]);
+  });
+
+  t("S19.10 toggling a style off removes just that property", () => {
+    const rt = richStyleRuns("hello", undefined, 0, 5, { b: true })!;
+    const off = richStyleRuns("hello", rt, 0, 5, { b: false });
+    assertEq(off, undefined); // no styles left → rt dropped
+  });
+
+  t("S19.10 overlapping partial toggle only hits the range", () => {
+    const rt = richStyleRuns("aabbcc", [{ t: "aabb", s: { u: true } }, { t: "cc" }], 1, 5, { i: true });
+    assertEq(rt?.map((r) => r.t), ["a", "abb", "c", "c"]);
+    assertEq(rt?.[0].s, { u: true });
+    assertEq(rt?.[1].s, { u: true, i: true });
+    assertEq(rt?.[2].s, { i: true });
+    assertEq(rt?.[3].s, undefined);
+  });
+
+  t("S19.10 richRunsForEdit shifts boundaries on typing", () => {
+    const rt = richStyleRuns("hello world", undefined, 6, 11, { b: true })!;
+    // insert "big " at pos 6 → bold moves to "world"
+    const rt2 = richRunsForEdit("hello world", rt, "hello big world")!;
+    assert(richRunsMatch(rt2, "hello big world"), "still matches");
+    const bold = rt2.filter((r) => r.s?.b);
+    assertEq(bold.length, 1);
+    assertEq(bold[0].t, "world");
+  });
+
+  t("S19.10 inserted text inherits the edit-point style", () => {
+    const rt = richStyleRuns("abcd", undefined, 0, 4, { i: true })!;
+    const rt2 = richRunsForEdit("abcd", rt, "abXcd")!;
+    assertEq(rt2, [{ t: "abXcd", s: { i: true } }]); // X joined the italic run
+  });
+
+  t("S19.10 deletion merges surviving neighbours", () => {
+    const rt = [{ t: "aa", s: { b: true } }, { t: "MID" }, { t: "zz", s: { b: true } }];
+    const rt2 = richRunsForEdit("aaMIDzz", rt, "aazz")!;
+    assertEq(rt2, [{ t: "aazz", s: { b: true } }]); // both bold ends merge
+  });
+
+  t("S19.10 richRunsFromHtml parses sheetjs markup", () => {
+    const rt = richRunsFromHtml('<span style="">plain <b>bold</b> <span style="color:#ff0000">red</span> <i><u>iu</u></i></span>');
+    assert(richRunsMatch(rt, "plain bold red iu"), "concat matches");
+    assertEq(rt?.find((r) => r.t === "bold")?.s, { b: true });
+    assertEq(rt?.find((r) => r.t === "red")?.s, { color: "#ff0000" });
+    assertEq(rt?.find((r) => r.t === "iu")?.s, { i: true, u: true });
+  });
+
+  // XLSX round-trip: rt → inline <r> runs → .h HTML → rt
+  {
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      A1: { v: "hello world", rt: [{ t: "hello " }, { t: "world", s: { b: true, color: "#ff0000" } }] },
+      A2: { v: "plain" },
+    } }] };
+    const bytes = await workbookToXLSXBytes(wb);
+    const back = await xlsxToWorkbook(new File([bytes as unknown as ArrayBuffer], "rt.xlsx"));
+    const c = back.sheets[0].cells.A1;
+    assertEq(c.v, "hello world");
+    assert(richRunsMatch(c.rt, "hello world"), "rt round-trips");
+    const bold = c.rt?.find((r) => r.s?.b);
+    assert(bold?.t === "world", "bold run survives (" + JSON.stringify(c.rt) + ")");
+    assertEq(back.sheets[0].cells.A2.rt, undefined);
+  }
 })();
 
 console.log(`${passed} passed, ${failed} failed`);
