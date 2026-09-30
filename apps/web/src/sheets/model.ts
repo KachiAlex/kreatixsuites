@@ -16,7 +16,7 @@ export interface CellStyle {
   size?: number;         // pt
   color?: string;
   bg?: string;
-  align?: "left" | "center" | "right";
+  align?: "left" | "center" | "right" | "justify" | "distributed" | "fill" | "centerAcross";
   valign?: "top" | "middle" | "bottom";
   wrap?: boolean;
   indent?: number;       // 0-15 (each ≈ 1ch * 2)
@@ -38,6 +38,29 @@ export interface CellData {
   /** S18.1 — rich data type (stock/geography-style entity). Formulas read
    *  fields via `A1.Prop`; the cell displays `name` with a kind glyph. */
   ent?: { kind: string; name: string; props: Record<string, unknown> };
+  /** S19.1 — hyperlink target: absolute URL or internal "#Sheet!A1" ref */
+  link?: string;
+}
+
+/** S19.1 — floating object layered over the grid (images for now; the
+ *  shape is deliberately extensible to text boxes later). Coordinates are
+ *  px offsets from the grid's top-left (below the headers). */
+export interface SheetObject {
+  id: string;
+  kind: "image";
+  /** data URL or external image URL */
+  src: string;
+  x: number; y: number; w: number; h: number;
+  name?: string;
+  /** alt text for accessibility */
+  alt?: string;
+}
+
+/** S19.6 — a named what-if scenario: cell snapshots applied on demand.
+ *  `cells` maps A1 refs to the values they should take when shown. */
+export interface Scenario {
+  name: string;
+  cells: Record<string, string | number | boolean | null>;
 }
 
 export interface CondFormat {
@@ -165,6 +188,20 @@ export interface SheetData {
   /** S15.3 — record changes into `changeLog` for accept/reject review */
   trackChanges?: boolean;
   changeLog?: { ref: string; prev?: CellData; next?: CellData; by?: string; at: number }[];
+  /** S19.1 — floating objects layered over the grid */
+  objects?: SheetObject[];
+  /** S19.6 — what-if scenarios */
+  scenarios?: Scenario[];
+  /** S19.16 — threaded cell comments (discussion-style, alongside `notes`) */
+  comments?: Record<string, CommentThread>;
+}
+
+/** S19.16 — a comment thread anchored to a cell. */
+export interface CommentThread {
+  by?: string;
+  at: number;
+  resolved?: boolean;
+  replies: { by?: string; at: number; text: string }[];
 }
 
 export interface FilterCrit {

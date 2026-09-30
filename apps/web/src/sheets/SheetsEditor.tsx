@@ -12,7 +12,7 @@ import { AppIcon } from "../components/AppIcon";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
-import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec } from "./model";
+import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
@@ -22,6 +22,9 @@ import { runQuery, queryToSheet, type QueryResult } from "./query";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
+import { LinkDialog, SymbolDialog, FunctionWizard, PictureDialog, ScenarioDialog, DataTableDialog, SolverDialog, SpellPanel, CommentDialog } from "./SheetsDialogs";
+import { captureScenario } from "./whatif";
+import { spellcheckText } from "../writer/proofing";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -83,6 +86,18 @@ export function SheetsEditor({ item, initialDoc, permission }: {
   const [subtotalDlg, setSubtotalDlg] = useState(false);
   const [slicerDlg, setSlicerDlg] = useState(false);
   const [seekDlg, setSeekDlg] = useState(false);
+  // ---- S19 Excel-parity batch ----
+  const [showFormulas, setShowFormulas] = useState(false);          // S19.2 Ctrl+`
+  const [linkDlg, setLinkDlg] = useState(false);                    // S19.1 insert/edit link
+  const [symbolDlg, setSymbolDlg] = useState(false);                // S19.5 insert symbol
+  const [fnWiz, setFnWiz] = useState(false);                        // S19.8 function wizard
+  const [picDlg, setPicDlg] = useState(false);                      // S19.3 floating picture
+  const [scenDlg, setScenDlg] = useState(false);                    // S19.6 scenario manager
+  const [dtDlg, setDtDlg] = useState(false);                        // S19.6 data table
+  const [solverDlg, setSolverDlg] = useState(false);                // S19.6 solver
+  const [spellDlg, setSpellDlg] = useState(false);                  // S19.4 spelling panel
+  const [spellOn, setSpellOn] = useState(false);                    // S19.4 underline toggle
+  const [commentDlg, setCommentDlg] = useState<string | null>(null); // S19.16 comment thread
   const [printDlg, setPrintDlg] = useState(false);
   const [propsDlg, setPropsDlg] = useState(false);
   const [protectDlg, setProtectDlg] = useState(false);
@@ -344,6 +359,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
 
   // cell notes (S3.5)
   const notedCells = useMemo(() => new Set(Object.keys(sheet.notes ?? {})), [sheet.notes]);
+  const commentedCells = useMemo(() => new Set(Object.keys(sheet.comments ?? {})), [sheet.comments]);
 
   // ---- mutation helpers ----
   const mutate = useCallback((fn: (wb: Workbook) => void, save = true) => {
@@ -768,6 +784,224 @@ export function SheetsEditor({ item, initialDoc, permission }: {
     });
   }, [mutateSheet, selection, structuralLocked]);
 
+  // S19.7 — column outline grouping (mirrors rows)
+  const groupCols = useCallback((delta: 1 | -1) => {
+    if (structuralLocked()) return;
+    mutateSheet((s) => {
+      const lv = { ...(s.outlineCols ?? {}) };
+      for (let c = selection.c1; c <= selection.c2; c++) {
+        const next = (lv[c] ?? 0) + delta;
+        if (next <= 0) delete lv[c]; else lv[c] = Math.min(next, 8);
+      }
+      s.outlineCols = Object.keys(lv).length ? lv : undefined;
+    });
+  }, [mutateSheet, selection, structuralLocked]);
+
+  // ---- S19 Excel-parity handlers ----
+
+  // S19.1 — open a cell link: "#Sheet!A1" jumps internally, else new tab
+  const openLink = useCallback((url: string) => {
+    if (url.startsWith("#")) {
+      const t = url.slice(1);
+      const q = t.match(/^(?:'([^']+)'|([A-Za-z_][\w.]*))!(.+)$/);
+      const ref = (q ? q[3] : t).replace(/\$/g, "");
+      const range = parseRange(ref);
+      if (!range) { toast(`"${t}" isn't a valid destination`); return; }
+      const sn = q ? (q[1] ?? q[2]) : sheet.name;
+      const si = wb.sheets.findIndex((s) => s.name.toLowerCase() === sn.toLowerCase());
+      if (si < 0) { toast(`No sheet named ${sn}`); return; }
+      setActive(si);
+      setSelection(range);
+      return;
+    }
+    const href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    window.open(href, "_blank", "noopener,noreferrer");
+  }, [wb, sheet.name, setSelection, toast]);
+
+  // S19.1 — write a hyperlink into the anchor cell
+  const insertLink = useCallback((text: string, link: string) => {
+    if (anyLocked([anchorRef])) return;
+    mutateSheet((s) => {
+      const cur = s.cells[anchorRef] ?? {};
+      s.cells[anchorRef] = { ...cur, v: text, link, s: { ...cur.s, color: "#1155CC", u: true } };
+    });
+    toast("Link inserted");
+  }, [anchorRef, mutateSheet, anyLocked, toast]);
+
+  // S19.5 — append a symbol to the anchor cell's text
+  const insertSymbol = useCallback((ch: string) => {
+    if (anyLocked([anchorRef])) return;
+    mutateSheet((s) => {
+      const cur = s.cells[anchorRef] ?? {};
+      // inserting into a literal cell appends; a formula cell is replaced
+      s.cells[anchorRef] = cur.f
+        ? { s: cur.s, v: ch }
+        : { ...cur, v: `${cur.v ?? ""}${ch}` };
+    });
+  }, [anchorRef, mutateSheet, anyLocked]);
+
+  // S19.3 — floating objects mutate through the normal sheet path (syncs via Yjs)
+  const setObjects = useCallback((next: SheetObject[]) => {
+    mutateSheet((s) => { s.objects = next.length ? next : undefined; });
+  }, [mutateSheet]);
+
+  // S19.6 — scenario add/show/delete
+  const scenarioAdd = useCallback((name: string) => {
+    const refs = [...rangeRefs(selection)];
+    const sc = captureScenario(wbRef.current ?? wb, sheet.name, name, refs);
+    mutateSheet((s) => { s.scenarios = [...(s.scenarios ?? []).filter((x) => x.name !== name), sc]; });
+    toast(`Scenario "${name}" saved (${refs.length} cell${refs.length > 1 ? "s" : ""})`);
+  }, [wb, sheet.name, selection, mutateSheet, toast]);
+  const scenarioShow = useCallback((sc: Scenario) => {
+    const refs = Object.keys(sc.cells);
+    if (anyLocked(refs)) return;
+    mutateSheet((s) => {
+      for (const [ref, v] of Object.entries(sc.cells))
+        s.cells[ref] = { ...(s.cells[ref] ?? {}), v, f: undefined };
+    });
+    toast(`Showing "${sc.name}"`);
+  }, [mutateSheet, anyLocked, toast]);
+  const scenarioDelete = useCallback((name: string) => {
+    mutateSheet((s) => { s.scenarios = (s.scenarios ?? []).filter((x) => x.name !== name); });
+  }, [mutateSheet]);
+
+  // S19.6 — write a computed data-table matrix below the anchor
+  const dataTableApply = useCallback((anchor: string, matrix: (number | string | null)[][]) => {
+    const a = parseA1(anchor);
+    if (!a) return;
+    const refs: string[] = [];
+    matrix.forEach((row, r) => row.forEach((_, c) => refs.push(toA1(a.col + c, a.row + r))));
+    if (anyLocked(refs)) return;
+    mutateSheet((s) => {
+      matrix.forEach((row, r) => row.forEach((v, c) => {
+        if (v === null || v === undefined) return;
+        const ref = toA1(a.col + c, a.row + r);
+        s.cells[ref] = { ...(s.cells[ref] ?? {}), v: v as CellData["v"] };
+      }));
+    });
+    toast("Data table created");
+  }, [mutateSheet, anyLocked, toast]);
+
+  // S19.6 — write solver results into the changing cells
+  const solverApply = useCallback((values: Record<string, number>) => {
+    const refs = Object.keys(values);
+    if (anyLocked(refs)) return;
+    mutateSheet((s) => {
+      for (const [ref, v] of Object.entries(values))
+        s.cells[ref] = { ...(s.cells[ref] ?? {}), v, f: undefined };
+    });
+  }, [mutateSheet, anyLocked]);
+
+  // S19.4 — misspelled refs for the wavy underline (only while enabled)
+  const spellMisses = useMemo(() => {
+    if (!spellOn) return undefined;
+    const out = new Set<string>();
+    for (const [ref, cell] of Object.entries(sheet.cells)) {
+      if (cell.f || typeof cell.v !== "string") continue;
+      if (spellcheckText(cell.v, 0).length) out.add(ref);
+    }
+    return out;
+  }, [spellOn, sheet.cells]);
+  const spellFix = useCallback((ref: string, from: number, to: number, word: string) => {
+    mutateSheet((s) => {
+      const cur = s.cells[ref];
+      if (!cur || typeof cur.v !== "string") return;
+      s.cells[ref] = { ...cur, v: cur.v.slice(0, from) + word + cur.v.slice(to) };
+    });
+  }, [mutateSheet]);
+
+  // S19.12 — Quick Analysis actions on the active selection
+  const quickAction = useCallback((kind: string, r: Range) => {
+    if (anyLocked([...rangeRefs(r)]) && kind !== "chart") return;
+    mutateSheet((s) => {
+      switch (kind) {
+        case "sum": {
+          // totals row under the selection: =SUM(col-range) per column
+          for (let c = r.c1; c <= r.c2; c++) {
+            const ref = toA1(c, r.r2 + 1);
+            s.cells[ref] = { f: `SUM(${toA1(c, r.r1)}:${toA1(c, r.r2)})`, s: { b: true } };
+          }
+          break;
+        }
+        case "chart": {
+          const id = `ch${Date.now().toString(36)}`;
+          const rng = rangeToA1(r);
+          // S19.13 — pick a sensible type: single row/col → pie, else column
+          const type: ChartSpec["type"] = (r.c2 - r.c1) <= 1 && (r.r2 - r.r1) <= 6 && (r.c2 - r.c1 + 1) * (r.r2 - r.r1 + 1) <= 8 ? "pie" : "bar";
+          s.charts = [...(s.charts ?? []), { id, type, range: rng, title: rng, x: 40, y: 40 }];
+          break;
+        }
+        case "colorscale":
+          s.cf = [...(s.cf ?? []), { range: rangeToA1(r), type: "colorscale", minColor: "#F8696B", maxColor: "#63BE7B" }];
+          break;
+        case "databar":
+          s.cf = [...(s.cf ?? []), { range: rangeToA1(r), type: "databar", bar: "#3574E0" }];
+          break;
+        case "table":
+          s.tables = [...(s.tables ?? []), { name: `Table${(s.tables ?? []).length + 1}`, range: rangeToA1(r), style: "banded" }];
+          break;
+        case "sparkline":
+          for (let row = r.r1; row <= r.r2; row++) {
+            s.sparklines = { ...(s.sparklines ?? {}), [toA1(r.c2 + 1, row)]: { range: `${toA1(r.c1, row)}:${toA1(r.c2, row)}`, type: "line" } };
+          }
+          break;
+      }
+    });
+    if (kind === "chart") toast("Chart inserted — drag to position");
+  }, [mutateSheet, anyLocked, toast]);
+
+  // S19.15 — Copy as picture: render the selection to a canvas, then to the
+  // clipboard (or a downloaded PNG when ClipboardItem is unavailable)
+  const copyAsPicture = useCallback(async () => {
+    const r = selection;
+    const cw = (c: number) => sheet.colWidths?.[c] ?? 100;
+    const rh = (row: number) => sheet.rowHeights?.[row] ?? 26;
+    const W = Array.from({ length: r.c2 - r.c1 + 1 }, (_, i) => cw(r.c1 + i)).reduce((a, b) => a + b, 0);
+    const H = Array.from({ length: r.r2 - r.r1 + 1 }, (_, i) => rh(r.r1 + i)).reduce((a, b) => a + b, 0);
+    const cv = document.createElement("canvas");
+    cv.width = W + 2; cv.height = H + 2;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.strokeStyle = "#D9D4CF"; ctx.font = "11px Inter, sans-serif";
+    let y = 1;
+    for (let row = r.r1; row <= r.r2; row++) {
+      let x = 1;
+      for (let c = r.c1; c <= r.c2; c++) {
+        const w = cw(c), h = rh(row);
+        const ref = toA1(c, row);
+        const cell = sheet.cells[ref];
+        const s = cell?.s ?? {};
+        const res = evals.get(ref);
+        const v = cell?.f ? res?.value : cell?.v;
+        const txt = res?.error ?? formatValue(Array.isArray(v) ? "" : v, s.fmt);
+        if (s.bg) { ctx.fillStyle = s.bg; ctx.fillRect(x, y, w, h); }
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillStyle = s.color ?? "#26221F";
+        ctx.font = `${s.i ? "italic " : ""}${s.b ? "600 " : ""}${s.size ?? 11}px ${s.font ?? "Inter"}, sans-serif`;
+        ctx.textBaseline = "middle";
+        const align = s.align ?? (typeof v === "number" ? "right" : "left");
+        const tx = align === "right" ? x + w - 5 : align === "center" ? x + w / 2 : x + 5;
+        ctx.textAlign = align === "right" ? "right" : align === "center" ? "center" : "left";
+        ctx.fillText(String(txt ?? ""), tx, y + h / 2, w - 8);
+        x += w;
+      }
+      y += rh(row);
+    }
+    try {
+      const blob = await new Promise<Blob | null>((res) => cv.toBlob(res, "image/png"));
+      if (blob && typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        toast("Copied range as picture");
+      } else throw new Error("no-clipboard");
+    } catch {
+      const a = document.createElement("a");
+      a.href = cv.toDataURL("image/png");
+      a.download = "range.png"; a.click();
+      toast("Downloaded range.png (clipboard images not permitted)");
+    }
+  }, [selection, sheet, evals, toast]);
+
   // S12.6 Flash Fill — anchor cell holds a worked example; infer the
   // transform from the other values on its row and fill the column down
   // across the contiguous data region.
@@ -1152,6 +1386,14 @@ export function SheetsEditor({ item, initialDoc, permission }: {
       } else if (k === "h" && canEdit) {
         e.preventDefault();
         setFindDlg({ replace: true });
+      } else if (k === "k" && canEdit) {
+        e.preventDefault();
+        setLinkDlg(true);
+      }
+      // S19.2 — Ctrl+` toggles show-formulas view (Excel parity)
+      if (e.key === "`" || e.key === "~") {
+        e.preventDefault();
+        setShowFormulas((v) => !v);
       }
     };
     window.addEventListener("keydown", h);
@@ -1267,6 +1509,17 @@ export function SheetsEditor({ item, initialDoc, permission }: {
               {a === "left" ? "⇤" : a === "center" ? "≡" : "⇥"}
             </button>
           ))}
+          {/* S19.11 — extended horizontal alignments */}
+          <select className="rb" title="More alignments — justify / distributed / fill / center-across"
+            style={{ padding: "0 4px", fontSize: 11 }}
+            value={anchorStyle.align && !["left", "center", "right"].includes(anchorStyle.align) ? anchorStyle.align : ""}
+            onChange={(e) => setStyle({ align: (e.target.value || undefined) as CellStyle["align"] })}>
+            <option value="">⇅</option>
+            <option value="justify">Justify</option>
+            <option value="distributed">Distributed</option>
+            <option value="fill">Fill</option>
+            <option value="centerAcross">Center across</option>
+          </select>
           {(["top", "middle", "bottom"] as const).map((v) => (
             <button key={v} className={`rb ${anchorStyle.valign === v ? "on" : ""}`} title={`Align ${v}`}
               onClick={() => setStyle({ valign: anchorStyle.valign === v ? undefined : v })}>
@@ -1390,6 +1643,31 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onClick={() => groupSel(1)}>⧉</button>
           <button className="rb" title="Ungroup selected rows" disabled={!canEdit}
             onClick={() => groupSel(-1)}>⧈</button>
+          <button className="rb" title="Group selected columns (outline)" disabled={!canEdit}
+            onClick={() => groupCols(1)}>⧉→</button>
+          <button className="rb" title="Ungroup selected columns" disabled={!canEdit}
+            onClick={() => groupCols(-1)}>⧈→</button>
+          <div className="rb-sep" />
+          <button className="rb" title="Insert link (Ctrl+K) — URL or place in this workbook" disabled={!canEdit}
+            onClick={() => setLinkDlg(true)}>🔗</button>
+          <button className="rb" title="Insert picture — floating over the grid" disabled={!canEdit}
+            onClick={() => setPicDlg(true)}>🖼</button>
+          <button className="rb" title="Insert symbol" disabled={!canEdit}
+            onClick={() => setSymbolDlg(true)}>Ω</button>
+          <button className="rb" title="Insert function — guided wizard"
+            onClick={() => setFnWiz(true)}>ƒx</button>
+          <button className={`rb ${showFormulas ? "on" : ""}`} title="Show formulas (Ctrl+`)"
+            onClick={() => setShowFormulas(!showFormulas)}>fx↔</button>
+          <button className={`rb ${spellOn ? "on" : ""}`} title="Spelling — toggle underlines; click again to review"
+            onClick={() => spellOn ? setSpellDlg(true) : setSpellOn(true)}>✓abc</button>
+          <button className="rb" title="Scenario Manager — named what-if snapshots"
+            onClick={() => setScenDlg(true)}>🎬</button>
+          <button className="rb" title="Data Table — 1/2-variable sensitivity grid"
+            onClick={() => setDtDlg(true)}>∑▦</button>
+          <button className="rb" title="Solver — optimize an objective under constraints"
+            onClick={() => setSolverDlg(true)}>∂</button>
+          <button className="rb" title="Copy selection as picture"
+            onClick={copyAsPicture}>📷</button>
           <button className="rb" title="Subtotal — insert SUBTOTAL rows at group boundaries" disabled={!canEdit}
             onClick={() => setSubtotalDlg(true)}>Σ↓</button>
           <button className="rb" title="Insert slicer — filter column values with a visual picker"
@@ -1453,6 +1731,7 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             addSelection, extendSelection: extWithPaint,
             invalid: invalidCells,
             noted: notedCells,
+            commented: commentedCells,
             showChanges,
             pageBreaks: pbPreview,
             onCellMenu: (ref: string, x: number, y: number) => setCellMenu({ ref, x, y }),
@@ -1462,6 +1741,11 @@ export function SheetsEditor({ item, initialDoc, permission }: {
             onCommit: commitCell, onClear: clearCells, onPaste: pasteTsv, onPasteImage: pasteImage, onFillHandle: fillHandle,
             onFillDir: fillDir,
             onGeom, onHeader,
+            showFormulas,
+            onOpenLink: openLink,
+            onObjects: canEdit ? setObjects : undefined,
+            spellMisses,
+            onQuickAction: canEdit ? quickAction : undefined,
           };
           // S16.1 split panes — two independently-scrolled windows at splitRow
           if (sheet.splitRow != null && sheet.splitRow > 0) {
@@ -1608,6 +1892,23 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <div className="ctx-back" onMouseDown={() => setCellMenu(null)} onContextMenu={(e) => e.preventDefault()}>
           <div className="hmenu" style={{ left: cellMenu.x, top: cellMenu.y, position: "fixed" }}
             onMouseDown={(e) => e.stopPropagation()}>
+            {/* S19.1 — link actions surface when the cell carries a link */}
+            {sheet.cells[cellMenu.ref]?.link && (<>
+              <div className="hmenu-item" onMouseDown={() => { setLinkDlg(true); setCellMenu(null); }}>Edit link</div>
+              <div className="hmenu-item" onMouseDown={() => {
+                mutateSheet((s) => {
+                  const cur = s.cells[cellMenu.ref];
+                  if (cur) s.cells[cellMenu.ref] = { ...cur, link: undefined, s: { ...cur.s, color: undefined, u: undefined } };
+                });
+                setCellMenu(null);
+              }}>Remove link</div>
+              <div className="hmenu-item" onMouseDown={() => { openLink(sheet.cells[cellMenu.ref]!.link!); setCellMenu(null); }}>Open link</div>
+            </>)}
+            <div className="hmenu-item" onMouseDown={() => { setLinkDlg(true); setCellMenu(null); }}>Insert link…</div>
+            <div className="hmenu-item" onMouseDown={() => { setCommentDlg(cellMenu.ref); setCellMenu(null); }}>
+              {sheet.comments?.[cellMenu.ref] ? `Comments (${sheet.comments[cellMenu.ref].replies.length})` : "New comment"}
+            </div>
+            <div className="hmenu-item" onMouseDown={() => { copyAsPicture(); setCellMenu(null); }}>Copy as picture</div>
             <div className="hmenu-item" onMouseDown={() => {
               setNoteEdit({ ref: cellMenu.ref, text: sheet.notes?.[cellMenu.ref] ?? "" });
               setCellMenu(null);
@@ -1796,6 +2097,68 @@ export function SheetsEditor({ item, initialDoc, permission }: {
         <InspectDialog sheet={sheet} wb={wb} evals={evals}
           onJump={(ref) => { const p = parseA1(ref); if (p) { setSelection({ c1: p.col, r1: p.row, c2: p.col, r2: p.row }); setInspDlg(false); } }}
           onClose={() => setInspDlg(false)} />
+      )}
+      {/* ---- S19 Excel-parity dialogs ---- */}
+      {linkDlg && (
+        <LinkDialog wb={wb} sheetName={sheet.name}
+          initialText={typeof anchorCell?.v === "string" ? anchorCell.v : anchorCell?.v != null ? String(anchorCell.v) : ""}
+          initialLink={anchorCell?.link}
+          onInsert={insertLink}
+          onRemove={anchorCell?.link ? () => mutateSheet((s) => {
+            const cur = s.cells[anchorRef];
+            if (cur) s.cells[anchorRef] = { ...cur, link: undefined, s: { ...cur.s, color: undefined, u: undefined } };
+          }) : undefined}
+          onClose={() => setLinkDlg(false)} />
+      )}
+      {symbolDlg && <SymbolDialog onPick={insertSymbol} onClose={() => setSymbolDlg(false)} />}
+      {fnWiz && (
+        <FunctionWizard wb={wb}
+          initial={anchorCell?.f}
+          onInsert={(f) => { commitCell(fxAnchor.current, f); }}
+          onClose={() => setFnWiz(false)} />
+      )}
+      {picDlg && (
+        <PictureDialog
+          onInsert={(obj) => setObjects([...(sheet.objects ?? []), { ...obj, id: `obj${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` }])}
+          onClose={() => setPicDlg(false)} />
+      )}
+      {scenDlg && (
+        <ScenarioDialog sheet={sheet} selection={rangeToA1(selection)}
+          onAdd={scenarioAdd} onShow={scenarioShow} onDelete={scenarioDelete}
+          onClose={() => setScenDlg(false)} />
+      )}
+      {dtDlg && (
+        <DataTableDialog wb={wb} sheetName={sheet.name}
+          onApply={dataTableApply} onClose={() => setDtDlg(false)} />
+      )}
+      {solverDlg && (
+        <SolverDialog wb={wb} sheetName={sheet.name} anchorRef={anchorRef}
+          onApply={solverApply} onClose={() => setSolverDlg(false)} />
+      )}
+      {spellDlg && (
+        <SpellPanel sheet={sheet}
+          onFix={(ref, from, to, w) => { spellFix(ref, from, to, w); }}
+          onJump={(ref) => { const p = parseA1(ref); if (p) setSelection({ c1: p.col, r1: p.row, c2: p.col, r2: p.row }); }}
+          onClose={() => setSpellDlg(false)} />
+      )}
+      {commentDlg && (
+        <CommentDialog cellRef={commentDlg} thread={sheet.comments?.[commentDlg]}
+          me={user?.displayName ?? user?.email ?? "You"} canEdit={canEdit}
+          onReply={(text) => mutateSheet((s) => {
+            const cur = s.comments?.[commentDlg] ?? { at: Date.now(), replies: [] };
+            const who = user?.displayName ?? user?.email ?? "You";
+            s.comments = { ...(s.comments ?? {}), [commentDlg]: { ...cur, by: cur.by ?? who, replies: [...cur.replies, { by: who, at: Date.now(), text }] } };
+          })}
+          onResolve={sheet.comments?.[commentDlg] ? (res) => mutateSheet((s) => {
+            const cur = s.comments![commentDlg];
+            s.comments![commentDlg] = { ...cur, resolved: res };
+          }) : undefined}
+          onDelete={sheet.comments?.[commentDlg] ? () => mutateSheet((s) => {
+            const next = { ...(s.comments ?? {}) };
+            delete next[commentDlg];
+            s.comments = Object.keys(next).length ? next : undefined;
+          }) : undefined}
+          onClose={() => setCommentDlg(null)} />
       )}
       {cellShiftDlg && (
         <CellShiftDialog

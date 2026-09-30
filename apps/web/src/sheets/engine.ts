@@ -7,6 +7,8 @@ export interface EvalResult {
   error: string | null;
   /** set on spill-target results — the anchor ref whose formula spilled here */
   spillFrom?: string;
+  /** S19.1 — HYPERLINK() target or a plain cell link (URL or "#Sheet!A1") */
+  link?: string;
 }
 
 /** Dynamic-array spill bookkeeping (S11.1): targets maps each covered ref to
@@ -180,6 +182,13 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
     const cmpRe = /((?:'([^']+)'|([A-Za-z_][\w.]*))!)?(\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+)\s*(>=|<=|<>|>|<|=)\s*("[^"]*"|'[^']*'|[^\s,;()]+)/g;
     s = s.replace(cmpRe, (_m, _q: string | undefined, qs: string | undefined, ps: string | undefined, rng: string, op: string, rhs: string) =>
       `KXCMP("${(qs ?? ps ?? "").replace(/"/g, '""')}","${rng.replace(/\$/g, "")}","${op}","${b64(rhs)}")`,
+    );
+    // 3D references (S19.9) — Sheet1:Sheet3!A1 → KX3D; spans every sheet
+    // between the two named sheets in workbook order
+    s = s.replace(
+      /(?:'([^']+)'|([A-Za-z_][\w.]*)):(?:'([^']+)'|([A-Za-z_][\w.]*))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)/g,
+      (_m, s1q: string | undefined, s1p: string | undefined, s2q: string | undefined, s2p: string | undefined, ref: string) =>
+        `KX3D("${(s1q ?? s1p)!.replace(/"/g, '""')}","${(s2q ?? s2p)!.replace(/"/g, '""')}","${ref.replace(/\$/g, "")}")`,
     );
     s = s.replace(
       /(?:'([^']+)'|([A-Za-z_][\w.]*))!\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?/g,
@@ -446,6 +455,9 @@ export function extraFunctions(
 
   return {
     NA: () => "#N/A",
+    // S19.1 — HYPERLINK(url [, text]) — display `text` (or url); the link
+    // target is attached to the EvalResult by evaluateWorkbook's post-pass
+    HYPERLINK: (p) => p[1] !== undefined && p[1] !== null && p[1] !== "" ? p[1] : p[0],
     // VLOOKUP(key, table, colIdx [, approx])
     VLOOKUP: (p) => {
       const [lv, table, ci, approx] = p as [unknown, unknown[][], number, unknown];
@@ -946,6 +958,26 @@ function makeEvaluator(wb: Workbook, spills?: SpillMaps, prior?: Map<string, Eva
       const r = evalIn(sn, String(p[1]).replace(/\$/g, "").toUpperCase(), depth + 1);
       return r.error ?? r.value;
     });
+    // 3D ref (S19.9) — same ref across every sheet from s1..s2 in tab
+    // order; returns a flat array so SUM/AVERAGE/etc. aggregate across them
+    parser.setFunction("KX3D", (p) => {
+      const s1 = String(p[0]), s2 = String(p[1]), ref = String(p[2]).toUpperCase();
+      const i1 = wb.sheets.findIndex((x) => x.name.toLowerCase() === s1.toLowerCase());
+      const i2 = wb.sheets.findIndex((x) => x.name.toLowerCase() === s2.toLowerCase());
+      if (i1 < 0 || i2 < 0) return "#REF!";
+      const [lo, hi] = i1 <= i2 ? [i1, i2] : [i2, i1];
+      const rng = parseRange(ref);
+      if (!rng) return "#REF!";
+      const out: unknown[] = [];
+      for (let i = lo; i <= hi; i++) {
+        for (let r = rng.r1; r <= rng.r2; r++)
+          for (let c = rng.c1; c <= rng.c2; c++) {
+            const res = evalIn(wb.sheets[i].name, toA1(c, r), depth + 1);
+            out.push(res.error ?? res.value ?? null);
+          }
+      }
+      return out.length === 1 ? out[0] : out;
+    });
     // [Book]Sheet!A1 — resolve against wb.externs snapshot; #REF! when uncached
     parser.setFunction("KXEXT", (p) => {
       const book = String(p[0]), sn = String(p[1]), ref = String(p[2]);
@@ -1444,7 +1476,30 @@ function evaluateAll(wb: Workbook): { caches: Map<string, Map<string, EvalResult
 }
 
 export function evaluateWorkbook(wb: Workbook): Map<string, Map<string, EvalResult>> {
-  return evaluateAll(wb).caches;
+  const e = evaluateAll(wb);
+  // S19.1 — attach hyperlink targets: HYPERLINK() cells evaluate their first
+  // arg as the destination; cells may also carry a stored `link` attribute
+  for (const sheet of wb.sheets) {
+    const cache = e.caches.get(sheet.name);
+    if (!cache) continue;
+    for (const [ref, cell] of Object.entries(sheet.cells)) {
+      const res = cache.get(ref);
+      if (!res) continue;
+      if (cell.link) res.link = cell.link;
+      else if (cell.f) {
+        const m = /^HYPERLINK\s*\((.*)\)\s*$/i.exec(cell.f.trim());
+        if (m) {
+          const first = splitTopArgs(m[1])[0]?.trim();
+          if (first) {
+            const urlRes = e.runFormula(first, sheet.name, 0);
+            const url = String(urlRes.value ?? "").trim();
+            if (url) res.link = url;
+          }
+        }
+      }
+    }
+  }
+  return e.caches;
 }
 
 /** Prime the workbook once, then allow ad-hoc formula evaluation in a sheet's

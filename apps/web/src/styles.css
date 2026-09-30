@@ -538,6 +538,7 @@ textarea.inp{padding:8px 10px;height:auto}
 .cell-flag.inv{left:0;bottom:0;border-left:7px solid transparent;border-bottom:7px solid #D64545}
 .cell-flag.note{right:0;top:0;border-right:7px solid var(--k-orange);border-top:7px solid var(--k-orange)}
 .cell-flag.chg{left:0;top:0;border-left:7px solid #8E6BC8;border-top:7px solid #8E6BC8}
+.cell-flag.cmt{right:0;bottom:0;border-right:7px solid #3574E0;border-bottom:7px solid #3574E0}
 .cell-img{display:block;object-fit:contain;pointer-events:none}
 .cell-ent{display:inline-flex;align-items:center;gap:3px;pointer-events:none}
 .cell-ent .ent-ico{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:3px;background:#E8F0FE;color:#1A56DB;font-size:9px;line-height:1}
@@ -1387,6 +1388,32 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
   border-radius: 2px; color: var(--mut, #888);
 }
 .outline-tgl:hover { color: var(--k-orange, #F2782E); border-color: var(--k-orange, #F2782E); }
+
+/* ---- S19 Sheets parity batch ---- */
+/* hyperlinks — blue + underline like Excel's link style */
+.grid-table .cell.has-link { cursor: pointer; }
+.cell-link { color: #1155CC; text-decoration: underline; cursor: pointer; }
+.cell-link:hover { color: #0B3D91; }
+/* spell check — red wavy underline */
+.grid-table .cell.spell-miss { text-decoration: underline wavy #D64545; text-decoration-skip-ink: none; }
+/* center-across-selection span overflows its cell */
+.cell-ca { display: inline-block; text-align: center; overflow: hidden; white-space: nowrap; pointer-events: none; }
+/* floating objects */
+.sheet-obj { position: absolute; z-index: 25; cursor: grab; }
+.sheet-obj img { width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; display: block; }
+.sheet-obj.sel { outline: 2px solid var(--k-orange, #F2782E); outline-offset: 1px; }
+.obj-grip { position: absolute; right: -7px; bottom: -7px; width: 12px; height: 12px; background: #fff; border: 2px solid var(--k-orange, #F2782E); border-radius: 2px; cursor: nwse-resize; }
+.obj-del { position: absolute; top: -10px; right: -10px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line, #ddd); background: #fff; color: #C0392B; font-size: 10px; line-height: 1; cursor: pointer; padding: 0; }
+/* quick-analysis corner button + popover */
+.qa-btn { position: absolute; right: -14px; bottom: -14px; z-index: 35; width: 20px; height: 20px; display: grid; place-items: center; font-size: 10px; background: #fff; border: 1px solid var(--line, #ddd); border-radius: 4px; cursor: pointer; color: var(--k-orange, #F2782E); box-shadow: 0 2px 6px rgba(23,18,15,.15); }
+.qa-pop { position: absolute; top: 24px; right: 0; display: flex; flex-direction: column; min-width: 148px; background: #fff; border: 1px solid var(--line, #ddd); border-radius: 10px; box-shadow: 0 10px 28px rgba(23,18,15,.18); padding: 4px; }
+.qa-pop button { text-align: left; font-size: 12px; padding: 6px 10px; background: none; border: 0; border-radius: 6px; cursor: pointer; color: #26221F; white-space: nowrap; }
+.qa-pop button:hover { background: #F6F2EE; }
+/* function wizard */
+.fx-wiz-cat { padding: 6px 10px; font-size: 12px; cursor: pointer; color: #555; }
+.fx-wiz-cat.on, .fx-wiz-cat:hover { background: var(--k-orange-soft, #FDEBDD); color: var(--k-orange-dark, #B3560E); }
+.fx-wiz-fn { padding: 5px 10px; font-size: 12px; font-family: monospace; cursor: pointer; }
+.fx-wiz-fn.on, .fx-wiz-fn:hover { background: #F1EDE9; }
 
 /* slicers (S12.2) */
 .slicer-panel {

@@ -1467,7 +1467,8 @@ t("S18.1 decimal literals unaffected by prop rewrite", () => {
     assertEq(s.cells.A1.v, "x");
     assertEq(s.cells.A2.v, 1);
     assert(s.cells.A1.s?.b === true, "header bold");
-    assertEq(s.filter?.range, "A1:B1");
+    // filter range covers header + data rows (r1 = header row)
+    assertEq(s.filter?.range, "A1:B2");
   });
   t("S18.3 cast + distinct + keepCols", () => {
     const res = applySteps(
@@ -1478,6 +1479,123 @@ t("S18.1 decimal literals unaffected by prop rewrite", () => {
     assertEq(res.rows, [[1, "x"], [2, "y"]]);
   });
 }
+
+// ---------- S19 parity batch: hyperlinks, 3D refs, what-if ----------
+
+await (async () => {
+  const { runSolver, runDataTable, captureScenario } = await import("./src/sheets/whatif");
+
+  t("S19.1 HYPERLINK() displays text and attaches link", () => {
+    const wb: Workbook = { sheets: [{ name: "S1", cells: {
+      A1: { f: 'HYPERLINK("https://example.com","Visit")' },
+      A2: { f: 'HYPERLINK(B1,"Go")' },
+      A3: { v: "Kreatix", link: "https://kreatix.tech" },
+      B1: { v: "https://docs.example.com" },
+    } }] };
+    const evals = evaluateSheetIn(wb, "S1");
+    assertEq(evals.get("A1")?.value, "Visit");
+    assertEq(evals.get("A1")?.link, "https://example.com");
+    assertEq(evals.get("A2")?.value, "Go");
+    assertEq(evals.get("A2")?.link, "https://docs.example.com");
+    assertEq(evals.get("A3")?.link, "https://kreatix.tech");
+  });
+
+  t("S19.1 HYPERLINK internal ref stays internal", () => {
+    const wb: Workbook = { sheets: [{ name: "S1", cells: {
+      A1: { f: 'HYPERLINK("#S1!B2","Jump")' },
+    } }] };
+    assertEq(evaluateSheetIn(wb, "S1").get("A1")?.link, "#S1!B2");
+  });
+
+  t("S19.9 3D reference sums across sheet span", () => {
+    const wb: Workbook = {
+      sheets: [
+        { name: "Jan", cells: { A1: { v: 10 }, B1: { f: "SUM(Jan:Mar!A1)" }, B2: { f: "SUM(Mar:Jan!A1)" }, B3: { f: "AVERAGE(Jan:Mar!A1)" } } },
+        { name: "Feb", cells: { A1: { v: 20 } } },
+        { name: "Mar", cells: { A1: { v: 30 } } },
+        { name: "Apr", cells: { A1: { v: 99 } } },
+      ],
+    };
+    const evals = evaluateSheetIn(wb, "Jan");
+    assertEq(evals.get("B1")?.value, 60);
+    assertEq(evals.get("B2")?.value, 60);   // reversed span still spans
+    assertEq(evals.get("B3")?.value, 20);
+  });
+
+  t("S19.6 data table — one variable", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 2 }, B2: { f: "B1*10" },
+    } }] };
+    const res = runDataTable(wb, "S", { formulaRef: "B2", input1: "B1", values1: [1, 5, 9] });
+    assertEq(res.matrix, [[10], [50], [90]]);
+  });
+
+  t("S19.6 data table — two variables", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 2 }, B2: { v: 3 }, B3: { f: "B1*B2" },
+    } }] };
+    const res = runDataTable(wb, "S", {
+      formulaRef: "B3", input1: "B1", values1: [1, 2],
+      input2: "B2", values2: [10, 20],
+    });
+    // [header row: null + vals2] then one row per values1: [v1, results…]
+    assertEq(res.matrix[0], [null, 10, 20]);
+    assertEq(res.matrix[1], [1, 10, 20]);
+    assertEq(res.matrix[2], [2, 20, 40]);
+  });
+
+  t("S19.6 solver — product-mix LP optimum", () => {
+    // max 3x+2y s.t. x+y<=4, x<=2  →  x=2, y=2, obj=10
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 0 }, B2: { v: 0 },          // x, y (changing)
+      C1: { f: "B1+B2" },                  // constraint lhs: x+y
+      D1: { f: "3*B1+2*B2" },              // objective
+    } }] };
+    const res = runSolver(wb, "S", {
+      targetRef: "D1", sense: "max", changing: ["B1", "B2"],
+      constraints: [{ lhs: "C1", op: "<=", rhs: 4 }, { lhs: "B1", op: "<=", rhs: 2 }],
+    });
+    assert(res.ok, "solver ok");
+    assertEq(res.values?.B1, 2);
+    assertEq(res.values?.B2, 2);
+    assertEq(res.objective, 10);
+  });
+
+  t("S19.6 solver — value-of mode reaches target", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 1 }, C1: { f: "B1*B1" },
+    } }] };
+    const res = runSolver(wb, "S", {
+      targetRef: "C1", sense: "value", targetValue: 9, changing: ["B1"], constraints: [],
+    });
+    assert(res.ok, "solver ok");
+    assert(Math.abs((res.values?.B1 ?? 0) - 3) < 1e-4, "x≈3");
+  });
+
+  t("S19.6 solver — integer variables round correctly", () => {
+    // max x s.t. x<=3.7, x integer → x=3
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 0 }, C1: { f: "B1" },
+    } }] };
+    const res = runSolver(wb, "S", {
+      targetRef: "C1", sense: "max", changing: ["B1"],
+      constraints: [{ lhs: "B1", op: "<=", rhs: 3.7 }], integers: ["B1"],
+    });
+    assert(res.ok, "solver ok");
+    assertEq(res.values?.B1, 3);
+  });
+
+  t("S19.6 scenario captures and re-applies", () => {
+    const wb: Workbook = { sheets: [{ name: "S", cells: {
+      B1: { v: 100 }, B2: { v: "low" }, B3: { f: "B1*2" },
+    } }] };
+    const sc = captureScenario(wb, "S", "Baseline", ["B1", "B2", "B3"]);
+    assertEq(sc.name, "Baseline");
+    assertEq(sc.cells.B1, 100);
+    assertEq(sc.cells.B2, "low");
+    assertEq(sc.cells.B3, null); // formula cells snapshot as null value
+  });
+})();
 
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

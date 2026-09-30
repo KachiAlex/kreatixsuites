@@ -150,6 +150,9 @@ function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
         v === null || v === undefined ? { t: "z" } :
         { t: "s", v: String(v) };
       if (cell.f && x.t !== "z") x.f = cell.f;
+      // S19.1 — hyperlinks round-trip via the cell's `l` field
+      const link = cell.link ?? (cell.f && /^HYPERLINK\s*\(/i.test(cell.f) ? res?.link : undefined);
+      if (link) (x as { l?: { Target: string; Tooltip?: string } }).l = { Target: link.startsWith("#") ? link.slice(1) : link };
       const xs = styleToXLSX(cell.s);
       if (Object.keys(xs).length) x.s = xs;
       ws[ref] = x;
@@ -195,6 +198,9 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       const cell: CellData = {};
       if (x.f) cell.f = x.f;
       if (x.v !== undefined) cell.v = x.v as string | number | boolean;
+      // S19.1 — hyperlinks (internal targets keep the "#Sheet!A1" form)
+      const xl = (x as { l?: { Target?: string } }).l?.Target;
+      if (xl) cell.link = /^https?:\/\//i.test(xl) || xl.includes("://") ? xl : `#${xl}`;
       const st = styleFromXLSX(x);
       if (st) cell.s = st;
       if (cell.f || cell.v !== undefined || cell.s) cells[ref] = cell;

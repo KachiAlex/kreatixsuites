@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type MouseEvent, type CSSProperties } from "react";
-import type { SheetData, Range, Ref, Workbook } from "./model";
+import type { SheetData, Range, Ref, Workbook, SheetObject } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
@@ -40,6 +40,8 @@ interface GridProps {
   listDrop?: { ref: string; items: string[] };
   /** cell with a note → marker (S3.5) */
   noted?: Set<string>;
+  /** cell with a comment thread → marker (S19.16) */
+  commented?: Set<string>;
   /** right-click a body cell → context menu (notes etc.) */
   onCellMenu?: (ref: string, x: number, y: number) => void;
   /** click a filter ▾ on the header row (S5.1) */
@@ -56,11 +58,24 @@ interface GridProps {
   pageBreaks?: boolean;
   /** S16.3 — Ctrl+D / Ctrl+R directional fill */
   onFillDir?: (dir: "down" | "right") => void;
+  /** S19.2 — render formulas instead of values (Ctrl+`) */
+  showFormulas?: boolean;
+  /** S19.1 — open a cell link / HYPERLINK() target */
+  onOpenLink?: (url: string) => void;
+  /** S19.3 — floating-object mutations (drag/resize/delete) */
+  onObjects?: (next: SheetObject[]) => void;
+  /** S19.4 — refs containing a misspelling (red wavy underline) */
+  spellMisses?: Set<string>;
+  /** S19.12 — Quick Analysis popover trigger on the selection corner */
+  onQuickAction?: (kind: string, range: Range) => void;
 }
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onPasteImage, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onPasteImage, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, commented, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir, showFormulas, onOpenLink, onObjects, spellMisses, onQuickAction }: GridProps) {
+  const [selObj, setSelObj] = useState<string | null>(null);
+  const [objDrag, setObjDrag] = useState<{ id: string; dx: number; dy: number; x: number; y: number; w: number; h: number; mode: "move" | "size" } | null>(null);
+  const [qaOpen, setQaOpen] = useState(false);
   const allSels = selections ?? [selection];
   const [editing, setEditing] = useState<{ ref: Ref; value: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -322,7 +337,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     else if (e.key === "F2") { e.preventDefault(); startEdit(anchor); }
     else if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      if (canEdit) onClear([...rangeRefs(selection)]);
+      // S19.3 — a selected floating object takes precedence over cell clear
+      if (selObj && canEdit && onObjects) {
+        onObjects((sheet.objects ?? []).filter((o) => o.id !== selObj));
+        setSelObj(null);
+      } else if (canEdit) onClear([...rangeRefs(selection)]);
     } else if (e.key === "a" && ctrl) {
       e.preventDefault();
       setSelection({ c1: 0, r1: 0, c2: cols - 1, r2: rows - 1 });
@@ -371,6 +390,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const merge = mergeMaps.covered.get(toA1(c, r)) ?? mergeMaps.heads.get(toA1(c, r));
     const box: Range = merge ?? { c1: c, r1: r, c2: c, r2: r };
     if (e.type === "mousedown") {
+      if (selObj) setSelObj(null);
       if (e.shiftKey) {
         extendSelection?.({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
         if (!extendSelection) setSelection({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
@@ -477,6 +497,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     const rawV = cell?.f || (!cell && res) ? res?.value : cell?.v;
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
       : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt);
+    // S19.2 — show formulas renders the expression, not the result (Ctrl+`)
+    if (showFormulas && cell?.f) content = `=${cell.f}`;
+    // S19.11 — "fill" alignment repeats the text to fill the cell width
+    if (s.align === "fill" && content !== null && content !== undefined && content !== "") {
+      const rep = Math.ceil((colW(c) - 6) / 7);
+      content = String(content).repeat(Math.max(1, rep)).slice(0, Math.max(1, rep * String(content).length));
+    }
+    // S19.1 — link styling + navigation (cell.link or HYPERLINK() result)
+    const link = cell?.link ?? res?.link ?? null;
     // IMAGE() renders its result URL as an in-cell image (S18.1)
     const isImgFn = /^IMAGE\s*\(/i.test(cell?.f ?? "");
     if (spark || cell?.img || cell?.ent || (isImgFn && typeof res?.value === "string")) content = null;
@@ -506,7 +535,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
       <td key={c} data-c={c} data-r={r}
         colSpan={head ? head.c2 - head.c1 + 1 : 1}
         rowSpan={head ? head.r2 - head.r1 + 1 : 1}
-        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""} ${s.wrap ? "wrap" : ""}`}
+        className={`cell ${sel ? "in-sel" : ""} ${res?.error ? "err" : ""} ${audit?.refs.has(ref) ? `audit-${audit.kind}` : ""} ${s.wrap ? "wrap" : ""} ${link ? "has-link" : ""} ${spellMisses?.has(ref) ? "spell-miss" : ""}`}
         style={{
           ...sticky, zIndex: z,
           fontWeight: band?.header || tot ? 600 : s.b ? 700 : 400, fontStyle: s.i ? "italic" : "normal",
@@ -514,7 +543,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           textDecoration: deco || "none",
           color: s.color ?? (band?.light ? "#fff" : "#26221F"),
           background: cfx?.bg ?? s.bg ?? band?.bg ?? (tot ? "#F4F1EE" : "#fff"),
-          textAlign: s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
+          textAlign: s.align === "justify" || s.align === "distributed" ? "justify" as const
+            : s.align === "centerAcross" || s.align === "fill" ? "left" as const
+            : s.align ?? (typeof (cell?.f ? res?.value : cell?.v) === "number" ? "right" : "left"),
+          textAlignLast: s.align === "distributed" ? "justify" : undefined,
+          overflow: s.align === "centerAcross" ? "visible" : undefined,
           verticalAlign: s.valign ?? (head ? "middle" : undefined),
           paddingLeft: s.indent ? 5 + s.indent * 8 : undefined,
           borderTop: borderCss(s.borders?.top), borderRight: borderCss(s.borders?.right),
@@ -547,13 +580,27 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
             <span className="ent-ico">▣</span>{cell.ent.name}
           </span>
         )}
-        {s.rotate ? (
+        {link ? (
+          <span className="cell-link" title={link}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onOpenLink?.(link); }}>
+            {s.rotate ? <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span> : content}
+          </span>
+        ) : s.align === "centerAcross" ? (() => {
+          // S19.11 — center the text across the contiguous run of
+          // centerAcross-aligned cells (Excel's center-across-selection)
+          let e2 = c;
+          while (sheet.cells[toA1(e2 + 1, r)]?.s?.align === "centerAcross") e2++;
+          const wRun = colX[e2] + colW(e2) - colX[c] - 8;
+          return <span className="cell-ca" style={{ width: wRun }}>{content}</span>;
+        })() : s.rotate ? (
           <span className="cell-rot" style={{ transform: `rotate(${s.rotate}deg)` }}>{content}</span>
         ) : s.shrink ? (
           <span className="cell-shrink">{content}</span>
         ) : content}
         {invalid?.has(ref) && <span className="cell-flag inv" title="Fails data validation" />}
         {noted?.has(ref) && <span className="cell-flag note" />}
+        {commented?.has(ref) && <span className="cell-flag cmt" title="Has comment thread" />}
         {showChanges && cell?.h && <span className="cell-flag chg" />}
         {fRange && r === fRange.r1 && c >= fRange.c1 && c <= fRange.c2 && canEdit && (
           <span className={`fbtn ${fActive.has(c) ? "on" : ""}`}
@@ -650,6 +697,22 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
               width: colX[sr.c2] + colW(sr.c2) - colX[sr.c1],
               height: rowY[sr.r2] + rowH(sr.r2) - rowY[sr.r1],
             }}>
+            {si === allSels.length - 1 && onQuickAction && (sr.c2 > sr.c1 || sr.r2 > sr.r1) && (
+              <span className="qa-btn" title="Quick analysis"
+                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setQaOpen((v) => !v); }}>
+                ⚡
+                {qaOpen && (
+                  <span className="qa-pop" onMouseDown={(e) => e.stopPropagation()}>
+                    {[
+                      ["sum", "Σ Totals"], ["chart", "📊 Chart"], ["colorscale", "🎨 Color scale"],
+                      ["databar", "▰ Data bars"], ["table", "▦ Table"], ["sparkline", "〽 Sparklines"],
+                    ].map(([k, l]) => (
+                      <button key={k} onClick={() => { setQaOpen(false); onQuickAction(k, sr); }}>{l}</button>
+                    ))}
+                  </span>
+                )}
+              </span>
+            )}
             {si === allSels.length - 1 && canEdit && <div className="fill-handle"
             onMouseDown={(e) => {
               e.stopPropagation();
@@ -730,6 +793,82 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
             );
           });
         })()}
+        {/* S19.7 — column outline toggles, same shape as row groups:
+            −/+ sits on the summary column just past each group's last member */}
+        {sheet.outlineCols && (() => {
+          const lv = sheet.outlineCols;
+          const collapsed = new Set(sheet.collapsedCols ?? []);
+          const ends: number[] = [];
+          const max = Math.max(0, ...Object.keys(lv).map(Number));
+          for (let i = 0; i <= max; i++)
+            if ((lv[i] ?? 0) >= 1 && (lv[i + 1] ?? 0) < (lv[i] ?? 0)) ends.push(i);
+          return ends.map((e) => {
+            const sum = e + 1;
+            const x = HEADER_W + (colX[sum] ?? 0);
+            if (hiddenC.has(sum)) return null;
+            return (
+              <button key={e} className="outline-tgl"
+                style={{ top: 2, left: x + Math.max(0, ((colW(sum) ?? COL_W) - 14) / 2) }}
+                title={collapsed.has(e) ? "Expand group" : "Collapse group"}
+                onMouseDown={(ev) => ev.stopPropagation()}
+                onClick={() => onOutlineToggle?.("col", e)}>
+                {collapsed.has(e) ? "+" : "−"}
+              </button>
+            );
+          });
+        })()}
+        {/* S19.3 — floating objects layer (images); drag to move, corner to
+            resize, Delete removes the selected object */}
+        {(sheet.objects ?? []).map((o) => {
+          const d = objDrag?.id === o.id ? objDrag : null;
+          const pos = { x: d?.x ?? o.x, y: d?.y ?? o.y, w: d?.w ?? o.w, h: d?.h ?? o.h };
+          const startDrag = (e: MouseEvent, mode: "move" | "size") => {
+            if (!canEdit || !onObjects) return;
+            e.stopPropagation(); e.preventDefault();
+            setSelObj(o.id);
+            const sx = e.clientX, sy = e.clientY;
+            const move = (ev: globalThis.MouseEvent) => {
+              setObjDrag({
+                id: o.id, mode, dx: 0, dy: 0,
+                x: mode === "move" ? Math.max(0, o.x + ev.clientX - sx) : o.x,
+                y: mode === "move" ? Math.max(0, o.y + ev.clientY - sy) : o.y,
+                w: mode === "size" ? Math.max(24, o.w + ev.clientX - sx) : o.w,
+                h: mode === "size" ? Math.max(24, o.h + ev.clientY - sy) : o.h,
+              });
+            };
+            const up = (ev: globalThis.MouseEvent) => {
+              window.removeEventListener("mousemove", move as never);
+              window.removeEventListener("mouseup", up);
+              setObjDrag((cur) => {
+                if (cur) {
+                  const next = (sheet.objects ?? []).map((ob) =>
+                    ob.id === o.id ? { ...ob, x: cur.x, y: cur.y, w: cur.w, h: cur.h } : ob);
+                  onObjects(next);
+                }
+                return null;
+              });
+              void ev;
+            };
+            window.addEventListener("mousemove", move as never);
+            window.addEventListener("mouseup", up);
+          };
+          return (
+            <div key={o.id} className={`sheet-obj ${selObj === o.id ? "sel" : ""}`}
+              style={{ left: HEADER_W + pos.x, top: HEADER_H + pos.y, width: pos.w, height: pos.h }}
+              onMouseDown={(e) => startDrag(e, "move")}
+              onContextMenu={(e) => { e.preventDefault(); setSelObj(o.id); }}>
+              <img src={o.src} alt={o.alt ?? ""} draggable={false} />
+              {canEdit && selObj === o.id && (
+                <>
+                  <span className="obj-grip" title="Drag to resize" onMouseDown={(e) => startDrag(e, "size")} />
+                  <button className="obj-del" title="Delete object"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => { onObjects?.((sheet.objects ?? []).filter((ob) => ob.id !== o.id)); setSelObj(null); }}>✕</button>
+                </>
+              )}
+            </div>
+          );
+        })}
         {/* freeze split indicators */}
         {fz.cols > 0 && <div className="freeze-v" style={{ left: frozenLeft }} />}
         {fz.rows > 0 && <div className="freeze-h" style={{ top: frozenTop }} />}
