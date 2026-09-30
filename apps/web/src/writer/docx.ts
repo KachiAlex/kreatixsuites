@@ -106,6 +106,9 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
       return [new TextRun({ text: "[image]" })];
     }
   }
+  if (n.type === "citation") {
+    return [new TextRun({ text: (n.attrs?.display as string) ?? "(?)", color: "C55A11" })];
+  }
   if (n.type !== "text" || !n.text) return [];
   const marks = [...inherited, ...(n.marks ?? [])];
   const has = (t: string) => marks.some((m) => m.type === t);
@@ -361,6 +364,18 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
     }
     case "embed":
       return [new Paragraph({ children: [new TextRun({ text: `Embedded content: ${(node.attrs?.src as string) ?? ""}` })] })];
+    case "textBox":
+      // boxed text — export contents as normal paragraphs (border is visual-only)
+      return (node.content ?? []).flatMap((c) => blockToParagraphs(c as Block));
+    case "chart":
+      return [new Paragraph({ children: [new TextRun({ text: `[Chart] ${(node.attrs?.title as string) || "Untitled chart"}` })] })];
+    case "shape":
+      return [new Paragraph({ children: [new TextRun({ text: `[${(node.attrs?.shape as string) ?? "shape"}]` })] })];
+    case "wordArt":
+      return [new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: (node.attrs?.text as string) ?? "", bold: true, size: Math.min(72, (node.attrs?.size as number) ?? 44) * 2 })],
+      })];
     case "image": {
       const runs = inlineRuns([node as unknown as Inline]);
       return [new Paragraph({ children: runs as never })];

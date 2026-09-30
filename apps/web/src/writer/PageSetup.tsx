@@ -52,6 +52,19 @@ export interface PageSetup {
   pageColor?: string;
   /** Border frame around each page. */
   pageBorder?: "" | "single" | "double" | "dashed" | "shadow";
+  /** Footnote/endnote number formats (decimal/alpha/roman CSS counter names). */
+  fnFmt?: string;
+  enFmt?: string;
+  /** Restart footnote numbering on each page. */
+  fnRestart?: boolean;
+  /** Restrict-editing mode: "" | "readonly" | "comments" | "tracked". */
+  restrict?: string;
+  /** SHA-256 hex of the unprotect password ("" = none). */
+  restrictKey?: string;
+  /** CSV source persisted for mail merge. */
+  mergeCsv?: string;
+  /** Heading auto-numbering (1 / 1.1 / 1.1.1) via CSS counters. */
+  headNums?: boolean;
 }
 
 export const DEFAULT_SETUP: PageSetup = {
@@ -458,6 +471,10 @@ export function applyPageSetup(editor: Editor, setup: PageSetup) {
   else dom.removeAttribute("data-pg-border");
   dom.classList.toggle("kx-linenums", !!normalized.lineNumbers);
   dom.classList.toggle("kx-hyphens", !!normalized.hyphenate);
+  dom.classList.toggle("kx-headnum", !!normalized.headNums);
+  dom.setAttribute("data-fnfmt", normalized.fnFmt ?? "decimal");
+  dom.setAttribute("data-enfmt", normalized.enFmt ?? "lower-roman");
+  dom.setAttribute("data-fnrestart", normalized.fnRestart ? "1" : "0");
   dom.setAttribute("lang", "en");
   applyNumberStyle(normalized);
   syncVariants(editor, normalized);

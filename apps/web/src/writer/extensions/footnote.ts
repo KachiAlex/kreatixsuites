@@ -4,6 +4,7 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { measureBands, bandIndexAt } from "../banding";
 import { pageOfPos } from "./field";
+import { fmtN } from "./extras";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -34,8 +35,8 @@ function notesIn(doc: PMNode, kind: string): NoteOcc[] {
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 interface NotesState {
-  fnByBand: Map<number, { n: number; note: string }[]>;
-  end: { n: number; note: string }[];
+  fnByBand: Map<number, { n: string; note: string }[]>;
+  end: { n: string; note: string }[];
   bandEnds: number[];
 }
 const NOTES_KEY = new PluginKey<NotesState>("kxNotes");
@@ -104,7 +105,7 @@ export const Footnote = Node.create({
         },
         props: {
           decorations(state) {
-            const st = NOTES_KEY.getState(state) ?? { fnByBand: new Map<number, { n: number; note: string }[]>(), end: [], bandEnds: [] };
+            const st = NOTES_KEY.getState(state) ?? { fnByBand: new Map<number, { n: string; note: string }[]>(), end: [], bandEnds: [] };
             const decos: Decoration[] = [];
             for (const [band, notes] of st.fnByBand) {
               const pos = st.bandEnds[band];
@@ -142,15 +143,21 @@ export const Footnote = Node.create({
             const bands = measureBands(root);
             const fn = notesIn(view.state.doc, "footnote");
             const en = notesIn(view.state.doc, "endnote");
-            const fnByBand = new Map<number, { n: number; note: string }[]>();
+            const fFmt = root.dataset.fnfmt ?? "decimal";
+            const eFmt = root.dataset.enfmt ?? "lower-roman";
+            const restart = root.dataset.fnrestart === "1";
+            const fnByBand = new Map<number, { n: string; note: string }[]>();
             const bandEnds: number[] = [];
             if (bands) {
-              // page band of each footnote
+              // page band of each footnote (restart optionally renumbers per page)
+              const perBand = new Map<number, number>();
               fn.forEach((f, i) => {
                 const p = pageOfPos(view, f.pos);
                 const band = (p ?? 1) - 1;
                 const arr = fnByBand.get(band) ?? [];
-                arr.push({ n: i + 1, note: f.note });
+                const n = restart ? (perBand.get(band) ?? 0) + 1 : i + 1;
+                perBand.set(band, n);
+                arr.push({ n: fmtN(n, fFmt), note: f.note });
                 fnByBand.set(band, arr);
               });
               // last textblock end per band → widget anchor
@@ -166,7 +173,7 @@ export const Footnote = Node.create({
                 return true;
               });
             }
-            const end = en.map((e, i) => ({ n: i + 1, note: e.note }));
+            const end = en.map((e, i) => ({ n: fmtN(i + 1, eFmt), note: e.note }));
             const sig = JSON.stringify({
               f: [...fnByBand.entries()], e: end, b: bandEnds.filter((x) => x != null),
             });

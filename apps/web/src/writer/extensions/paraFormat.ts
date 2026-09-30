@@ -166,6 +166,8 @@ export const KxParaFormat = Extension.create({
         () =>
         ({ editor, state, dispatch }) => {
           editor.storage.KxParaFormat.showMarks = !editor.storage.KxParaFormat.showMarks;
+          // reflect on the root so CSS-only features (hidden text) can key off it
+          editor.view.dom.classList.toggle("kx-marks-on", editor.storage.KxParaFormat.showMarks);
           if (dispatch) dispatch(state.tr.setMeta("kxShowMarks", true));
           return true;
         },

@@ -56,6 +56,16 @@ export const Toc = Node.create({
         parseHTML: (el: HTMLElement) => el.getAttribute("data-levels") ?? "1-3",
         renderHTML: (attrs) => ({ "data-levels": attrs.levels }),
       },
+      leader: {
+        default: "dots",
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-leader") ?? "dots",
+        renderHTML: (attrs) => ({ "data-leader": attrs.leader }),
+      },
+      pageNums: {
+        default: true,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-pagenums") !== "0",
+        renderHTML: (attrs) => ({ "data-pagenums": attrs.pageNums ? "1" : "0" }),
+      },
     };
   },
 
@@ -75,11 +85,19 @@ export const Toc = Node.create({
       dom.contentEditable = "false";
       const render = () => {
         const [lo, hi] = parseLevels(node.attrs.levels as string);
+        const leader = (node.attrs.leader as string) || "dots";
+        const pageNums = node.attrs.pageNums !== false;
         const items = collectHeadings(editor.state.doc, editor, lo, hi);
+        dom.className = `doc-toc toc-leader-${leader}`;
+        dom.setAttribute("data-type", "toc");
+        dom.setAttribute("data-leader", leader);
         dom.innerHTML = items.length
           ? items.map((h, i) =>
               `<div class="toc-item toc-l${h.level}" data-i="${i}" style="padding-left:${(h.level - lo) * 14}px">` +
-              `<span class="toc-text">${escapeHtml(h.text)}</span><span class="toc-page">${h.page ?? ""}</span></div>`).join("")
+              `<span class="toc-text">${escapeHtml(h.text)}</span>` +
+              `<span class="toc-lead"></span>` +
+              (pageNums ? `<span class="toc-page">${h.page ?? ""}</span>` : "") +
+              `</div>`).join("")
           : `<div class="toc-item toc-empty">No headings yet</div>`;
         // click → jump to heading
         dom.querySelectorAll<HTMLElement>(".toc-item[data-i]").forEach((el) => {

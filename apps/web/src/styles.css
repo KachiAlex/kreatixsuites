@@ -1539,3 +1539,108 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
   .editor .topbar .btn-ghost{padding:4px 7px}
   .presence-label{display:none}
 }
+
+/* ===== Word-parity dialogs (MoreDialogs) ===== */
+.modal-wide{max-width:640px;min-width:420px;max-height:86vh;overflow-y:auto}
+.dlg-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+.dlg-row>label{width:118px;flex-shrink:0;font-size:11.5px;color:#8B837D}
+.dlg-row input[type=text],.dlg-row input:not([type]),.dlg-row input[type=number],.dlg-row input[type=password],.dlg-row select,.dlg-row input[type=url]{flex:1;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;color:#3A3633;min-width:0}
+.dlg-row input[type=color]{width:44px;height:28px;border:1px solid var(--line);border-radius:6px;padding:1px 2px;cursor:pointer}
+.dlg-inline{display:flex;gap:8px;align-items:center;flex:1}
+.dlg-inline input{flex:1;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;min-width:0}
+.dlg-grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+.dlg-checks{display:flex;flex-wrap:wrap;gap:6px 16px;margin:10px 0}
+.dlg-checks label,.dlg-radios label{display:flex;align-items:center;gap:6px;font-size:12px;color:#4E4945;cursor:pointer}
+.dlg-radios{display:flex;flex-direction:column;gap:8px;margin:8px 0}
+.dlg-preview{border:1px solid var(--line);border-radius:10px;background:#fafafa;padding:18px;text-align:center;margin:10px 0;overflow:auto}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.dlg-note{font-size:11px;color:#8B837D;margin:6px 0;line-height:1.45}
+.dlg-err{color:#C0392B;font-size:11.5px;margin:4px 0 0 128px}
+.dlg-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:8px;flex-wrap:wrap}
+.dlg-tab{background:none;border:0;padding:7px 11px;font-size:12px;font-weight:650;color:#8B837D;cursor:pointer;border-bottom:2px solid transparent}
+.dlg-tab.on{color:var(--k-orange-dark);border-bottom-color:var(--k-orange)}
+.eq-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:4px;max-height:220px;overflow-y:auto}
+.eq-btn{border:1px solid var(--line);background:#fff;border-radius:8px;min-height:38px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:2px}
+.eq-btn:hover{background:var(--k-orange-soft);border-color:var(--k-orange)}
+.eq-btn.on{background:var(--k-orange-soft);border-color:var(--k-orange)}
+.eq-btn svg{max-width:100%}
+.dlg-fieldset{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0}
+.dlg-fieldset legend{font-size:11px;font-weight:650;color:#8B837D;padding:0 6px}
+.dlg-textarea{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;font-family:ui-monospace,monospace;resize:vertical}
+.hf-edit{flex:1;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;min-height:26px;background:#fff;outline:none}
+.hf-edit:focus{border-color:var(--k-orange)}
+.btn-sm{padding:5px 10px;font-size:11px;border-radius:8px}
+
+/* ===== drop cap ===== */
+.ProseMirror p[data-dropcap]::first-letter{float:left;font-size:3.96em;line-height:.78;padding:.06em .1em 0 0;font-weight:600}
+.ProseMirror p[data-dropcap="2"]::first-letter{font-size:2.64em}
+.ProseMirror p[data-dropcap="4"]::first-letter{font-size:5.28em}
+
+/* ===== hidden text ===== */
+.ProseMirror [data-hidden]{display:none}
+.ProseMirror.kx-marks-on [data-hidden]{display:inline;color:#999;border-bottom:1px dotted #999}
+
+/* ===== multilevel list (1. / 1.1 / 1.1.1) ===== */
+.ProseMirror ol.ml,.ProseMirror ol.ml ol{list-style:none;counter-reset:ml}
+.ProseMirror ol.ml li{counter-increment:ml;position:relative}
+.ProseMirror ol.ml li::marker{content:none}
+.ProseMirror ol.ml>li::before{content:counters(ml,".") ".\2002";position:absolute;left:-3.2em;width:3em;text-align:right;color:inherit;font-weight:400}
+
+/* ===== heading numbering ===== */
+.kx-headnum{counter-reset:kx-h1}
+.kx-headnum h1{counter-increment:kx-h1;counter-reset:kx-h2}
+.kx-headnum h2{counter-increment:kx-h2;counter-reset:kx-h3}
+.kx-headnum h3{counter-increment:kx-h3;counter-reset:kx-h4}
+.kx-headnum h4{counter-increment:kx-h4;counter-reset:kx-h5}
+.kx-headnum h5{counter-increment:kx-h5;counter-reset:kx-h6}
+.kx-headnum h6{counter-increment:kx-h6}
+.kx-headnum h1::before{content:counter(kx-h1) ".\2002"}
+.kx-headnum h2::before{content:counter(kx-h1) "." counter(kx-h2) "\2002"}
+.kx-headnum h3::before{content:counter(kx-h1) "." counter(kx-h2) "." counter(kx-h3) "\2002"}
+.kx-headnum h4::before{content:counter(kx-h1) "." counter(kx-h2) "." counter(kx-h3) "." counter(kx-h4) "\2002"}
+.kx-headnum h5::before{content:counter(kx-h1) "." counter(kx-h2) "." counter(kx-h3) "." counter(kx-h4) "." counter(kx-h5) "\2002"}
+.kx-headnum h6::before{content:counter(kx-h1) "." counter(kx-h2) "." counter(kx-h3) "." counter(kx-h4) "." counter(kx-h5) "." counter(kx-h6) "\2002"}
+
+/* ===== footnote format variants ===== */
+.ProseMirror[data-fnfmt="lower-alpha"] .footnote-ref[data-kind="footnote"]::after{content:"[" counter(footnote,lower-alpha) "]"}
+.ProseMirror[data-fnfmt="upper-alpha"] .footnote-ref[data-kind="footnote"]::after{content:"[" counter(footnote,upper-alpha) "]"}
+.ProseMirror[data-fnfmt="lower-roman"] .footnote-ref[data-kind="footnote"]::after{content:"[" counter(footnote,lower-roman) "]"}
+.ProseMirror[data-fnfmt="upper-roman"] .footnote-ref[data-kind="footnote"]::after{content:"[" counter(footnote,upper-roman) "]"}
+.ProseMirror[data-enfmt="decimal"] .footnote-ref[data-kind="endnote"]::after{content:"[" counter(endnote) "]"}
+.ProseMirror[data-enfmt="lower-alpha"] .footnote-ref[data-kind="endnote"]::after{content:"[" counter(endnote,lower-alpha) "]"}
+.ProseMirror[data-enfmt="upper-alpha"] .footnote-ref[data-kind="endnote"]::after{content:"[" counter(endnote,upper-alpha) "]"}
+.ProseMirror[data-enfmt="upper-roman"] .footnote-ref[data-kind="endnote"]::after{content:"[" counter(endnote,upper-roman) "]"}
+
+/* ===== TOC leaders ===== */
+.doc-toc .toc-item{display:flex;align-items:baseline;gap:6px}
+.doc-toc .toc-lead{flex:1;min-width:12px}
+.toc-leader-dots .toc-lead{border-bottom:2px dotted #9a948e;height:.72em}
+.toc-leader-dashes .toc-lead{border-bottom:1px dashed #9a948e;height:.7em}
+.toc-leader-underline .toc-lead{border-bottom:1px solid #9a948e;height:.7em}
+.toc-leader-none .toc-lead{border-bottom:0}
+
+/* ===== view modes ===== */
+.doc-view-web .doc-page,.doc-view-draft .doc-page,.doc-view-outline .doc-page{background:#fff}
+.doc-view-web .ProseMirror{max-width:none}
+.doc-view-draft .ProseMirror{font-size:13px}
+.doc-view-draft .doc-toc,.doc-view-draft .kx-chart,.doc-view-draft img{opacity:.85}
+.doc-view-outline .ProseMirror>*:not(h1):not(h2):not(h3):not(h4):not(h5):not(h6){display:none}
+.doc-view-outline .ProseMirror h1{margin-left:0}
+.doc-view-outline .ProseMirror h2{margin-left:24px}
+.doc-view-outline .ProseMirror h3{margin-left:48px}
+.doc-view-outline .ProseMirror h4{margin-left:72px}
+.doc-view-outline .ProseMirror h5{margin-left:96px}
+.doc-view-outline .ProseMirror h6{margin-left:120px}
+
+/* ===== chart / shape / wordart / textbox / citation / index ===== */
+.kx-chart{margin:10px 0;padding:8px;border:1px solid transparent;border-radius:8px;cursor:default}
+.kx-chart:hover,.kx-chart.ProseMirror-selectednode{border-color:var(--k-orange)}
+.kx-chart svg{width:100%;height:auto;display:block}
+.kx-chart-empty{padding:32px;text-align:center;color:#8B837D;border:1px dashed var(--line);border-radius:8px;font-size:12px}
+.kx-shape{margin:8px 0;display:inline-block;line-height:0}
+.kx-shape.ProseMirror-selectednode{outline:2px solid var(--k-orange);outline-offset:2px}
+.kx-wordart{margin:12px 0;text-align:center;line-height:0;padding:8px;cursor:default}
+.kx-wordart.ProseMirror-selectednode{outline:2px solid var(--k-orange);outline-offset:2px}
+.kx-textbox{margin:8px 0}
+.kx-cite{color:var(--k-orange-dark);background:var(--k-orange-soft);border-radius:4px;padding:0 3px;cursor:default;font-size:.94em}
+.kx-ie{border-bottom:1px dotted #8B837D}

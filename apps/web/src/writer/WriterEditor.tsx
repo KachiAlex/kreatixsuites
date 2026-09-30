@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { TextStyle, Color, FontFamily, FontSize, LineHeight, BackgroundColor } from "@tiptap/extension-text-style";
+import { Color, FontFamily, FontSize, LineHeight, BackgroundColor } from "@tiptap/extension-text-style";
 import { Highlight } from "@tiptap/extension-highlight";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { Subscript } from "@tiptap/extension-subscript";
@@ -55,7 +55,9 @@ import { ImageLayoutDialog } from "./ImageDialogs";
 import { measureBands } from "./banding";
 import { LinkPopover } from "./LinkPopover";
 import { SpecialChars } from "./SpecialChars";
-import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup } from "./PageSetup";
+import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup, type PageSetup } from "./PageSetup";
+import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry } from "./extensions/extras";
+import { GoToDialog, FontDialog, TocOptionsDialog, NoteOptionsDialog, RestrictDialog, UnprotectDialog, EquationPalette, ChartDialog, ShapeDialog, WordArtDialog, MergeDialog, CitationDialog, HeaderFooterDialog, insertIndexAt } from "./MoreDialogs";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
 import { ContextMenu, type ContextMenuState } from "./ContextMenu";
@@ -137,6 +139,24 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const [captionDlg, setCaptionDlg] = useState(false);
   const [bookmarkDlg, setBookmarkDlg] = useState(false);
   const [xrefDlg, setXrefDlg] = useState(false);
+  // Word-parity dialogs
+  const [goToOpen, setGoToOpen] = useState(false);
+  const [fontDlg, setFontDlg] = useState(false);
+  const [tocOpts, setTocOpts] = useState(false);
+  const [noteOpts, setNoteOpts] = useState(false);
+  const [restrictDlg, setRestrictDlg] = useState(false);
+  const [unprotectDlg, setUnprotectDlg] = useState(false);
+  const [eqPal, setEqPal] = useState(false);
+  const [chartDlg, setChartDlg] = useState(false);
+  const [shapeDlg, setShapeDlg] = useState(false);
+  const [wordArtDlg, setWordArtDlg] = useState(false);
+  const [hfDlg, setHfDlg] = useState(false);
+  const [mergeDlg, setMergeDlg] = useState(false);
+  const [citeDlg, setCiteDlg] = useState(false);
+  const [dictating, setDictating] = useState(false);
+  const dictRec = useRef<{ stop: () => void } | null>(null);
+  const [viewMode, setViewMode] = useState<"print" | "web" | "draft" | "outline">("print");
+  const [unlocked, setUnlocked] = useState(false);
   // Format Painter: armed state + captured format (single-use; sticky on dbl-click)
   const [painterOn, setPainterOn] = useState(false);
   const painter = useRef<{
@@ -208,7 +228,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         undoRedo: false, // Collaboration ships its own Yjs-backed history
         link: { openOnClick: !canMutate, autolink: true, linkOnPaste: true },
       }),
-      TextStyle, Color, FontFamily, FontSize, LineHeight, BackgroundColor,
+      KxTextStyle, Color, FontFamily, FontSize, LineHeight, BackgroundColor,
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Subscript, Superscript,
@@ -223,6 +243,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
       ParagraphSpacing,
       KxParaFormat,
       ListStyle,
+      DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry,
       PageBreak, SectionBreak, ColumnBreak, Columns, ClearBreak, SignatureLine,
       ForcedBreaks,
       Footnote,
@@ -254,7 +275,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         },
         // reviewers land in suggesting mode; everyone else edits directly
         mode: permission === "reviewer" ? "suggest" : "edit",
-        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "sectionBreak", "columnBreak", "columns", "clearBreak", "signatureLine", "toc", "tof", "embed", "blockMath"],
+        additionalBlockTypes: ["taskList", "taskItem", "table", "tableRow", "tableCell", "tableHeader", "horizontalRule", "pageBreak", "sectionBreak", "columnBreak", "columns", "clearBreak", "signatureLine", "toc", "tof", "embed", "blockMath", "chart", "shape", "textBox", "wordArt", "citation"],
       }),
       ...(session ? [
         Collaboration.configure({ document: session.ydoc, field: "default" }),
@@ -601,7 +622,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
         void flushSave();
       } else if (k === "g") {
         e.preventDefault();
-        setBookmarkDlg(true);
+        setGoToOpen(true);
       } else if (k === "/") {
         e.preventDefault();
         setShortcutsOpen(true);
@@ -715,6 +736,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
       showMarks: (ctx.editor?.storage.KxParaFormat?.showMarks as boolean) ?? false,
       spellOn: (ctx.editor?.storage.spellcheck?.enabled as boolean) ?? true,
       typoOn: (ctx.editor?.storage.typography?.enabled as boolean) ?? true,
+      restrict: ((ctx.editor?.storage.KxPageSetup as { setup?: PageSetup } | undefined)?.setup?.restrict as string) ?? "",
+      headNums: !!((ctx.editor?.storage.KxPageSetup as { setup?: PageSetup } | undefined)?.setup?.headNums),
+      chartSel: ctx.editor?.isActive("chart") ?? false,
+      shapeSel: ctx.editor?.isActive("shape") ?? false,
+      wordArtSel: ctx.editor?.isActive("wordArt") ?? false,
+      citeSel: ctx.editor?.isActive("citation") ?? false,
     }),
   });
 
@@ -722,8 +749,22 @@ export function WriterEditor({ item, initialDoc, permission }: {
   // gates trackSetNode, so we toggle editable ourselves on mode changes
   useEffect(() => {
     if (!editor) return;
-    editor.setEditable(canMutate && !readMode && !docFinal && (state?.trackMode ?? "edit") !== "view");
-  }, [editor, canMutate, readMode, docFinal, state?.trackMode]);
+    const locked = !unlocked && (state?.restrict === "readonly" || state?.restrict === "comments");
+    editor.setEditable(canMutate && !readMode && !docFinal && (state?.trackMode ?? "edit") !== "view" && !locked);
+  }, [editor, canMutate, readMode, docFinal, state?.trackMode, state?.restrict, unlocked]);
+
+  // view modes — print layout keeps the paginator; web/draft/outline drop it
+  useEffect(() => {
+    if (!editor) return;
+    const wantPaged = viewMode === "print";
+    const paged = (editor.storage.PaginationPlus as { enabled?: boolean } | undefined)?.enabled ?? true;
+    if (paged !== wantPaged) editor.chain().togglePagination().run();
+    const canvas = document.querySelector(".doc-canvas");
+    if (canvas) {
+      for (const m of ["web", "draft", "outline", "print"]) canvas.classList.remove(`doc-view-${m}`);
+      canvas.classList.add(`doc-view-${viewMode}`);
+    }
+  }, [editor, viewMode, state?.paged]);
 
   // markup display modes + type/author filtering — classes on the page wrapper
   useEffect(() => {
@@ -738,8 +779,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
   // lock tracking → reviewers can't leave suggest mode (doc-level flag rides
   // along in the pageSetup payload, so it persists + collab-syncs via save)
   useEffect(() => {
-    const tl = (initialDoc as { pageSetup?: { trackingLocked?: boolean } })?.pageSetup?.trackingLocked;
-    if (tl) setTrackLocked(true);
+    const ps = (initialDoc as { pageSetup?: { trackingLocked?: boolean; restrict?: string } })?.pageSetup;
+    if (ps?.trackingLocked || ps?.restrict === "tracked") setTrackLocked(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
   const toggleTrackLock = useCallback(() => {
@@ -856,7 +897,11 @@ export function WriterEditor({ item, initialDoc, permission }: {
   const submitComment = async (body: string) => {
     if (!editor) return;
     const anchor = crypto.randomUUID();
+    // comments-only restriction still permits comment marks — lift the lock briefly
+    const wasEditable = editor.isEditable;
+    if (!wasEditable) editor.setEditable(true);
     editor.chain().focus().setComment(anchor).run();
+    if (!wasEditable) editor.setEditable(false);
     await api.post(`/api/files/${item.id}/comments`, { body, anchor });
     setNewComment(false);
     loadComments();
@@ -1193,6 +1238,95 @@ export function WriterEditor({ item, initialDoc, permission }: {
     }
   }, [editor, canMutate, toast]);
 
+  /** Word's Paste Special — choose how clipboard content lands. */
+  const doPasteAs = useCallback(async (mode: "html" | "text" | "merge") => {
+    if (!editor || !canMutate) return;
+    try {
+      if (mode === "text") {
+        const t = await navigator.clipboard.readText();
+        if (t) editor.chain().focus().insertContent(t).run();
+        return;
+      }
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        if (!it.types.includes("text/html")) continue;
+        let html = await (await it.getType("text/html")).text();
+        if (mode === "merge") {
+          // merge formatting — keep structure, strip inline styles/fonts/colors
+          const d = new DOMParser().parseFromString(html, "text/html");
+          d.querySelectorAll("[style]").forEach((el) => el.removeAttribute("style"));
+          d.querySelectorAll("font").forEach((el) => {
+            const p = el.parentNode; while (el.firstChild) p?.insertBefore(el.firstChild, el);
+            el.remove();
+          });
+          html = d.body.innerHTML;
+        }
+        editor.chain().focus().insertContent(html).run();
+        return;
+      }
+      const t = await navigator.clipboard.readText();
+      if (t) editor.chain().focus().insertContent(t).run();
+    } catch {
+      toast("Clipboard access denied — use Ctrl+V");
+    }
+  }, [editor, canMutate, toast]);
+
+  /** Apply + persist a PageSetup change (shared by the new dialogs). */
+  const applySetup = useCallback((s: PageSetup) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    applyPageSetup(ed, s);
+    // keep the React lock flag in sync so ModeSwitcher enforces suggest mode
+    const tl = !!s.trackingLocked;
+    setTrackLocked(tl);
+    if (tl) (ed.commands as unknown as Record<string, (m: string) => boolean>).setTrackChangesMode("suggest");
+    savePageSetup();
+  }, [savePageSetup]);
+
+  /** Speech-to-text dictation (Web Speech API). */
+  const toggleDictation = useCallback(() => {
+    if (dictating) {
+      dictRec.current?.stop();
+      dictRec.current = null;
+      setDictating(false);
+      return;
+    }
+    // minimal SpeechRecognition typing (not in all DOM lib versions)
+    type SRResult = { isFinal: boolean; 0: { transcript: string } };
+    type SR = {
+      continuous: boolean; interimResults: boolean; lang: string;
+      onresult: ((e: { resultIndex: number; results: ArrayLike<SRResult> }) => void) | null;
+      onend: (() => void) | null;
+      onerror: (() => void) | null;
+      start: () => void; stop: () => void;
+    };
+    const w = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SR) { toast("Dictation isn't supported in this browser — try Chrome or Edge"); return; }
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.lang = navigator.language || "en-US";
+    rec.onresult = (e: { resultIndex: number; results: ArrayLike<SRResult> }) => {
+      const ed = editorRef.current;
+      if (!ed) return;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          const t = e.results[i][0].transcript.trim();
+          if (t) ed.chain().focus().insertContent(t + " ").run();
+        }
+      }
+    };
+    rec.onend = () => { setDictating(false); dictRec.current = null; };
+    rec.onerror = () => { setDictating(false); dictRec.current = null; };
+    try {
+      rec.start();
+      dictRec.current = rec;
+      setDictating(true);
+      toast("Dictation on — speak to type. Click the mic again to stop.");
+    } catch { toast("Could not start dictation"); }
+  }, [dictating, toast]);
+
   const makeCopy = useCallback(async () => {
     if (!editor) return;
     try {
@@ -1507,13 +1641,27 @@ export function WriterEditor({ item, initialDoc, permission }: {
         { label: "Cut", shortcut: "Ctrl+X", onClick: () => void doCopy(true) },
       ] : []),
       { label: "Copy", shortcut: "Ctrl+C", onClick: () => void doCopy(false) },
-      ...(canMutate ? [{ label: "Paste", shortcut: "Ctrl+V", onClick: () => void doPaste() }] : []),
+      ...(canMutate ? [
+        { label: "Paste", shortcut: "Ctrl+V", onClick: () => void doPaste() },
+        {
+          label: "Paste special", submenu: [
+            { label: "Keep source formatting", onClick: () => void doPasteAs("html") },
+            { label: "Merge formatting", onClick: () => void doPasteAs("merge") },
+            { label: "Text only", onClick: () => void doPasteAs("text") },
+          ],
+        } as MenuItem,
+      ] : []),
       { label: "Select all", shortcut: "Ctrl+A", onClick: () => ed.chain().focus().selectAll().run() },
       { divider: true },
       { label: "Find and replace", shortcut: "Ctrl+F", checked: findOpen, onClick: () => setFindOpen(true) },
+      { label: "Go to…", shortcut: "Ctrl+G", onClick: () => setGoToOpen(true) },
     ];
     const viewItems: MenuItem[] = [
-      { label: "Print layout", checked: state?.paged, onClick: () => { ed.chain().focus().togglePagination().run(); } },
+      { label: "Print layout", checked: viewMode === "print", onClick: () => setViewMode("print") },
+      { label: "Web layout", checked: viewMode === "web", onClick: () => setViewMode("web") },
+      { label: "Draft", checked: viewMode === "draft", onClick: () => setViewMode("draft") },
+      { label: "Outline view", checked: viewMode === "outline", onClick: () => setViewMode("outline") },
+      { divider: true },
       { label: "Show outline", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
       { label: "Show ruler", checked: showRuler, onClick: () => setShowRuler(!showRuler) },
       { label: "Formatting marks (¶)", checked: state?.showMarks, onClick: () => ed.chain().focus().toggleShowMarks().run() },
@@ -1540,6 +1688,15 @@ export function WriterEditor({ item, initialDoc, permission }: {
       { label: "Check accessibility", onClick: () => setA11yDlg(true) },
       { label: "Spellcheck squiggles", checked: state?.spellOn, onClick: () => ed.chain().focus().toggleSpellcheck().run() },
       { label: "AutoCorrect as you type", checked: state?.typoOn, onClick: () => ed.chain().toggleTypography().run() },
+      { divider: true },
+      ...(canMutate ? [
+        { label: dictating ? "Stop dictation 🎤" : "Dictate (speech to text) 🎤", checked: dictating, onClick: toggleDictation } as MenuItem,
+      ] : []),
+      ...(canEdit ? [
+        state?.restrict
+          ? { label: "Unprotect document…", onClick: () => setUnprotectDlg(true) } as MenuItem
+          : { label: "Restrict editing…", onClick: () => setRestrictDlg(true) } as MenuItem,
+      ] : []),
       { divider: true },
       { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
       ...(canMutate ? [
@@ -1608,6 +1765,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Inline math  $x^2$", onClick: () => ed.chain().focus().insertInlineMath({ latex: "" }).run() },
           { label: "Display math", onClick: () => ed.chain().focus().insertBlockMath({ latex: "" }).run() },
+          { label: "Equation tools…", onClick: () => setEqPal(true) },
           {
             label: "Footnote", onClick: () => {
               void askText({ title: "Insert footnote", placeholder: "Footnote text" })
@@ -1620,14 +1778,39 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 .then((note) => { if (note !== null) ed.chain().focus().insertEndnote(note).run(); });
             },
           },
+          { label: "Footnote & endnote options…", onClick: () => setNoteOpts(true) },
           { divider: true },
           { label: "Caption…", onClick: () => setCaptionDlg(true) },
           { label: "Bookmark…", onClick: () => setBookmarkDlg(true) },
           { label: "Cross-reference…", onClick: () => setXrefDlg(true) },
           { label: "Update fields", shortcut: "F9", onClick: () => ed.chain().focus().updateFields().run() },
           { divider: true },
-          { label: "Table of contents", onClick: () => ed.chain().focus().insertToc().run() },
+          { label: "Table of contents…", onClick: () => setTocOpts(true) },
           { label: "Table of figures", onClick: () => ed.chain().focus().insertTof().run() },
+          { divider: true },
+          { label: "Citation…", onClick: () => setCiteDlg(true) },
+          { label: "Bibliography", onClick: () => { if (!ed.chain().focus().insertBibliography().run()) toast("No citations in the document"); } },
+          {
+            label: "Mark index entry…", onClick: () => {
+              void askText({ title: "Mark index entry", placeholder: "Index entry text" })
+                .then((en) => { if (en) ed.chain().focus().markIndexEntry(en).run(); });
+            },
+          },
+          {
+            label: "Insert index", onClick: () => {
+              if (!insertIndexAt(ed)) toast("No marked index entries — select text and use Mark index entry first");
+            },
+          },
+          { divider: true },
+          { label: "Chart…", onClick: () => setChartDlg(true) },
+          { label: "Shape…", onClick: () => setShapeDlg(true) },
+          { label: "Text box", onClick: () => ed.chain().focus().insertTextBox().run() },
+          { label: "WordArt…", onClick: () => setWordArtDlg(true) },
+          {
+            label: "Drop cap", checked: !!ed.getAttributes("paragraph").dropCap,
+            onClick: () => { if (!ed.chain().focus().toggleDropCap(3).run()) toast("Drop caps apply to body paragraphs"); },
+          },
+          { label: "Mail merge…", onClick: () => setMergeDlg(true) },
           {
             label: "Embed (YouTube / URL)…", onClick: () => {
               void askText({ title: "Embed", placeholder: "https://" })
@@ -1648,6 +1831,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
             ],
           },
           { label: "Page numbers…", onClick: () => setPageNumbersOpen(true) },
+          { label: "Header & footer…", onClick: () => setHfDlg(true) },
           { label: "Horizontal rule", onClick: () => ed.chain().focus().setHorizontalRule().run() },
           {
             label: "Date & time", submenu: [
@@ -1665,6 +1849,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
       },
       {
         label: "Format", items: [
+          { label: "Font…", onClick: () => setFontDlg(true) },
+          { divider: true },
           {
             label: "Text", submenu: [
               { label: "Bold", shortcut: "Ctrl+B", checked: state?.bold, onClick: () => ed.chain().focus().toggleBold().run() },
@@ -1793,7 +1979,21 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 { label: "i. Lower roman", onClick: () => ed.chain().focus().setListStyle("lower-roman").run() },
                 { label: "A. Upper alpha", onClick: () => ed.chain().focus().setListStyle("upper-alpha").run() },
                 { label: "I. Upper roman", onClick: () => ed.chain().focus().setListStyle("upper-roman").run() },
+                { divider: true } as MenuItem,
+                {
+                  label: "Multilevel (1. / 1.1 / 1.1.1)",
+                  checked: !!ed.getAttributes("orderedList").ml,
+                  onClick: () => ed.chain().focus().toggleMultiList().run(),
+                } as MenuItem,
               ] : []),
+              { divider: true },
+              {
+                label: "Heading numbering", checked: !!state?.headNums,
+                onClick: () => {
+                  const s = readPageSetup(ed);
+                  applySetup({ ...s, headNums: !s.headNums });
+                },
+              },
             ],
           },
           {
@@ -1850,7 +2050,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
     );
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment, markupMode, hideTypes, hideAuthors, trackLocked, readMode, focusMode, docProps, editAnyway]);
+  }, [ed, state, panel, findOpen, title, zoom, showRuler, canMutate, canEdit, canComment, markupMode, hideTypes, hideAuthors, trackLocked, readMode, focusMode, docProps, editAnyway, viewMode, dictating]);
 
   const wcStats = useMemo(() => {
     if (!wordCountOpen || !editor) return null;
@@ -1948,6 +2148,8 @@ export function WriterEditor({ item, initialDoc, permission }: {
             onDoubleClick={() => copyFormat(true)}>🖌</button>
           <button className={`rb rb-opt ${state?.showMarks ? "on" : ""}`} title="Show formatting marks" onClick={() => editor?.chain().focus().toggleShowMarks().run()}>¶</button>
           <button className="rb rb-opt" title="Paragraph settings" onClick={() => setParaDlg(true)}>¶…</button>
+          <button className="rb rb-opt" title="Font settings" onClick={() => setFontDlg(true)}>A…</button>
+          <button className={`rb rb-opt ${dictating ? "on" : ""}`} title="Dictate (speech to text)" onClick={toggleDictation}>🎤</button>
           <div className="ribbon-end">
             {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
             {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode ?? (trackLocked ? "suggest" : undefined)} />}
@@ -1994,6 +2196,12 @@ export function WriterEditor({ item, initialDoc, permission }: {
         <div className="final-banner">
           <span><b>MARKED AS FINAL</b> — an author marked this document as final to discourage editing.</span>
           {canMutate && <button className="btn-ghost btn-sm" onClick={() => setEditAnyway(true)}>Edit Anyway</button>}
+        </div>
+      )}
+      {state?.restrict && !unlocked && canEdit && (
+        <div className="final-banner">
+          <span><b>PROTECTED</b> — {state.restrict === "readonly" ? "this document is read-only" : state.restrict === "comments" ? "only comments are allowed" : "edits are tracked as suggestions"}.</span>
+          <button className="btn-ghost btn-sm" onClick={() => setUnprotectDlg(true)}>Unprotect</button>
         </div>
       )}
       <div className="doc-canvas" style={{ marginRight: panel !== "none" ? 330 : 0, marginLeft: panel === "outline" ? 240 : 0 }}>
@@ -2052,7 +2260,28 @@ export function WriterEditor({ item, initialDoc, permission }: {
         )}
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
           {editor && showRuler && <Ruler editor={editor} canMutate={canMutate} />}
-          <div className="doc-page" onContextMenu={(e) => {
+          <div className="doc-page" onDoubleClick={(e) => {
+            // double-click a chart/shape/wordart/citation → open its editor
+            if (!editor || !canMutate) return;
+            const t = (e.target as HTMLElement).closest<HTMLElement>(".kx-chart,.kx-shape,.kx-wordart,.kx-cite,.doc-toc");
+            if (!t) return;
+            const want = t.classList.contains("kx-chart") ? "chart"
+              : t.classList.contains("kx-shape") ? "shape"
+              : t.classList.contains("kx-wordart") ? "wordArt"
+              : t.classList.contains("doc-toc") ? "toc" : "citation";
+            const p = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
+            if (!p) return;
+            // posAtCoords may land inside the node — try boundary candidates
+            for (const c of [p.pos, p.inside, p.pos - 1]) {
+              const n = c >= 0 ? editor.state.doc.nodeAt(c) : null;
+              if (n?.type.name === want) { editor.chain().focus().setNodeSelection(c).run(); break; }
+            }
+            if (want === "chart") setChartDlg(true);
+            else if (want === "shape") setShapeDlg(true);
+            else if (want === "wordArt") setWordArtDlg(true);
+            else if (want === "toc") setTocOpts(true);
+            else setCiteDlg(true);
+          }} onContextMenu={(e) => {
             if (!editor) return;
             const target = e.target as HTMLElement;
             const coords = { left: e.clientX, top: e.clientY };
@@ -2258,6 +2487,27 @@ export function WriterEditor({ item, initialDoc, permission }: {
           onInsert={(a) => editor.chain().focus().setSignatureLine(a).run()}
           onClose={() => setSigDlg(false)} />
       )}
+      {goToOpen && editor && <GoToDialog editor={editor} onClose={() => setGoToOpen(false)} />}
+      {fontDlg && editor && <FontDialog editor={editor} onClose={() => setFontDlg(false)} />}
+      {tocOpts && editor && <TocOptionsDialog editor={editor} onClose={() => setTocOpts(false)} />}
+      {noteOpts && editor && <NoteOptionsDialog setup={readPageSetup(editor)} onApply={applySetup} onClose={() => setNoteOpts(false)} />}
+      {restrictDlg && editor && <RestrictDialog setup={readPageSetup(editor)} onApply={applySetup} onClose={() => setRestrictDlg(false)} />}
+      {unprotectDlg && editor && (
+        <UnprotectDialog expected={readPageSetup(editor).restrictKey ?? ""} onClose={() => setUnprotectDlg(false)}
+          onOk={() => {
+            applySetup({ ...readPageSetup(editor), restrict: undefined, restrictKey: undefined, trackingLocked: undefined });
+            setUnlocked(true); setUnprotectDlg(false); toast("Protection removed");
+          }} />
+      )}
+      {eqPal && editor && <EquationPalette editor={editor} onClose={() => setEqPal(false)} />}
+      {chartDlg && editor && <ChartDialog editor={editor} onClose={() => setChartDlg(false)} />}
+      {shapeDlg && editor && <ShapeDialog editor={editor} onClose={() => setShapeDlg(false)} />}
+      {wordArtDlg && editor && <WordArtDialog editor={editor} onClose={() => setWordArtDlg(false)} />}
+      {hfDlg && editor && <HeaderFooterDialog setup={readPageSetup(editor)}
+        onApply={(s) => { applySetup(s); setHfDlg(false); }} onClose={() => setHfDlg(false)} />}
+      {mergeDlg && editor && <MergeDialog editor={editor} initialCsv={readPageSetup(editor).mergeCsv ?? ""}
+        onSaveCsv={(csv) => applySetup({ ...readPageSetup(editor), mergeCsv: csv })} onClose={() => setMergeDlg(false)} />}
+      {citeDlg && editor && <CitationDialog editor={editor} onClose={() => setCiteDlg(false)} />}
       {wordCountOpen && (
         <div className="modal-overlay" onClick={() => setWordCountOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Word count">
@@ -2289,7 +2539,7 @@ export function WriterEditor({ item, initialDoc, permission }: {
                 ["Grow / shrink font", "Ctrl+] / Ctrl+["],
                 ["Cycle case", "Shift+F3"], ["Update fields", "F9"],
                 ["Copy / paint format", "Ctrl+Shift+C / V"],
-                ["Go to (bookmarks)", "Ctrl+G"], ["Exit focus / read mode", "Esc"],
+                ["Go to (page/line/bookmark/…)", "Ctrl+G"], ["Exit focus / read mode", "Esc"],
               ].map(([label, k]) => <tr key={label}><td>{label}</td><td><kbd>{k}</kbd></td></tr>)}
             </tbody></table>
             <button className="btn-primary btn-sm" onClick={() => setShortcutsOpen(false)}>Close</button>
