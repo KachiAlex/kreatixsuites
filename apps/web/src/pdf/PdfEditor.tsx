@@ -91,6 +91,15 @@ const COLOR_NAMES: Record<string, string> = {
 };
 const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact", "caret", "replace", "check", "cross"]);
 
+const REDACT_PRESETS: Record<string, { label: string; re: string }> = {
+  ssn:    { label: "SSN (###-##-####)",  re: "\\b\\d{3}-\\d{2}-\\d{4}\\b" },
+  email:  { label: "Email address",      re: "\\b[\\w.+-]+@[\\w-]+\\.[\\w.]+\\b" },
+  phone:  { label: "US phone number",    re: "\\b(?:\\+?1[\\s.-]?)?\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4}\\b" },
+  cc:     { label: "Credit card number", re: "\\b(?:\\d[ -]?){13,16}\\b" },
+  date:   { label: "Date (MM/DD/YYYY)",  re: "\\b\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}\\b" },
+  custom: { label: "Custom regex…",      re: "" },
+};
+
 // minimal LinkService stub — external links open in a new tab, internal dests go nowhere (we use our own nav)
 const LINK_SERVICE = {
   externalLinkEnabled: true,
@@ -141,6 +150,19 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [dark, setDark] = useState(false);
   const [selAnn, setSelAnn] = useState<string | null>(null);
   const [focusAnn, setFocusAnn] = useState<string | null>(null); // newly placed textbox → focus for typing
+  const [hlFields, setHlFields] = useState(true);      // Acrobat-style blue tint on fillable fields
+  const [spaceDown, setSpaceDown] = useState(false);   // spacebar held → drag-to-pan
+  const [panning, setPanning] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);     // shortcuts overlay
+  const [redactDlg, setRedactDlg] = useState(false);
+  const [redactPat, setRedactPat] = useState("ssn");
+  const [redactCustom, setRedactCustom] = useState("");
+  const [redactCase, setRedactCase] = useState(false);
+  const [redactScan, setRedactScan] = useState<{ page: number; text: string; rects: Rect4[] }[] | null>(null);
+  const [redactBusy, setRedactBusy] = useState(false);
+  const [curDims, setCurDims] = useState<{ w: number; h: number } | null>(null);
+  const zoomAnchor = useRef<{ fx: number; fy: number; ratio: number; sl: number; st: number } | null>(null);
+  const didInitView = useRef(false);
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [printing, setPrinting] = useState(false);
   const [exportDlg, setExportDlg] = useState(false);
@@ -985,9 +1007,72 @@ export function PdfEditor({ item, initialDoc, permission }: {
       const ctx = c.getContext("2d")!;
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
       await pg.render({ canvas: c, viewport: v }).promise;
+      // burn the marks into the pixels — covered content is destroyed in the
+      // image itself, not merely hidden under an overlaid rect
+      ctx.fillStyle = "#000";
+      for (const a of annDoc.annotations.filter((x) => x.type === "redact" && x.page === p)) {
+        for (const [rx, ry, rw, rh] of a.rects ?? []) {
+          const [x1, y1] = v.convertToViewportPoint(rx, ry);
+          const [x2, y2] = v.convertToViewportPoint(rx + rw, ry + rh);
+          ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        }
+      }
       out[p] = c.toDataURL("image/png");
     }
     return out;
+  };
+
+  // ---------- find & redact: scan every page for pattern hits → mark rects ----------
+  const redactRunScan = async () => {
+    if (!doc || redactBusy) return;
+    setRedactBusy(true); setRedactScan(null);
+    try {
+      const src = redactPat === "custom" ? redactCustom.trim() : REDACT_PRESETS[redactPat].re;
+      if (!src) { toast("Enter a pattern to search for"); return; }
+      const re = new RegExp(src, `g${redactCase ? "" : "i"}`);
+      const out: { page: number; text: string; rects: Rect4[] }[] = [];
+      for (let p = 1; p <= doc.numPages && out.length < 500; p++) {
+        const pg = await doc.getPage(p);
+        const tc = await pg.getTextContent();
+        const vp1 = pg.getViewport({ scale: 1 });
+        // joined text so matches spanning text items still hit — then map the
+        // char range back to per-item rects (same mapping as search marks)
+        const text = tc.items.map((i) => ("str" in i ? i.str : "")).join("");
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text))) {
+          const rects: Rect4[] = [];
+          let off = 0;
+          for (const it of tc.items) {
+            const str = "str" in it ? it.str : "";
+            const s = off, e = off + str.length; off = e;
+            const os = Math.max(s, m.index), oe = Math.min(e, m.index + m[0].length);
+            if (oe <= os || !("transform" in it) || !str) continue;
+            const tx = pdfjs.Util.transform(vp1.transform, it.transform);
+            const fh = Math.max(2, Math.hypot(tx[2], tx[3]));
+            const [ix, iy] = vp1.convertToPdfPoint(tx[4], tx[5]);
+            const cw = it.width / Math.max(1, str.length);
+            rects.push([ix + cw * (os - s) - 0.5, iy - fh * 0.32, Math.max(2.5, cw * (oe - os)) + 1, fh * 1.18]);
+          }
+          if (rects.length) out.push({ page: p, text: m[0], rects });
+          if (m[0].length === 0) re.lastIndex++;
+          if (out.length >= 500) break;
+        }
+      }
+      setRedactScan(out);
+      if (!out.length) toast("No matches found");
+    } catch { toast("Invalid pattern"); }
+    finally { setRedactBusy(false); }
+  };
+  const redactMarkAll = () => {
+    if (!redactScan?.length) return;
+    const hits = redactScan;
+    mutate((d) => {
+      for (const h of hits) d.annotations.push({ id: crypto.randomUUID().slice(0, 8), type: "redact",
+        page: h.page, rects: h.rects, author: user?.displayName, createdAt: new Date().toISOString() });
+    });
+    toast(`Marked ${hits.length} item${hits.length === 1 ? "" : "s"} — Save applies redaction permanently`);
+    setRedactDlg(false); setRedactScan(null);
   };
 
   const resolveDest = async (dest: unknown): Promise<number | null> => {
@@ -1009,7 +1094,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
       else if ((e.key === "Delete" || e.key === "Backspace") && selAnn && canEdit) { e.preventDefault(); delAnn(selAnn); setSelAnn(null); }
       else if ((e.key === "Delete" || e.key === "Backspace") && selField && canEdit) { e.preventDefault(); delField(selField); setSelField(null); }
-      else if (e.key === "Escape") { setSelAnn(null); setSelField(null); }
+      else if (e.key === "Escape") { setSelAnn(null); setSelField(null); if (tool !== "select") setTool("select"); }
+      else if (e.key === " " && !e.repeat) { e.preventDefault(); setSpaceDown(true); }
+      else if (e.key === "?") { e.preventDefault(); setShowKeys((v) => !v); }
       // PDF-3 — paged-view navigation
       else if ((viewMode === "single" || viewMode === "two") && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
         { e.preventDefault(); setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1))); }
@@ -1024,8 +1111,66 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onKeyUp = (e: KeyboardEvent) => { if (e.key === " ") setSpaceDown(false); };
+    window.addEventListener("keyup", onKeyUp);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onKeyUp); };
   });
+
+  // Ctrl+wheel zoom centered on the cursor — non-passive so we can preventDefault
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const fx = e.clientX - rect.left, fy = e.clientY - rect.top;
+      setScale((s) => {
+        const ns = Math.min(4, Math.max(0.4, +(s * (e.deltaY < 0 ? 1.12 : 1 / 1.12)).toFixed(3)));
+        if (ns !== s) zoomAnchor.current = { fx, fy, ratio: ns / s, sl: el.scrollLeft, st: el.scrollTop };
+        return ns;
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [doc]);
+  // apply the zoom anchor after re-render so the point under the cursor stays put
+  useEffect(() => {
+    const a = zoomAnchor.current; const el = scrollRef.current;
+    if (!a || !el) return;
+    zoomAnchor.current = null;
+    el.scrollLeft = (a.sl + a.fx) * a.ratio - a.fx;
+    el.scrollTop = (a.st + a.fy) * a.ratio - a.fy;
+  }, [scale]);
+
+  // open at remembered zoom+page, else fit-width
+  useEffect(() => {
+    if (!doc || didInitView.current) return;
+    didInitView.current = true;
+    const saved = (() => { try { const r = localStorage.getItem(`kx:pdfpos:${item.id}`); return r ? JSON.parse(r) as { scale?: number; page?: number } : null; } catch { return null; } })();
+    if (saved?.scale) setScale(Math.min(4, Math.max(0.4, saved.scale)));
+    else void fitWidth();
+    if (saved?.page && saved.page > 1 && saved.page <= numPages) {
+      setCurPage(saved.page);
+      for (const t of [150, 500, 1000]) setTimeout(() => pageRefs.current.get(saved.page!)?.scrollIntoView(), t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, numPages]);
+  useEffect(() => {
+    if (!doc) return;
+    const t = setTimeout(() =>
+      localStorage.setItem(`kx:pdfpos:${item.id}`, JSON.stringify({ scale, page: curPage })), 400);
+    return () => clearTimeout(t);
+  }, [scale, curPage, doc, item.id]);
+
+  // status bar — current page dimensions (cached via effect)
+  useEffect(() => {
+    if (!doc) { setCurDims(null); return; }
+    let dead = false;
+    void pageDims(curPage).then((d) => { if (!dead) setCurDims(d); }).catch(() => {});
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, curPage]);
 
   const saveLabel = { saved: "Saved", saving: "Saving…", unsaved: "Unsaved", error: "Save failed" }[saveState];
 
@@ -1085,6 +1230,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Redo", icon: "↷", shortcut: "Ctrl+Y", onClick: redo, disabled: !canEdit },
           { divider: true },
           { label: "Find in document…", icon: "🔍", shortcut: "Ctrl+F", onClick: () => setPanel("search") },
+          { label: "Find & redact patterns…", icon: "🛡", onClick: () => setRedactDlg(true), disabled: !canEdit },
           { divider: true },
           { label: "Edit page content", icon: "✎", submenu: [
             { label: "Edit text — retype a block", icon: "✎T", checked: tool === "edittext", onClick: () => pickTool("edittext"), disabled: !canEdit },
@@ -1110,6 +1256,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Zoom out", onClick: () => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2))) },
           { divider: true },
           { label: "Rotate view 90°", onClick: () => setViewRot((r) => (r + 90) % 360) },
+          { label: "Highlight form fields", checked: hlFields, onClick: () => setHlFields((v) => !v) },
           { label: "Dark mode", checked: dark, onClick: () => setDark((d) => !d) },
           { label: "Fullscreen", onClick: () => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {}) },
           { divider: true },
@@ -1129,6 +1276,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
             { label: "Marquee zoom — drag a box to fill the view", icon: "🔍+", checked: tool === "zoombox", onClick: () => pickTool("zoombox") },
             { label: "Loupe — hover to magnify", icon: "🔎", checked: tool === "loupe", onClick: () => pickTool("loupe") },
           ]},
+          { divider: true },
+          { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
         ]},
         { label: "Insert", items: [
           { label: "Image…", icon: "🖼", checked: tool === "image", onClick: () => pickTool("image"), disabled: !canEdit },
@@ -1524,7 +1673,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
             ))}
           </div>
         ) : (
-        <div className={`pages pdf-pages ${viewMode === "single" || viewMode === "two" ? "paged" : ""}`} ref={scrollRef}
+        <div className={`pages pdf-pages ${viewMode === "single" || viewMode === "two" ? "paged" : ""} ${hlFields ? "hl-fields" : ""} ${panning ? "panning" : spaceDown ? "space-hold" : ""}`} ref={scrollRef}
+          onPointerDownCapture={(e) => {
+            if (!spaceDown || e.button !== 0) return;
+            e.preventDefault(); e.stopPropagation();
+            const el = scrollRef.current!;
+            const sx = e.clientX, sy = e.clientY, sl = el.scrollLeft, st = el.scrollTop;
+            const mv = (ev: PointerEvent) => { el.scrollLeft = sl - (ev.clientX - sx); el.scrollTop = st - (ev.clientY - sy); };
+            const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); setPanning(false); };
+            window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+            setPanning(true);
+          }}
           onScroll={(e) => {
             const el = e.currentTarget;
             const kids = [...el.querySelectorAll<HTMLElement>("[data-page]")];
@@ -1577,6 +1736,19 @@ export function PdfEditor({ item, initialDoc, permission }: {
         </div>
         )}
       </div>
+
+      {doc && (
+        <div className="pdf-status">
+          <span>Page {curPage} of {numPages}</span>
+          {curDims && <span>{(curDims.w / 72).toFixed(1)} × {(curDims.h / 72).toFixed(1)} in</span>}
+          <span>{Math.round(scale * 100)}%</span>
+          {annDoc.annotations.length > 0 && <span>{annDoc.annotations.length} annotation{annDoc.annotations.length === 1 ? "" : "s"}</span>}
+          {(annDoc.fields ?? []).length > 0 && <span>{annDoc.fields!.length} field{annDoc.fields!.length === 1 ? "" : "s"}</span>}
+          <span style={{ flex: 1 }} />
+          <button className="pdf-status-hint" onClick={() => setShowKeys(true)} title="Keyboard shortcuts (?)" style={{ background: "none", border: 0, cursor: "pointer", font: "inherit", color: "inherit" }}>⌨</button>
+          <span className={`save-state ${saveState}`}>{saveLabel}</span>
+        </div>
+      )}
 
       {panel === "comments" && (
         <CommentsPanel fileId={item.id} comments={comments}
@@ -1713,6 +1885,76 @@ export function PdfEditor({ item, initialDoc, permission }: {
                   } catch { toast("PDF export failed"); }
                 })();
               }}>Export</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showKeys && (
+        <div className="dlg-back" onClick={() => setShowKeys(false)}>
+          <div className="dlg" style={{ width: 400 }} onClick={(e) => e.stopPropagation()}>
+            <h3>Keyboard shortcuts</h3>
+            <div className="keys-list">
+              {[
+                ["Ctrl+S", "Save — write changes into the PDF"],
+                ["Ctrl+O", "Open a PDF from this computer"],
+                ["Ctrl+P", "Print"],
+                ["Ctrl+F", "Find in document"],
+                ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
+                ["Ctrl+scroll", "Zoom at cursor"],
+                ["Space+drag", "Pan the page"],
+                ["Delete", "Remove selected annotation/field"],
+                ["Esc", "Deselect / back to Select tool"],
+                ["← → ↑ ↓", "Navigate pages (single/two-page view)"],
+                ["?", "Toggle this panel"],
+              ].map(([k, d]) => (
+                <div key={k} className="keys-row"><kbd>{k}</kbd><span>{d}</span></div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn-primary btn-sm" onClick={() => setShowKeys(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {redactDlg && (
+        <div className="dlg-back" onClick={() => { setRedactDlg(false); setRedactScan(null); }}>
+          <div className="dlg" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h3>Find &amp; redact</h3>
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 12px" }}>
+              Scan the document for sensitive patterns, review matches, then mark them all for redaction.
+              Marks become permanent on Save or Export.
+            </p>
+            <select value={redactPat} onChange={(e) => { setRedactPat(e.target.value); setRedactScan(null); }}
+              style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }}>
+              {Object.entries(REDACT_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+            {redactPat === "custom" && (
+              <input value={redactCustom} placeholder="Regular expression, e.g. \bINV-\d+\b" autoFocus
+                onChange={(e) => setRedactCustom(e.target.value)}
+                style={{ width: "100%", height: 34, border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px", fontSize: 12, marginBottom: 8, boxSizing: "border-box", fontFamily: "monospace" }} />
+            )}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, marginBottom: 10 }}>
+              <input type="checkbox" checked={redactCase} onChange={(e) => setRedactCase(e.target.checked)} />
+              Match case
+            </label>
+            {redactScan && (
+              <div className="keys-list" style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: 8, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>{redactScan.length} match{redactScan.length === 1 ? "" : "es"} found{redactScan.length >= 500 ? " (showing first 500)" : ""}</div>
+                {[...new Set(redactScan.map((r) => r.text))].slice(0, 12).map((t) => (
+                  <div key={t} style={{ fontSize: 11, color: "#555", padding: "1px 0", fontFamily: "monospace" }}>{t}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn-ghost btn-sm" onClick={() => { setRedactDlg(false); setRedactScan(null); }}>Cancel</button>
+              <button className="btn-ghost btn-sm" disabled={redactBusy || !doc} onClick={() => void redactRunScan()}>
+                {redactBusy ? "Scanning…" : "Scan document"}
+              </button>
+              <button className="btn-primary btn-sm" disabled={!redactScan?.length} onClick={redactMarkAll}>
+                Mark {redactScan?.length ?? 0} for redaction
+              </button>
             </div>
           </div>
         </div>
@@ -1913,6 +2155,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   const loupeRef = useRef<HTMLCanvasElement>(null);
   const loupeBusy = useRef(false);
   const [editText, setEditText] = useState<string | null>(null);
+  const [selPop, setSelPop] = useState<{ x: number; y: number; rects: Rect4[]; text: string } | null>(null);
   const dragRef = useRef<{ kind: "draw"; sx: number; sy: number; x: number; y: number } | { kind: "move"; id: string; sx: number; sy: number; field?: boolean } | null>(null);
   const movedFlag = useRef(false);
   const renderedKey = useRef("");
@@ -2255,9 +2498,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
 
   // text-selection → highlight/underline/strikeout
   const onMouseUp = () => {
-    if (!canEdit || (tool !== "highlight" && tool !== "underline" && tool !== "strikeout" && tool !== "squiggly" && tool !== "replace")) return;
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
+    if (!sel || sel.isCollapsed) { setSelPop(null); return; }
     const b = boxRef.current!.getBoundingClientRect();
     const rects: Rect4[] = [];
     for (let i = 0; i < sel.rangeCount; i++) {
@@ -2268,10 +2510,27 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         rects.push([Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)]);
       }
     }
-    if (rects.length) {
+    if (!rects.length) { setSelPop(null); return; }
+    if (canEdit && (tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly" || tool === "replace")) {
       onAdd({ type: tool, rects, color: toolColor, text: tool === "replace" ? "" : undefined });
       sel.removeAllRanges();
+      return;
     }
+    // select tool → floating markup popup over the selection
+    if (tool === "select") {
+      const r0 = sel.getRangeAt(0).getClientRects()[0];
+      if (r0) setSelPop({
+        x: Math.max(4, Math.min(r0.left - b.left, b.width - 220)),
+        y: Math.max(2, r0.top - b.top - 40),
+        rects, text: sel.toString(),
+      });
+    }
+  };
+  const applySelMarkup = (type: "highlight" | "underline" | "strikeout" | "squiggly") => {
+    if (!selPop) return;
+    onAdd({ type, rects: selPop.rects, color: toolColor });
+    window.getSelection()?.removeAllRanges();
+    setSelPop(null);
   };
 
   const startMove = (e: React.PointerEvent, a: PdfAnn) => {
@@ -2297,8 +2556,9 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
 
   return (
     <div ref={boxRef} className={`pdf-page ${tool !== "select" ? "draw" : ""}`}
+      data-tool={tool}
       style={{ width: size.w || undefined, height: size.h || undefined }}
-      onPointerDown={onPointerDown} onPointerMove={(e) => { onPointerMove(e); onPolylineHover(e); }} onPointerUp={onPointerUp} onMouseUp={onMouseUp}
+      onPointerDown={(e) => { setSelPop(null); onPointerDown(e); }} onPointerMove={(e) => { onPointerMove(e); onPolylineHover(e); }} onPointerUp={onPointerUp} onMouseUp={onMouseUp}
       onPointerLeave={() => setLoupe(null)}
       onDoubleClick={() => { if (tool === "polyline" && plPts.length > 1) finishPolyline(plPts.slice(0, -1)); }}>
       <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
@@ -2315,6 +2575,19 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         const [x, y, w2, h2] = vpRect(r);
         return <div key={`m${i}`} className="pdf-searchmark" style={{ left: x, top: y, width: w2, height: h2 }} />;
       })}
+      {/* floating markup toolbar on text selection */}
+      {selPop && (
+        <div className="sel-pop" style={{ left: selPop.x, top: selPop.y }}
+          onPointerDown={(e) => e.stopPropagation()} onMouseUp={(e) => e.stopPropagation()}>
+          {canEdit && (<>
+            <button title="Highlight" onClick={() => applySelMarkup("highlight")}><span style={{ background: toolColor, padding: "0 3px", borderRadius: 2 }}>H</span></button>
+            <button title="Underline" onClick={() => applySelMarkup("underline")}><u>U</u></button>
+            <button title="Strikeout" onClick={() => applySelMarkup("strikeout")}><s>S</s></button>
+            <button title="Squiggly" onClick={() => applySelMarkup("squiggly")}>~</button>
+          </>)}
+          <button title="Copy" onClick={() => { void navigator.clipboard?.writeText(selPop.text); window.getSelection()?.removeAllRanges(); setSelPop(null); }}>⧉</button>
+        </div>
+      )}
       {/* annotation overlay */}
       {v && (
         <svg className="ann-layer" width={size.w} height={size.h} style={{ pointerEvents: "none" }}>
@@ -2646,9 +2919,11 @@ function AnnSvg({ a, vpRect, toVp, scale, selected, selectable, onDown }: {
       return <rect x={x} y={y} width={w} height={h} fill="#fff" stroke="#ddd" strokeWidth={0.6} style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
     }
     case "redact": {
-      const [x, y, w, h] = vpRect(a.rects![0]);
-      return <rect x={x} y={y} width={w} height={h} fill="#171717" stroke="#d33" strokeWidth={1} strokeDasharray="4 3"
-        style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+      return <g>{(a.rects ?? []).map((rr, i) => {
+        const [x, y, w, h] = vpRect(rr);
+        return <rect key={i} x={x} y={y} width={w} height={h} fill="#171717" stroke="#d33" strokeWidth={1} strokeDasharray="4 3"
+          style={{ ...pe, ...selOutline }} onPointerDown={onDown} />;
+      })}</g>;
     }
     case "rect": {
       const [x, y, w, h] = vpRect(a.rects![0]);
@@ -2823,12 +3098,14 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
               t2.textContent = a.text.slice(0, 90);
               svg.appendChild(t2);
             }
-          } else if (a.type === "whiteout" && a.rects?.length) {
-            const [x, y, w, h] = vpR(a.rects[0]);
-            const el = document.createElementNS(svgNS, "rect");
-            el.setAttribute("x", `${x}`); el.setAttribute("y", `${y}`); el.setAttribute("width", `${w}`); el.setAttribute("height", `${h}`);
-            el.setAttribute("fill", "#fff");
-            svg.appendChild(el);
+          } else if ((a.type === "whiteout" || a.type === "redact") && a.rects?.length) {
+            for (const rr of a.rects) {
+              const [x, y, w, h] = vpR(rr);
+              const el = document.createElementNS(svgNS, "rect");
+              el.setAttribute("x", `${x}`); el.setAttribute("y", `${y}`); el.setAttribute("width", `${w}`); el.setAttribute("height", `${h}`);
+              el.setAttribute("fill", a.type === "whiteout" ? "#fff" : "#171717");
+              svg.appendChild(el);
+            }
           } else if ((a.type === "sign" || a.type === "image") && a.img) {
             const [x, y, w, h] = vpR(a.rects![0]);
             const el = document.createElementNS(svgNS, "image");

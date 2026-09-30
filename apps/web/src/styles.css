@@ -844,11 +844,34 @@ textarea.inp{padding:8px 10px;height:auto}
 .pdf-pages.paged>.pdf-page-wrap{margin-block:auto}
 .pdf-page{position:relative;background:#fff;box-shadow:0 10px 34px rgba(23,18,15,.22)}
 .pdf-page.draw{cursor:crosshair}
+/* per-tool cursors */
+.pdf-page[data-tool="textbox"],.pdf-page[data-tool="edittext"]{cursor:text}
+.pdf-page[data-tool="check"],.pdf-page[data-tool="cross"],.pdf-page[data-tool="note"],
+.pdf-page[data-tool="caret"],.pdf-page[data-tool="replace"],.pdf-page[data-tool="sign"],
+.pdf-page[data-tool="stamp"]{cursor:pointer}
+.pdf-page[data-tool="zoombox"]{cursor:zoom-in}
+.pdf-page[data-tool="measure"]{cursor:crosshair}
+.pdf-pages.panning,.pdf-pages.panning *{cursor:grabbing!important}
+.pdf-pages.space-hold,.pdf-pages.space-hold *{cursor:grab!important}
 .pdf-canvas{display:block}
 .pdf-page .textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;z-index:2}
 .pdf-page .annotationLayer{position:absolute;inset:0;z-index:3}
 .ann-layer{position:absolute;inset:0;z-index:4}
 .pdf-pageno{position:absolute;bottom:6px;right:10px;font-size:10px;color:#B3ABA5;z-index:5;pointer-events:none}
+
+/* status bar + selection popup + shortcuts overlay + field highlight */
+.pdf-status{display:flex;align-items:center;gap:14px;padding:4px 14px;font-size:11px;color:#8B8480;background:#FBF8F5;border-top:1px solid var(--line);flex:none}
+.pdf-status .save-state{margin-left:0}
+.sel-pop{position:absolute;z-index:8;display:flex;gap:2px;background:#241F1B;border-radius:8px;padding:3px;box-shadow:0 6px 20px rgba(0,0,0,.3)}
+.sel-pop button{border:0;background:transparent;color:#fff;font-size:12px;min-width:26px;height:24px;border-radius:5px;cursor:pointer;display:grid;place-items:center}
+.sel-pop button:hover{background:rgba(255,255,255,.15)}
+.keys-list{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+.keys-row{display:flex;align-items:center;gap:12px;font-size:12px}
+.keys-row kbd{background:#F3EFEA;border:1px solid var(--line);border-radius:5px;padding:1px 7px;font-size:11px;font-family:inherit;min-width:88px;text-align:center;flex:none}
+/* Acrobat-style fillable-field tint: pdf.js widget sections + authored fields */
+.hl-fields .annotationLayer section{background:rgba(53,120,229,.10)}
+.hl-fields .annotationLayer :is(input,textarea,select,button,a){background-color:rgba(53,120,229,.10)!important}
+.hl-fields .pdf-field{box-shadow:inset 0 0 0 1.5px rgba(53,120,229,.45);background:rgba(53,120,229,.08)}
 .pdf-searchmark{position:absolute;background:rgba(242,120,46,.45);border:1px solid #F2782E;border-radius:2px;z-index:3;pointer-events:none;animation:smark .9s ease}
 @keyframes smark{0%{opacity:0;transform:scale(1.15)}100%{opacity:1;transform:none}}
 

@@ -264,8 +264,8 @@ export async function buildFlattenedPdf(
           break;
         }
         case "whiteout": {
-          const [x, y, w, h] = a.rects![0];
-          page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1) });
+          for (const [x, y, w, h] of a.rects ?? [])
+            page.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1) });
           break;
         }
         case "check":
@@ -276,8 +276,8 @@ export async function buildFlattenedPdf(
           break;
         }
         case "redact": {
-          const [x, y, w, h] = a.rects![0];
-          page.drawRectangle({ x, y, width: w, height: h, color: rgb(0.09, 0.09, 0.09) });
+          for (const [x, y, w, h] of a.rects ?? [])
+            page.drawRectangle({ x, y, width: w, height: h, color: rgb(0.09, 0.09, 0.09) });
           break;
         }
         case "rect": {
