@@ -477,9 +477,19 @@ export function PdfEditor({ item, initialDoc, permission }: {
       const { bytes } = await embedIntoPdf(b.slice(0), annDoc, formValues(), doc, rasters);
       downloadPdf(bytes, name);
       toast("Downloaded — annotations and fields are embedded in the file");
-    } catch {
-      downloadPdf(new Uint8Array(b), name);
-      toast("Downloaded original bytes (annotation embedding failed)");
+    } catch (e) {
+      console.warn("[pdf] annotation embed failed, falling back to flattened export", e);
+      try {
+        const { buildFlattenedPdf } = await import("./flatten");
+        const bytes = await buildFlattenedPdf(
+          b.slice(0), annDoc.annotations, formValues(), doc,
+          {}, annDoc.fields ?? [], await rasterizeRedacted(), annDoc.ocr);
+        downloadPdf(bytes, name);
+        toast("Downloaded — edits baked into the page");
+      } catch (e2) {
+        console.error("[pdf] flattened export failed too", e2);
+        toast("Download failed — your edits could not be written to the file");
+      }
     }
   };
 

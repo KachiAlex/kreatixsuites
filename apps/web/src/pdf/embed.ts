@@ -232,6 +232,157 @@ const embedImageAnnot = async (
   } catch { return null; }
 };
 
+/** Escape a string for a PDF literal (…) text object. */
+const pdfStr = (s: string) =>
+  safe(s).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+
+/** Types that get a generated /AP stream — viewers that don't synthesize
+ *  appearances for non-widget annots (some converters, printers, older
+ *  renderers) otherwise show nothing even though the annot is in the file.
+ *  note/caret/replace render natively everywhere; sign/image build their own
+ *  AP in embedImageAnnot. */
+const AP_TYPES = new Set<PdfAnn["type"]>([
+  "freehand", "polyline", "line", "arrow", "rect", "ellipse", "cloud", "whiteout",
+  "highlight", "underline", "strikeout", "squiggly",
+  "textbox", "callout", "check", "cross", "stamp",
+]);
+
+/** Build the /AP normal-appearance stream (a Form XObject whose BBox equals
+ *  the annot /Rect, painted in absolute page coordinates) for one annotation.
+ *  Returns the registered stream ref, or null when not applicable. */
+const makeAppearance = (
+  a: PdfAnn, L: Lib, src: LibDoc, rect: number[],
+  fonts: { helv: { ref: LibRef; widthOfTextAtSize: (t: string, s: number) => number }; ding: { ref: LibRef } },
+): LibRef | null => {
+  const { PDFName } = L;
+  const n = (v: number) => Number(v.toFixed(2));
+  const [R, G, B] = hexRgb(a.color).map(n);
+  const path = (pts: [number, number][]) =>
+    pts.map((p, i) => `${n(p[0])} ${n(p[1])} ${i ? "l" : "m"}`).join(" ");
+  const r0 = a.rects?.[0];
+  let ops = "", ca = 1;
+
+  switch (a.type) {
+    case "freehand": {
+      const pts = a.points ?? [];
+      if (pts.length < 2) return null;
+      ops = `${R} ${G} ${B} RG 1.8 w 1 J 1 j ${path(pts)} S`;
+      break;
+    }
+    case "polyline": {
+      const pts = a.points ?? [];
+      if (pts.length < 2) return null;
+      ops = `${R} ${G} ${B} RG 1.4 w 1 J 1 j ${path(pts)} S`;
+      break;
+    }
+    case "line": case "arrow": {
+      const pts = a.points ?? [];
+      if (pts.length < 2) return null;
+      ops = `${R} ${G} ${B} RG 1.4 w ${path(pts)} S`;
+      if (a.type === "arrow") {
+        const p = pts[pts.length - 2], q = pts[pts.length - 1];
+        const ang = Math.atan2(q[1] - p[1], q[0] - p[0]), hl = 8;
+        const p1 = [q[0] + hl * Math.cos(ang + Math.PI * 0.82), q[1] + hl * Math.sin(ang + Math.PI * 0.82)];
+        const p2 = [q[0] + hl * Math.cos(ang - Math.PI * 0.82), q[1] + hl * Math.sin(ang - Math.PI * 0.82)];
+        ops += ` ${R} ${G} ${B} rg ${n(q[0])} ${n(q[1])} m ${n(p1[0])} ${n(p1[1])} l ${n(p2[0])} ${n(p2[1])} l f`;
+      }
+      break;
+    }
+    case "rect": case "whiteout": case "cloud": {
+      if (!r0) return null;
+      const [x, y, w, h] = r0;
+      ops = a.type === "whiteout"
+        ? `1 1 1 rg ${n(x)} ${n(y)} ${n(w)} ${n(h)} re f 0.8 0.8 0.8 RG 0.5 w ${n(x)} ${n(y)} ${n(w)} ${n(h)} re S`
+        : `${R} ${G} ${B} RG 1.4 w ${n(x)} ${n(y)} ${n(w)} ${n(h)} re S`;
+      break;
+    }
+    case "ellipse": {
+      if (!r0) return null;
+      const [x, y, w, h] = r0, k = 0.5523, rx = w / 2, ry = h / 2, cx = x + rx, cy = y + ry;
+      ops = `${R} ${G} ${B} RG 1.4 w ${n(cx + rx)} ${n(cy)} m` +
+        ` ${n(cx + rx)} ${n(cy + ry * k)} ${n(cx + rx * k)} ${n(cy + ry)} ${n(cx)} ${n(cy + ry)} c` +
+        ` ${n(cx - rx * k)} ${n(cy + ry)} ${n(cx - rx)} ${n(cy + ry * k)} ${n(cx - rx)} ${n(cy)} c` +
+        ` ${n(cx - rx)} ${n(cy - ry * k)} ${n(cx - rx * k)} ${n(cy - ry)} ${n(cx)} ${n(cy - ry)} c` +
+        ` ${n(cx + rx * k)} ${n(cy - ry)} ${n(cx + rx)} ${n(cy - ry * k)} ${n(cx + rx)} ${n(cy)} c S`;
+      break;
+    }
+    case "highlight": {
+      if (!a.rects?.length) return null;
+      ca = 0.35;
+      ops = `${R} ${G} ${B} rg ` + a.rects.map(([x, y, w, h]) => `${n(x)} ${n(y)} ${n(w)} ${n(h)} re f`).join(" ");
+      break;
+    }
+    case "underline": case "strikeout": case "squiggly": {
+      if (!a.rects?.length) return null;
+      ca = 0.9;
+      const parts: string[] = [`${R} ${G} ${B} RG ${a.type === "squiggly" ? 1 : 1.2} w`];
+      for (const [x, y, w, h] of a.rects) {
+        if (a.type === "squiggly") {
+          const pts: [number, number][] = [];
+          for (let px = x; px <= x + w; px += 2.4) pts.push([px, y + (pts.length % 2 ? 0 : 1.6)]);
+          pts.push([x + w, y]);
+          parts.push(path(pts) + " S");
+        } else {
+          const ly = a.type === "underline" ? y : y + h / 2;
+          parts.push(`${n(x)} ${n(ly)} m ${n(x + w)} ${n(ly)} l S`);
+        }
+      }
+      ops = parts.join(" ");
+      break;
+    }
+    case "textbox": case "callout": {
+      if (!r0) return null;
+      const [x, y, w, h] = r0;
+      const sz = a.fontSize ?? 11;
+      const bg = a.type === "callout" ? `${R} ${G} ${B} rg` : `1 1 1 rg`;
+      ops = `${bg} ${n(x)} ${n(y)} ${n(w)} ${n(h)} re f ` +
+        `${R} ${G} ${B} RG ${a.type === "callout" ? 1.2 : 0.5} w ${n(x)} ${n(y)} ${n(w)} ${n(h)} re S ` +
+        `${n(x)} ${n(y)} ${n(w)} ${n(h)} re W n ` +
+        `BT /F1 ${n(sz)} Tf 0.09 0.09 0.09 rg ${n(x + 3)} ${n(y + h - sz - 2)} Td ${n(sz * 1.25)} TL ` +
+        safe(a.text ?? "").split("\n").map((l) => `(${pdfStr(l)}) Tj T*`).join(" ") + " ET";
+      if (a.type === "callout") {
+        const [tx, ty] = a.points?.[0] ?? [x, y];
+        ops += ` ${R} ${G} ${B} RG 1.2 w ${n(tx)} ${n(ty)} m ${n(x + w / 2)} ${n(y + h / 2)} l S`;
+      }
+      break;
+    }
+    case "check": case "cross": {
+      if (!r0) return null;
+      const [x, y, w, h] = r0;
+      const sz = Math.max(8, h * 0.9);
+      ops = `BT /FD ${n(sz)} Tf ${R} ${G} ${B} rg ${n(x + (w - sz * 0.6) / 2)} ${n(y + (h - sz) / 2)} Td (${a.type === "check" ? "4" : "8"}) Tj ET`;
+      break;
+    }
+    case "stamp": {
+      if (!r0) return null;
+      const std = STAMP_NAMES[(a.text ?? "").toUpperCase()];
+      if (std) return null; // standard stamps render natively from /Name
+      const [x, y, w, h] = r0;
+      const label = safe(a.text ?? "").toUpperCase();
+      const fs = Math.min(16, (w - 8) / Math.max(1, fonts.helv.widthOfTextAtSize(label, 1)));
+      const tw = fonts.helv.widthOfTextAtSize(label, fs);
+      ops = `${R} ${G} ${B} RG 2 w ${n(x)} ${n(y)} ${n(w)} ${n(h)} re S ` +
+        `BT /F1 ${n(fs)} Tf ${R} ${G} ${B} rg ${n(x + (w - tw) / 2)} ${n(y + h / 2 - fs * 0.36)} Td (${pdfStr(label)}) Tj ET`;
+      break;
+    }
+    default:
+      return null;
+  }
+
+  const resources: Record<string, unknown> = {
+    ProcSet: [PDFName.of("PDF"), PDFName.of("Text")],
+    ExtGState: { GS0: { Type: PDFName.of("ExtGState"), CA: ca, ca } },
+    Font: { F1: fonts.helv.ref, FD: fonts.ding.ref },
+  };
+  const bbox = [rect[0] - 3, rect[1] - 3, rect[2] + 3, rect[3] + 3]; // stroke bleed
+  const stream = src.context.flateStream(ops, {
+    Type: PDFName.of("XObject"), Subtype: PDFName.of("Form"),
+    BBox: src.context.obj(bbox), Matrix: src.context.obj([1, 0, 0, 1, 0, 0]),
+    Resources: src.context.obj(resources as never),
+  });
+  return src.context.register(stream);
+};
+
 const parseRef = (s?: string): [number, number] | null => {
   const m = /^(\d+) (\d+) R$/.exec(s ?? "");
   return m ? [Number(m[1]), Number(m[2])] : null;
@@ -413,6 +564,12 @@ export async function embedIntoPdf(
   const pages = src.getPages();
   const obj = (v: unknown) => src.context.obj(v as never) as never;
 
+  // fonts shared by every generated /AP stream
+  const apFonts = {
+    helv: await src.embedFont(L.StandardFonts.Helvetica),
+    ding: await src.embedFont(L.StandardFonts.ZapfDingbats),
+  };
+
   // ---- reconcile annotations: remove ours that were deleted, update moved ones ----
   for (let i = 0; i < pages.length; i++) {
     const leaf = pages[i].node;
@@ -448,6 +605,15 @@ export async function embedIntoPdf(
 
       const entries = annotEntries(a, L);
       if (!entries) continue;
+      // appearance stream — annots without /AP render invisible in viewers
+      // that don't synthesize appearances for non-widget annots
+      if (AP_TYPES.has(a.type)) {
+        const rect = (entries.Rect as number[] | undefined) ?? annotRectOf(a);
+        if (rect?.length === 4) {
+          const ap = makeAppearance(a, L, src, rect, apFonts);
+          if (ap) entries.AP = { N: ap };
+        }
+      }
       const refStr = parseRef(a.embedded);
       if (refStr) {
         // update the existing annot dict in place (moved/edited)
