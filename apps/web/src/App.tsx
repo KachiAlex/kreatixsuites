@@ -1,4 +1,5 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { useEffect } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { Shell } from "./components/Shell";
 import { Login } from "./pages/Login";
@@ -16,10 +17,29 @@ function Protected({ children }: { children: ReactNode }) {
   return children;
 }
 
+/** Keeps document.title in sync with the route (editors overwrite it with
+ *  the file name once loaded). */
+function TitleSync() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    const name = pathname === "/login" ? "Sign in"
+      : pathname === "/register" ? "Create account"
+      : pathname === "/" ? "Home"
+      : pathname.startsWith("/drive") ? "Drive"
+      : pathname.startsWith("/admin") ? "Admin"
+      : pathname.startsWith("/shared") ? "Shared file"
+      : pathname.startsWith("/edit") ? null   // editor sets its own title
+      : null;
+    if (name) document.title = `${name} · Kreatix Suites`;
+  }, [pathname]);
+  return null;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <TitleSync />
         <Routes>
           <Route path="/login" element={<Login mode="login" />} />
           <Route path="/register" element={<Login mode="register" />} />

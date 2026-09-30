@@ -67,10 +67,19 @@ async function main() {
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");
   if (existsSync(join(webDist, "index.html"))) {
-    await app.register(fastifyStatic, { root: webDist });
+    await app.register(fastifyStatic, {
+      root: webDist,
+      setHeaders(res, path) {
+        // hashed bundles under /assets are immutable — cache forever;
+        // everything else (index.html, manifest, icons) revalidates
+        res.header("Cache-Control", path.includes("assets/")
+          ? "public, max-age=31536000, immutable"
+          : "no-cache");
+      },
+    });
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api/")) return reply.code(404).send({ error: "not_found" });
-      return reply.sendFile("index.html");
+      return reply.header("Cache-Control", "no-cache").sendFile("index.html");
     });
   }
 

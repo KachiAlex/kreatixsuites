@@ -49,6 +49,15 @@ export function Editor() {
     })();
   }, [id]);
 
+  // tab title follows the open file (restored by App's TitleSync on nav)
+  useEffect(() => {
+    if (item?.name) {
+      const app = ({ writer: "Writer", sheets: "Sheets", present: "Present", pdf: "PDF" } as Record<string, string>)[item.kind] ?? "";
+      document.title = app ? `${item.name} — ${app} · Kreatix Suites` : `${item.name} · Kreatix Suites`;
+    }
+    return () => { document.title = "Kreatix Suites"; };
+  }, [item?.name, item?.kind]);
+
   const restoreDraft = async () => {
     if (!draft || !item) return;
     const restored = JSON.parse(draft.content) as unknown;

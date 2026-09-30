@@ -1,0 +1,16 @@
+{
+  "name": "Kreatix Suites",
+  "short_name": "Kreatix",
+  "description": "AI-native office productivity suite — Writer, Sheets, Present, PDF, Drive",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#F2782E",
+  "background_color": "#FFF9F4",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -2,18 +2,73 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Kreatix Suites — AI-native office suite</title>
+    <meta name="description" content="Kreatix Suites — a modern, AI-native office productivity suite. Write documents, build spreadsheets, design slides, and edit PDFs with real-time collaboration." />
+    <meta name="author" content="Kreatix" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#F2782E" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://suites.kreatixtech.com/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Kreatix Suites" />
+    <meta property="og:title" content="Kreatix Suites — AI-native office suite" />
+    <meta property="og:description" content="Write documents, build spreadsheets, design slides, and edit PDFs — one collaborative workspace." />
+    <meta property="og:url" content="https://suites.kreatixtech.com/" />
+    <meta property="og:image" content="https://suites.kreatixtech.com/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Kreatix Suites — Writer, Sheets, Present, PDF, Drive" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Kreatix Suites — AI-native office suite" />
+    <meta name="twitter:description" content="Write documents, build spreadsheets, design slides, and edit PDFs — one collaborative workspace." />
+    <meta name="twitter:image" content="https://suites.kreatixtech.com/og.png" />
+
+    <!-- Icons + PWA -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
-      rel="stylesheet"
-    />
-    <title>Kreatix Suites</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="application-name" content="Kreatix Suites" />
+    <meta name="apple-mobile-web-app-title" content="Kreatix" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="msapplication-TileColor" content="#F2782E" />
+
+    <style>
+      /* first-paint splash — replaced by React on mount */
+      .boot-wrap { display: grid; place-items: center; min-height: 100vh; background: #FFF9F4; }
+      .boot { width: 56px; height: 56px; border-radius: 14px; background: #F2782E;
+        display: grid; place-items: center; margin: 0 auto 14px;
+        animation: boot-pulse 1.1s ease-in-out infinite alternate; }
+      .boot svg { width: 34px; height: 34px; }
+      .boot-t { font: 600 13px Inter, system-ui, sans-serif; color: #8B8480; letter-spacing: .02em; text-align: center; }
+      @keyframes boot-pulse { from { transform: scale(.94); opacity: .85 } to { transform: scale(1); opacity: 1 } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-wrap">
+        <div>
+          <div class="boot"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="15" y="12" width="10" height="40" rx="5" fill="#fff"/><path d="M51 13 30 32 51 51Z" fill="#fff"/></svg></div>
+          <div class="boot-t">Kreatix Suites</div>
+        </div>
+      </div>
+    </div>
+    <noscript>
+      <div style="font-family: system-ui, sans-serif; text-align: center; padding: 60px 20px;">
+        <h1>Kreatix Suites</h1>
+        <p>This application requires JavaScript. Please enable it to continue.</p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
