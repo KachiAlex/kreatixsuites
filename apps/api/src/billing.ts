@@ -199,7 +199,9 @@ export async function ensureSuperAdmin(): Promise<void> {
   const existing = await one<{ id: string; org_id: string }>("SELECT id, org_id FROM users WHERE email = $1", [email]);
   const saOrg = existing?.org_id ?? orgId;
   if (existing) {
-    await run("UPDATE users SET is_super = true WHERE id = $1", [existing.id]);
+    // env password is the source of truth — re-sync every boot so the seeded
+    // account can be rotated (or repaired) via .env
+    await run("UPDATE users SET is_super = true, password_hash = $2 WHERE id = $1", [existing.id, hashPassword(password)]);
   } else {
     await run("INSERT INTO orgs (id, name, created_at) VALUES ($1,'Kreatix HQ',$2) ON CONFLICT (id) DO NOTHING", [orgId, now()]);
     await run(
