@@ -33,14 +33,16 @@ const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
 }));
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
-type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe";
+type Tool = "select" | AnnType | "pan" | "zoombox" | "measure" | "edittext" | "field" | "loupe" | "snapshot";
+// tools that stay enabled for read-only viewers
+const VIEW_TOOLS = new Set<Tool>(["select", "pan", "zoombox", "loupe", "snapshot"]);
 const SIG_KEY = "kx.signature";
 type Panel = "none" | "thumbs" | "outline" | "search" | "anns" | "layers" | "attach" | "access" | "comments" | "versions" | "ai" | "organize" | "compare";
 type Rect4 = [number, number, number, number];
 
 // Tools grouped by task — the ribbon renders each group as a labeled dropdown
 // so every function is discoverable by name without a 26-icon row.
-const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: string }[] }[] = [
+const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: string; viewer?: boolean }[] }[] = [
   { label: "Markup", tools: [
     { id: "highlight", ico: "🖍", label: "Highlight text" },
     { id: "underline", ico: "U̲", label: "Underline text" },
@@ -80,8 +82,10 @@ const TOOL_GROUPS: { label: string; tools: { id: Tool; ico: string; label: strin
     { id: "replace", ico: "⌁", label: "Replace text — suggest a correction" },
   ]},
   { label: "Inspect", tools: [
-    { id: "zoombox", ico: "🔍+", label: "Marquee zoom — drag a box to fill the view" },
-    { id: "loupe", ico: "🔎", label: "Loupe — hover to magnify" },
+    { id: "pan", ico: "✋", label: "Hand — drag to pan (or hold Space)", viewer: true },
+    { id: "zoombox", ico: "🔍+", label: "Marquee zoom — drag a box to fill the view", viewer: true },
+    { id: "loupe", ico: "🔎", label: "Loupe — hover to magnify", viewer: true },
+    { id: "snapshot", ico: "📸", label: "Snapshot — drag an area to copy it as an image", viewer: true },
   ]},
 ];
 
@@ -162,6 +166,35 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [redactScan, setRedactScan] = useState<{ page: number; text: string; rects: Rect4[] }[] | null>(null);
   const [redactBusy, setRedactBusy] = useState(false);
   const [curDims, setCurDims] = useState<{ w: number; h: number } | null>(null);
+  const [pageLabels, setPageLabels] = useState<string[] | null>(null); // logical labels (i, ii, 1, A-1)
+  const [showAnns, setShowAnns] = useState(true);   // global show/hide comments & markup
+  const [propsOpen, setPropsOpen] = useState(false);
+  const [docProps, setDocProps] = useState<{ k: string; v: string }[] | null>(null);
+  // Acrobat-style view history: Alt+←/→ jumps back/forward through navigations
+  const navHist = useRef<{ stack: { page: number; top: number }[]; idx: number }>({ stack: [], idx: -1 });
+  const navPush = (p: number) => {
+    const h = navHist.current;
+    const top = scrollRef.current?.scrollTop ?? 0;
+    const cur = h.stack[h.idx];
+    if (cur && cur.page === p && Math.abs(cur.top - top) < 40) return;
+    h.stack = h.stack.slice(0, h.idx + 1);
+    h.stack.push({ page: p, top });
+    if (h.stack.length > 60) h.stack.shift();
+    h.idx = h.stack.length - 1;
+  };
+  const navStep = (dir: -1 | 1) => {
+    const h = navHist.current;
+    const e = h.stack[h.idx + dir];
+    if (!e || e.page > numPages) return;
+    h.idx += dir;
+    setCurPage(e.page);
+    for (const t of [0, 200]) setTimeout(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      pageRefs.current.get(e.page)?.scrollIntoView();
+      el.scrollTop = e.top;
+    }, t);
+  };
   const zoomAnchor = useRef<{ fx: number; fy: number; ratio: number; sl: number; st: number } | null>(null);
   const didInitView = useRef(false);
   const [outline, setOutline] = useState<OutlineNode[]>([]);
@@ -254,6 +287,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         setNumPages(d.numPages);
         setAnnDoc(anns);
         d.getOutline().then((o) => !dead && setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
+        // logical page labels (i, ii, 1, A-1…) when the doc defines them
+        (d.getPageLabels?.() ?? Promise.resolve(null)).then((l) => !dead && setPageLabels(l)).catch(() => {});
         // PDF-11.1 — optional content groups for the layers pane
         d.getOptionalContentConfig?.().then((cfg) => {
           if (dead || !cfg) return;
@@ -446,6 +481,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
     setDoc(d);
     setNumPages(d.numPages);
     d.getOutline().then((o) => setOutline((o as OutlineNode[]) ?? [])).catch(() => {});
+    (d.getPageLabels?.() ?? Promise.resolve(null)).then((l) => setPageLabels(l)).catch(() => {});
     setDocGen((g) => g + 1); // forces PdfPage remount — they cache PDFPageProxy
   }, [annDoc.form]);
 
@@ -858,8 +894,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
   };
 
   const scrollToPage = (p: number) => {
+    if (p !== curPage) navPush(curPage);
     setCurPage(p);
     pageRefs.current.get(p)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // record the destination once the scroll settles
+    setTimeout(() => navPush(p), 350);
   };
 
   // PDF-3 — fit-width / fit-page use the current page's rotated viewport
@@ -1116,6 +1155,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if (e.key === "Escape") { setSelAnn(null); setSelField(null); if (tool !== "select") setTool("select"); }
       else if (e.key === " " && !e.repeat) { e.preventDefault(); setSpaceDown(true); }
       else if (e.key === "?") { e.preventDefault(); setShowKeys((v) => !v); }
+      // Acrobat view history — Alt+← back, Alt+→ forward
+      else if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); navStep(-1); }
+      else if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); navStep(1); }
       // PDF-3 — paged-view navigation
       else if ((viewMode === "single" || viewMode === "two") && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"))
         { e.preventDefault(); setCurPage((p) => Math.min(numPages, cover && viewMode === "two" && p === 1 ? 2 : p + (viewMode === "two" ? 2 : 1))); }
@@ -1128,11 +1170,125 @@ export function PdfEditor({ item, initialDoc, permission }: {
       else if ((e.ctrlKey || e.metaKey) && e.key === "o") { e.preventDefault(); openFileRef.current?.click(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
+      else if ((e.ctrlKey || e.metaKey) && e.key === "d") { e.preventDefault(); void openDocProps(); }
     };
     window.addEventListener("keydown", onKey);
     const onKeyUp = (e: KeyboardEvent) => { if (e.key === " ") setSpaceDown(false); };
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onKeyUp); };
+  });
+
+  // clipboard: image → image annotation, text → typewriter box, PDF → merge (all on the current page)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if (!canEdit || !doc || !pdfDataRef.current) return;
+      const cd = e.clipboardData;
+      if (!cd) return;
+      const file = [...cd.files].find((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"))
+        ?? [...cd.files].find((f) => f.type.startsWith("image/"));
+      if (file) e.preventDefault();
+      void pasteClipboard(cd, file ?? null, curPage);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  });
+  // File ▸ Document properties — metadata + file characteristics via pdf.js
+  const openDocProps = async () => {
+    if (!doc) return;
+    setPropsOpen(true);
+    setDocProps(null);
+    const rows: { k: string; v: string }[] = [];
+    try {
+      const meta = await doc.getMetadata();
+      const info = (meta.info ?? {}) as Record<string, unknown>;
+      const put = (k: string, v: unknown) => { if (v != null && String(v).trim() !== "") rows.push({ k, v: String(v) }); };
+      put("Title", info.Title); put("Author", info.Author); put("Subject", info.Subject);
+      put("Keywords", info.Keywords); put("Creator", info.Creator); put("Producer", info.Producer);
+      put("Created", info.CreationDate); put("Modified", info.ModDate); put("Trapped", info.Trapped);
+      put("PDF version", info.PDFFormatVersion);
+      rows.push({ k: "Pages", v: String(doc.numPages) });
+      if (pdfDataRef.current) {
+        const mb = pdfDataRef.current.byteLength;
+        rows.push({ k: "File size", v: mb >= 1048576 ? `${(mb / 1048576).toFixed(2)} MB` : `${(mb / 1024).toFixed(1)} KB` });
+      }
+      const d0 = await pageDims(1).catch(() => null);
+      if (d0) rows.push({ k: "Page 1 size", v: `${(d0.w / 72).toFixed(2)} × ${(d0.h / 72).toFixed(2)} in (${d0.w.toFixed(0)} × ${d0.h.toFixed(0)} pt)` });
+      rows.push({ k: "Tagged", v: (await doc.getMarkInfo().catch(() => null))?.Marked ? "Yes" : "No" });
+      const perms = await doc.getPermissions().catch(() => null);
+      if (perms) {
+        rows.push({ k: "Security", v: "Restricted — " + ([
+          [0x04, "print"], [0x08, "modify"], [0x10, "copy"], [0x20, "annotate"],
+          [0x100, "fill forms"], [0x200, "accessibility copy"], [0x400, "assemble"], [0x800, "print hi-res"],
+        ] as [number, string][]).filter(([f]) => !perms.has(f)).map(([, n]) => n).join(", ") + " not allowed" });
+      } else rows.push({ k: "Security", v: "None" });
+      put("Fast Web View", info.IsLinearized === true ? "Yes" : info.IsLinearized === false ? "No" : undefined);
+      put("AcroForm", info.IsAcroFormPresent === true ? "Yes" : undefined);
+      put("Signatures", info.IsSignaturesPresent === true ? "Yes" : undefined);
+      // fonts seen while rendering this session
+      const fonts = new Set<string>();
+      for (let p = 1; p <= Math.min(doc.numPages, 25); p++) {
+        const pg = await doc.getPage(p).catch(() => null);
+        if (!pg) continue;
+        for (const [, obj] of pg.commonObjs as unknown as Iterable<[string, unknown]>) {
+          const f = obj as { name?: string; loadedName?: string } | null;
+          if (f?.loadedName && f?.name) fonts.add(f.name);
+        }
+      }
+      if (fonts.size) rows.push({ k: `Fonts (${fonts.size})`, v: [...fonts].sort().join(", ") });
+    } catch { rows.push({ k: "Error", v: "Could not read document metadata" }); }
+    setDocProps(rows);
+  };
+
+  const pasteClipboard = async (cd: DataTransfer, file: File | null, page: number) => {
+    if (file?.type === "application/pdf" || file?.name.toLowerCase().endsWith(".pdf")) {
+      await orgMerge(file);
+      return;
+    }
+    const dims = await pageDims(page).catch(() => ({ w: 612, h: 792 }));
+    if (file?.type.startsWith("image/")) {
+      const data = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result)); r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const { w: iw, h: ih } = await new Promise<{ w: number; h: number }>((res) => {
+        const im = new Image();
+        im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => res({ w: 300, h: 200 });
+        im.src = data;
+      });
+      const maxW = dims.w * 0.5;
+      const sc = Math.min(1, maxW / iw);
+      const w = iw * sc, h = ih * sc;
+      addAnn(page, { type: "image", rects: [[(dims.w - w) / 2, (dims.h - h) / 2, w, h]], img: data });
+      toast("Image pasted");
+      return;
+    }
+    const text = cd.getData("text/plain");
+    if (text?.trim()) {
+      const w = Math.min(300, dims.w - 20), h = Math.max(24, (text.split("\n").length + 1) * (tbSize + 4));
+      const id = addAnn(page, { type: "textbox", rects: [[10, (dims.h - h) / 2, w, h]], text, color: toolColor, font: tbFont, fontSize: tbSize });
+      setSelAnn(id);
+      toast("Text pasted as typewriter box");
+    }
+  };
+
+  // drag a PDF (or image) anywhere onto the editor to open/insert it
+  useEffect(() => {
+    const over = (e: DragEvent) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; };
+    const drop = (e: DragEvent) => {
+      e.preventDefault();
+      const files = [...(e.dataTransfer?.files ?? [])];
+      const pdf = files.find((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+      if (pdf) { void openFromComputer(pdf); return; }
+      const img = files.find((f) => f.type.startsWith("image/"));
+      if (img && canEdit && doc) void pasteClipboard(e.dataTransfer!, img, curPage);
+    };
+    window.addEventListener("dragover", over);
+    window.addEventListener("drop", drop);
+    return () => { window.removeEventListener("dragover", over); window.removeEventListener("drop", drop); };
   });
 
   // Ctrl+wheel zoom centered on the cursor — non-passive so we can preventDefault
@@ -1245,6 +1401,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Version history", icon: "🕘", onClick: () => setPanel("versions") },
           { label: "Comments", icon: "💬", onClick: () => setPanel("comments") },
           { divider: true },
+          { label: "Document properties…", icon: "ℹ", shortcut: "Ctrl+D", onClick: () => void openDocProps() },
+          { divider: true },
           { label: "Share…", icon: "🔗", onClick: () => setSharing(true) },
           { divider: true },
           { label: "Close", icon: "✕", shortcut: "Ctrl+W", onClick: () => navigate(-1) },
@@ -1255,6 +1413,23 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Find in document…", icon: "🔍", shortcut: "Ctrl+F", onClick: () => setPanel("search") },
           { label: "Find & redact patterns…", icon: "🛡", onClick: () => setRedactDlg(true), disabled: !canEdit },
+          { divider: true },
+          { label: "Take a snapshot — drag an area to copy it as an image", icon: "📸", checked: tool === "snapshot",
+            onClick: () => pickTool("snapshot") },
+          { label: "Paste", icon: "📋", shortcut: "Ctrl+V", disabled: !canEdit,
+            onClick: () => void navigator.clipboard.read().then((items) => {
+              for (const it of items) {
+                const pdf = it.types.find((t) => t === "application/pdf");
+                const img = it.types.find((t) => t.startsWith("image/"));
+                const t = pdf ?? img;
+                if (t) return it.getType(t).then((b) => pasteClipboard(new DataTransfer(), new File([b], "clipboard" + (pdf ? ".pdf" : ".png"), { type: t }), curPage));
+              }
+              return navigator.clipboard.readText().then((txt) => {
+                const dt = new DataTransfer();
+                dt.setData("text/plain", txt);
+                return pasteClipboard(dt, null, curPage);
+              });
+            }).catch(() => toast("Clipboard is empty or blocked")) },
           { divider: true },
           { label: "Edit page content", icon: "✎", submenu: [
             { label: "Edit text — retype a block", icon: "✎T", checked: tool === "edittext", onClick: () => pickTool("edittext"), disabled: !canEdit },
@@ -1280,6 +1455,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Zoom out", onClick: () => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2))) },
           { divider: true },
           { label: "Rotate view 90°", onClick: () => setViewRot((r) => (r + 90) % 360) },
+          { label: "Show annotations", checked: showAnns, onClick: () => setShowAnns((v) => !v) },
           { label: "Highlight form fields", checked: hlFields, onClick: () => setHlFields((v) => !v) },
           { label: "Dark mode", checked: dark, onClick: () => setDark((d) => !d) },
           { label: "Fullscreen", onClick: () => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {}) },
@@ -1297,9 +1473,14 @@ export function PdfEditor({ item, initialDoc, permission }: {
             { label: "AI assistant", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
           ]},
           { label: "Zoom & inspect", icon: "🔎", submenu: [
+            { label: "Hand tool — drag to pan", icon: "✋", checked: tool === "pan", onClick: () => pickTool("pan") },
             { label: "Marquee zoom — drag a box to fill the view", icon: "🔍+", checked: tool === "zoombox", onClick: () => pickTool("zoombox") },
             { label: "Loupe — hover to magnify", icon: "🔎", checked: tool === "loupe", onClick: () => pickTool("loupe") },
+            { label: "Snapshot — drag an area to copy it", icon: "📸", checked: tool === "snapshot", onClick: () => pickTool("snapshot") },
           ]},
+          { divider: true },
+          { label: "Previous view", shortcut: "Alt+←", onClick: () => navStep(-1), disabled: navHist.current.idx <= 0 },
+          { label: "Next view", shortcut: "Alt+→", onClick: () => navStep(1), disabled: navHist.current.idx >= navHist.current.stack.length - 1 },
           { divider: true },
           { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
         ]},
@@ -1362,6 +1543,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
           }))},
           { divider: true },
           { label: "Auto-detect fields on this PDF", icon: "⚡", onClick: () => void detectFields(), disabled: !canEdit },
+          { divider: true },
+          { label: "Clear form — reset all entered values", icon: "⟲", onClick: () => {
+            if (!confirm("Clear all entered form values? Fields keep their layout.")) return;
+            mutate((d) => {
+              for (const f of d.fields ?? []) f.value = undefined;
+              d.form = {};
+            });
+            try { doc?.annotationStorage.resetModified(); } catch { /* best effort */ }
+            setDocGen((g) => g + 1);
+            toast("Form cleared");
+          }, disabled: !canEdit },
         ]},
         { label: "Pages", items: [
           { label: "Organize pages…", icon: "⧉", checked: panel === "organize", disabled: !canEdit,
@@ -1400,6 +1592,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <div className="rb-sep" />
         <button className={`rb ${tool === "select" ? "on" : ""}`} title="Select / move annotations"
           onClick={() => setTool("select")}>➤</button>
+        <button className={`rb ${tool === "pan" ? "on" : ""}`} title="Hand tool — drag to pan"
+          onClick={() => setTool("pan")}>✋</button>
         {TOOL_GROUPS.map((g) => (
           <ToolMenu key={g.label} label={g.label} tools={g.tools} tool={tool} canEdit={canEdit} onPick={pickTool} />
         ))}
@@ -1466,8 +1660,17 @@ export function PdfEditor({ item, initialDoc, permission }: {
           onClick={() => setViewMode((m) => m === "reflow" ? "cont" : "reflow")}>🔤</button>
         <button className={`rb ${dark ? "on" : ""}`} title="Dark render" onClick={() => setDark((d) => !d)}>🌙</button>
         <button className="rb" title="Fullscreen" onClick={() => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {})}>⛶</button>
-        <span className="rb-info">Page <input className="pg-in" type="number" min={1} max={numPages} value={curPage}
-          onChange={(e) => scrollToPage(Math.max(1, Math.min(numPages, Number(e.target.value) || 1)))} /> / {numPages}</span>
+        <span className="rb-info">Page <input className="pg-in" key={`pg${curPage}`} defaultValue={pageLabels?.[curPage - 1] ?? curPage}
+          title={pageLabels?.[curPage - 1] ? `Label ${pageLabels[curPage - 1]} — page ${curPage} of ${numPages}` : `${curPage} of ${numPages}`}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            const v = e.currentTarget.value.trim();
+            const li = pageLabels?.findIndex((l) => l.toLowerCase() === v.toLowerCase()) ?? -1;
+            const n = li >= 0 ? li + 1 : parseInt(v, 10);
+            if (!isNaN(n)) scrollToPage(Math.max(1, Math.min(numPages, n)));
+            else e.currentTarget.value = pageLabels?.[curPage - 1] ?? String(curPage);
+          }}
+          onBlur={(e) => { e.target.value = pageLabels?.[curPage - 1] ?? String(curPage); }} /> / {numPages}</span>
         <div className="rb-sep" />
         <button className={`rb ${speaking ? "on" : ""}`} title="Read page aloud (text-to-speech)" onClick={() => void speakPage()}>{speaking ? "⏸" : "🔊"}</button>
         <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
@@ -1699,7 +1902,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
         ) : (
         <div className={`pages pdf-pages ${viewMode === "single" || viewMode === "two" ? "paged" : ""} ${hlFields ? "hl-fields" : ""} ${panning ? "panning" : spaceDown ? "space-hold" : ""}`} ref={scrollRef}
           onPointerDownCapture={(e) => {
-            if (!spaceDown || e.button !== 0) return;
+            const wantPan = spaceDown || tool === "pan";
+            if (!wantPan || e.button !== 0) return;
             e.preventDefault(); e.stopPropagation();
             const el = scrollRef.current!;
             const sx = e.clientX, sy = e.clientY, sl = el.scrollLeft, st = el.scrollTop;
@@ -1713,7 +1917,11 @@ export function PdfEditor({ item, initialDoc, permission }: {
             const kids = [...el.querySelectorAll<HTMLElement>("[data-page]")];
             const mid = el.scrollTop + el.clientHeight * 0.35;
             const vis = kids.find((k) => k.offsetTop + k.offsetHeight > mid);
-            if (vis) setCurPage(Number(vis.dataset.page));
+            if (vis) {
+              const p = Number(vis.dataset.page);
+              if (p !== curPage) navPush(curPage);
+              setCurPage(p);
+            }
           }}>
           {loadErr && <div className="empty" style={{ padding: 60 }}>{loadErr}</div>}
           {!doc && !loadErr && <div className="empty" style={{ padding: 60 }}>Loading PDF…</div>}
@@ -1729,7 +1937,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
               <PdfPage doc={doc} pageNum={p} scale={scale}
                 anns={annDoc.annotations.filter((a) => a.page === p)}
                 selAnn={selAnn} setSelAnn={setSelAnn}
-                tool={canEdit ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
+                tool={canEdit || VIEW_TOOLS.has(tool) ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
+                showAnns={showAnns}
+                onSnapshot={(ok) => toast(ok ? "Snapshot copied to clipboard" : "Clipboard blocked — snapshot downloaded instead")}
                 tbFont={tbFont} tbSize={tbSize} ocrWords={annDoc.ocr?.[String(p)]}
                 canEdit={canEdit} viewRot={viewRot} dark={dark}
                 searchRects={matches.filter((m, i) => m.page === p && i <= matchIdx + 3).flatMap((m) => m.rects)}
@@ -1763,7 +1973,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
 
       {doc && (
         <div className="pdf-status">
-          <span>Page {curPage} of {numPages}</span>
+          <span>Page {pageLabels?.[curPage - 1] ?? curPage} of {numPages}{pageLabels?.[curPage - 1] && pageLabels[curPage - 1] !== String(curPage) ? ` (${curPage})` : ""}</span>
           {curDims && <span>{(curDims.w / 72).toFixed(1)} × {(curDims.h / 72).toFixed(1)} in</span>}
           <span>{Math.round(scale * 100)}%</span>
           {annDoc.annotations.length > 0 && <span>{annDoc.annotations.length} annotation{annDoc.annotations.length === 1 ? "" : "s"}</span>}
@@ -1927,6 +2137,10 @@ export function PdfEditor({ item, initialDoc, permission }: {
                 ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
                 ["Ctrl+scroll", "Zoom at cursor"],
                 ["Space+drag", "Pan the page"],
+                ["Ctrl+D", "Document properties"],
+                ["Ctrl+V", "Paste image/text/PDF onto the page"],
+                ["Alt+← / Alt+→", "Back / forward through visited views"],
+                ["Tab / Shift+Tab", "Cycle through form fields"],
                 ["Delete", "Remove selected annotation/field"],
                 ["Esc", "Deselect / back to Select tool"],
                 ["← → ↑ ↓", "Navigate pages (single/two-page view)"],
@@ -1937,6 +2151,26 @@ export function PdfEditor({ item, initialDoc, permission }: {
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
               <button className="btn-primary btn-sm" onClick={() => setShowKeys(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Properties */}
+      {propsOpen && (
+        <div className="dlg-back" onClick={() => setPropsOpen(false)}>
+          <div className="dlg" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <h3>Document properties</h3>
+            <div className="keys-list" style={{ maxHeight: 340, overflowY: "auto" }}>
+              {(docProps ?? [{ k: "…", v: "Reading…" }]).map((r) => (
+                <div key={r.k} className="keys-row" style={{ alignItems: "baseline" }}>
+                  <span style={{ minWidth: 120, color: "var(--muted)", fontSize: 12 }}>{r.k}</span>
+                  <span style={{ fontSize: 12, wordBreak: "break-word" }}>{r.v}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn-primary btn-sm" onClick={() => setPropsOpen(false)}>Close</button>
             </div>
           </div>
         </div>
@@ -2128,7 +2362,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
 }
 
 // ---------- a single page: canvas + text layer + form layer + annotation overlay ----------
-function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn }: {
+function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor, stampText, sigImg, tbFont, tbSize, canEdit, searchRects, viewRot, dark, ocrWords, onAdd, onMove, onPatch, onZoomTo, onPickImage, fieldApi, ocgCfg, ocgRev, focusAnn, setFocusAnn, onDelAnn, showAnns = true, onSnapshot }: {
   doc: PDFDocumentProxy;
   pageNum: number;
   scale: number;
@@ -2147,6 +2381,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   focusAnn?: string | null;
   setFocusAnn?: (id: string | null) => void;
   onDelAnn?: (id: string) => void;
+  showAnns?: boolean;
+  onSnapshot?: (ok: boolean) => void;
   onZoomTo?: (r: { x: number; y: number; w: number; h: number }, el: HTMLElement) => void;
   onPickImage?: (rect: Rect4) => void;
   ocgCfg?: { getGroups: () => Record<string, { name?: string }>; setVisibility: (id: string, v: boolean) => void } | null;
@@ -2203,7 +2439,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         pageRef.current = page;
         const vp = page.getViewport({ scale, rotation: (page.rotate + (viewRot ?? 0)) % 360 });
         setSize({ w: vp.width, h: vp.height });
-        const key = `${pageNum}:${scale}:${viewRot ?? 0}:${ocgRev ?? 0}`;
+        const key = `${pageNum}:${scale}:${viewRot ?? 0}:${ocgRev ?? 0}:${showAnns ? 1 : 0}`;
         if (renderedKey.current === key) return;
         renderedKey.current = key;
         const canvas = canvasRef.current!;
@@ -2246,7 +2482,8 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           const embFieldNames = new Set((fieldApi?.fields ?? [])
             .flatMap((f) => f.embedded && f.embedded !== "drawn" ? [f.embedded, ...(f.group ? [f.group] : [])] : []));
           const annotations = (await page.getAnnotations()).filter((ja) => {
-            const j = ja as { id?: string; fieldName?: string; annotationType?: number; rect?: number[] };
+            const j = ja as { id?: string; fieldName?: string; annotationType?: number; rect?: number[]; fieldType?: string };
+            if (!showAnns && !j.fieldType) return false; // comments hidden — form widgets stay visible
             if (j.fieldName && embFieldNames.has(j.fieldName)) return false;
             if (j.id && hideIds.has(j.id)) return false;
             if (j.rect && j.annotationType !== undefined) {
@@ -2275,7 +2512,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       } catch { /* page render failed */ }
     })();
     return () => { dead = true; };
-  }, [doc, pageNum, scale, near, viewRot, ocgRev, ocgCfg]);
+  }, [doc, pageNum, scale, near, viewRot, ocgRev, ocgCfg, showAnns]);
 
   const vp = () => pageRef.current?.getViewport({ scale }) ?? null;
   const toPdf = (cx: number, cy: number): [number, number] => {
@@ -2331,7 +2568,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (!canEdit && tool !== "zoombox") return;
+    if (!canEdit && tool !== "zoombox" && tool !== "snapshot") return;
     if (tool === "select" || tool === "pan") return;
     const b = boxRef.current!.getBoundingClientRect();
     const x = e.clientX - b.left, y = e.clientY - b.top;
@@ -2387,6 +2624,33 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     if (tool === "freehand") setPenPts((p) => [...p, [x, y]]);
     else setPreview({ x: Math.min(d.sx, x), y: Math.min(d.sy, y), w: Math.abs(x - d.sx), h: Math.abs(y - d.sy) });
   };
+  // snapshot tool — render the dragged region at 2× and copy it as PNG
+  const doSnapshot = async (r: { x: number; y: number; w: number; h: number }) => {
+    const pg = pageRef.current;
+    if (!pg || r.w < 2 || r.h < 2) return;
+    const SUP = 2;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(r.w * SUP));
+    c.height = Math.max(1, Math.round(r.h * SUP));
+    const vp2 = pg.getViewport({ scale: scale * SUP, rotation: (pg.rotate + (viewRot ?? 0)) % 360 });
+    try {
+      await pg.render({ canvas: c, viewport: vp2, transform: [1, 0, 0, 1, -r.x * SUP, -r.y * SUP] }).promise;
+    } catch { return; }
+    const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/png"));
+    if (!blob) return;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      onSnapshot?.(true);
+    } catch {
+      // clipboard blocked — fall back to a PNG download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `snapshot-p${pageNum}.png`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      onSnapshot?.(false);
+    }
+  };
+
   const onPolylineHover = (e: React.PointerEvent) => {
     if (tool !== "polyline" || !plPts.length) return;
     const b = boxRef.current!.getBoundingClientRect();
@@ -2423,6 +2687,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       return;
     }
     if (tool === "zoombox") { onZoomTo?.(preview, boxRef.current!); return; }
+    if (tool === "snapshot") { void doSnapshot({ x, y, w, h }); return; }
     if (tool === "measure") {
       const pt = Math.hypot(d.x - d.sx, d.y - d.sy) / scale;
       setReadout(`${pt.toFixed(1)} pt · ${(pt / 72).toFixed(2)} in · ${(pt / 72 * 2.54).toFixed(2)} cm`);
@@ -2640,7 +2905,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
               fill={tool === "highlight" ? toolColor : "none"} fillOpacity={tool === "highlight" ? 0.35 : 0}
               stroke={toolColor} strokeWidth={1.5} strokeDasharray="4 3" />
           )}
-          {anns.map((a) => (
+          {showAnns && anns.map((a) => (
             <AnnSvg key={a.id} a={a} vpRect={vpRect} toVp={toVp} scale={scale}
               selected={selAnn === a.id} selectable={tool === "select" && canEdit}
               onDown={(e) => startMove(e, a)} />
@@ -2654,7 +2919,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
         </div>
       )}
       {/* html-rendered anns: notes, textboxes, stamps */}
-      {v && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace" || a.type === "check" || a.type === "cross").map((a) => {
+      {v && showAnns && anns.filter((a) => a.type === "note" || a.type === "textbox" || a.type === "stamp" || a.type === "sign" || a.type === "callout" || a.type === "image" || a.type === "caret" || a.type === "replace" || a.type === "check" || a.type === "cross").map((a) => {
         const sel = selAnn === a.id;
         if (a.type === "check" || a.type === "cross") {
           const [x, y, w2, h2] = vpRect(a.rects![0]);
@@ -2786,16 +3051,23 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
               maxLength={f.comb}
               style={f.comb ? { letterSpacing: `${Math.max(0, w2 / f.comb - 8)}px` } : undefined}
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onFocus={() => fieldApi?.select(f.id)}
               onChange={(e) => fieldApi?.patch(f.id, { value: e.target.value }, `fv:${f.id}`)} />);
           case "checkbox":
-            return shell(<span className="pdf-field-check" onClick={(e) => { e.stopPropagation(); fieldApi?.patch(f.id, { value: !f.value }); }}>
+            return shell(<span className="pdf-field-check" tabIndex={0} role="checkbox" aria-checked={!!f.value}
+              onClick={(e) => { e.stopPropagation(); fieldApi?.patch(f.id, { value: !f.value }); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); fieldApi?.patch(f.id, { value: !f.value }); } }}
+              onFocus={() => fieldApi?.select(f.id)}>
               {f.value ? "✔" : ""}</span>);
           case "radio":
-            return shell(<span className={`pdf-field-radio ${f.value ? "on" : ""}`}
-              onClick={(e) => { e.stopPropagation(); fieldApi?.checkRadio(f); }} />);
+            return shell(<span className={`pdf-field-radio ${f.value ? "on" : ""}`} tabIndex={0} role="radio" aria-checked={!!f.value}
+              onClick={(e) => { e.stopPropagation(); fieldApi?.checkRadio(f); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); fieldApi?.checkRadio(f); } }}
+              onFocus={() => fieldApi?.select(f.id)} />);
           case "dropdown":
             return shell(<select className="pdf-field-in" value={String(f.value ?? "")}
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onFocus={() => fieldApi?.select(f.id)}
               onChange={(e) => fieldApi?.patch(f.id, { value: e.target.value })}>
               <option value=""></option>
               {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
@@ -2803,16 +3075,20 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
           case "list":
             return shell(<select className="pdf-field-in" multiple value={String(f.value ?? "").split("\n").filter(Boolean)}
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+              onFocus={() => fieldApi?.select(f.id)}
               onChange={(e) => fieldApi?.patch(f.id, { value: [...e.target.selectedOptions].map((o) => o.value).join("\n") })}>
               {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
             </select>);
           case "signature":
-            return shell(<div className="pdf-field-sign" title="Click to sign"
-              onClick={(e) => { e.stopPropagation(); fieldApi?.signField?.(f.id); }}>
+            return shell(<div className="pdf-field-sign" title="Click to sign" tabIndex={0} role="button"
+              onClick={(e) => { e.stopPropagation(); fieldApi?.signField?.(f.id); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); fieldApi?.signField?.(f.id); } }}
+              onFocus={() => fieldApi?.select(f.id)}>
               {f.value ? <img src={String(f.value)} alt="signature" draggable={false} /> : "✍ Sign here"}
             </div>);
           case "barcode":
-            return shell(<div className="pdf-field-barcode" title={String(f.value ?? "")}
+            return shell(<div className="pdf-field-barcode" title={String(f.value ?? "")} tabIndex={0}
+              onFocus={() => fieldApi?.select(f.id)}
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
               {[...String(f.value ?? "")].map((c, i) => (
                 <span key={i} style={{ width: (c.charCodeAt(0) % 3) + 1, background: "#111", marginRight: i % 2 ? 1 : 2 }} />
@@ -3209,7 +3485,7 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
  *  so every tool is discoverable by name (Acrobat/Office-style grouping). */
 function ToolMenu({ label, tools, tool, canEdit, onPick }: {
   label: string;
-  tools: { id: Tool; ico: string; label: string }[];
+  tools: { id: Tool; ico: string; label: string; viewer?: boolean }[];
   tool: Tool;
   canEdit: boolean;
   onPick: (t: Tool) => void;
@@ -3224,11 +3500,12 @@ function ToolMenu({ label, tools, tool, canEdit, onPick }: {
     document.addEventListener("keydown", esc);
     return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
   }, [open]);
+  const enabled = tools.filter((t) => canEdit || t.viewer);
   const active = tools.find((t) => t.id === tool);
   if (tools.length === 1) {
     const t = tools[0];
     return (
-      <button className={`rb rb-group${t.id === tool ? " on" : ""}`} disabled={!canEdit}
+      <button className={`rb rb-group${t.id === tool ? " on" : ""}`} disabled={!canEdit && !t.viewer}
         title={t.label} onClick={() => onPick(t.id)}>
         <span aria-hidden>{t.ico}</span>
         <span className="rb-group-label">{label}</span>
@@ -3238,7 +3515,7 @@ function ToolMenu({ label, tools, tool, canEdit, onPick }: {
   return (
     <span className={`menu-root${open ? " open" : ""}`} ref={rootRef}>
       <button className={`rb rb-group${open ? " open" : ""}${active ? " on" : ""}`}
-        disabled={!canEdit} title={active ? `${label}: ${active.label}` : `${label} tools`}
+        disabled={!enabled.length} title={active ? `${label}: ${active.label}` : `${label} tools`}
         onClick={() => setOpen((o) => !o)}>
         <span aria-hidden>{active ? active.ico : tools[0]?.ico}</span>
         <span className="rb-group-label">{label}</span>
@@ -3247,8 +3524,8 @@ function ToolMenu({ label, tools, tool, canEdit, onPick }: {
       {open && (
         <div className="menu-drop" role="menu">
           {tools.map((t) => (
-            <div key={t.id} role="menuitem" className={`menu-item${t.id === tool ? " on" : ""}`}
-              onClick={() => { setOpen(false); onPick(t.id); }}>
+            <div key={t.id} role="menuitem" className={`menu-item${t.id === tool ? " on" : ""}${!canEdit && !t.viewer ? " disabled" : ""}`}
+              onClick={() => { if (canEdit || t.viewer) { setOpen(false); onPick(t.id); } }}>
               <span className="menu-check">{t.id === tool ? "✓" : ""}</span>
               <span className="mi-ico" aria-hidden>{t.ico}</span>
               <span>{t.label}</span>

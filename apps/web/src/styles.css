@@ -853,6 +853,8 @@ textarea.inp{padding:8px 10px;height:auto}
 .pdf-page[data-tool="stamp"]{cursor:pointer}
 .pdf-page[data-tool="zoombox"]{cursor:zoom-in}
 .pdf-page[data-tool="measure"]{cursor:crosshair}
+.pdf-page[data-tool="snapshot"]{cursor:crosshair}
+.pdf-page[data-tool="pan"]{cursor:grab}
 .pdf-pages.panning,.pdf-pages.panning *{cursor:grabbing!important}
 .pdf-pages.space-hold,.pdf-pages.space-hold *{cursor:grab!important}
 .pdf-canvas{display:block}
