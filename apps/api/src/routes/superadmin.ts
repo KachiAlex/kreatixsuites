@@ -30,9 +30,10 @@ export function superadminRoutes(app: FastifyInstance) {
       trialing: await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'trialing' AND trial_ends_at > $1", [now()]),
       locked: await count(
         `SELECT COUNT(*) n FROM subscriptions s WHERE
-           (s.status = 'trialing' AND COALESCE(s.trial_ends_at, '1970-01-01'::timestamptz) + interval '7 days' < $1)
-           OR (s.status = 'active' AND COALESCE(s.period_end, '1970-01-01'::timestamptz) + interval '7 days' < $1)
-           OR s.status = 'canceled'`, [now()]),
+           COALESCE(s.override_until, '1970-01-01'::timestamptz) < $1 AND (
+             (s.status = 'trialing' AND COALESCE(s.trial_ends_at, '1970-01-01'::timestamptz) + interval '7 days' < $1)
+             OR (s.status = 'active' AND COALESCE(s.period_end, '1970-01-01'::timestamptz) + interval '7 days' < $1)
+             OR s.status = 'canceled')`, [now()]),
       pendingPayments: await count("SELECT COUNT(*) n FROM payments WHERE status = 'pending'"),
       mrrNgn: mrr?.total ?? 0,
     };
