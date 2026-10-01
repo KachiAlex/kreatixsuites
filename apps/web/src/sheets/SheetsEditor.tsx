@@ -53,19 +53,21 @@ async function sha256hex(s: string): Promise<string> {
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
+export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPrompt }: {
   item: DriveItem;
   initialDoc: unknown;
   /** Native binary upload (xlsx/ods) — auto-imported on mount. */
   sourceFile?: File | null;
   permission: string;
+  /** ?ai=<prompt> deep-link — opens the AI panel with a seeded prompt. */
+  aiPrompt?: string;
 }) {
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "ai">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "ai">(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -2428,7 +2430,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
         <AiPanel fileId={item.id} kind="sheets" canEdit={canEdit}
           serialize={aiSerialize}
           selection={() => `${sheet.name}!${rangeToA1(selection)}`}
-          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}

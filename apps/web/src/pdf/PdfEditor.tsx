@@ -137,10 +137,12 @@ const LINK_SERVICE = {
 
 interface OutlineNode { title: string; dest: unknown; items?: OutlineNode[] }
 
-export function PdfEditor({ item, initialDoc, permission }: {
+export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
   item: DriveItem;
   initialDoc: unknown;
   permission: string;
+  /** ?ai=<prompt> deep-link — opens the AI panel with a seeded prompt. */
+  aiPrompt?: string;
 }) {
   const { msg, toast } = useToast();
   const { user } = useAuth();
@@ -149,7 +151,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   // rail overlays the document on small screens — start closed there
-  const [panel, setPanel] = useState<Panel>(() => (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches ? "none" : "thumbs"));
+  const [panel, setPanel] = useState<Panel>(() => (aiPrompt !== undefined ? "ai" : typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches ? "none" : "thumbs"));
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -2416,7 +2418,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
         <AiPanel fileId={item.id} kind="pdf" canEdit={canEdit}
           serialize={aiSerialize}
           selection={() => `Page ${curPage}`}
-          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {pwPrompt && (
         <div className="dlg-back" onClick={() => {

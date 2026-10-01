@@ -90,12 +90,14 @@ import "katex/dist/katex.min.css";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Panel = "none" | "comments" | "versions" | "ai" | "outline" | "suggest";
 
-export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
+export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPrompt }: {
   item: DriveItem;
   initialDoc: unknown;
   /** Native binary upload (docx/odt) — auto-imported once the editor is live. */
   sourceFile?: File | null;
   permission: string;
+  /** ?ai=<prompt> deep-link — opens the AI panel with a seeded prompt. */
+  aiPrompt?: string;
 }) {
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
@@ -107,7 +109,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<Panel>("none");
+  const [panel, setPanel] = useState<Panel>(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -639,6 +641,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
       } else if (k === "g") {
         e.preventDefault();
         setGoToOpen(true);
+      } else if (k === "o") {
+        e.preventDefault();
+        navigate("/drive");
       } else if (k === "/") {
         e.preventDefault();
         setShortcutsOpen(true);
@@ -2480,7 +2485,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
             const { from, to } = editor?.state.selection ?? { from: 0, to: 0 };
             return to > from && editor ? editor.state.doc.textBetween(from, to, " ") : "";
           }}
-          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {panel === "suggest" && editor && (
         <SuggestionsPanel editor={editor} canResolve={canEdit} onClose={() => setPanel("none")} />

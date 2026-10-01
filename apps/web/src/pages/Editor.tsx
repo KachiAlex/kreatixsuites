@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
@@ -21,6 +21,10 @@ const Fallback = () => (
 export function Editor() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  // ?ai=<prompt> — deep-link from Home's AI prompt box; opens the AI panel
+  // (and auto-sends when a prompt is present).
+  const aiPrompt = search.has("ai") ? search.get("ai") ?? "" : undefined;
   const [item, setItem] = useState<DriveItem | null>(null);
   const [content, setContent] = useState<unknown>(null);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -99,16 +103,16 @@ export function Editor() {
 
   const inner = (() => {
     if (item.kind === "writer") {
-      return <WriterEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
+      return <WriterEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
     if (item.kind === "sheets") {
-      return <SheetsEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
+      return <SheetsEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
     if (item.kind === "present") {
-      return <PresentEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} />;
+      return <PresentEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
     if (item.kind === "pdf") {
-      return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
+      return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
 
     const meta = KIND_META[item.kind] ?? KIND_META.file;

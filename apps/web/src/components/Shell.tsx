@@ -123,6 +123,23 @@ function BillingBanner() {
 
 function Rail() {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const [menu, setMenu] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menu]);
+  const toggleTheme = () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
+  };
   const items = [
     { to: "/", icon: "⌂", title: "Home" },
     { to: "/drive", icon: "▣", title: "Kreatix Drive" },
@@ -135,7 +152,19 @@ function Rail() {
           className={`rail-btn ${pathname === i.to ? "active" : ""}`}>{i.icon}</NavLink>
       ))}
       <div className="spacer" />
-      <button className="rail-btn" title="Settings">⚙</button>
+      <div ref={ref} style={{ position: "relative" }}>
+        <button className="rail-btn" title="Settings" aria-haspopup="menu" aria-expanded={menu}
+          onClick={() => setMenu((v) => !v)}>⚙</button>
+        {menu && (
+          <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
+            <button onClick={() => { setMenu(false); toggleTheme(); }}>Toggle dark / light theme</button>
+            {(user?.role === "owner" || user?.role === "admin") && (
+              <button onClick={() => { setMenu(false); navigate("/admin"); }}>Administration</button>
+            )}
+            <button onClick={() => { setMenu(false); logout(); navigate("/login"); }}>Sign out</button>
+          </div>
+        )}
+      </div>
     </aside>
   );
 }
@@ -194,6 +223,20 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       .catch((e) => toast((e as Error).message));
   };
 
+  // AI lives inside the editors — open the most recent file's AI panel,
+  // or a fresh document when the workspace is empty.
+  const openAi = async () => {
+    try {
+      const r = await api.get<{ items: DriveItem[] }>("/api/drive?view=home");
+      const f = r.items.find((i) => i.kind !== "folder");
+      if (f) navigate(`/edit/${f.id}?ai=`);
+      else {
+        const c = await api.post<{ item: DriveItem }>("/api/drive", { name: "Untitled document", kind: "writer" });
+        navigate(`/edit/${c.item.id}?ai=`);
+      }
+    } catch { toast("Couldn't open Kreatix AI"); }
+  };
+
   const navCls = ({ isActive }: { isActive: boolean }) => `nav ${isActive ? "active" : ""}`;
   return (
     <aside className={`sidebar${open ? " open" : ""}`}>
@@ -246,7 +289,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <div className="ai-card">
         <div className="tag">Kreatix AI</div>
         <h4>Your intelligent work companion across the entire suite.</h4>
-        <button>Open AI workspace</button>
+        <button onClick={() => void openAi()}>Open AI workspace</button>
       </div>
     </aside>
   );

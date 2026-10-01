@@ -16,7 +16,7 @@ interface ActionRow { id: string; mode: string; prompt: string; applied: boolean
 
 const AUTOAPPLY_KEY = "kreatix.ai.autoApply";
 
-export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps, onClose, toast }: {
+export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps, onClose, toast, initialPrompt }: {
   fileId: string;
   kind: string;
   canEdit: boolean;
@@ -25,11 +25,14 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   applyOps: (ops: AiOp[]) => void;
   onClose: () => void;
   toast: (m: string) => void;
+  /** Seed the input from an external flow (Home prompt box); auto-sends
+   *  once AI availability is known. */
+  initialPrompt?: string;
 }) {
   const [mode, setMode] = useState<AiMode>(canEdit ? "edit" : "ask");
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialPrompt ?? "");
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
@@ -41,6 +44,14 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   useEffect(() => {
     api.get<{ enabled: boolean }>("/api/ai/status").then((r) => setEnabled(r.enabled)).catch(() => setEnabled(false));
   }, []);
+  const sentInitial = useRef(false);
+  useEffect(() => {
+    if (enabled === true && initialPrompt?.trim() && !sentInitial.current) {
+      sentInitial.current = true;
+      void send(initialPrompt.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, pending, busy, streaming]);
   useEffect(() => () => abortRef.current?.abort(), []);
 

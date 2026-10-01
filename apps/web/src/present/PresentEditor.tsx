@@ -27,19 +27,21 @@ import { importPptx, importOdp } from "./import";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
-export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
+export function PresentEditor({ item, initialDoc, sourceFile, permission, aiPrompt }: {
   item: DriveItem;
   initialDoc: unknown;
   /** Native binary upload (pptx/odp) — auto-imported on mount. */
   sourceFile?: File | null;
   permission: string;
+  /** ?ai=<prompt> deep-link — opens the AI panel with a seeded prompt. */
+  aiPrompt?: string;
 }) {
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects" | "ai" | "anim">("none");
+  const [panel, setPanel] = useState<"none" | "comments" | "versions" | "objects" | "ai" | "anim">(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -1750,7 +1752,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
         <AiPanel fileId={item.id} kind="present" canEdit={canEdit}
           serialize={aiSerialize}
           selection={() => `Slide ${slideIdx + 1}`}
-          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} />
+          applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}
