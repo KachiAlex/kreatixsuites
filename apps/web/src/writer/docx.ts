@@ -4,15 +4,15 @@ import {
   Header, HeadingLevel, ImageRun, LevelFormat, LevelSuffix, Math as DocxMath, MathRun,
   Packer, PageBreak as DocxPageBreak, PageOrientation, Paragraph, SectionType,
   Table, TableCell, TableRow,
-  TextDirection, TextRun, VerticalAlignTable, WidthType,
+  TextDirection, TextRun, VerticalAlignSection, VerticalAlignTable, WidthType,
   type File as DocxFile, type IParagraphStyleOptions, type ISectionOptions,
-  type ISectionPropertiesOptions, type ParagraphChild,
+  type ISectionPropertiesOptions, type ParagraphChild, type SectionVerticalAlign,
 } from "docx";
 import mammoth from "mammoth";
 import type { Editor } from "@tiptap/core";
 import { DEFAULT_STYLES, loadStyleDefs, styleDefsOf, type StyleDef } from "./extensions/styles";
 import type { DocProps } from "./DocProps";
-import type { PageSetup } from "./PageSetup";
+import { applyPageSetup, readPageSetup, type PageSetup } from "./PageSetup";
 
 type Json = Record<string, unknown>;
 
@@ -46,6 +46,8 @@ export interface DocxImportResult {
   /** True when the converter dropped all text and raw document.xml text was
    *  salvaged instead — formatting fidelity is reduced. */
   degraded?: boolean;
+  /** settings.xml + first-section geometry → doc-level page setup merge. */
+  settings?: DocxSettings;
 }
 
 const HEADINGS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
@@ -501,8 +503,14 @@ function sectionProps(attrs: Record<string, unknown>): {
   headers?: ISectionOptions["headers"];
   footers?: ISectionOptions["footers"];
 } {
+  const VA_OUT: Record<string, SectionVerticalAlign> = {
+    center: VerticalAlignSection.CENTER, bottom: VerticalAlignSection.BOTTOM,
+    both: VerticalAlignSection.BOTH, top: VerticalAlignSection.TOP,
+  };
   const properties: ISectionPropertiesOptions = {
     type: SECTION_TYPES[(attrs.type as string) ?? "nextPage"] ?? SectionType.NEXT_PAGE,
+    ...(attrs.vAlign && VA_OUT[attrs.vAlign as string]
+      ? { verticalAlign: VA_OUT[attrs.vAlign as string] } : {}),
   };
   const w = pxToDxa(attrs.pageWidth), h = pxToDxa(attrs.pageHeight);
   const margin: Record<string, number | undefined> = {
@@ -738,6 +746,19 @@ interface ImportedStyle {
   nextId?: string;
 }
 interface NumberingInfo { fmt: string; start?: number }
+/** word/settings.xml + first-section geometry that maps onto PageSetup. */
+interface DocxSettings {
+  hyphenate?: boolean;
+  /** w:hyphenationZone (twips) → px — Word's distance-from-margin hyphen zone. */
+  hyphenZone?: number;
+  /** w:consecutiveHyphenLimit → CSS hyphenate-limit-lines. */
+  hyphenLimit?: number;
+  /** w:evenAndOddHeaders → PageSetup.oddEven. */
+  evenOdd?: boolean;
+  /** First section's page geometry → doc-level page setup (px). */
+  page?: { w: number; h: number; mt: number; mb: number; ml: number; mr: number };
+}
+
 interface DocxMeta {
   /** OOXML styleId → parsed paragraph style. */
   styles: Map<string, ImportedStyle>;
@@ -747,6 +768,7 @@ interface DocxMeta {
   numFmt: Map<string, NumberingInfo>;
   comments: { id: string; author?: string; date?: string; body: string }[];
   docProps: DocProps;
+  settings: DocxSettings;
 }
 
 const wAttr = (tag: string, attr: string) =>
@@ -869,6 +891,41 @@ function parseCoreXml(xml: string): DocProps {
   };
 }
 
+/** Parse word/settings.xml → doc-level switches that map onto PageSetup. */
+function parseSettingsXml(xml: string): DocxSettings {
+  const on = (tag: string) => {
+    const t = xml.match(new RegExp(`<w:${tag}\\b[^>]*>`))?.[0];
+    return t ? !/w:val="(0|false|off|none)"/.test(t) : false;
+  };
+  const twips = (tag: string) => {
+    const v = xml.match(new RegExp(`<w:${tag}\\b[^>]*w:val="(\\d+)"`))?.[1];
+    return v ? Math.round(parseInt(v) / 15) : undefined;
+  };
+  const lim = xml.match(/<w:consecutiveHyphenLimit\b[^>]*w:val="(\d+)"/)?.[1];
+  return {
+    hyphenate: on("autoHyphenation") || undefined,
+    hyphenZone: twips("hyphenationZone"),
+    hyphenLimit: lim ? Math.max(1, parseInt(lim)) : undefined,
+    evenOdd: on("evenAndOddHeaders") || undefined,
+  };
+}
+
+/** First sectPr's page geometry → doc-level setup (the first pPr-level sectPr
+ *  describes section 1; with none, the trailing body sectPr does). */
+function firstSectionPage(docXml: string): DocxSettings["page"] {
+  const sect = docXml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/)?.[0];
+  if (!sect) return undefined;
+  const tw = (tag: string, name: string) => {
+    const v = sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
+    return v != null ? Math.round(parseInt(v) / 15) : null;
+  };
+  const w = tw("pgSz", "w"), h = tw("pgSz", "h");
+  const mt = tw("pgMar", "top"), mb = tw("pgMar", "bottom"),
+    ml = tw("pgMar", "left"), mr = tw("pgMar", "right");
+  if (w == null && h == null && mt == null && mb == null && ml == null && mr == null) return undefined;
+  return { w: w ?? 0, h: h ?? 0, mt: mt ?? 0, mb: mb ?? 0, ml: ml ?? 0, mr: mr ?? 0 };
+}
+
 const sentinel = (text: string) =>
   `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
 
@@ -883,6 +940,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     numFmt: parseNumberingXml(await zip.file("word/numbering.xml")?.async("text") ?? ""),
     comments: parseCommentsXml(await zip.file("word/comments.xml")?.async("text") ?? ""),
     docProps: parseCoreXml(await zip.file("docProps/core.xml")?.async("text") ?? ""),
+    settings: parseSettingsXml(await zip.file("word/settings.xml")?.async("text") ?? ""),
   };
   let docXml = await zip.file("word/document.xml")?.async("text");
   if (!docXml) {
@@ -893,6 +951,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     throw new Error("This file isn't a Word .docx document");
   }
   const original = docXml;
+  meta.settings.page = firstSectionPage(docXml);
 
   // w:pStyle / w:numPr / comment ranges → sentinel runs (mammoth drops the
   // original constructs; the sentinels survive as literal text we post-process).
@@ -967,6 +1026,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
           cols: wv("cols", "num") ? parseInt(wv("cols", "num")!) : null,
           colGap: wv("cols", "space") ? Math.round(parseInt(wv("cols", "space")!) / 15) : null,
           pnStart: wv("pgNumType", "start") ? parseInt(wv("pgNumType", "start")!) : null,
+          vAlign: wv("vAlign", "val") ?? null,
           headerText: await hfText(sect, "header"),
           footerText: await hfText(sect, "footer"),
         };
@@ -982,13 +1042,29 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
         (_, tail) => `${tail}<w:r><w:t xml:space="preserve">⟦KXSB:${payloads[mi++] ?? ""}⟧</w:t></w:r>`,
       );
     }
+    // Section 1's own vAlign (title-page centering) never reaches a marker —
+    // carry it into the document's first block instead.
+    const firstSect = pPrSects[0]?.xml ?? bodySect?.xml;
+    const va = firstSect?.match(/<w:vAlign\b[^>]*w:val="([^"]+)"/)?.[1];
+    if (va && va !== "top")
+      docXml = docXml.replace(/<w:p\b[^>]*>/, (m) => `${m}${sentinel(`KXSA:${b64enc(JSON.stringify({ vAlign: va }))}`)}`);
   }
 
-  // mammoth silently drops w:sdt content controls and w:txbxContent text
-  // boxes — a doc built from them opens blank. Unwrap controls in place and
-  // hoist text-box paragraphs to the end of the body so their content survives.
+  // mammoth silently drops w:sdt content controls and floating-object
+  // geometry — anchored images and text boxes lost their position, wrap mode
+  // and size entirely (boxes were previously hoisted to the document end,
+  // scrambling order). Extract txbxContent up front, then walk each drawing /
+  // VML picture: anchored objects emit ⟦KXFO⟧/⟦KXTB⟧ sentinels carrying the
+  // wp:anchor geometry; box bodies are appended at body end between
+  // ⟦KXTBB⟧/⟦KXTBE⟧ markers so mammoth still converts their paragraphs.
   {
     let prev = "";
+    // mc:Fallback duplicates the mc:Choice payload as VML — drop it or every
+    // DrawingML object would be extracted twice.
+    while (prev !== docXml) {
+      prev = docXml;
+      docXml = docXml.replace(/<mc:Fallback\b[^>]*>[\s\S]*?<\/mc:Fallback>/g, "");
+    }
     while (prev !== docXml) {
       prev = docXml;
       docXml = docXml.replace(
@@ -996,16 +1072,138 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
         (_, inner: string) => inner.match(/<w:sdtContent[^>]*>([\s\S]*?)<\/w:sdtContent>/)?.[1] ?? "",
       );
     }
-    const boxes: string[] = [];
+
+    const boxes: { inner: string; geo: Record<string, unknown>; plain?: boolean }[] = [];
+    // pass A — text-box bodies out to placeholders (placeholder is plain text
+    // inside the drawing markup; the drawing pass below swaps in real sentinels)
     do {
       prev = docXml;
       docXml = docXml.replace(
         /<w:txbxContent[^>]*>((?:(?!<w:txbxContent)[\s\S])*)<\/w:txbxContent>/g,
-        (_, inner: string) => { boxes.push(inner); return ""; },
+        (_, inner: string) => `⟦KXTBBOX:${boxes.push({ inner, geo: {} }) - 1}⟧`,
       );
     } while (prev !== docXml);
-    if (boxes.length)
-      docXml = docXml.replace(/<\/w:body>/, `${boxes.join("")}</w:body>`);
+
+    const EMU = 9525;
+    const docGeo = (() => {
+      const sect = docXml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/)?.[0] ?? "";
+      const tw = (tag: string, name: string) => {
+        const v = sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
+        return v != null ? Math.round(parseInt(v) / 15) : null;
+      };
+      return {
+        pw: tw("pgSz", "w") ?? 816, ph: tw("pgSz", "h") ?? 1056,
+        mt: tw("pgMar", "top") ?? 96, mb: tw("pgMar", "bottom") ?? 96,
+        ml: tw("pgMar", "left") ?? 96, mr: tw("pgMar", "right") ?? 96,
+      };
+    })();
+    /** wp:anchor/wp:inline geometry → node attrs. posX/posY are deltas from
+     *  the object's flow position (what our translate() offsets mean): page-
+     *  relative offsets are re-based to margin-relative, paragraph/margin
+     *  offsets pass through. Vertical page/margin alignment assumes the anchor
+     *  paragraph sits at the band top — the common case for floats. */
+    const anchorGeo = (ax: string): Record<string, unknown> => {
+      const extent = ax.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/);
+      const w = extent ? Math.round(+extent[1] / EMU) : 0;
+      const h = extent ? Math.round(+extent[2] / EMU) : 0;
+      const contentW = Math.max(1, docGeo.pw - docGeo.ml - docGeo.mr);
+      const innerH = Math.max(1, docGeo.ph - docGeo.mt - docGeo.mb);
+      let posX = 0, posY = 0, align: string | undefined;
+      const pos = (axis: "H" | "V") =>
+        ax.match(new RegExp(`<wp:position${axis}\\b[^>]*relativeFrom="([^"]+)"[^>]*>([\\s\\S]*?)</wp:position${axis}>`));
+      const ph = pos("H"), pv = pos("V");
+      const offOf = (body: string) => {
+        const v = body.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/)?.[1];
+        return v != null ? Math.round(+v / EMU) : null;
+      };
+      const alignOf = (body: string) => body.match(/<wp:align>(\w+)<\/wp:align>/)?.[1];
+      if (ph) {
+        const a = alignOf(ph[2]), o = offOf(ph[2]);
+        const base = ph[1] === "page" ? -docGeo.ml : 0;
+        if (a === "center" || a === "right") {
+          const ref = ph[1] === "page" ? docGeo.pw : contentW;
+          posX = base + (a === "center" ? Math.round((ref - w) / 2) : ref - w);
+          align = a;
+        } else if (a) { posX = base; align = "left"; }
+        else if (o != null) posX = base + o;
+      }
+      if (pv) {
+        const a = alignOf(pv[2]), o = offOf(pv[2]);
+        const base = pv[1] === "page" ? -docGeo.mt : 0;
+        if (a === "center" || a === "bottom") {
+          const ref = pv[1] === "page" ? docGeo.ph : innerH;
+          posY = base + (a === "center" ? Math.round((ref - h) / 2) : ref - h);
+        } else if (a) posY = base;
+        else if (o != null) posY = base + o;
+      }
+      const behind = /behindDoc="1"/.test(ax);
+      const wrap = behind ? "behind"
+        : /<wp:wrapNone\b/.test(ax) ? "front"
+        : /<wp:wrapTight\b|<wp:wrapThrough\b/.test(ax) ? "tight"
+        : /<wp:wrapTopAndBottom\b/.test(ax) ? "topBottom"
+        : "square";
+      // float wraps need a left/right side — infer it from the h position
+      if ((wrap === "square" || wrap === "tight") && align !== "right")
+        align = posX > contentW / 2 ? "right" : "left";
+      return { wrap, align, posX, posY, w, h };
+    };
+    const mtext = (s: string) => `<w:t xml:space="preserve">${s}</w:t>`;
+
+    // pass B — DrawingML objects. Sentinels go inside the same run just before
+    // <w:drawing> so mammoth emits them adjacent to (or instead of) the img.
+    docXml = docXml.replace(/<w:drawing>[\s\S]*?<\/w:drawing>/g, (block) => {
+      const anchor = block.match(/<wp:anchor\b[\s\S]*?<\/wp:anchor>/)?.[0];
+      const geo = anchor ? anchorGeo(anchor) : (() => {
+        const ext = block.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/);
+        return ext ? { wrap: "inline", w: Math.round(+ext[1] / EMU), h: Math.round(+ext[2] / EMU) } : {};
+      })();
+      let marker = "";
+      let out = block.replace(/⟦KXTBBOX:(\d+)⟧/g, (_m, i) => {
+        boxes[+i].geo = geo;
+        marker += `⟦KXTB:${b64enc(JSON.stringify({ i: +i, ...geo }))}⟧`;
+        return "";
+      });
+      if (/<a:blip\b/.test(out)) marker += `⟦KXFO:${b64enc(JSON.stringify(geo))}⟧`;
+      return marker ? `${mtext(marker)}${out}` : out;
+    });
+
+    // pass C — VML pictures: v:textbox (older shape text) gets a textbox
+    // sentinel; standalone v:shape geometry comes from its inline style.
+    docXml = docXml.replace(/<w:pict>[\s\S]*?<\/w:pict>/g, (block) => {
+      if (!/⟦KXTBBOX:\d+⟧/.test(block)) return block;
+      const st = block.match(/<v:shape\b[^>]*style="([^"]*)"/)?.[1] ?? "";
+      const pt = (k: string) => {
+        const v = st.match(new RegExp(`(?:^|;)\\s*${k}:([^;]+)`))?.[1]?.trim();
+        return v ? Math.round(parseFloat(v) * 4 / 3) : 0; // pt → px
+      };
+      const geo: Record<string, unknown> = { wrap: "front", posX: pt("margin-left"), posY: pt("margin-top"), w: pt("width") };
+      const fill = block.match(/<v:shape\b[^>]*fillcolor="([^"]+)"/)?.[1];
+      if (fill && fill !== "none") geo.bg = fill;
+      let marker = "";
+      const out = block.replace(/⟦KXTBBOX:(\d+)⟧/g, (_m, i) => {
+        boxes[+i].geo = geo;
+        marker += `⟦KXTB:${b64enc(JSON.stringify({ i: +i, ...geo }))}⟧`;
+        return "";
+      });
+      return `${mtext(marker)}${out}`;
+    });
+
+    // stray placeholders (txbx outside any drawing/pict — e.g. detached boxes)
+    // keep the old behavior: plain paragraphs appended at body end.
+    docXml = docXml.replace(/⟦KXTBBOX:(\d+)⟧/g, (_m, i) => { boxes[+i].plain = true; return ""; });
+
+    if (boxes.length) {
+      const parts: string[] = [];
+      boxes.forEach((b, i) => {
+        if (b.plain) { parts.push(b.inner); return; }
+        parts.push(
+          `<w:p>${sentinel(`KXTBB:${i}`)}</w:p>`,
+          b.inner,
+          `<w:p>${sentinel("KXTBE")}</w:p>`,
+        );
+      });
+      docXml = docXml.replace(/<\/w:body>/, `${parts.join("")}</w:body>`);
+    }
   }
 
   docXml = injectFormatSentinels(docXml, meta);
@@ -1037,6 +1235,7 @@ interface SectMarkerProps {
   marginTop?: number | null; marginBottom?: number | null;
   marginLeft?: number | null; marginRight?: number | null;
   cols?: number | null; colGap?: number | null; pnStart?: number | null;
+  vAlign?: string | null;
   headerText?: string | null; footerText?: string | null;
 }
 
@@ -1063,6 +1262,7 @@ function breakMarkersToHtml(html: string): string {
       ["data-pn-start", p.pnStart],
     ];
     for (const [k, v] of pairs) if (v != null) s += ` ${k}="${v}"`;
+    if (p.vAlign && p.vAlign !== "top") s += ` data-v-align="${esc(p.vAlign)}"`;
     if (p.headerText) s += ` data-header-left="${esc(p.headerText)}"`;
     if (p.footerText) s += ` data-footer-left="${esc(p.footerText)}"`;
     return `<div data-type="section-break" ${s} class="page-break section-break"></div>`;
@@ -1450,6 +1650,7 @@ function readParaProps(ppr: string): Record<string, unknown> {
   if (flag("keepNext")) p.kn = 1;
   if (flag("keepLines")) p.kl = 1;
   if (flag("widowControl")) p.wo = 1;
+  if (flag("suppressAutoHyphens")) p.nh = 1;
   const shd = attr("shd", "fill");
   if (shd && shd !== "auto" && shd !== "clear") p.bg = `#${shd}`;
   if (flag("bidi")) p.dir = "rtl";
@@ -1581,6 +1782,7 @@ function paraFmtMarkersToHtml(html: string): string {
       if (p.kn) attrs += ` data-keep-next="1"`;
       if (p.kl) attrs += ` data-keep-lines="1"`;
       if (p.wo) attrs += ` data-widow-orphan="1"`;
+      if (p.nh) style += "hyphens:manual;";
       if (p.dir) attrs += ` dir="${p.dir}"`;
       if (p.pb) attrs += ` data-p-borders="${attrEsc(JSON.stringify(p.pb))}"`;
       if (p.tabs) attrs += ` data-tabs="${attrEsc(JSON.stringify(p.tabs))}"`;
@@ -1593,6 +1795,62 @@ function paraFmtMarkersToHtml(html: string): string {
     },
   );
   return html.replace(/⟦KXPF:[A-Za-z0-9+/=]*⟧/g, "");
+}
+
+/** ⟦KXSA:b64⟧ (first section's props, emitted at the document start) → data
+ *  attrs on the first block element. */
+function firstSectionMarkerToHtml(html: string): string {
+  const m = html.match(/⟦KXSA:([A-Za-z0-9+/=]*)⟧/);
+  if (!m) return html;
+  html = html.replace(m[0], "");
+  const p = JSON.parse(b64dec(m[1])) as { vAlign?: string };
+  if (p.vAlign && p.vAlign !== "top") {
+    html = html.replace(
+      /<(p|h[1-6]|table|ul|ol|blockquote|div)\b([^>]*)>/,
+      `<$1$2 data-v-align="${p.vAlign}">`,
+    );
+  }
+  return html;
+}
+
+/** Floating objects: ⟦KXTB⟧→ kx-textbox divs (body HTML recovered from the
+ *  ⟦KXTBB⟧…⟦KXTBE⟧ staging region); ⟦KXFO⟧+img → figure wrap/position attrs. */
+function floatMarkersToHtml(html: string): string {
+  const bodies = new Map<string, string>();
+  html = html.replace(/<p>⟦KXTBB:(\d+)⟧<\/p>([\s\S]*?)<p>⟦KXTBE⟧<\/p>/g, (_m, i, body) => {
+    bodies.set(i, body);
+    return "";
+  });
+  const tb = (b: string) => {
+    const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+    const inner = bodies.get(String(p.i)) ?? "";
+    const a = [`data-type="kx-textbox"`];
+    if (p.align) a.push(`data-align="${p.align}"`);
+    if (p.w) a.push(`data-w="${p.w}"`);
+    if (p.h) a.push(`data-h="${p.h}"`);
+    if (p.wrap && p.wrap !== "inline") a.push(`data-wrap="${p.wrap}"`);
+    if (p.posX) a.push(`data-posx="${p.posX}"`);
+    if (p.posY) a.push(`data-posy="${p.posY}"`);
+    if (p.bg) a.push(`data-bg="${attrEsc(String(p.bg))}"`);
+    return `<div ${a.join(" ")}>${inner}</div>`;
+  };
+  html = html
+    .replace(/<p[^>]*>⟦KXTB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_m, b) => tb(b))
+    .replace(/⟦KXTB:([A-Za-z0-9+/=]*)⟧/g, (_m, b) => `</p>${tb(b)}<p>`);
+  // ⟦KXFO⟧ sits in the run just before its drawing → immediately ahead of
+  // the <img> mammoth emits (allow inline tag churn between them).
+  html = html.replace(
+    /⟦KXFO:([A-Za-z0-9+/=]*)⟧((?:<[^>]+>)*)<img\b([^>]*?)\/?>/g,
+    (_m, b, mid: string, attrs: string) => {
+      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      let a = attrs;
+      if (p.w && !/\bwidth="/.test(a)) a += ` width="${p.w}"`;
+      if (p.h && !/\bheight="/.test(a)) a += ` height="${p.h}"`;
+      if (!p.wrap || p.wrap === "inline") return `${mid}<img${a}>`;
+      return `${mid}<figure data-wrap="${p.wrap}" data-align="${p.align ?? "none"}" data-posx="${p.posX ?? 0}" data-posy="${p.posY ?? 0}"><img${a}></figure>`;
+    },
+  );
+  return html.replace(/⟦KX(?:FO|TB|TBBOX)[^⟧]*⟧/g, "");
 }
 
 /** Reject non-docx payloads with a user-readable reason before they reach
@@ -1641,6 +1899,8 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
     html = styleMarkersToHtml(html, idToKey);
     html = numMarkersToHtml(html, meta);
     html = commentMarkersToHtml(html);
+    html = floatMarkersToHtml(html);
+    html = firstSectionMarkerToHtml(html);
     // conversion came back textless but the package has real text (text boxes,
     // content controls, exotic runs mammoth skipped) — salvage it so the file
     // doesn't open as a blank page
@@ -1657,6 +1917,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
       anchor: `docx-${c.id}`, body: c.body, author: c.author, createdAt: c.date,
     })),
     degraded,
+    settings: meta.settings,
   };
 }
 
@@ -1665,6 +1926,23 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
 export function applyDocxImport(editor: Editor, res: DocxImportResult): void {
   if (Object.keys(res.styles).length) {
     loadStyleDefs(editor, { ...styleDefsOf(editor), ...res.styles });
+  }
+  const s = res.settings;
+  if (s && Object.values(s).some((v) => v != null)) {
+    const next: PageSetup = { ...readPageSetup(editor) };
+    if (s.hyphenate != null) next.hyphenate = s.hyphenate;
+    if (s.hyphenZone != null) next.hyphenZone = s.hyphenZone;
+    if (s.hyphenLimit != null) next.hyphenLimit = s.hyphenLimit;
+    if (s.evenOdd != null) next.oddEven = s.evenOdd;
+    if (s.page) {
+      if (s.page.w) next.width = s.page.w;
+      if (s.page.h) next.height = s.page.h;
+      if (s.page.mt) next.marginTop = s.page.mt;
+      if (s.page.mb) next.marginBottom = s.page.mb;
+      if (s.page.ml) next.marginLeft = s.page.ml;
+      if (s.page.mr) next.marginRight = s.page.mr;
+    }
+    applyPageSetup(editor, next);
   }
 }
 

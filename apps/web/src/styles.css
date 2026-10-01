@@ -1342,7 +1342,7 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ProseMirror[data-pg-border="double"] .kx-page-paper::after{border:4px double #4A453F}
 .ProseMirror[data-pg-border="dashed"] .kx-page-paper::after{border:2px dashed #4A453F}
 .ProseMirror[data-pg-border="shadow"] .kx-page-paper::after{border:2px solid #4A453F;box-shadow:5px 5px 0 rgba(74,69,63,.4)}
-.kx-hyphens p,.kx-hyphens li,.kx-hyphens h1,.kx-hyphens h2,.kx-hyphens h3,.kx-hyphens h4,.kx-hyphens h5,.kx-hyphens h6,.kx-hyphens blockquote{hyphens:auto}
+.kx-hyphens p,.kx-hyphens li,.kx-hyphens h1,.kx-hyphens h2,.kx-hyphens h3,.kx-hyphens h4,.kx-hyphens h5,.kx-hyphens h6,.kx-hyphens blockquote{hyphens:auto;hyphenate-limit-zone:var(--kx-hyphen-zone,10%);hyphenate-limit-lines:var(--kx-hyphen-limit,no-limit)}
 /* line numbers overlay */
 .kx-linenums-overlay{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
 .kx-linenum{position:absolute;font-size:10px;line-height:1;color:var(--muted);text-align:right;width:30px;font-family:var(--mono,ui-monospace,monospace)}

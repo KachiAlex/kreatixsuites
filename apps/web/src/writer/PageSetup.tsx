@@ -46,6 +46,10 @@ export interface PageSetup {
   lineNumbers?: boolean;
   /** CSS hyphenation of body text. */
   hyphenate?: boolean;
+  /** Hyphenation zone width in px (Word w:hyphenationZone). */
+  hyphenZone?: number;
+  /** Max consecutive hyphenated lines (Word w:consecutiveHyphenLimit). */
+  hyphenLimit?: number;
   /** Diagonal watermark text; "" disables. */
   watermark?: string;
   /** Page background color; "" = default white. */
@@ -471,6 +475,8 @@ export function applyPageSetup(editor: Editor, setup: PageSetup) {
   else dom.removeAttribute("data-pg-border");
   dom.classList.toggle("kx-linenums", !!normalized.lineNumbers);
   dom.classList.toggle("kx-hyphens", !!normalized.hyphenate);
+  dom.style.setProperty("--kx-hyphen-zone", normalized.hyphenZone ? `${normalized.hyphenZone}px` : "10%");
+  dom.style.setProperty("--kx-hyphen-limit", normalized.hyphenLimit ? String(normalized.hyphenLimit) : "no-limit");
   dom.classList.toggle("kx-headnum", !!normalized.headNums);
   dom.setAttribute("data-fnfmt", normalized.fnFmt ?? "decimal");
   dom.setAttribute("data-enfmt", normalized.enFmt ?? "lower-roman");

@@ -423,7 +423,9 @@ export const Shape = Node.create({
 
 /* -------------------------------------------------------------- text box */
 
-/** Bordered text box — real editable content (Word's Insert ▸ Text Box). */
+/** Bordered text box — real editable content (Word's Insert ▸ Text Box).
+ *  wrap/posX/posY mirror the image node's floating-object model so anchored
+ *  OOXML boxes keep their page position on import. */
 export const TextBox = Node.create({
   name: "textBox",
   group: "block",
@@ -431,21 +433,34 @@ export const TextBox = Node.create({
   defining: true,
 
   addAttributes() {
+    const num = (name: string) => (el: Element) => {
+      const v = (el as HTMLElement).getAttribute(name);
+      return v == null ? null : Number(v);
+    };
     return {
       align: { default: "none", parseHTML: (el) => el.getAttribute("data-align") ?? "none", renderHTML: (a) => ({ "data-align": a.align }) },
       w: { default: null, parseHTML: (el) => el.getAttribute("data-w"), renderHTML: (a) => (a.w ? { "data-w": a.w } : {}) },
+      h: { default: null, parseHTML: num("data-h"), renderHTML: (a) => (a.h != null ? { "data-h": a.h } : {}) },
       bg: { default: "", parseHTML: (el) => el.getAttribute("data-bg") ?? "", renderHTML: (a) => (a.bg ? { "data-bg": a.bg } : {}) },
       border: { default: "1px solid #555", parseHTML: (el) => el.getAttribute("data-border") ?? "1px solid #555", renderHTML: (a) => ({ "data-border": a.border }) },
+      wrap: { default: "", parseHTML: (el) => el.getAttribute("data-wrap") ?? "", renderHTML: (a) => (a.wrap ? { "data-wrap": a.wrap } : {}) },
+      posX: { default: null, parseHTML: num("data-posx"), renderHTML: (a) => (a.posX != null ? { "data-posx": a.posX } : {}) },
+      posY: { default: null, parseHTML: num("data-posy"), renderHTML: (a) => (a.posY != null ? { "data-posy": a.posY } : {}) },
+      z: { default: 0, parseHTML: num("data-z"), renderHTML: (a) => (a.z ? { "data-z": a.z } : {}) },
     };
   },
   parseHTML() { return [{ tag: 'div[data-type="kx-textbox"]' }]; },
   renderHTML({ HTMLAttributes, node }) {
-    const a = node.attrs as Record<string, string>;
+    const a = node.attrs as Record<string, string | number | null>;
+    const floating = a.wrap === "front" || a.wrap === "behind";
     const style = [
       `border:${a.border || "1px solid #555"}`,
       a.w ? `width:${a.w}px` : "",
+      a.h != null ? `min-height:${a.h}px` : "",
       a.bg ? `background:${a.bg}` : "",
-      a.align === "left" ? "float:left;margin:0 14px 8px 0"
+      floating
+        ? `position:absolute;transform:translate(${a.posX ?? 0}px,${a.posY ?? 0}px);z-index:${a.wrap === "behind" ? -1 : 5 + (Number(a.z) || 0)}`
+        : a.align === "left" ? "float:left;margin:0 14px 8px 0"
         : a.align === "right" ? "float:right;margin:0 0 8px 14px"
         : a.align === "center" ? "margin-left:auto;margin-right:auto" : "",
       "padding:8px 10px",

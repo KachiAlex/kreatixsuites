@@ -313,11 +313,12 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   const CT = `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`;
   const RELS = `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
   const para = (t: string) => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`;
-  const zipOf = async (documentXml: string) => {
+  const zipOf = async (documentXml: string, extra?: Record<string, string | Uint8Array>) => {
     const z = new JSZip();
     z.file("[Content_Types].xml", CT);
     z.file("_rels/.rels", RELS);
     z.file("word/document.xml", documentXml);
+    for (const [k, v] of Object.entries(extra ?? {})) z.file(k, v);
     return z.generateAsync({ type: "arraybuffer" });
   };
   const doc = (body: string) =>
@@ -328,6 +329,53 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     `${para("Body text.")}<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox><w:txbxContent>${para("Text box content.")}</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>`));
   const txRes = await importDocx(fileOf(txbx, "textbox.docx"));
   check("docx: text box content imported", txRes.html.includes("Text box content."));
+
+  // anchored objects: wp:anchor geometry must reach the text box node —
+  // previously every box was flattened to a plain paragraph at the doc end
+  const anchored = await zipOf(
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body>${para("Before.")}<w:p><w:r><w:drawing><wp:anchor behindDoc="0" layoutInCell="0" allowOverlap="1" relativeHeight="0" simplePos="0" locked="0" distT="0" distB="0" distL="0" distR="0"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>457200</wp:posOffset></wp:positionV><wp:extent cx="1828800" cy="914400"/><wp:wrapSquare wrapText="bothSides"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent>${para("Boxed callout.")}</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>${para("After.")}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`);
+  const boxRes = await importDocx(fileOf(anchored, "anchored.docx"));
+  check("docx: anchored text box → kx-textbox",
+    boxRes.html.includes('data-type="kx-textbox"') && boxRes.html.includes("Boxed callout."));
+  check("docx: anchored box keeps wrap + size",
+    /data-wrap="square"/.test(boxRes.html) && /data-w="192"/.test(boxRes.html));
+  check("docx: box renders at anchor position, not doc end",
+    boxRes.html.indexOf("Boxed callout") < boxRes.html.indexOf("After."));
+
+  // section vertical alignment: body-sectPr vAlign → first block; pPr-level
+  // vAlign → the sectionBreak introducing that section
+  const vaXml = await zipOf(
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${para("S1 title")}<w:p><w:pPr><w:sectPr><w:vAlign w:val="center"/></w:sectPr></w:pPr></w:p>${para("S2 body")}<w:sectPr><w:vAlign w:val="bottom"/></w:sectPr></w:body></w:document>`);
+  const vaRes = await importDocx(fileOf(vaXml, "valign.docx"));
+  check("docx: first-section vAlign on first block",
+    /<[a-z0-9]+[^>]*data-v-align="center"/.test(vaRes.html));
+  check("docx: following-section vAlign on section break",
+    /data-type="section-break"[^>]*data-v-align="bottom"/.test(vaRes.html));
+
+  // settings.xml → doc-level setup flags
+  const hyph = await zipOf(doc(para("Hyphenated document text.")), {
+    "word/settings.xml": `<?xml version="1.0"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:autoHyphenation/><w:hyphenationZone w:val="360"/><w:consecutiveHyphenLimit w:val="2"/><w:evenAndOddHeaders/></w:settings>`,
+  });
+  const hyRes = await importDocx(fileOf(hyph, "hyph.docx"));
+  check("docx: autoHyphenation imported", hyRes.settings?.hyphenate === true);
+  check("docx: hyphenationZone + limit + evenOdd", hyRes.settings?.hyphenZone === 24
+    && hyRes.settings?.hyphenLimit === 2 && hyRes.settings?.evenOdd === true);
+
+  // suppressAutoHyphens keeps a paragraph out of hyphenation
+  const nh = await zipOf(doc(
+    `<w:p><w:pPr><w:suppressAutoHyphens/></w:pPr><w:r><w:t>No hyphenation here.</w:t></w:r></w:p>`));
+  const nhRes = await importDocx(fileOf(nh, "nh.docx"));
+  check("docx: suppressAutoHyphens → hyphens:manual", nhRes.html.includes("hyphens:manual"));
+
+  // vAlign must survive our own export → import round trip
+  const vaDoc = { type: "doc", content: [
+    { type: "paragraph", content: [{ type: "text", text: "Cover" }] },
+    { type: "sectionBreak", attrs: { vAlign: "center" } },
+    { type: "paragraph", content: [{ type: "text", text: "Body" }] },
+  ] };
+  const vaBlob = await exportDocxBytes(vaDoc as never, "va");
+  const vaBack = await importDocx(fileOf(await vaBlob.arrayBuffer(), "va.docx"));
+  check("docx: vAlign export→import round trip", vaBack.html.includes('data-v-align="center"'));
 
   // w:sdt content controls must be unwrapped, not dropped
   const sdt = await zipOf(doc(

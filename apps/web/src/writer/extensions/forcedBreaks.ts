@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import {
-  bandPadBottom, bandPadTop, keepNextPadTop, splitPadTop,
+  bandPadBottom, bandPadTop, keepNextPadTop, splitPadTop, vAlignPadTop,
 } from "../banding";
 
 const PADS_META = "kx-pads";
@@ -110,6 +110,19 @@ export const ForcedBreaks = Extension.create({
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-keep-lines],[data-widow-orphan]")) {
               add(el, splitPadTop(el, root, el.hasAttribute("data-keep-lines")), null);
+            }
+            // section vertical alignment: the break div introduces the
+            // section → pad its first content block; a vAlign'd block is
+            // itself the first block (document's first section)
+            for (const el of root.querySelectorAll<HTMLElement>("[data-v-align]")) {
+              const mode = el.getAttribute("data-v-align") ?? "";
+              let target: HTMLElement | null =
+                el.hasAttribute("data-force-break") || el.classList.contains("section-break")
+                  ? el.nextElementSibling as HTMLElement | null
+                  : el;
+              while (target && !posOfEl(target))
+                target = target.nextElementSibling as HTMLElement | null;
+              if (target) add(target, vAlignPadTop(target, root, mode), null);
             }
 
             const ops: PadOp[] = [];

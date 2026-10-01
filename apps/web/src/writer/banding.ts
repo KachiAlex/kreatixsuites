@@ -170,3 +170,41 @@ export function splitPadTop(el: HTMLElement, root: HTMLElement, keepLines: boole
     ? Math.max(0, nextStart - top)
     : 0;
 }
+
+/**
+ * Section vertical alignment (Word w:vAlign): desired padding-top on the
+ * section's first block so its content sits centered/bottom in the band.
+ * `el` is that first block — the caller resolves it from the marker element
+ * (a sectionBreak div introduces the section; a vAlign'd block IS the first
+ * block for the document's first section).
+ *
+ * Measured section height = the run of flow siblings until the next forced
+ * break / page wall / vAlign boundary. Only applied when the whole section
+ * fits on one page — Word's vAlign sees real use on title/cover pages;
+ * multi-page sections render top-aligned. "both" (justified) approximates to
+ * centered — true inter-paragraph spreading isn't representable.
+ */
+export function vAlignPadTop(el: HTMLElement, root: HTMLElement, mode: string): number | null {
+  if (mode !== "center" && mode !== "bottom" && mode !== "both") return 0;
+  // only meaningful on a top-level flow block — an element nested inside a
+  // table/columns cell has no page band to center within
+  if (el.parentElement !== root) return null;
+  const bands = measureBands(root);
+  if (!bands) return null;
+  const top = flowY(el, root);
+  const i = bandIndexAt(bands, top);
+  const bandH = bands.ends[i] - bands.starts[i];
+  let h = 0;
+  let sib: HTMLElement | null = el;
+  while (sib) {
+    if (sib !== el && (sib.hasAttribute("data-force-break") || sib.hasAttribute("data-v-align")
+      || sib.classList.contains("rm-page-break") || sib.classList.contains("rm-pages-wrapper")
+      || sib.classList.contains("page-break"))) break;
+    const cs = getComputedStyle(sib);
+    h += sib.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+    sib = sib.nextElementSibling as HTMLElement | null;
+  }
+  if (h <= 0 || h >= bandH * 0.92) return 0; // fills or overflows the page — nothing to center
+  const pad = mode === "bottom" ? bandH - h - 2 : Math.round((bandH - h) / 2);
+  return Math.max(0, bands.starts[i] + pad - top);
+}
