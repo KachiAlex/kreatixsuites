@@ -264,6 +264,12 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 /* File-tab dropdown — position:fixed (set inline) escapes .ribbon-tabs' overflow-x clip.
    Double class beats .menu-drop's absolute positioning regardless of source order. */
 .menu-drop.ribbon-menu-drop{position:fixed;max-height:min(72vh,480px);overflow:auto}
+/* "Add or Remove Buttons" — Word-style chevron at the panel's right edge */
+.ribbon-cust{display:flex;align-items:center}
+.ribbon-cust-btn{font-weight:700;letter-spacing:-1px}
+.menu-drop.ribbon-cust-drop{position:fixed;max-height:min(72vh,480px);overflow:auto;min-width:200px}
+.ribbon-cust-li{display:flex;align-items:center;gap:8px}
+.ribbon-cust-check{width:14px;text-align:center;color:var(--k-orange);font-weight:800;flex-shrink:0}
 .ribbon-panel{border-bottom:1px solid var(--line)}
 .ribbon-tabs+.ribbon-panel{border-bottom:1px solid var(--line)}
 .rbg{display:flex;flex-direction:column;justify-content:space-between;padding:0 8px;border-right:1px solid var(--line);position:relative;flex-shrink:0}

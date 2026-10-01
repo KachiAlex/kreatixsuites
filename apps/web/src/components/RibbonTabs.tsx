@@ -42,6 +42,15 @@ function save(key: string, v: string) {
   try { localStorage.setItem(key, v); } catch { /* private mode */ }
 }
 
+/** Hidden ribbon groups — `kx-ribhide-{persistKey}` = JSON `{ tabId: [groupId…] }`. */
+function loadHidden(persistKey: string): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(`kx-ribhide-${persistKey}`);
+    const v = raw ? JSON.parse(raw) : null;
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+
 /**
  * Excel-style ribbon: a tab row (File-style menu tabs + panel tabs) above a panel
  * of labeled command groups. Click the active tab or the chevron to collapse the
@@ -56,6 +65,12 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
   // anchored position for the File-style dropdown — it must be position:fixed
   // because .ribbon-tabs scrolls horizontally (overflow-x:auto clips overflow-y)
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+  // "Add or Remove Buttons" — per-tab hidden group set, persisted
+  const [hidden, setHidden] = useState<Record<string, string[]>>(() => loadHidden(persistKey));
+  const [custOpen, setCustOpen] = useState(false);
+  const custRef = useRef<HTMLDivElement>(null);
+  const custBtnRef = useRef<HTMLButtonElement>(null);
+  const [custPos, setCustPos] = useState<{ left: number; top: number } | null>(null);
   const activeId = active ?? (tabs.some((t) => t.id === inner && !t.menu) ? inner : firstPanel);
   const rootRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -68,6 +83,12 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabIds]);
+
+  // reload hidden groups when switching between apps sharing this component
+  useEffect(() => {
+    setHidden(loadHidden(persistKey));
+    setCustOpen(false);
+  }, [persistKey]);
 
   // close File/menu tabs on outside click + Escape
   useEffect(() => {
@@ -129,6 +150,39 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
 
   const activeTab = tabs.find((t) => t.id === activeId && !t.menu);
   const openMenuTab = tabs.find((t) => t.id === menuOpen && t.menu);
+  const hiddenIds = new Set(hidden[activeId] ?? []);
+  const visibleGroups = activeTab?.groups?.filter((g) => !hiddenIds.has(g.id));
+
+  const toggleGroup = (gid: string) => {
+    setHidden((h) => {
+      const cur = new Set(h[activeId] ?? []);
+      cur.has(gid) ? cur.delete(gid) : cur.add(gid);
+      const next = { ...h, [activeId]: [...cur] };
+      save(`kx-ribhide-${persistKey}`, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const openCust = () => {
+    const r = custBtnRef.current?.getBoundingClientRect();
+    if (r) {
+      // right-edge anchored; clamp inside the viewport
+      setCustPos({ left: Math.max(8, Math.min(r.left - 200, window.innerWidth - 232)), top: r.bottom + 4 });
+    } else setCustPos({ left: window.innerWidth - 240, top: 100 });
+    setCustOpen(true);
+  };
+
+  // close the customize menu on outside click + Escape
+  useEffect(() => {
+    if (!custOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!custRef.current?.contains(e.target as Node)) setCustOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setCustOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, [custOpen]);
 
   // track the anchor tab on resize so the fixed drop stays attached
   useEffect(() => {
@@ -187,10 +241,47 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
       )}
       {!collapsed && activeTab && (
         <div className="ribbon ribbon-panel" role="tabpanel" aria-label={activeTab.label}>
-          {activeTab.groups?.map((g) => (
+          {visibleGroups?.map((g) => (
             <RibbonGroupView key={g.id} group={g} />
           ))}
-          {end && <div className="ribbon-end">{end}</div>}
+          {(end || activeTab.groups?.length) ? (
+            <div className="ribbon-end">
+              {end}
+              {!!activeTab.groups?.length && (
+                <div className="ribbon-cust" ref={custRef}>
+                  <button
+                    ref={custBtnRef}
+                    className={`rb ribbon-cust-btn${custOpen ? " on" : ""}`}
+                    title="Add or Remove Buttons"
+                    aria-haspopup="menu"
+                    aria-expanded={custOpen}
+                    onClick={() => (custOpen ? setCustOpen(false) : openCust())}
+                  >»</button>
+                  {custOpen && custPos && (
+                    <div className="menu-drop ribbon-cust-drop" role="menu" style={{ left: custPos.left, top: custPos.top }}>
+                      <div className="drop-head">Add or Remove Buttons — {activeTab.label}</div>
+                      {activeTab.groups.map((g) => (
+                        <button key={g.id} className="menu-li ribbon-cust-li" role="menuitemcheckbox"
+                          aria-checked={!hiddenIds.has(g.id)}
+                          onClick={() => toggleGroup(g.id)}>
+                          <span className="ribbon-cust-check">{hiddenIds.has(g.id) ? "" : "✓"}</span>
+                          {g.label ?? g.id}
+                        </button>
+                      ))}
+                      <div className="menu-divider" />
+                      <button className="menu-li" onClick={() => {
+                        setHidden((h) => {
+                          const next = { ...h, [activeId]: [] };
+                          save(`kx-ribhide-${persistKey}`, JSON.stringify(next));
+                          return next;
+                        });
+                      }}>Show all buttons</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
