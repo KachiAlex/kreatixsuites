@@ -35,7 +35,8 @@ export function Editor() {
   useEffect(() => {
     (async () => {
       try {
-        const meta = await api.get<{ item: DriveItem & { ownerName?: string } }>(`/api/drive/${id}`);
+        const meta = await api.get<{ item?: DriveItem & { ownerName?: string } }>(`/api/drive/${id}`);
+        if (!meta?.item) throw new Error("File not found — it may have been moved or deleted");
         setItem(meta.item);
         if (meta.item.kind === "folder") { setReady(true); return; }
         const [c, d] = await Promise.all([

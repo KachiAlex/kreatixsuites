@@ -56,6 +56,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | null = null;
+// Renderer sets this once it has subscribed to "kx:open-file" (React mount is
+// later than did-finish-load) — IPC sent before the listener attaches is lost.
+let rendererReady = false;
 const pendingFiles: string[] = [];
 
 /** argv file paths the OS handed us (double-click / "Open with"). */
@@ -66,11 +69,15 @@ const fileArgs = (argv: string[]) =>
   });
 
 const deliverFile = (p: string) => {
-  if (mainWindow) {
+  if (mainWindow && rendererReady) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
     mainWindow.webContents.send("kx:open-file", p);
   } else pendingFiles.push(p);
+};
+
+const flushPendingFiles = () => {
+  for (const p of pendingFiles.splice(0)) deliverFile(p);
 };
 
 const handleProtocol = async (req: Request): Promise<Response> => {
@@ -131,7 +138,6 @@ const createWindow = () => {
 
   void mainWindow.loadURL(APP_URL);
   mainWindow.webContents.once("did-finish-load", () => {
-    for (const p of pendingFiles.splice(0)) deliverFile(p);
     // KX_SMOKE=1 → headless smoke test: report the loaded doc and quit (CI)
     if (process.env.KX_SMOKE) {
       mainWindow?.webContents
@@ -140,7 +146,7 @@ const createWindow = () => {
         .catch((e) => { console.error("SMOKE-FAIL:", e); app.exit(1); });
     }
   });
-  mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow.on("closed", () => { mainWindow = null; rendererReady = false; });
 };
 
 // ---------- IPC ----------
@@ -189,6 +195,9 @@ ipcMain.handle("kx:saveDialog", async (_e, defaultName: string) => {
 
 ipcMain.handle("kx:showInFolder", (_e, p: string) => shell.showItemInFolder(p));
 ipcMain.handle("kx:pendingFiles", () => pendingFiles.splice(0));
+// Renderer signals it has subscribed to "kx:open-file" — only now is a sent
+// event guaranteed to land. Flush anything queued from argv / protocol.
+ipcMain.on("kx:renderer-ready", () => { rendererReady = true; flushPendingFiles(); });
 
 // entitlement persistence — encrypted with Windows DPAPI via safeStorage
 const entitlementPath = () => path.join(app.getPath("userData"), "entitlement.bin");

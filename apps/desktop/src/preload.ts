@@ -16,12 +16,14 @@ contextBridge.exposeInMainWorld("kxDesktop", {
   saveDialog: (defaultName: string) => invoke<string | null>("kx:saveDialog", defaultName),
   showInFolder: (path: string) => invoke<void>("kx:showInFolder", path),
 
-  // files passed on argv (double-click) — flushed once after load, then
-  // streamed via onOpenFile for second-instance opens
+  // files passed on argv (double-click) — queued in main until the renderer
+  // signals readiness, then pushed via onOpenFile. pendingFiles() remains a
+  // pull fallback; both drain the same queue so nothing double-opens.
   pendingFiles: () => invoke<string[]>("kx:pendingFiles"),
   onOpenFile: (cb: (path: string) => void) => {
     const l = (_e: unknown, p: string) => cb(p);
     ipcRenderer.on("kx:open-file", l);
+    ipcRenderer.send("kx:renderer-ready");
     return () => ipcRenderer.off("kx:open-file", l);
   },
 

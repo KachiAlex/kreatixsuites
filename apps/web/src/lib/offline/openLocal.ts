@@ -32,8 +32,9 @@ const ALL_EXTS = ".docx,.doc,.odt,.rtf,.txt,.xlsx,.xls,.csv,.ods,.pptx,.odp,.pdf
 export async function importLocalFile(f: File): Promise<string> {
   const kind = kindForPath(f.name);
   if (!kind) throw new Error(`Kreatix can't open .${f.name.split(".").pop() ?? "?"} files`);
-  const up = await api.upload<{ item: { id: string } }>(
+  const up = await api.upload<{ item?: { id: string } }>(
     `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
+  if (!up?.item?.id) throw new Error("Upload failed — the file wasn't stored in Drive");
   return up.item.id;
 }
 
@@ -81,8 +82,9 @@ export async function importLocalPath(filePath: string): Promise<string> {
   const blob = new Blob([b64.from(r.data)], { type: MIME_BY_EXT[ext] ?? "application/octet-stream" });
   const name = r.name ?? filePath.split(/[\\/]/).pop() ?? "document";
 
-  const up = await api.upload<{ item: { id: string } }>(
+  const up = await api.upload<{ item?: { id: string } }>(
     `/api/drive/upload?name=${encodeURIComponent(name)}&kind=${kind}`, blob);
+  if (!up?.item?.id) throw new Error("Upload failed — the file wasn't stored in Drive");
 
   // remember the source path so a later save can offer write-back
   const f = await store.files.get(up.item.id);
