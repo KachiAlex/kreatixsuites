@@ -23,17 +23,23 @@ export const desktop: KxDesktop | undefined =
 
 export const isDesktop = !!desktop?.isDesktop;
 
-/** Origin for API/WS traffic. The desktop bundle runs on the kx:// scheme, so
- *  it must call the production origin explicitly; the browser app is same-origin. */
-export const API_BASE = isDesktop ? "https://suites.kreatixtech.com" : "";
+/** Capacitor WebView (Android/iOS shells) — no kxDesktop bridge, but the app is
+ *  still served from a local origin so API traffic needs the absolute host. */
+const capacitor = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+export const isNativeMobile = !!capacitor?.isNativePlatform?.();
+
+/** Origin for API/WS traffic. The desktop bundle runs on the kx:// scheme and
+ *  the Android shell on https://localhost, so both must call the production
+ *  origin explicitly; the browser app is same-origin. */
+export const API_BASE = (isDesktop || isNativeMobile) ? "https://suites.kreatixtech.com" : "";
 
 /**
- * Desktop only: rewrite <img src="/api/…"> (relative media URLs stored inside
+ * Desktop/mobile only: rewrite <img src="/api/…"> (relative media URLs stored inside
  * document JSON) to the API origin with an auth token so they resolve from the
- * kx:// shell. Document JSON stays portable — only the rendered DOM is patched.
+ * kx:// / capacitor shell. Document JSON stays portable — only the rendered DOM is patched.
  */
 export function installDesktopMediaRewrite(): void {
-  if (!isDesktop) return;
+  if (!isDesktop && !isNativeMobile) return;
   const fix = (el: Element) => {
     if (el instanceof HTMLImageElement && el.src.startsWith(`${location.origin}/api/`)) {
       const t = localStorage.getItem("kreatix.token") ?? "";
