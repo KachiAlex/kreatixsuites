@@ -9,6 +9,7 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
 import { AppIcon } from "../components/AppIcon";
+import { RibbonTabs } from "../components/RibbonTabs";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
@@ -1475,249 +1476,296 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
         <PresenceBar session={session} />
         <div className="spacer" />
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
-          Comments{comments.length ? ` (${comments.length})` : ""}
-        </button>
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
-        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-ghost btn-sm" title="Workbook properties" onClick={() => setPropsDlg(true)}>⋯</button>
-        <button className="btn-ghost btn-sm" title="Print / save as PDF" onClick={() => setPrintDlg(true)}>🖨</button>
-        <button className="btn-ghost btn-sm" title="Export .ods" onClick={() => void workbookToODS(wb, title)}>.ods</button>
         <button className="btn-primary btn-sm" onClick={() => void workbookToXLSX(wb, title)}>Export .xlsx</button>
       </div>
 
-      {canEdit && (
-        <div className="ribbon">
-          <button className="rb" title="Undo" disabled={!undoStack.current.length} onClick={undo}>↶</button>
-          <button className="rb" title="Redo" disabled={!redoStack.current.length} onClick={redo}>↷</button>
-          <div className="rb-sep" />
-          <select className="rb-sel" value={anchorStyle.font ?? "Inter"} title="Font family" style={{ width: 96 }}
-            onChange={(e) => setStyle({ font: e.target.value === "Inter" ? undefined : e.target.value })}>
-            {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
-          </select>
-          <select className="rb-sel" value={String(anchorStyle.size ?? 12)} title="Font size" style={{ width: 52 }}
-            onChange={(e) => setStyle({ size: Number(e.target.value) === 12 ? undefined : Number(e.target.value) })}>
-            {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-          <select className="rb-sel" value={!anchorStyle.fmt ? "auto" : NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "custom"} title="Number format"
-            onChange={(e) => {
-              if (e.target.value === "auto") return setStyle({ fmt: undefined });
-              if (e.target.value === "custom") {
-                const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):", anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
-                if (code) setStyle({ fmt: code });
-                return;
-              }
-              setStyle({ fmt: e.target.value });
-            }}>
-            {NUM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-            <option value="custom">Custom code…</option>
-          </select>
-          <div className="rb-sep" />
-          <button className={`rb ${anchorStyle.b ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => toggleStyle("b")}><b>B</b></button>
-          <button className={`rb ${anchorStyle.i ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => toggleStyle("i")}><i>I</i></button>
-          <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => toggleStyle("u")}><u>U</u></button>
-          <button className={`rb ${anchorStyle.st ? "on" : ""}`} title="Strikethrough" onClick={() => toggleStyle("st")}><s>S</s></button>
-          <label className="rb" title="Text color" style={{ padding: 4, cursor: "pointer" }}>
-            A<input type="color" value={anchorStyle.color ?? "#171717"} style={{ position: "absolute", opacity: 0, width: 0 }}
-              onChange={(e) => setStyle({ color: e.target.value })} />
-          </label>
-          <label className="rb" title="Fill color" style={{ padding: 4, cursor: "pointer" }}>
-            ▨<input type="color" value={anchorStyle.bg ?? "#ffffff"} style={{ position: "absolute", opacity: 0, width: 0 }}
-              onChange={(e) => setStyle({ bg: e.target.value })} />
-          </label>
-          <div className="rb-sep" />
-          {(["left", "center", "right"] as const).map((a) => (
-            <button key={a} className={`rb ${anchorStyle.align === a ? "on" : ""}`} title={`Align ${a}`}
-              onClick={() => setStyle({ align: a })}>
-              {a === "left" ? "⇤" : a === "center" ? "≡" : "⇥"}
-            </button>
-          ))}
-          {/* S19.11 — extended horizontal alignments */}
-          <select className="rb" title="More alignments — justify / distributed / fill / center-across"
-            style={{ padding: "0 4px", fontSize: 11 }}
-            value={anchorStyle.align && !["left", "center", "right"].includes(anchorStyle.align) ? anchorStyle.align : ""}
-            onChange={(e) => setStyle({ align: (e.target.value || undefined) as CellStyle["align"] })}>
-            <option value="">⇅</option>
-            <option value="justify">Justify</option>
-            <option value="distributed">Distributed</option>
-            <option value="fill">Fill</option>
-            <option value="centerAcross">Center across</option>
-          </select>
-          {(["top", "middle", "bottom"] as const).map((v) => (
-            <button key={v} className={`rb ${anchorStyle.valign === v ? "on" : ""}`} title={`Align ${v}`}
-              onClick={() => setStyle({ valign: anchorStyle.valign === v ? undefined : v })}>
-              {v === "top" ? "⤒" : v === "middle" ? "⬍" : "⤓"}
-            </button>
-          ))}
-          <button className={`rb ${anchorStyle.wrap ? "on" : ""}`} title="Wrap text"
-            onClick={() => setStyle({ wrap: !anchorStyle.wrap || undefined })}>↩</button>
-          <button className={`rb ${anchorStyle.shrink ? "on" : ""}`} title="Shrink to fit"
-            onClick={() => setStyle({ shrink: !anchorStyle.shrink || undefined })}>⇲</button>
-          <button className="rb" title="Decrease indent"
-            onClick={() => setStyle({ indent: Math.max(0, (anchorStyle.indent ?? 0) - 1) || undefined })}>◁</button>
-          <button className="rb" title="Increase indent"
-            onClick={() => setStyle({ indent: Math.min(15, (anchorStyle.indent ?? 0) + 1) })}>▷</button>
-          <select className="rb-sel" value={String(anchorStyle.rotate ?? 0)} title="Text orientation" style={{ width: 56 }}
-            onChange={(e) => setStyle({ rotate: Number(e.target.value) || undefined })}>
-            {[0, 45, 90, -45, -90].map((d) => <option key={d} value={d}>{d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`}</option>)}
-          </select>
-          <div className="rb-sep" />
-          <div style={{ position: "relative" }}>
-            <button className={`rb ${borderMenu ? "on" : ""}`} title="Borders" onClick={() => setBorderMenu((v) => !v)}>▩</button>
-            {borderMenu && (
-              <div className="border-menu" onMouseLeave={() => setBorderMenu(false)}>
-                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                  <select className="rb-sel" style={{ flex: 1 }} value={borderStyle.style}
-                    onChange={(e) => setBorderStyle({ ...borderStyle, style: e.target.value as typeof borderStyle.style })}>
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option><option value="double">Double</option>
-                  </select>
-                  <select className="rb-sel" value={borderStyle.w}
-                    onChange={(e) => setBorderStyle({ ...borderStyle, w: Number(e.target.value) as 1 | 2 | 3 })}>
-                    <option value={1}>Thin</option><option value={2}>Medium</option><option value={3}>Thick</option>
-                  </select>
-                  <input type="color" value={borderStyle.color} style={{ width: 28, height: 28, padding: 0, border: "none", background: "none" }}
-                    onChange={(e) => setBorderStyle({ ...borderStyle, color: e.target.value })} />
-                </div>
-                <div className="border-grid">
-                  {([["all", "▦ All"], ["outside", "◻ Outside"], ["top", "⬒ Top"], ["bottom", "⬓ Bottom"], ["left", "◨ Left"], ["right", "◧ Right"], ["none", "✕ None"]] as const).map(([p, label]) => (
-                    <button key={p} className="border-opt" onClick={() => applyBorder(p)}>{label}</button>
-                  ))}
-                </div>
-              </div>
+      {canEdit && (<>
+        <RibbonTabs persistKey="sheets"
+          end={<>
+            {missingLinks.length > 0 && (
+              <span className="rb warn" title={`Uncached external refs: ${missingLinks.join(", ")} — link the file to resolve`}
+                style={{ color: "#B3560E" }}>⚠ {missingLinks.length} link{missingLinks.length > 1 ? "s" : ""}</span>
             )}
-          </div>
-          <button className={`rb ${painter ? "on" : ""}`} title="Format Painter — click to copy this cell's format, then drag over targets"
-            onClick={() => setPainter(painter ? null : { s: { ...anchorStyle } })}>🖌</button>
-          <select className="rb-sel" value="" title="Cell style preset (replaces formatting)" style={{ width: 84 }}
-            onChange={(e) => {
-              const p = CELL_STYLES.find(([id]) => id === e.target.value);
-              if (!p) return;
-              const st = p[2];
-              mutateSheet((s) => selRefs.forEach((r) => {
-                s.cells[r] = { ...s.cells[r], s: p[0] === "normal" ? undefined : { ...st } };
-              }));
-            }}>
-            <option value="" disabled>Style…</option>
-            {CELL_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-          </select>
-          <div className="rb-sep" />
-          <button className="rb" title="Freeze rows above" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
-            onClick={() => mutateSheet((s) => { s.freeze = { rows: selection.r1, cols: s.freeze?.cols ?? 0 }; })}>
-            ❄ {selection.r1 || "No"} rows
-          </button>
-          <button className="rb" title="Freeze columns left" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
-            onClick={() => mutateSheet((s) => { s.freeze = { rows: s.freeze?.rows ?? 0, cols: selection.c1 }; })}>
-            ❄ {selection.c1 || "No"} cols
-          </button>
-          <button className={`rb ${sheet.splitRow ? "on" : ""}`} title="Split at selection row — two scrollable panes (dbl-click divider to unsplit)"
-            onClick={() => mutateSheet((s) => { s.splitRow = s.splitRow ? undefined : Math.max(1, selection.r1); })}>⇹</button>
-          <button className={`rb ${pbPreview ? "on" : ""}`} title="Page-break preview — dashed page boundaries"
-            onClick={() => setPbPreview(!pbPreview)}>▦⃞</button>
-          <button className="rb" title="Custom views — save/apply named view states" onClick={() => setViewsDlg(true)}>👁</button>
-          <button className="rb" title="Conditional formatting" onClick={() => setCfOpen(true)}>◐</button>
-          <button className="rb" title="Merge selection" onClick={mergeSel}>▦</button>
-          <button className="rb" title="Unmerge" onClick={unmergeSel}>▢</button>
-          <div className="rb-sep" />
-          <button className="rb" title="Insert/delete cells — shift remaining cells" disabled={!canEdit}
-            onClick={() => setCellShiftDlg(true)}>⌗</button>
-          <button className="rb" title="Insert rows above" onClick={insRows}>R+</button>
-          <button className="rb" title="Delete rows" onClick={delRows}>R−</button>
-          <button className="rb" title="Insert columns left" onClick={insCols}>C+</button>
-          <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
-          <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
-          <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
-          <button className="rb" title="Sort — multiple columns/levels" onClick={() => setSortDlg(true)}>⇅…</button>
-          <button className={`rb ${sheet.filter ? "on" : ""}`} title="AutoFilter — dropdown filters on selection/range"
-            onClick={toggleFilter}>⧩</button>
-          <button className="rb" title="Remove duplicates in selection" onClick={() => setDedupeDlg(true)}>⊟</button>
-          <button className="rb" title="Text to Columns — split selection by delimiter" onClick={() => setT2cDlg(true)}>⇶</button>
-          <button className="rb" title="Format as Table — banded rows + totals" onClick={() => setTableDlg(true)}>▤</button>
-          <button className="rb" title="Data validation — lists, ranges, rules" onClick={() => setValDlg(true)}>✓⃞</button>
-          <button className="rb" title="Paste Special — values/formats/formulas/transpose/operations (Ctrl+Alt+V)"
-            onClick={() => getCopyBuffer() ? setPasteSpec(true) : toast("Nothing copied yet")}>⧉</button>
-          <button className="rb" title="Name Manager — define named ranges" onClick={() => setNameMgr(true)}>📛</button>
-          <button className={`rb ${audit === "pre" ? "on" : ""}`} title="Trace precedents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
-            onClick={() => setAudit(audit === "pre" ? null : "pre")}>⇠Pre</button>
-          <button className={`rb ${audit === "dep" ? "on" : ""}`} title="Trace dependents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
-            onClick={() => setAudit(audit === "dep" ? null : "dep")}>Dep⇢</button>
-          <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
-          <button className="rb" title="Sparkline — in-cell mini chart (anchor cell gets it)" onClick={() => setSparkDlg(true)}>∿</button>
-          <button className={`rb ${sheet.protected ? "on" : ""}`} title="Protect sheet — lock cells except allowed ranges"
-            onClick={() => setProtectDlg(true)}>🔒</button>
-          <button className={`rb ${showChanges ? "on" : ""}`} title="Show change marks — who last edited each cell"
-            onClick={() => setShowChanges(!showChanges)}>✎</button>
-          <button className={`rb ${sheet.trackChanges ? "on" : ""}`} title={`Review tracked changes${sheet.changeLog?.length ? ` — ${sheet.changeLog.length} pending` : ""}`}
-            onClick={() => setReviewDlg(true)}>☑{sheet.changeLog?.length ? ` ${sheet.changeLog.length}` : ""}</button>
-          <button className="rb" title="PivotTable — summarize selection by row/column fields"
-            onClick={() => setPivotDlg(true)}>⊞</button>
-          <button className="rb" title="Goal Seek — find input that makes a formula hit a target"
-            onClick={() => setSeekDlg(true)}>🎯</button>
-          <button className={`rb ${manualCalc ? "on" : ""}`} title="Calculation options — manual/auto, iterative calc"
-            onClick={() => setCalcDlg(true)}>∑</button>
-          {manualCalc && <button className="rb" title="Calculate now (F9)" onClick={recalc}>⟳</button>}
-          <button className="rb" title="Formula inspector — step through evaluation / error check"
-            onClick={() => setInspDlg(true)}>ƒx</button>
-          <button className="rb" title="Flash Fill — infer pattern from example cell, fill column"
-            onClick={flashFill}>⚡</button>
-          <button className="rb" title="Go To Special — select blanks/formulas/constants/errors/notes"
-            onClick={() => setGtsDlg(true)}>◎</button>
-          <button className="rb" title="Group selected rows (outline)" disabled={!canEdit}
-            onClick={() => groupSel(1)}>⧉</button>
-          <button className="rb" title="Ungroup selected rows" disabled={!canEdit}
-            onClick={() => groupSel(-1)}>⧈</button>
-          <button className="rb" title="Group selected columns (outline)" disabled={!canEdit}
-            onClick={() => groupCols(1)}>⧉→</button>
-          <button className="rb" title="Ungroup selected columns" disabled={!canEdit}
-            onClick={() => groupCols(-1)}>⧈→</button>
-          <div className="rb-sep" />
-          <button className="rb" title="Insert link (Ctrl+K) — URL or place in this workbook" disabled={!canEdit}
-            onClick={() => setLinkDlg(true)}>🔗</button>
-          <button className="rb" title="Insert picture — floating over the grid" disabled={!canEdit}
-            onClick={() => setPicDlg(true)}>🖼</button>
-          <button className="rb" title="Insert symbol" disabled={!canEdit}
-            onClick={() => setSymbolDlg(true)}>Ω</button>
-          <button className="rb" title="Insert function — guided wizard"
-            onClick={() => setFnWiz(true)}>ƒx</button>
-          <button className={`rb ${showFormulas ? "on" : ""}`} title="Show formulas (Ctrl+`)"
-            onClick={() => setShowFormulas(!showFormulas)}>fx↔</button>
-          <button className={`rb ${spellOn ? "on" : ""}`} title="Spelling — toggle underlines; click again to review"
-            onClick={() => spellOn ? setSpellDlg(true) : setSpellOn(true)}>✓abc</button>
-          <button className="rb" title="Scenario Manager — named what-if snapshots"
-            onClick={() => setScenDlg(true)}>🎬</button>
-          <button className="rb" title="Data Table — 1/2-variable sensitivity grid"
-            onClick={() => setDtDlg(true)}>∑▦</button>
-          <button className="rb" title="Solver — optimize an objective under constraints"
-            onClick={() => setSolverDlg(true)}>∂</button>
-          <button className="rb" title="Copy selection as picture"
-            onClick={copyAsPicture}>📷</button>
-          <button className="rb" title="Subtotal — insert SUBTOTAL rows at group boundaries" disabled={!canEdit}
-            onClick={() => setSubtotalDlg(true)}>Σ↓</button>
-          <button className="rb" title="Insert slicer — filter column values with a visual picker"
-            onClick={() => setSlicerDlg(true)}>⊟</button>
-          <button className="rb" title="Insert data-type entity — fields usable as A1.Prop in formulas"
-            disabled={!canEdit} onClick={insertEntity}>▣</button>
-          <button className="rb" title="Scripts — JS automation against the workbook (Office Scripts-style)"
-            onClick={() => setScriptDlg(true)}>📜</button>
-          <button className="rb" title="Get & Transform — load external data through a query pipeline"
-            onClick={() => setQueryDlg(true)}>⚡</button>
-          <div className="rb-sep" />
-          <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
-          <button className="rb" title="Import CSV / XLSX" onClick={() => csvRef.current?.click()}>⇪</button>
-          <button className="rb" title="Export CSV" onClick={exportCSV}>⇩</button>
-          <input ref={csvRef} type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onCsvImport(e.target.files[0])} />
-          <input ref={xlsxRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.xml" hidden onChange={(e) => e.target.files?.[0] && onXlsxImport(e.target.files[0])} />
-          <input ref={linkRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods" hidden onChange={(e) => e.target.files?.[0] && onLinkImport(e.target.files[0])} />
-          <button className="rb" title="Link external workbook — its sheets resolve as [file]Sheet!A1 refs"
-            onClick={() => linkRef.current?.click()}>🔗</button>
-          {missingLinks.length > 0 && (
-            <span className="rb warn" title={`Uncached external refs: ${missingLinks.join(", ")} — link the file to resolve`}
-              style={{ color: "#B3560E" }}>⚠ {missingLinks.length} link{missingLinks.length > 1 ? "s" : ""}</span>
-          )}
-          <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--muted)" }}>{usedRangeA1(sheet.cells)}</span>
-        </div>
-      )}
+            <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
+              onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
+            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Kreatix AI"
+              onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
+            <span style={{ fontSize: 10, color: "var(--muted)", whiteSpace: "nowrap" }}>{usedRangeA1(sheet.cells)}</span>
+          </>}
+          tabs={[
+            { id: "file", label: "File", icon: "📁", menu: [
+              { label: "Import CSV…", onClick: () => csvRef.current?.click() },
+              { label: "Import XLSX / ODS…", onClick: () => xlsxRef.current?.click() },
+              { label: "Link external workbook…", onClick: () => linkRef.current?.click() },
+              { divider: true },
+              { label: "Export CSV", onClick: exportCSV },
+              { label: "Export .ods", onClick: () => void workbookToODS(wb, title) },
+              { label: "Export .xlsx", onClick: () => void workbookToXLSX(wb, title) },
+              { divider: true },
+              { label: "Print / save as PDF…", onClick: () => setPrintDlg(true) },
+              { label: "Version history", onClick: () => setPanel("versions") },
+              { label: "Workbook properties…", onClick: () => setPropsDlg(true) },
+            ]},
+            { id: "home", label: "Home", icon: "🏠", groups: [
+              { id: "clip", label: "Clipboard", node: <>
+                <button className="rb" title="Undo" disabled={!undoStack.current.length} onClick={undo}>↶</button>
+                <button className="rb" title="Redo" disabled={!redoStack.current.length} onClick={redo}>↷</button>
+                <button className="rb" title="Paste Special — values/formats/formulas/transpose/operations (Ctrl+Alt+V)"
+                  onClick={() => getCopyBuffer() ? setPasteSpec(true) : toast("Nothing copied yet")}>⧉</button>
+                <button className="rb" title="Copy selection as picture" onClick={copyAsPicture}>📷</button>
+                <button className={`rb ${painter ? "on" : ""}`} title="Format Painter — click to copy this cell's format, then drag over targets"
+                  onClick={() => setPainter(painter ? null : { s: { ...anchorStyle } })}>🖌</button>
+              </>},
+              { id: "font", label: "Font", node: <>
+                <select className="rb-sel" value={anchorStyle.font ?? "Inter"} title="Font family" style={{ width: 96 }}
+                  onChange={(e) => setStyle({ font: e.target.value === "Inter" ? undefined : e.target.value })}>
+                  {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+                <select className="rb-sel" value={String(anchorStyle.size ?? 12)} title="Font size" style={{ width: 52 }}
+                  onChange={(e) => setStyle({ size: Number(e.target.value) === 12 ? undefined : Number(e.target.value) })}>
+                  {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <button className={`rb ${anchorStyle.b ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => toggleStyle("b")}><b>B</b></button>
+                <button className={`rb ${anchorStyle.i ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => toggleStyle("i")}><i>I</i></button>
+                <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => toggleStyle("u")}><u>U</u></button>
+                <button className={`rb ${anchorStyle.st ? "on" : ""}`} title="Strikethrough" onClick={() => toggleStyle("st")}><s>S</s></button>
+                <label className="rb" title="Text color" style={{ padding: 4, cursor: "pointer" }}>
+                  A<input type="color" value={anchorStyle.color ?? "#171717"} style={{ position: "absolute", opacity: 0, width: 0 }}
+                    onChange={(e) => setStyle({ color: e.target.value })} />
+                </label>
+                <label className="rb" title="Fill color" style={{ padding: 4, cursor: "pointer" }}>
+                  ▨<input type="color" value={anchorStyle.bg ?? "#ffffff"} style={{ position: "absolute", opacity: 0, width: 0 }}
+                    onChange={(e) => setStyle({ bg: e.target.value })} />
+                </label>
+                <div style={{ position: "relative" }}>
+                  <button className={`rb ${borderMenu ? "on" : ""}`} title="Borders" onClick={() => setBorderMenu((v) => !v)}>▩</button>
+                  {borderMenu && (
+                    <div className="border-menu" onMouseLeave={() => setBorderMenu(false)}>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <select className="rb-sel" style={{ flex: 1 }} value={borderStyle.style}
+                          onChange={(e) => setBorderStyle({ ...borderStyle, style: e.target.value as typeof borderStyle.style })}>
+                          <option value="solid">Solid</option><option value="dashed">Dashed</option>
+                          <option value="dotted">Dotted</option><option value="double">Double</option>
+                        </select>
+                        <select className="rb-sel" value={borderStyle.w}
+                          onChange={(e) => setBorderStyle({ ...borderStyle, w: Number(e.target.value) as 1 | 2 | 3 })}>
+                          <option value={1}>Thin</option><option value={2}>Medium</option><option value={3}>Thick</option>
+                        </select>
+                        <input type="color" value={borderStyle.color} style={{ width: 28, height: 28, padding: 0, border: "none", background: "none" }}
+                          onChange={(e) => setBorderStyle({ ...borderStyle, color: e.target.value })} />
+                      </div>
+                      <div className="border-grid">
+                        {([["all", "▦ All"], ["outside", "◻ Outside"], ["top", "⬒ Top"], ["bottom", "⬓ Bottom"], ["left", "◨ Left"], ["right", "◧ Right"], ["none", "✕ None"]] as const).map(([p, label]) => (
+                          <button key={p} className="border-opt" onClick={() => applyBorder(p)}>{label}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>},
+              { id: "align", label: "Alignment", node: <>
+                {(["left", "center", "right"] as const).map((a) => (
+                  <button key={a} className={`rb ${anchorStyle.align === a ? "on" : ""}`} title={`Align ${a}`}
+                    onClick={() => setStyle({ align: a })}>
+                    {a === "left" ? "⇤" : a === "center" ? "≡" : "⇥"}
+                  </button>
+                ))}
+                {/* S19.11 — extended horizontal alignments */}
+                <select className="rb" title="More alignments — justify / distributed / fill / center-across"
+                  style={{ padding: "0 4px", fontSize: 11 }}
+                  value={anchorStyle.align && !["left", "center", "right"].includes(anchorStyle.align) ? anchorStyle.align : ""}
+                  onChange={(e) => setStyle({ align: (e.target.value || undefined) as CellStyle["align"] })}>
+                  <option value="">⇅</option>
+                  <option value="justify">Justify</option>
+                  <option value="distributed">Distributed</option>
+                  <option value="fill">Fill</option>
+                  <option value="centerAcross">Center across</option>
+                </select>
+                {(["top", "middle", "bottom"] as const).map((v) => (
+                  <button key={v} className={`rb ${anchorStyle.valign === v ? "on" : ""}`} title={`Align ${v}`}
+                    onClick={() => setStyle({ valign: anchorStyle.valign === v ? undefined : v })}>
+                    {v === "top" ? "⤒" : v === "middle" ? "⬍" : "⤓"}
+                  </button>
+                ))}
+                <button className={`rb ${anchorStyle.wrap ? "on" : ""}`} title="Wrap text"
+                  onClick={() => setStyle({ wrap: !anchorStyle.wrap || undefined })}>↩</button>
+                <button className={`rb ${anchorStyle.shrink ? "on" : ""}`} title="Shrink to fit"
+                  onClick={() => setStyle({ shrink: !anchorStyle.shrink || undefined })}>⇲</button>
+                <button className="rb" title="Decrease indent"
+                  onClick={() => setStyle({ indent: Math.max(0, (anchorStyle.indent ?? 0) - 1) || undefined })}>◁</button>
+                <button className="rb" title="Increase indent"
+                  onClick={() => setStyle({ indent: Math.min(15, (anchorStyle.indent ?? 0) + 1) })}>▷</button>
+                <select className="rb-sel" value={String(anchorStyle.rotate ?? 0)} title="Text orientation" style={{ width: 56 }}
+                  onChange={(e) => setStyle({ rotate: Number(e.target.value) || undefined })}>
+                  {[0, 45, 90, -45, -90].map((d) => <option key={d} value={d}>{d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`}</option>)}
+                </select>
+                <button className="rb" title="Merge selection" onClick={mergeSel}>▦</button>
+                <button className="rb" title="Unmerge" onClick={unmergeSel}>▢</button>
+              </>},
+              { id: "num", label: "Number", node: <>
+                <select className="rb-sel" value={!anchorStyle.fmt ? "auto" : NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "custom"} title="Number format"
+                  onChange={(e) => {
+                    if (e.target.value === "auto") return setStyle({ fmt: undefined });
+                    if (e.target.value === "custom") {
+                      const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):", anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
+                      if (code) setStyle({ fmt: code });
+                      return;
+                    }
+                    setStyle({ fmt: e.target.value });
+                  }}>
+                  {NUM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                  <option value="custom">Custom code…</option>
+                </select>
+              </>},
+              { id: "styles", label: "Styles", node: <>
+                <select className="rb-sel" value="" title="Cell style preset (replaces formatting)" style={{ width: 84 }}
+                  onChange={(e) => {
+                    const p = CELL_STYLES.find(([id]) => id === e.target.value);
+                    if (!p) return;
+                    const st = p[2];
+                    mutateSheet((s) => selRefs.forEach((r) => {
+                      s.cells[r] = { ...s.cells[r], s: p[0] === "normal" ? undefined : { ...st } };
+                    }));
+                  }}>
+                  <option value="" disabled>Style…</option>
+                  {CELL_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+                <button className="rb" title="Conditional formatting" onClick={() => setCfOpen(true)}>◐</button>
+              </>},
+              { id: "cells", label: "Cells", node: <>
+                <button className="rb" title="Insert/delete cells — shift remaining cells"
+                  onClick={() => setCellShiftDlg(true)}>⌗</button>
+                <button className="rb" title="Insert rows above" onClick={insRows}>R+</button>
+                <button className="rb" title="Delete rows" onClick={delRows}>R−</button>
+                <button className="rb" title="Insert columns left" onClick={insCols}>C+</button>
+                <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
+              </>},
+            ]},
+            { id: "insert", label: "Insert", icon: "➕", groups: [
+              { id: "ill", label: "Illustrations", node: <>
+                <button className="rb" title="Insert picture — floating over the grid"
+                  onClick={() => setPicDlg(true)}>🖼</button>
+                <button className="rb" title="Insert chart from selection" onClick={() => setChartOpen(true)}>📊</button>
+                <button className="rb" title="Sparkline — in-cell mini chart (anchor cell gets it)" onClick={() => setSparkDlg(true)}>∿</button>
+                <button className="rb" title="Format as Table — banded rows + totals" onClick={() => setTableDlg(true)}>▤</button>
+                <button className="rb" title="Insert slicer — filter column values with a visual picker"
+                  onClick={() => setSlicerDlg(true)}>⊟</button>
+                <button className="rb" title="Insert data-type entity — fields usable as A1.Prop in formulas"
+                  onClick={insertEntity}>▣</button>
+              </>},
+              { id: "lnk", label: "Links & Text", node: <>
+                <button className="rb" title="Insert link (Ctrl+K) — URL or place in this workbook"
+                  onClick={() => setLinkDlg(true)}>🔗</button>
+                <button className="rb" title="Insert symbol" onClick={() => setSymbolDlg(true)}>Ω</button>
+              </>},
+            ]},
+            { id: "formulas", label: "Formulas", icon: "𝑓x", groups: [
+              { id: "names", label: "Named & Insert", node: <>
+                <button className="rb" title="Name Manager — define named ranges" onClick={() => setNameMgr(true)}>📛</button>
+                <button className="rb" title="Insert function — guided wizard" onClick={() => setFnWiz(true)}>ƒx</button>
+              </>},
+              { id: "audit", label: "Auditing", node: <>
+                <button className={`rb ${showFormulas ? "on" : ""}`} title="Show formulas (Ctrl+`)"
+                  onClick={() => setShowFormulas(!showFormulas)}>fx↔</button>
+                <button className={`rb ${audit === "pre" ? "on" : ""}`} title="Trace precedents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+                  onClick={() => setAudit(audit === "pre" ? null : "pre")}>⇠Pre</button>
+                <button className={`rb ${audit === "dep" ? "on" : ""}`} title="Trace dependents" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+                  onClick={() => setAudit(audit === "dep" ? null : "dep")}>Dep⇢</button>
+                <button className="rb" title="Formula inspector — step through evaluation / error check"
+                  onClick={() => setInspDlg(true)}>🔍</button>
+              </>},
+              { id: "calc", label: "Calculation", node: <>
+                <button className={`rb ${manualCalc ? "on" : ""}`} title="Calculation options — manual/auto, iterative calc"
+                  onClick={() => setCalcDlg(true)}>∑</button>
+                {manualCalc && <button className="rb" title="Calculate now (F9)" onClick={recalc}>⟳</button>}
+              </>},
+            ]},
+            { id: "data", label: "Data", icon: "🗃", groups: [
+              { id: "sort", label: "Sort & Filter", node: <>
+                <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
+                <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
+                <button className="rb" title="Sort — multiple columns/levels" onClick={() => setSortDlg(true)}>⇅…</button>
+                <button className={`rb ${sheet.filter ? "on" : ""}`} title="AutoFilter — dropdown filters on selection/range"
+                  onClick={toggleFilter}>⧩</button>
+              </>},
+              { id: "tools", label: "Data Tools", node: <>
+                <button className="rb" title="Remove duplicates in selection" onClick={() => setDedupeDlg(true)}>⊟</button>
+                <button className="rb" title="Text to Columns — split selection by delimiter" onClick={() => setT2cDlg(true)}>⇶</button>
+                <button className="rb" title="Flash Fill — infer pattern from example cell, fill column"
+                  onClick={flashFill}>⚡</button>
+                <button className="rb" title="Data validation — lists, ranges, rules" onClick={() => setValDlg(true)}>✓⃞</button>
+                <button className="rb" title="Subtotal — insert SUBTOTAL rows at group boundaries"
+                  onClick={() => setSubtotalDlg(true)}>Σ↓</button>
+                <button className="rb" title="Go To Special — select blanks/formulas/constants/errors/notes"
+                  onClick={() => setGtsDlg(true)}>◎</button>
+              </>},
+              { id: "outline", label: "Outline", node: <>
+                <button className="rb" title="Group selected rows (outline)" onClick={() => groupSel(1)}>⧉</button>
+                <button className="rb" title="Ungroup selected rows" onClick={() => groupSel(-1)}>⧈</button>
+                <button className="rb" title="Group selected columns (outline)" onClick={() => groupCols(1)}>⧉→</button>
+                <button className="rb" title="Ungroup selected columns" onClick={() => groupCols(-1)}>⧈→</button>
+              </>},
+              { id: "whatif", label: "What-If", node: <>
+                <button className="rb" title="Scenario Manager — named what-if snapshots"
+                  onClick={() => setScenDlg(true)}>🎬</button>
+                <button className="rb" title="Goal Seek — find input that makes a formula hit a target"
+                  onClick={() => setSeekDlg(true)}>🎯</button>
+                <button className="rb" title="Data Table — 1/2-variable sensitivity grid"
+                  onClick={() => setDtDlg(true)}>∑▦</button>
+                <button className="rb" title="Solver — optimize an objective under constraints"
+                  onClick={() => setSolverDlg(true)}>∂</button>
+              </>},
+              { id: "auto", label: "Automation", node: <>
+                <button className="rb" title="PivotTable — summarize selection by row/column fields"
+                  onClick={() => setPivotDlg(true)}>⊞</button>
+                <button className="rb" title="Get & Transform — load external data through a query pipeline"
+                  onClick={() => setQueryDlg(true)}>⚡</button>
+                <button className="rb" title="Scripts — JS automation against the workbook (Office Scripts-style)"
+                  onClick={() => setScriptDlg(true)}>📜</button>
+              </>},
+            ]},
+            { id: "review", label: "Review", icon: "✓", groups: [
+              { id: "proof", label: "Proofing", node: <>
+                <button className={`rb ${spellOn ? "on" : ""}`} title="Spelling — toggle underlines; click again to review"
+                  onClick={() => spellOn ? setSpellDlg(true) : setSpellOn(true)}>✓abc</button>
+              </>},
+              { id: "comm", label: "Comments", node: <>
+                <button className="rb" title="Add comment on cell" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
+              </>},
+              { id: "chg", label: "Changes", node: <>
+                <button className={`rb ${showChanges ? "on" : ""}`} title="Show change marks — who last edited each cell"
+                  onClick={() => setShowChanges(!showChanges)}>✎</button>
+                <button className={`rb ${sheet.trackChanges ? "on" : ""}`} title={`Review tracked changes${sheet.changeLog?.length ? ` — ${sheet.changeLog.length} pending` : ""}`}
+                  onClick={() => setReviewDlg(true)}>☑{sheet.changeLog?.length ? ` ${sheet.changeLog.length}` : ""}</button>
+              </>},
+              { id: "prot", label: "Protection", node: <>
+                <button className={`rb ${sheet.protected ? "on" : ""}`} title="Protect sheet — lock cells except allowed ranges"
+                  onClick={() => setProtectDlg(true)}>🔒</button>
+              </>},
+            ]},
+            { id: "view", label: "View", icon: "👁", groups: [
+              { id: "views", label: "Views", node: <>
+                <button className="rb" title="Freeze rows above" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+                  onClick={() => mutateSheet((s) => { s.freeze = { rows: selection.r1, cols: s.freeze?.cols ?? 0 }; })}>
+                  ❄ {selection.r1 || "No"} rows
+                </button>
+                <button className="rb" title="Freeze columns left" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+                  onClick={() => mutateSheet((s) => { s.freeze = { rows: s.freeze?.rows ?? 0, cols: selection.c1 }; })}>
+                  ❄ {selection.c1 || "No"} cols
+                </button>
+                <button className={`rb ${sheet.splitRow ? "on" : ""}`} title="Split at selection row — two scrollable panes (dbl-click divider to unsplit)"
+                  onClick={() => mutateSheet((s) => { s.splitRow = s.splitRow ? undefined : Math.max(1, selection.r1); })}>⇹</button>
+                <button className={`rb ${pbPreview ? "on" : ""}`} title="Page-break preview — dashed page boundaries"
+                  onClick={() => setPbPreview(!pbPreview)}>▦⃞</button>
+                <button className="rb" title="Custom views — save/apply named view states" onClick={() => setViewsDlg(true)}>👁</button>
+              </>},
+            ]},
+          ]} />
+        <input ref={csvRef} type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onCsvImport(e.target.files[0])} />
+        <input ref={xlsxRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.xml" hidden onChange={(e) => e.target.files?.[0] && onXlsxImport(e.target.files[0])} />
+        <input ref={linkRef} type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.ods" hidden onChange={(e) => e.target.files?.[0] && onLinkImport(e.target.files[0])} />
+      </>)}
 
       {/* formula bar */}
       <div className="formula-bar">

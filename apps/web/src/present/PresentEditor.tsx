@@ -9,6 +9,7 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { writeKx, readKx } from "../lib/clipboard";
 import { AppIcon } from "../components/AppIcon";
+import { RibbonTabs } from "../components/RibbonTabs";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -898,6 +899,19 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
 
   const selCount = selection.size;
 
+  // contextual "Format" tab — auto-activates when a selection appears
+  const [ribTab, setRibTab] = useState(() => {
+    try { return localStorage.getItem("kx-ribtab-present") || "home"; } catch { return "home"; }
+  });
+  const hadCtx = useRef(false);
+  useEffect(() => {
+    const ctx = selCount > 0 || !!editingObj;
+    if (ctx !== hadCtx.current) {
+      hadCtx.current = ctx;
+      setRibTab((t) => ctx ? "format" : (t === "format" ? "home" : t));
+    }
+  }, [selCount, editingObj]);
+
   return (
     <div className="editor-shell present-shell">
       <div className="editor-top">
@@ -911,51 +925,63 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
         {permission !== "owner" && <span className="perm-badge">{permission}</span>}
         <PresenceBar session={session} />
         <div className="spacer" />
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
-          Comments{comments.length ? ` (${comments.length})` : ""}
-        </button>
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
-        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-ghost btn-sm" onClick={() => pptxRef.current?.click()}>Import</button>
-        <input ref={pptxRef} type="file" accept=".pptx,.potx,.odp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
-        <select className="rb-sel" value={printLayout} title="Print layout (P4.5)"
-          onChange={(e) => setPrintLayout(e.target.value as typeof printLayout)}>
-          <option value="slides">Full-page slides</option>
-          <option value="handout2">Handouts · 2/page</option>
-          <option value="handout4">Handouts · 4/page</option>
-          <option value="handout6">Handouts · 6/page</option>
-          <option value="notes">Notes pages</option>
-        </select>
-        <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Export PDF</button>
-        <button className="btn-ghost btn-sm" onClick={() => void exportPptx(deck, title).catch(() => toast("Export failed"))}>Export .pptx</button>
-        <button className="btn-ghost btn-sm" title="Timed video export (P6.3)" disabled={exporting}
-          onClick={() => {
-            setExporting(true);
-            void exportVideo(deck, title, (m) => toast(m))
-              .catch(() => toast("Video export failed"))
-              .finally(() => setExporting(false));
-          }}>{exporting ? "Recording…" : "Export video"}</button>
         <button className="btn-primary btn-sm" onClick={() => setPresenting("present")}>▶ Present</button>
       </div>
 
-      {canEdit && (
-        <div className="ribbon">
+      {canEdit && (<>
+        <RibbonTabs persistKey="present" active={ribTab} onActive={setRibTab}
+          end={<>
+            <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
+              onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
+            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Kreatix AI"
+              onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
+            <select className="rb-sel" style={{ width: 76 }} value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
+              {[0.4, 0.5, 0.6, 0.75, 1, 1.25].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
+            </select>
+            <button className="rb" style={{ width: "auto", padding: "0 8px", fontSize: 11 }} onClick={fitZoom}>Fit</button>
+          </>}
+          tabs={[
+            { id: "file", label: "File", icon: "📁", menu: [
+              { label: "Import PPTX / ODP…", onClick: () => pptxRef.current?.click() },
+              { divider: true },
+              { label: "Export PDF", submenu: [
+                { label: "Full-page slides", onClick: () => { setPrintLayout("slides"); setPrinting(true); } },
+                { label: "Handouts · 2/page", onClick: () => { setPrintLayout("handout2"); setPrinting(true); } },
+                { label: "Handouts · 4/page", onClick: () => { setPrintLayout("handout4"); setPrinting(true); } },
+                { label: "Handouts · 6/page", onClick: () => { setPrintLayout("handout6"); setPrinting(true); } },
+                { label: "Notes pages", onClick: () => { setPrintLayout("notes"); setPrinting(true); } },
+              ]},
+              { label: "Export .pptx", onClick: () => void exportPptx(deck, title).catch(() => toast("Export failed")) },
+              { label: exporting ? "Recording video…" : "Export video", disabled: exporting, onClick: () => {
+                setExporting(true);
+                void exportVideo(deck, title, (m) => toast(m))
+                  .catch(() => toast("Video export failed"))
+                  .finally(() => setExporting(false));
+              }},
+              { divider: true },
+              { label: "Version history", onClick: () => setPanel("versions") },
+            ]},
+            { id: "home", label: "Home", icon: "🏠", groups: [
+              { id: "clip", label: "Clipboard", node: <>
           <button className="rb" title="Undo" disabled={!undoStack.current.length} onClick={undo}>↶</button>
           <button className="rb" title="Redo" disabled={!redoStack.current.length} onClick={redo}>↷</button>
-          <div className="rb-sep" />
+              </>},
+              { id: "slides", label: "Slides", node: <>
           <select className="rb-sel" value="" title="Add slide with layout"
             onChange={(e) => { if (e.target.value) addSlide(e.target.value); e.target.value = ""; }}>
             <option value="">＋ Slide…</option>
             {LAYOUTS.filter((l) => l.id !== "blank").map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
-          <button className="rb" title="Slideshow from this slide (reading view)" onClick={() => setPresenting("present")}>▶</button>
-          <button className="rb" title="Presenter view" style={{ fontSize: 11 }} onClick={() => setPresenting("presenter")}>🖥</button>
           <select className="rb-sel" value={masterView !== "off" ? "__mv" : slide.layout ?? "blank"} onChange={(e) => setLayout(e.target.value)} title="Layout (built-ins replace objects; custom layouts render live-linked)" disabled={masterView !== "off"}>
             {LAYOUTS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             {Object.keys(deck.layouts ?? {}).map((k) => <option key={k} value={k}>◆ {k}</option>)}
             {masterView !== "off" && <option value="__mv">— editing master —</option>}
           </select>
+              </>},
+            ]},
+            { id: "design", label: "Design", icon: "🎨", groups: [
+              { id: "theme", label: "Themes", node: <>
           <select className="rb-sel" title="Theme" disabled={masterView !== "off"}
             value={deck.customTheme ? (deck.themeVariants?.some((v) => v.id === deck.customTheme!.id) ? `variant:${deck.customTheme.id}` : "imported") : deck.theme ?? "kreatix"}
             onChange={(e) => setTheme(e.target.value)}>
@@ -967,9 +993,10 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               </optgroup>
             )}
           </select>
-          <button className="rb" title="Edit theme colors" disabled={masterView !== "off"}
-            onClick={() => setThemeEd(themeEd ? null : { ...theme })}>🎨</button>
-          {themeEd && (
+          <div style={{ position: "relative" }}>
+            <button className={`rb ${themeEd ? "on" : ""}`} title="Edit theme colors" disabled={masterView !== "off"}
+              onClick={() => setThemeEd(themeEd ? null : { ...theme })}>🎨</button>
+            {themeEd && (
             <div className="shape-menu" style={{ gridTemplateColumns: "1fr", width: 200, gap: 6 }}>
               <input className="rb-sel" value={themeEd.name} style={{ fontSize: 12 }}
                 onChange={(e) => applyThemeEd({ ...themeEd, name: e.target.value })} />
@@ -989,7 +1016,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
                 <button className="rb" style={{ fontSize: 11 }} onClick={() => setThemeEd(null)}>Done</button>
               </div>
             </div>
-          )}
+            )}
+          </div>
           <button className={`rb ${masterView !== "off" ? "on" : ""}`} title="Master view — objects here render under every slide (P2.1)"
             onClick={() => { setMasterView(masterView === "off" ? "master" : "off"); setSelection(new Set()); setEditingObj(null); }}>◈</button>
           {masterView !== "off" && (
@@ -1009,6 +1037,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               <button className="rb" title="Exit master view" onClick={() => setMasterView("off")}>Done</button>
             </>
           )}
+              </>},
+              { id: "size", label: "Slide Setup", node: <>
           <select className="rb-sel" value={`${dims.w}x${dims.h}`} title="Slide size (P2.4)" disabled={masterView !== "off"}
             onChange={(e) => { if (e.target.value) pickSlideSize(e.target.value); e.target.value = `${dims.w}x${dims.h}`; }}>
             <option value={`${dims.w}x${dims.h}`} hidden>{dims.w}×{dims.h}</option>
@@ -1048,16 +1078,10 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               </div>
             )}
           </div>
-          <input ref={bgImageRef} type="file" accept="image/*" hidden
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              const r = new FileReader();
-              r.onload = () => mutate((d) => { d.slides[slideIdx].bgImage = String(r.result); });
-              r.readAsDataURL(f);
-              e.target.value = "";
-            }} />
-          <div className="rb-sep" />
+              </>},
+            ]},
+            { id: "insert", label: "Insert", icon: "➕", groups: [
+              { id: "obj", label: "Objects", node: <>
           <button className="rb" title="Text box" onClick={insertText}>T</button>
           <div style={{ position: "relative" }}>
             <button className="rb" title="Shapes" onClick={() => setShapeMenu((v) => !v)}>▢▾</button>
@@ -1074,12 +1098,26 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
           <button className="rb" title="Connector — straight (select 2 objects to auto-attach)" onClick={() => insertConnector("straight")}>↔</button>
           <button className="rb" title="Connector — elbow" onClick={() => insertConnector("elbow")}>⌐</button>
           <button className="rb" title="Connector — curved" onClick={() => insertConnector("curve")}>⌒</button>
+              </>},
+              { id: "media", label: "Media", node: <>
           <button className="rb" title="Image" onClick={() => imageRef.current?.click()}>🖼</button>
           <button className="rb" title="Audio / video (P6.4)" onClick={() => mediaRef.current?.click()}>🎬</button>
           <button className="rb" title="Table" onClick={insertTable}>⊞</button>
           <button className="rb" title="Chart" onClick={insertChart}>📊</button>
-          <button className="rb" title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
+              </>},
+            ]},
+            { id: "view", label: "View", icon: "👁", groups: [
+              { id: "panes", label: "Panes & Guides", node: <>
+          <button className={`rb ${panel === "objects" ? "on" : ""}`} title="Objects pane" onClick={() => setPanel(panel === "objects" ? "none" : "objects")}>☰</button>
           <button className={`rb ${findOpen ? "on" : ""}`} title="Find & replace (P4.3)" onClick={() => setFindOpen((v) => !v)}>🔍</button>
+          <button className={`rb ${deck.showGrid ? "on" : ""}`} title="Gridlines (P5.4)"
+            onClick={() => mutate((d) => { d.showGrid = !d.showGrid; })}>⌗</button>
+          <button className={`rb ${deck.showRuler ? "on" : ""}`} title="Ruler + guides — drag from ruler edges to create guides (P5.4)"
+            onClick={() => mutate((d) => { d.showRuler = !d.showRuler; })}>📏</button>
+              </>},
+            ]},
+            { id: "transitions", label: "Transitions", icon: "🎬", groups: [
+              { id: "trans", label: "Transition", node: <>
           <select className="rb-sel" value={slide.transition?.type ?? "none"} title="Slide transition (P3.4)"
             onChange={(e) => setTransition(e.target.value as TransitionType)}>
             <option value="none">No transition</option>
@@ -1103,12 +1141,20 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               ))}
             </select>
           )}
+              </>},
+              { id: "timing", label: "Timing", node: <>
           {/* P5.2 — auto-advance + kiosk loop; P5.3 — custom shows; P5.4 — grid/ruler */}
           <input className="rb-sel" style={{ width: 58 }} type="number" min={0} step={1} title="Auto-advance after N seconds (0 = manual)"
             value={Math.round((slide.advanceAfter ?? 0) / 1000)}
             onChange={(e) => mutateSlide((s) => { s.advanceAfter = Math.max(0, Number(e.target.value) || 0) * 1000 || undefined; })} />
           <button className={`rb ${deck.showLoop ? "on" : ""}`} title="Kiosk loop — restart deck at end (P5.2)"
             onClick={() => mutate((d) => { d.showLoop = !d.showLoop; })}>⟲</button>
+              </>},
+            ]},
+            { id: "show", label: "Slide Show", icon: "▶", groups: [
+              { id: "play", label: "Present", node: <>
+          <button className="rb" title="Slideshow from this slide (reading view)" onClick={() => setPresenting("present")}>▶</button>
+          <button className="rb" title="Presenter view" style={{ fontSize: 11 }} onClick={() => setPresenting("presenter")}>🖥</button>
           <select className="rb-sel" value="" title="Custom shows (P5.3)"
             onChange={(e) => {
               if (e.target.value === "__manage") setShowDlg(true);
@@ -1119,11 +1165,11 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
             {(deck.shows ?? []).map((s, i) => <option key={i} value={i}>▶ {s.name}</option>)}
             <option value="__manage">⚙ Manage…</option>
           </select>
-          <button className={`rb ${deck.showGrid ? "on" : ""}`} title="Gridlines (P5.4)"
-            onClick={() => mutate((d) => { d.showGrid = !d.showGrid; })}>⌗</button>
-          <button className={`rb ${deck.showRuler ? "on" : ""}`} title="Ruler + guides — drag from ruler edges to create guides (P5.4)"
-            onClick={() => mutate((d) => { d.showRuler = !d.showRuler; })}>📏</button>
-          <div className="rb-sep" />
+              </>},
+            ]},
+            ...(selCount > 0 || editingObj ? [{
+              id: "format", label: "Format", icon: "✎", contextual: true, groups: [
+                { id: "text", label: "Text", node: <>
           {editingObj && (
             <>
               <RunBtn cmd="bold" title="Bold"><b>B</b></RunBtn>
@@ -1181,6 +1227,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               <div className="rb-sep" />
             </>
           )}
+                </>},
+                { id: "pic", label: "Picture", node: <>
           {firstSel?.type === "image" && !editingObj && (
             <>
               <button className={`rb ${cropId === firstSel.id ? "on" : ""}`} title="Crop mode — drag the edge bars; double-click image to exit"
@@ -1199,7 +1247,9 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               <div className="rb-sep" />
             </>
           )}
-          {firstSel?.type === "connector" && (
+                </>},
+                { id: "shape", label: "Shape & Line", node: <>
+          {firstSel?.type === "connector" && !editingObj && (
             <select className="rb-sel" value={firstSel.conn?.kind ?? "straight"} title="Connector style"
               onChange={(e) => patchSel({ conn: { ...firstSel.conn!, kind: e.target.value as "straight" | "elbow" | "curve" } })}>
               <option value="straight">Straight</option>
@@ -1219,6 +1269,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               <div className="rb-sep" />
             </>
           )}
+                </>},
+                { id: "arrange", label: "Arrange", node: <>
           {selCount > 0 && !editingObj && (
             <>
               <button className={`rb ${firstSel?.link ? "on" : ""}`} title="Object hyperlink (Ctrl+click to open, clickable in present mode)"
@@ -1258,6 +1310,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               <button className="rb" title="Ungroup" onClick={ungroupSel}>⧈</button>
             </>
           )}
+                </>},
+                { id: "anim", label: "Animation", node: <>
           {selCount > 0 && (
             <>
             <select className="rb-sel" value={firstSel?.anim?.type ?? ""} title="Animation (P3.1/3.2)"
@@ -1292,19 +1346,27 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
               onClick={() => setPanel(panel === "anim" ? "none" : "anim")}>✦</button>
             </>
           )}
+                </>},
+                { id: "act", label: "Actions", node: <>
           {selCount > 0 && <button className="rb" title="Delete" onClick={() => delSelected()}>⌫</button>}
-          <div className="rb-sep" />
           <button className="rb" title="Add comment" onClick={() => { setNewComment(true); setPanel("comments"); }}>💬</button>
-          <input ref={imageRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && void insertImage(e.target.files[0])} />
-          <input ref={mediaRef} type="file" accept="video/*,audio/*" hidden onChange={(e) => e.target.files?.[0] && void insertMedia(e.target.files[0])} />
-          <span style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
-            <select className="rb-sel" style={{ width: 76 }} value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
-              {[0.4, 0.5, 0.6, 0.75, 1, 1.25].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
-            </select>
-            <button className="rb" style={{ width: "auto", padding: "0 8px", fontSize: 11 }} onClick={fitZoom}>Fit</button>
-          </span>
-        </div>
-      )}
+                </>},
+              ],
+            }] : []),
+          ]} />
+        <input ref={pptxRef} type="file" accept=".pptx,.potx,.odp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportPptx(f); e.target.value = ""; }} />
+        <input ref={bgImageRef} type="file" accept="image/*" hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            const r = new FileReader();
+            r.onload = () => mutate((d) => { d.slides[slideIdx].bgImage = String(r.result); });
+            r.readAsDataURL(f);
+            e.target.value = "";
+          }} />
+        <input ref={imageRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && void insertImage(e.target.files[0])} />
+        <input ref={mediaRef} type="file" accept="video/*,audio/*" hidden onChange={(e) => e.target.files?.[0] && void insertMedia(e.target.files[0])} />
+      </>)}
 
       {/* P4.3 — find & replace across the deck */}
       {findOpen && (

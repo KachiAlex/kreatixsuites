@@ -69,7 +69,8 @@ import { TABLE_PRESET_SWATCHES, QUICK_TABLES } from "./extensions/table";
 import { SortDialog } from "./SortDialog";
 import { CellsDialog, SplitCellsDialog, SeparatorDialog, InsertTableDialog, FormulaDialog } from "./CellsDialog";
 import { TableFormula } from "./extensions/tableFormula";
-import { MenuBar, textCaseItems, type MenuItem } from "./MenuBar";
+import { textCaseItems, type MenuItem } from "./MenuBar";
+import { RibbonTabs } from "../components/RibbonTabs";
 import { FontPicker, FontSizePicker, ColorSwatch, LineSpacingDrop, ZoomDrop, StylePicker, StatusBar } from "./controls";
 import { KxStyles, serializeStyles, loadStyleDefs, allStyleDefs, type StyleDef } from "./extensions/styles";
 import { StyleDialog } from "./StyleDialog";
@@ -2118,70 +2119,86 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
         <button className="btn-primary btn-sm" onClick={() => void download("docx")}>Export .docx</button>
       </div>
 
-      <MenuBar items={menus} />
-
-      {canMutate && (
-        <div className="ribbon">
-          <button className="rb" title="Undo (Ctrl+Z)" disabled={!state?.canUndo} onClick={() => editor?.chain().focus().undo().run()}>↶</button>
-          <button className="rb" title="Redo (Ctrl+Y)" disabled={!state?.canRedo} onClick={() => editor?.chain().focus().redo().run()}>↷</button>
-          <button className="rb" title="Print / PDF (Ctrl+P)" onClick={print}>🖨</button>
-          <div className="rb-sep" />
-          <ZoomDrop zoom={zoom} onZoom={setZoom} />
-          <div className="rb-sep" />
-          {editor && (
-            <StylePicker editor={editor}
-              current={state?.block === "code" ? "normal" : state?.styleKey ?? "normal"}
-              onModify={(k) => setStyleDlg(k)}
-              onCreate={() => void createStyleFromSelection()} />
-          )}
-          {state?.block === "code" && <span className="perm-badge">code</span>}
-          {editor && <FontPicker editor={editor} current={state?.font ?? ""} />}
-          {editor && <FontSizePicker editor={editor} current={state?.fontSize ?? ""} />}
-          <div className="rb-sep" />
-          <button className={`rb ${state?.bold ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => editor?.chain().focus().toggleBold().run()}><b>B</b></button>
-          <button className={`rb ${state?.italic ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
-          <button className={`rb ${state?.underline ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
-          <button className={`rb ${state?.strike ? "on" : ""}`} title="Strikethrough" onClick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
-          {editor && <ColorSwatch editor={editor} kind="color" current={state?.color ?? ""} />}
-          {editor && <ColorSwatch editor={editor} kind="highlight" current={state?.bgColor ?? ""} />}
-          <div className="rb-sep" />
-          <button className={`rb ${state?.link ? "on" : ""}`} title="Link (Ctrl+K)" onClick={insertLink}>🔗</button>
-          <button className="rb" title="Add comment" onClick={startComment}>💬</button>
-          <button className="rb" title="Insert image" onClick={() => imageRef.current?.click()}>🖼</button>
-          <button className="rb" title="Insert table" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</button>
-          <div className="rb-sep" />
-          {(["left", "center", "right", "justify"] as const).map((a) => (
-            <button key={a} className={`rb ${a === "right" || a === "justify" ? "rb-opt2" : ""} ${state?.align === a ? "on" : ""}`} title={`Align ${a}`}
-              onClick={() => editor?.chain().focus().setTextAlign(a).run()}>
-              {a === "left" ? "⇤" : a === "center" ? "≡" : a === "right" ? "⇥" : "☰"}
-            </button>
-          ))}
-          {editor && <LineSpacingDrop editor={editor} />}
-          <button className={`rb rb-opt2 ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
-          <button className={`rb rb-opt2 ${state?.bullet ? "on" : ""}`} title="Bullet list" onClick={() => editor?.chain().focus().toggleBulletList().run()}>•≡</button>
-          <button className={`rb rb-opt2 ${state?.ordered ? "on" : ""}`} title="Numbered list" onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1≡</button>
-          <button className="rb rb-opt" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
-          <button className="rb rb-opt" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
-          <div className="rb-sep" />
-          <button className={`rb rb-opt ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
-          <button className={`rb rb-opt ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
-          <button className="rb rb-opt" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
-          <button className={`rb rb-opt ${painterOn ? "on" : ""}`} title="Format Painter (click = one use · double-click = repeat · then select text to paint)"
-            onClick={() => (painterOn ? (painter.current = null, setPainterOn(false)) : copyFormat(false))}
-            onDoubleClick={() => copyFormat(true)}>🖌</button>
-          <button className={`rb rb-opt ${state?.showMarks ? "on" : ""}`} title="Show formatting marks" onClick={() => editor?.chain().focus().toggleShowMarks().run()}>¶</button>
-          <button className="rb rb-opt" title="Paragraph settings" onClick={() => setParaDlg(true)}>¶…</button>
-          <button className="rb rb-opt" title="Font settings" onClick={() => setFontDlg(true)}>A…</button>
-          <button className={`rb rb-opt ${dictating ? "on" : ""}`} title="Dictate (speech to text)" onClick={toggleDictation}>🎤</button>
-          <div className="ribbon-end">
+      {menus.length > 0 && (
+        <RibbonTabs persistKey="writer"
+          end={<>
             {editor && <SuggestionsBadge editor={editor} onOpenPanel={() => setPanel("suggest")} />}
             {editor && <ModeSwitcher editor={editor} canEdit={canEdit} forced={forcedMode ?? (trackLocked ? "suggest" : undefined)} />}
+            <ZoomDrop zoom={zoom} onZoom={setZoom} />
             <span className="word-count" role="button" tabIndex={0} title="Word count"
               onClick={() => setWordCountOpen(true)} onKeyDown={(e) => e.key === "Enter" && setWordCountOpen(true)}>
               {state?.words ?? 0} words
             </span>
-          </div>
-        </div>
+          </>}
+          tabs={[
+            { id: "file", label: "File", icon: "📁", menu: menus[0].items },
+            ...(canMutate ? [{
+              id: "home", label: "Home", icon: "🏠", groups: [
+                { id: "clip", label: "Clipboard", node: <>
+                  <button className="rb" title="Undo (Ctrl+Z)" disabled={!state?.canUndo} onClick={() => editor?.chain().focus().undo().run()}>↶</button>
+                  <button className="rb" title="Redo (Ctrl+Y)" disabled={!state?.canRedo} onClick={() => editor?.chain().focus().redo().run()}>↷</button>
+                  <button className={`rb ${painterOn ? "on" : ""}`} title="Format Painter (click = one use · double-click = repeat · then select text to paint)"
+                    onClick={() => (painterOn ? (painter.current = null, setPainterOn(false)) : copyFormat(false))}
+                    onDoubleClick={() => copyFormat(true)}>🖌</button>
+                  <button className="rb" title="Print / PDF (Ctrl+P)" onClick={print}>🖨</button>
+                </>},
+                { id: "font", label: "Font", node: <>
+                  {editor && <FontPicker editor={editor} current={state?.font ?? ""} />}
+                  {editor && <FontSizePicker editor={editor} current={state?.fontSize ?? ""} />}
+                  <button className={`rb ${state?.bold ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => editor?.chain().focus().toggleBold().run()}><b>B</b></button>
+                  <button className={`rb ${state?.italic ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
+                  <button className={`rb ${state?.underline ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
+                  <button className={`rb ${state?.strike ? "on" : ""}`} title="Strikethrough" onClick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
+                  {editor && <ColorSwatch editor={editor} kind="color" current={state?.color ?? ""} />}
+                  {editor && <ColorSwatch editor={editor} kind="highlight" current={state?.bgColor ?? ""} />}
+                  <button className={`rb rb-opt ${state?.sup ? "on" : ""}`} title="Superscript" onClick={() => editor?.chain().focus().toggleSuperscript().run()}>x²</button>
+                  <button className={`rb rb-opt ${state?.sub ? "on" : ""}`} title="Subscript" onClick={() => editor?.chain().focus().toggleSubscript().run()}>x₂</button>
+                  <button className="rb rb-opt" title="Clear formatting" onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}>⌫</button>
+                  <button className="rb rb-opt" title="Font settings" onClick={() => setFontDlg(true)}>A…</button>
+                </>},
+                { id: "para", label: "Paragraph", node: <>
+                  {(["left", "center", "right", "justify"] as const).map((a) => (
+                    <button key={a} className={`rb ${a === "right" || a === "justify" ? "rb-opt2" : ""} ${state?.align === a ? "on" : ""}`} title={`Align ${a}`}
+                      onClick={() => editor?.chain().focus().setTextAlign(a).run()}>
+                      {a === "left" ? "⇤" : a === "center" ? "≡" : a === "right" ? "⇥" : "☰"}
+                    </button>
+                  ))}
+                  {editor && <LineSpacingDrop editor={editor} />}
+                  <button className={`rb rb-opt2 ${state?.taskList ? "on" : ""}`} title="Checklist" onClick={() => editor?.chain().focus().toggleTaskList().run()}>☑</button>
+                  <button className={`rb rb-opt2 ${state?.bullet ? "on" : ""}`} title="Bullet list" onClick={() => editor?.chain().focus().toggleBulletList().run()}>•≡</button>
+                  <button className={`rb rb-opt2 ${state?.ordered ? "on" : ""}`} title="Numbered list" onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1≡</button>
+                  <button className="rb rb-opt" title="Decrease indent" onClick={() => editor?.chain().focus().decreaseIndent().run()}>⇤−</button>
+                  <button className="rb rb-opt" title="Increase indent" onClick={() => editor?.chain().focus().increaseIndent().run()}>⇥+</button>
+                  <button className={`rb rb-opt ${state?.showMarks ? "on" : ""}`} title="Show formatting marks" onClick={() => editor?.chain().focus().toggleShowMarks().run()}>¶</button>
+                  <button className="rb rb-opt" title="Paragraph settings" onClick={() => setParaDlg(true)}>¶…</button>
+                </>},
+                { id: "styles", label: "Styles", node: <>
+                  {editor && (
+                    <StylePicker editor={editor}
+                      current={state?.block === "code" ? "normal" : state?.styleKey ?? "normal"}
+                      onModify={(k) => setStyleDlg(k)}
+                      onCreate={() => void createStyleFromSelection()} />
+                  )}
+                  {state?.block === "code" && <span className="perm-badge">code</span>}
+                </>},
+                { id: "ins", label: "Insert", node: <>
+                  <button className={`rb ${state?.link ? "on" : ""}`} title="Link (Ctrl+K)" onClick={insertLink}>🔗</button>
+                  <button className="rb" title="Add comment" onClick={startComment}>💬</button>
+                  <button className="rb" title="Insert image" onClick={() => imageRef.current?.click()}>🖼</button>
+                  <button className="rb" title="Insert table" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</button>
+                </>},
+                { id: "dvr", label: "Voice", node: <>
+                  <button className={`rb ${dictating ? "on" : ""}`} title="Dictate (speech to text)" onClick={toggleDictation}>🎤</button>
+                </>},
+              ],
+            }] : []),
+            ...menus.slice(1).map((m) => ({
+              id: m.label.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+              label: m.label,
+              icon: ({ Edit: "✎", View: "👁", Insert: "➕", Format: "Aa", Review: "✓", Tools: "🔧" } as Record<string, string>)[m.label],
+              menu: m.items,
+            })),
+          ]} />
       )}
 
       {findOpen && (

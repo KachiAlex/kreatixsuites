@@ -60,7 +60,7 @@ export function MenuBar({ items }: MenuBarProps) {
   );
 }
 
-function MenuList({ items, close, depth }: { items: MenuItem[]; close: () => void; depth: number }) {
+export function MenuList({ items, close, depth }: { items: MenuItem[]; close: () => void; depth: number }) {
   const [sub, setSub] = useState<number | null>(null);
   return (
     <>

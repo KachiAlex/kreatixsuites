@@ -16,7 +16,7 @@ import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
 import { useAuth } from "../lib/auth";
-import { MenuBar } from "../writer/MenuBar";
+import { RibbonTabs } from "../components/RibbonTabs";
 import { AppIcon } from "../components/AppIcon";
 import type { PdfAnn, PdfDoc, AnnType, PdfField, FieldKind, OcrWord } from "./model";
 import { emptyPdfDoc, STAMPS } from "./model";
@@ -1573,11 +1573,6 @@ export function PdfEditor({ item, initialDoc, permission }: {
           title="Save — write annotations, fields and filled values into the PDF file"
           onClick={() => void saveIntoFile()}>💾 Save</button>
         <span className={`save-state ${saveState}`}>{saveLabel}</span>
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>
-          Comments{comments.length ? ` (${comments.length})` : ""}
-        </button>
-        <button className="btn-ghost btn-sm" onClick={() => setPanel(panel === "versions" ? "none" : "versions")}>History</button>
-        <button className="btn-ghost btn-sm" title="Kreatix AI" onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨ AI</button>
         <PresenceBar session={session} />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
@@ -1585,12 +1580,29 @@ export function PdfEditor({ item, initialDoc, permission }: {
           onClick={() => void downloadCurrent()}>⬇ Download</button>
         <button className="btn-ghost btn-sm" disabled={!pdfDataRef.current}
           onClick={() => setExportDlg(true)}>Export PDF</button>
-        <button className="btn-ghost btn-sm" onClick={() => setPrinting(true)}>Print</button>
       </div>
 
-      {/* ---- menubar: every feature, grouped + labeled (Acrobat/Office-style) ---- */}
-      <MenuBar items={[
-        { label: "File", items: [
+      {/* ---- ribbon tabs: every feature, grouped + labeled (Acrobat/Office-style) ---- */}
+      <RibbonTabs persistKey="pdf"
+        end={<>
+          <span className="rb-info">Page <input className="pg-in" key={`pg${curPage}`} defaultValue={pageLabels?.[curPage - 1] ?? curPage}
+            title={pageLabels?.[curPage - 1] ? `Label ${pageLabels[curPage - 1]} — page ${curPage} of ${numPages}` : `${curPage} of ${numPages}`}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              const v = e.currentTarget.value.trim();
+              const li = pageLabels?.findIndex((l) => l.toLowerCase() === v.toLowerCase()) ?? -1;
+              const n = li >= 0 ? li + 1 : parseInt(v, 10);
+              if (!isNaN(n)) scrollToPage(Math.max(1, Math.min(numPages, n)));
+              else e.currentTarget.value = pageLabels?.[curPage - 1] ?? String(curPage);
+            }}
+            onBlur={(e) => { e.target.value = pageLabels?.[curPage - 1] ?? String(curPage); }} /> / {numPages}</span>
+          <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
+            onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
+          <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Kreatix AI"
+            onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
+        </>}
+        tabs={[
+        { id: "file", label: "File", icon: "📁", menu: [
           { label: "Open…", icon: "📂", shortcut: "Ctrl+O", onClick: () => navigate("/drive") },
           { label: "Open from this computer…", icon: "💻", onClick: () => openFileRef.current?.click() },
           { divider: true },
@@ -1620,7 +1632,40 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { divider: true },
           { label: "Close", icon: "✕", shortcut: "Ctrl+W", onClick: () => navigate(-1) },
         ]},
-        { label: "Edit", items: [
+        { id: "home", label: "Home", icon: "🏠", groups: [
+          { id: "nav", label: "Navigate", node: <>
+            <button className={`rb ${panel === "thumbs" ? "on" : ""}`} title="Page thumbnails" onClick={() => setPanel(panel === "thumbs" ? "none" : "thumbs")}>▦</button>
+            <button className={`rb ${panel === "outline" ? "on" : ""}`} title="Bookmarks" onClick={() => setPanel(panel === "outline" ? "none" : "outline")}>🔖</button>
+            <button className={`rb ${panel === "search" ? "on" : ""}`} title="Search" onClick={() => setPanel(panel === "search" ? "none" : "search")}>🔍</button>
+            <button className={`rb ${panel === "anns" ? "on" : ""}`} title="Annotations list — review status and replies"
+              onClick={() => setPanel(panel === "anns" ? "none" : "anns")}>📋</button>
+            {ocg.length > 0 && (
+              <button className={`rb ${panel === "layers" ? "on" : ""}`} title="Layers — toggle optional content groups"
+                onClick={() => setPanel(panel === "layers" ? "none" : "layers")}>⧈</button>
+            )}
+            <button className={`rb ${panel === "attach" ? "on" : ""}`} title="Embedded attachments — attach files, build portfolio"
+              onClick={() => setPanel(panel === "attach" ? "none" : "attach")}>📎</button>
+            <button className={`rb ${panel === "access" ? "on" : ""}`} title="Accessibility check"
+              onClick={() => { setPanel(panel === "access" ? "none" : "access"); if (!accessReport) void runAccessCheck(); }}>♿</button>
+          </>},
+          { id: "tools", label: "Tools", node: <>
+            <button className={`rb ${tool === "select" ? "on" : ""}`} title="Select / move annotations"
+              onClick={() => setTool("select")}>➤</button>
+            <button className={`rb ${tool === "pan" ? "on" : ""}`} title="Hand tool — drag to pan"
+              onClick={() => setTool("pan")}>✋</button>
+            <button className={`rb ${speaking ? "on" : ""}`} title="Read page aloud (text-to-speech)" onClick={() => void speakPage()}>{speaking ? "⏸" : "🔊"}</button>
+          </>},
+          { id: "doc", label: "Document", node: <>
+            <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
+            <button className="rb" title="OCR this page — recognize text on scans (searchable/selectable)"
+              disabled={!canEdit || ocrBusy} onClick={() => void runOcr()}>{ocrBusy ? "⏳" : "OCR"}</button>
+          </>},
+          { id: "clip", label: "Clipboard", node: <>
+            <button className="rb" onClick={undo} title="Undo" disabled={!canEdit}>↶</button>
+            <button className="rb" onClick={redo} title="Redo" disabled={!canEdit}>↷</button>
+          </>},
+        ]},
+        { id: "edit", label: "Edit", icon: "✎", menu: [
           { label: "Undo", icon: "↶", shortcut: "Ctrl+Z", onClick: undo, disabled: !canEdit },
           { label: "Redo", icon: "↷", shortcut: "Ctrl+Y", onClick: redo, disabled: !canEdit },
           { divider: true },
@@ -1654,73 +1699,98 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "OCR this page (make text searchable)", icon: "OCR", onClick: () => void runOcr(), disabled: !canEdit },
           { label: "Compare with another PDF…", icon: "⇄", onClick: () => cmpRef.current?.click() },
         ]},
-        { label: "View", items: [
-          { label: "Continuous scroll", checked: viewMode === "cont", onClick: () => setViewMode("cont") },
-          { label: "Single page", checked: viewMode === "single", onClick: () => setViewMode("single") },
-          { label: "Two pages", checked: viewMode === "two" && !cover, onClick: () => { setViewMode("two"); setCover(false); } },
-          { label: "Two-page cover", checked: viewMode === "two" && cover, onClick: () => { setViewMode("two"); setCover(true); } },
-          { label: "Reflow text", checked: viewMode === "reflow", onClick: () => setViewMode("reflow") },
-          { divider: true },
-          { label: "Fit width", onClick: () => void fitWidth() },
-          { label: "Fit page", onClick: () => void fitPage() },
-          { label: "Fit visible — zoom to content, ignoring margins", onClick: () => void fitVisible() },
-          { label: "100%", onClick: () => setScale(1) },
-          { label: "Zoom in", onClick: () => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2))) },
-          { label: "Zoom out", onClick: () => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2))) },
-          { divider: true },
-          { label: "Rotate view 90°", onClick: () => setViewRot((r) => (r + 90) % 360) },
-          { label: "Show annotations", checked: showAnns, onClick: () => setShowAnns((v) => !v) },
-          { label: "Highlight form fields", checked: hlFields, onClick: () => setHlFields((v) => !v) },
-          { label: "Dark mode", checked: dark, onClick: () => setDark((d) => !d) },
-          { label: "Fullscreen", onClick: () => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {}) },
-          { divider: true },
-          { label: "Read page aloud", checked: speaking, onClick: () => void speakPage() },
-          { label: "Panes", submenu: [
-            { label: "Page thumbnails", checked: panel === "thumbs", onClick: () => setPanel(panel === "thumbs" ? "none" : "thumbs") },
-            { label: "Bookmarks", checked: panel === "outline", onClick: () => setPanel(panel === "outline" ? "none" : "outline") },
-            { label: "Search results", checked: panel === "search", onClick: () => setPanel(panel === "search" ? "none" : "search") },
-            { label: "Annotations", checked: panel === "anns", onClick: () => setPanel(panel === "anns" ? "none" : "anns") },
-            { label: "Layers", checked: panel === "layers", disabled: !ocg.length, onClick: () => setPanel(panel === "layers" ? "none" : "layers") },
-            { label: "Attachments", checked: panel === "attach", onClick: () => setPanel(panel === "attach" ? "none" : "attach") },
-            { label: "Signatures", checked: panel === "sigs", onClick: () => setPanel(panel === "sigs" ? "none" : "sigs") },
-            { label: "Accessibility check", checked: panel === "access", onClick: () => { setPanel("access"); if (!accessReport) void runAccessCheck(); } },
-            { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
-            { label: "AI assistant", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
-          ]},
-          { label: "Zoom & inspect", icon: "🔎", submenu: [
-            { label: "Hand tool — drag to pan", icon: "✋", checked: tool === "pan", onClick: () => pickTool("pan") },
-            { label: "Marquee zoom — drag a box to fill the view", icon: "🔍+", checked: tool === "zoombox", onClick: () => pickTool("zoombox") },
-            { label: "Loupe — hover to magnify", icon: "🔎", checked: tool === "loupe", onClick: () => pickTool("loupe") },
-            { label: "Snapshot — drag an area to copy it", icon: "📸", checked: tool === "snapshot", onClick: () => pickTool("snapshot") },
-          ]},
-          { divider: true },
-          { label: "Previous view", shortcut: "Alt+←", onClick: () => navStep(-1), disabled: navHist.current.idx <= 0 },
-          { label: "Next view", shortcut: "Alt+→", onClick: () => navStep(1), disabled: navHist.current.idx >= navHist.current.stack.length - 1 },
-          { label: "First page", icon: "⏮", onClick: () => scrollToPage(1), disabled: curPage <= 1 },
-          { label: "Last page", icon: "⏭", onClick: () => scrollToPage(numPages), disabled: curPage >= numPages },
-          { divider: true },
-          { label: "Automatically scroll", icon: "⏬", checked: autoScroll > 0,
-            onClick: () => { const on = !autoScroll; setAutoScroll(on ? 1.1 : 0); if (on) { setViewMode("cont"); toast("Auto-scrolling — ↑ faster · ↓ slower · Esc stops"); } } },
-          { label: "Read mode — hide all toolbars", icon: "📖", shortcut: "Ctrl+H", checked: readMode, onClick: () => setReadMode((v) => !v) },
-          { divider: true },
-          { label: "Rulers & grids", icon: "📐", submenu: [
-            { label: "Rulers — page edges, inches", checked: showRulers, onClick: () => setShowRulers((v) => !v) },
-            { label: "Grid — 1in lines over pages", checked: showGrid, onClick: () => setShowGrid((v) => !v) },
-          ]},
-          { label: "Read aloud", icon: "🔊", submenu: [
-            { label: speaking ? "Stop reading" : "Read this page", checked: speaking, onClick: () => void speakPage() },
+        { id: "annotate", label: "Annotate", icon: "🖊", groups: [
+          { id: "markup", label: "Markup", node: <>
+            {TOOL_GROUPS[0].tools.map((t) => (
+              <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label}
+                disabled={!canEdit && !t.viewer} onClick={() => pickTool(t.id)}>{t.ico}</button>
+            ))}
+          </>},
+          { id: "draw", label: "Draw", node: <>
+            {TOOL_GROUPS[1].tools.map((t) => (
+              <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label}
+                disabled={!canEdit && !t.viewer} onClick={() => pickTool(t.id)}>{t.ico}</button>
+            ))}
+          </>},
+          { id: "rev", label: "Review", node: <>
+            {TOOL_GROUPS[5].tools.map((t) => (
+              <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label}
+                disabled={!canEdit && !t.viewer} onClick={() => pickTool(t.id)}>{t.ico}</button>
+            ))}
+          </>},
+          { id: "comm", label: "Comments", items: [
+            { label: "Sticky note", icon: "💬", checked: tool === "note", onClick: () => pickTool("note"), disabled: !canEdit },
+            { label: "Stamp", icon: "✅", checked: tool === "stamp", onClick: () => pickTool("stamp"), disabled: !canEdit },
             { divider: true },
-            ...[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => ({ label: `Speed ${r}×`, checked: (tts.rate || 1) === r, onClick: () => setTts((t) => ({ ...t, rate: r })) })),
-            { divider: true },
-            ...(voices.length ? voices.slice(0, 12).map((v) => ({
-              label: v.name.length > 34 ? v.name.slice(0, 33) + "…" : v.name,
-              checked: tts.voice === v.voiceURI, onClick: () => setTts((t) => ({ ...t, voice: v.voiceURI })),
-            })) : [{ label: "System default voice", onClick: () => setTts((t) => ({ ...t, voice: undefined })) }]),
+            { label: "Annotation list", icon: "📋", onClick: () => setPanel("anns") },
+            { label: "Export comments (.fdf)", onClick: () => void import("./fdf").then(({ exportFdf }) => exportFdf(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
+            { label: "Import comments (.fdf)…", onClick: () => fdfRef.current?.click(), disabled: !canEdit },
+            { label: "Summarize comments — printable PDF report", icon: "🖨", onClick: () => void import("./summarize").then(({ summarizeComments }) => summarizeComments(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
           ]},
-          { divider: true },
-          { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
         ]},
-        { label: "Insert", items: [
+        { id: "sign", label: "Fill & Sign", icon: "✍", groups: [
+          { id: "fill", label: "Fill", node: <>
+            {TOOL_GROUPS[2].tools.filter((t) => ["textbox", "check", "cross"].includes(t.id)).map((t) => (
+              <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label}
+                disabled={!canEdit && !t.viewer} onClick={() => pickTool(t.id)}>{t.ico}</button>
+            ))}
+          </>},
+          { id: "sgn", label: "Sign", node: <>
+            <button className={`rb ${tool === "sign" ? "on" : ""}`} title="Signature — draw or type, then click to place"
+              disabled={!canEdit} onClick={() => pickTool("sign")}>✍</button>
+            <button className={`rb ${tool === "cryptosign" ? "on" : ""}`} title="Digital signature — sign with certificate"
+              disabled={!canEdit} onClick={() => (digId ? pickTool("cryptosign") : setDigSignDlg(true))}>🖋</button>
+            <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
+              title={sigImg ? "Change signature" : "Create signature"}
+              disabled={!canEdit} onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
+          </>},
+          { id: "ns", label: "Note & Stamp", node: <>
+            <button className={`rb ${tool === "note" ? "on" : ""}`} title="Sticky note" disabled={!canEdit} onClick={() => pickTool("note")}>💬</button>
+            <button className={`rb ${tool === "stamp" ? "on" : ""}`} title="Stamp (APPROVED / DRAFT / …)" disabled={!canEdit} onClick={() => pickTool("stamp")}>✅</button>
+          </>},
+          { id: "dig", label: "Digital ID", items: [
+            { label: "Digital ID settings…", icon: "🖋", onClick: () => setDigSignDlg(true), disabled: !canEdit },
+          ]},
+        ]},
+        { id: "forms", label: "Forms", icon: "▣", groups: [
+          { id: "fld", label: "Fields", node: <>
+            <button className={`rb ${tool === "field" ? "on" : ""}`} title="Form field — drag to place"
+              disabled={!canEdit} onClick={() => pickTool("field")}>▣</button>
+            <select className="rb-sel" value={fieldKind} onChange={(e) => setFieldKind(e.target.value as FieldKind)} title="Field kind">
+              <option value="text">Text field</option>
+              <option value="checkbox">Checkbox</option>
+              <option value="radio">Radio</option>
+              <option value="dropdown">Dropdown</option>
+              <option value="list">List box</option>
+              <option value="signature">Signature</option>
+              <option value="barcode">Barcode</option>
+            </select>
+            <button className="rb" title="Auto-detect blank fields (underscores, checkbox glyphs)"
+              disabled={!canEdit} onClick={() => void detectFields()}>⚡ Detect</button>
+          </>},
+          { id: "fdata", label: "Form data", items: [
+            { label: "Place a field", icon: "▣", checked: tool === "field", onClick: () => pickTool("field"), disabled: !canEdit },
+            { label: "Field kind", submenu: (["text", "checkbox", "radio", "dropdown", "list", "signature", "barcode"] as FieldKind[]).map((k) => ({
+              label: k[0].toUpperCase() + k.slice(1), checked: fieldKind === k,
+              onClick: () => { setFieldKind(k); pickTool("field"); },
+            }))},
+            { divider: true },
+            { label: "Auto-detect fields on this PDF", icon: "⚡", onClick: () => void detectFields(), disabled: !canEdit },
+            { divider: true },
+            { label: "Export form data (.fdf)", icon: "📤", onClick: () => void exportFormData() },
+            { label: "Clear form — reset all entered values", icon: "⟲", onClick: () => {
+              if (!confirm("Clear all entered form values? Fields keep their layout.")) return;
+              mutate((d) => {
+                for (const f of d.fields ?? []) f.value = undefined;
+                d.form = {};
+              });
+              try { doc?.annotationStorage.resetModified(); } catch { /* best effort */ }
+              setDocGen((g) => g + 1);
+              toast("Form cleared");
+            }, disabled: !canEdit },
+          ]},
+        ]},
+        { id: "insert", label: "Insert", icon: "➕", menu: [
           { label: "Image…", icon: "🖼", checked: tool === "image", onClick: () => pickTool("image"), disabled: !canEdit },
           { label: "Sticky note", icon: "💬", checked: tool === "note", onClick: () => pickTool("note"), disabled: !canEdit },
           { label: "Stamp", icon: "✅", checked: tool === "stamp", onClick: () => pickTool("stamp"), disabled: !canEdit },
@@ -1730,7 +1800,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
           { label: "Web page…", icon: "🌐", onClick: () => { const u = window.prompt("Web page URL to append as pages:"); if (u?.trim()) void insertWebPage(u); }, disabled: !canEdit },
           { label: "PDF file — merge at end…", icon: "📄", onClick: () => mergeRef.current?.click(), disabled: !canEdit },
         ]},
-        { label: "Format", items: [
+        { id: "format", label: "Format", icon: "Aa", menu: [
           { label: "Typewriter font", icon: "T", submenu: [
             { label: "Helvetica", checked: tbFont === "helv", onClick: () => setTbFont("helv") },
             { label: "Times", checked: tbFont === "times", onClick: () => setTbFont("times") },
@@ -1748,236 +1818,207 @@ export function PdfEditor({ item, initialDoc, permission }: {
             label: s, checked: stampText === s, onClick: () => { setStampText(s); pickTool("stamp"); },
           }))},
         ]},
-        { label: "Comment", items: [
-          ...TOOL_GROUPS[0].tools.map((t) => ({ label: t.label, icon: t.ico, checked: tool === t.id, onClick: () => pickTool(t.id), disabled: !canEdit })),
-          { label: "Shapes & drawing", icon: "✏", submenu: TOOL_GROUPS[1].tools.map((t) => ({
-            label: t.label, icon: t.ico, checked: tool === t.id, onClick: () => pickTool(t.id), disabled: !canEdit,
-          }))},
-          { divider: true },
-          { label: "Sticky note", icon: "💬", checked: tool === "note", onClick: () => pickTool("note"), disabled: !canEdit },
-          { label: "Insert text at caret", icon: "⌃", checked: tool === "caret", onClick: () => pickTool("caret"), disabled: !canEdit },
-          { label: "Replace text", icon: "⌁", checked: tool === "replace", onClick: () => pickTool("replace"), disabled: !canEdit },
-          { label: "Stamp", icon: "✅", checked: tool === "stamp", onClick: () => pickTool("stamp"), disabled: !canEdit },
-          { divider: true },
-          { label: "Annotation list", icon: "📋", onClick: () => setPanel("anns") },
-          { label: "Export comments (.fdf)", onClick: () => void import("./fdf").then(({ exportFdf }) => exportFdf(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
-          { label: "Import comments (.fdf)…", onClick: () => fdfRef.current?.click(), disabled: !canEdit },
-          { label: "Summarize comments — printable PDF report", icon: "🖨", onClick: () => void import("./summarize").then(({ summarizeComments }) => summarizeComments(annDoc.annotations, title)), disabled: !annDoc.annotations.length },
+        { id: "pages", label: "Pages", icon: "⧉", groups: [
+          { id: "org", label: "Organize", node: <>
+            <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
+              onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
+            {panel === "organize" && (
+              <>
+                <span className="rb-info" style={{ fontSize: 11 }}>{orgSel.size ? `${orgSel.size} selected` : "Click pages · drag to reorder"}</span>
+                <button className="rb" title="Delete selected pages" disabled={!orgSel.size} onClick={orgDelete}>🗑</button>
+                <button className="rb" title="Rotate left 90°" disabled={!orgSel.size} onClick={() => void orgRotate(270)}>↺</button>
+                <button className="rb" title="Rotate right 90°" disabled={!orgSel.size} onClick={() => void orgRotate(90)}>↻</button>
+                <button className="rb" title="Insert blank page after current" onClick={() => void orgInsertBlank()}>＋▤</button>
+                <button className="rb" title="Merge another PDF at the end" onClick={() => mergeRef.current?.click()}>⇤📄</button>
+                <button className="rb" title="Insert images as new pages at the end" onClick={() => imgPageRef.current?.click()}>＋🖼</button>
+                <button className="rb" title="Extract selected pages → new PDF" disabled={!orgSel.size} onClick={() => void orgExtract()}>⤓</button>
+                <button className="rb" title={`Split at page ${curPage} → two PDFs`} disabled={curPage <= 1} onClick={() => void orgSplit()}>✂</button>
+                <span className="rb-info" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                  <input className="pg-in" style={{ width: 180 }} placeholder="https://… → pages (PDF-13.4)"
+                    value={webUrl} onChange={(e) => setWebUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void insertWebPage(); }} />
+                  <button className="rb" title="Fetch web page and append as text pages" disabled={!webUrl.trim()}
+                    onClick={() => void insertWebPage()}>🌐</button>
+                </span>
+              </>
+            )}
+          </>},
+          { id: "pgact", label: "Page actions", items: [
+            { label: "Organize pages…", icon: "⧉", checked: panel === "organize", disabled: !canEdit,
+              onClick: () => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); } },
+            { divider: true },
+            { label: "Insert blank page", onClick: () => void orgInsertBlank(), disabled: !canEdit },
+            { label: "Insert images as pages…", onClick: () => imgPageRef.current?.click(), disabled: !canEdit },
+            { label: "Insert web page…", onClick: () => { const u = window.prompt("Web page URL to append as pages:"); if (u?.trim()) void insertWebPage(u); }, disabled: !canEdit },
+            { label: "Merge another PDF…", onClick: () => mergeRef.current?.click(), disabled: !canEdit },
+            { divider: true },
+            { label: "Rotate current page right", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(90); }, disabled: !canEdit },
+            { label: "Rotate current page left", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(270); }, disabled: !canEdit },
+            { label: "Delete current page", onClick: () => { setOrgSel(new Set([curPage])); orgDelete(); }, disabled: !canEdit || numPages <= 1 },
+            { divider: true },
+            { label: `Split at page ${curPage}`, onClick: () => void orgSplit(), disabled: !canEdit || curPage <= 1 },
+            { label: "Extract all pages", onClick: () => { setOrgSel(new Set(Array.from({ length: numPages }, (_, i) => i + 1))); void orgExtract(); }, disabled: !canEdit },
+          ]},
         ]},
-        { label: "Fill & Sign", items: [
-          { label: "Typewriter — type anywhere", icon: "T", checked: tool === "textbox", onClick: () => pickTool("textbox"), disabled: !canEdit },
-          { label: "Check mark — tick a checkbox", icon: "✔", checked: tool === "check", onClick: () => pickTool("check"), disabled: !canEdit },
-          { label: "Cross mark", icon: "✖", checked: tool === "cross", onClick: () => pickTool("cross"), disabled: !canEdit },
-          { divider: true },
-          { label: "Place signature", icon: "✍", checked: tool === "sign", onClick: () => pickTool("sign"), disabled: !canEdit },
-          { label: "Create / edit signature…", onClick: () => setSigPadOpen(true), disabled: !canEdit },
-          { divider: true },
-          { label: "Digital signature — sign with certificate…", icon: "🖋", checked: tool === "cryptosign",
-            onClick: () => (digId ? pickTool("cryptosign") : setDigSignDlg(true)), disabled: !canEdit },
-          { label: "Digital ID settings…", onClick: () => setDigSignDlg(true), disabled: !canEdit },
-        ]},
-        { label: "Forms", items: [
-          { label: "Place a field", icon: "▣", checked: tool === "field", onClick: () => pickTool("field"), disabled: !canEdit },
-          { label: "Field kind", submenu: (["text", "checkbox", "radio", "dropdown", "list", "signature", "barcode"] as FieldKind[]).map((k) => ({
-            label: k[0].toUpperCase() + k.slice(1), checked: fieldKind === k,
-            onClick: () => { setFieldKind(k); pickTool("field"); },
-          }))},
-          { divider: true },
-          { label: "Auto-detect fields on this PDF", icon: "⚡", onClick: () => void detectFields(), disabled: !canEdit },
-          { divider: true },
-          { label: "Export form data (.fdf)", icon: "📤", onClick: () => void exportFormData() },
-          { label: "Clear form — reset all entered values", icon: "⟲", onClick: () => {
-            if (!confirm("Clear all entered form values? Fields keep their layout.")) return;
-            mutate((d) => {
-              for (const f of d.fields ?? []) f.value = undefined;
-              d.form = {};
-            });
-            try { doc?.annotationStorage.resetModified(); } catch { /* best effort */ }
-            setDocGen((g) => g + 1);
-            toast("Form cleared");
-          }, disabled: !canEdit },
-        ]},
-        { label: "Pages", items: [
-          { label: "Organize pages…", icon: "⧉", checked: panel === "organize", disabled: !canEdit,
-            onClick: () => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); } },
-          { divider: true },
-          { label: "Insert blank page", onClick: () => void orgInsertBlank(), disabled: !canEdit },
-          { label: "Insert images as pages…", onClick: () => imgPageRef.current?.click(), disabled: !canEdit },
-          { label: "Insert web page…", onClick: () => { const u = window.prompt("Web page URL to append as pages:"); if (u?.trim()) void insertWebPage(u); }, disabled: !canEdit },
-          { label: "Merge another PDF…", onClick: () => mergeRef.current?.click(), disabled: !canEdit },
-          { divider: true },
-          { label: "Rotate current page right", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(90); }, disabled: !canEdit },
-          { label: "Rotate current page left", onClick: () => { setOrgSel(new Set([curPage])); void orgRotate(270); }, disabled: !canEdit },
-          { label: "Delete current page", onClick: () => { setOrgSel(new Set([curPage])); orgDelete(); }, disabled: !canEdit || numPages <= 1 },
-          { divider: true },
-          { label: `Split at page ${curPage}`, onClick: () => void orgSplit(), disabled: !canEdit || curPage <= 1 },
-          { label: "Extract all pages", onClick: () => { setOrgSel(new Set(Array.from({ length: numPages }, (_, i) => i + 1))); void orgExtract(); }, disabled: !canEdit },
+        { id: "view", label: "View", icon: "👁", groups: [
+          { id: "zoom", label: "Zoom", node: <>
+            <button className="rb" title="Zoom out" onClick={() => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2)))}>−</button>
+            <select className="rb-sel" style={{ width: 76 }} value={scale} onChange={(e) => setScale(Number(e.target.value))}>
+              {[0.5, 0.75, 1, 1.1, 1.25, 1.5, 2, 3].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
+            </select>
+            <button className="rb" title="Zoom in" onClick={() => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2)))}>＋</button>
+            <button className="rb" title="Fit width" onClick={() => void fitWidth()}>⇤⇥</button>
+            <button className="rb" title="Fit page" onClick={() => void fitPage()}>⛶</button>
+            <button className="rb" title="Rotate view (session only)" onClick={() => setViewRot((r) => (r + 90) % 360)}>⟳</button>
+          </>},
+          { id: "mode", label: "Page View", node: <>
+            <button className="rb" title="Reading view: continuous / single / two-page" onClick={() => setViewMode((m) => m === "cont" ? "single" : m === "single" ? "two" : "cont")}>{viewMode === "cont" ? "📜" : viewMode === "single" ? "📄" : "📑"}</button>
+            {viewMode === "two" && (
+              <button className={`rb ${cover ? "on" : ""}`} title="Two-page cover — show page 1 alone"
+                onClick={() => setCover((c) => !c)}>🅲</button>
+            )}
+            <button className={`rb ${viewMode === "reflow" ? "on" : ""}`} title="Reflow — extract text into a readable column"
+              onClick={() => setViewMode((m) => m === "reflow" ? "cont" : "reflow")}>🔤</button>
+            <button className={`rb ${dark ? "on" : ""}`} title="Dark render" onClick={() => setDark((d) => !d)}>🌙</button>
+            <button className="rb" title="Fullscreen" onClick={() => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {})}>⛶</button>
+          </>},
+          { id: "insp", label: "Inspect", node: <>
+            {TOOL_GROUPS[6].tools.map((t) => (
+              <button key={t.id} className={`rb ${tool === t.id ? "on" : ""}`} title={t.label}
+                onClick={() => pickTool(t.id)}>{t.ico}</button>
+            ))}
+          </>},
+          { id: "vopt", label: "Options", items: [
+            { label: "Continuous scroll", checked: viewMode === "cont", onClick: () => setViewMode("cont") },
+            { label: "Single page", checked: viewMode === "single", onClick: () => setViewMode("single") },
+            { label: "Two pages", checked: viewMode === "two" && !cover, onClick: () => { setViewMode("two"); setCover(false); } },
+            { label: "Two-page cover", checked: viewMode === "two" && cover, onClick: () => { setViewMode("two"); setCover(true); } },
+            { label: "Reflow text", checked: viewMode === "reflow", onClick: () => setViewMode("reflow") },
+            { divider: true },
+            { label: "Fit width", onClick: () => void fitWidth() },
+            { label: "Fit page", onClick: () => void fitPage() },
+            { label: "Fit visible — zoom to content, ignoring margins", onClick: () => void fitVisible() },
+            { label: "100%", onClick: () => setScale(1) },
+            { divider: true },
+            { label: "Rotate view 90°", onClick: () => setViewRot((r) => (r + 90) % 360) },
+            { label: "Show annotations", checked: showAnns, onClick: () => setShowAnns((v) => !v) },
+            { label: "Highlight form fields", checked: hlFields, onClick: () => setHlFields((v) => !v) },
+            { label: "Dark mode", checked: dark, onClick: () => setDark((d) => !d) },
+            { label: "Fullscreen", onClick: () => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {}) },
+            { divider: true },
+            { label: "Previous view", shortcut: "Alt+←", onClick: () => navStep(-1), disabled: navHist.current.idx <= 0 },
+            { label: "Next view", shortcut: "Alt+→", onClick: () => navStep(1), disabled: navHist.current.idx >= navHist.current.stack.length - 1 },
+            { label: "First page", icon: "⏮", onClick: () => scrollToPage(1), disabled: curPage <= 1 },
+            { label: "Last page", icon: "⏭", onClick: () => scrollToPage(numPages), disabled: curPage >= numPages },
+            { divider: true },
+            { label: "Automatically scroll", icon: "⏬", checked: autoScroll > 0,
+              onClick: () => { const on = !autoScroll; setAutoScroll(on ? 1.1 : 0); if (on) { setViewMode("cont"); toast("Auto-scrolling — ↑ faster · ↓ slower · Esc stops"); } } },
+            { label: "Read mode — hide all toolbars", icon: "📖", shortcut: "Ctrl+H", checked: readMode, onClick: () => setReadMode((v) => !v) },
+            { divider: true },
+            { label: "Rulers & grids", icon: "📐", submenu: [
+              { label: "Rulers — page edges, inches", checked: showRulers, onClick: () => setShowRulers((v) => !v) },
+              { label: "Grid — 1in lines over pages", checked: showGrid, onClick: () => setShowGrid((v) => !v) },
+            ]},
+            { label: "Read aloud", icon: "🔊", submenu: [
+              { label: speaking ? "Stop reading" : "Read this page", checked: speaking, onClick: () => void speakPage() },
+              { divider: true },
+              ...[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => ({ label: `Speed ${r}×`, checked: (tts.rate || 1) === r, onClick: () => setTts((t) => ({ ...t, rate: r })) })),
+              { divider: true },
+              ...(voices.length ? voices.slice(0, 12).map((v) => ({
+                label: v.name.length > 34 ? v.name.slice(0, 33) + "…" : v.name,
+                checked: tts.voice === v.voiceURI, onClick: () => setTts((t) => ({ ...t, voice: v.voiceURI })),
+              })) : [{ label: "System default voice", onClick: () => setTts((t) => ({ ...t, voice: undefined })) }]),
+            ]},
+            { divider: true },
+            { label: "Keyboard shortcuts", icon: "⌨", shortcut: "?", onClick: () => setShowKeys(true) },
+          ]},
         ]},
       ]} />
 
-      <div className="ribbon">
-        <button className={`rb ${panel === "thumbs" ? "on" : ""}`} title="Page thumbnails" onClick={() => setPanel(panel === "thumbs" ? "none" : "thumbs")}>▦</button>
-        <button className={`rb ${panel === "outline" ? "on" : ""}`} title="Bookmarks" onClick={() => setPanel(panel === "outline" ? "none" : "outline")}>🔖</button>
-        <button className={`rb ${panel === "search" ? "on" : ""}`} title="Search" onClick={() => setPanel(panel === "search" ? "none" : "search")}>🔍</button>
-        <button className={`rb ${panel === "anns" ? "on" : ""}`} title="Annotations list — review status and replies"
-          onClick={() => setPanel(panel === "anns" ? "none" : "anns")}>📋</button>
-        {ocg.length > 0 && (
-          <button className={`rb ${panel === "layers" ? "on" : ""}`} title="Layers — toggle optional content groups"
-            onClick={() => setPanel(panel === "layers" ? "none" : "layers")}>⧈</button>
-        )}
-        <button className={`rb ${panel === "attach" ? "on" : ""}`} title="Embedded attachments — attach files, build portfolio"
-          onClick={() => setPanel(panel === "attach" ? "none" : "attach")}>📎</button>
-        <button className={`rb ${panel === "access" ? "on" : ""}`} title="Accessibility check"
-          onClick={() => { setPanel(panel === "access" ? "none" : "access"); if (!accessReport) void runAccessCheck(); }}>♿</button>
-        <button className={`rb ${panel === "organize" ? "on" : ""}`} title="Organize pages (PDF-1)" disabled={!canEdit}
-          onClick={() => { setPanel(panel === "organize" ? "none" : "organize"); setOrgSel(new Set()); }}>⧉</button>
-        <div className="rb-sep" />
-        <button className={`rb ${tool === "select" ? "on" : ""}`} title="Select / move annotations"
-          onClick={() => setTool("select")}>➤</button>
-        <button className={`rb ${tool === "pan" ? "on" : ""}`} title="Hand tool — drag to pan"
-          onClick={() => setTool("pan")}>✋</button>
-        {TOOL_GROUPS.map((g) => (
-          <ToolMenu key={g.label} label={g.label} tools={g.tools} tool={tool} canEdit={canEdit} onPick={pickTool} />
-        ))}
-        {tool === "sign" && (
-          <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
-            title={sigImg ? "Change signature" : "Create signature"}
-            onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
-        )}
-        {tool === "stamp" && (
-          <select className="rb-sel" value={stampText} onChange={(e) => setStampText(e.target.value)} title="Stamp text">
-            {STAMPS.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        )}
-        {tool === "textbox" && (
-          <>
-            <select className="rb-sel" value={tbFont} onChange={(e) => setTbFont(e.target.value as typeof tbFont)} title="Textbox font">
-              <option value="helv">Helvetica</option><option value="times">Times</option><option value="courier">Courier</option>
+      {/* tool options — contextual strip shown while an annotating/fill tool is armed */}
+      {(MARKUP_TOOLS.has(tool) || tool === "sign" || tool === "cryptosign" || tool === "field") && (
+        <div className="ribbon ribbon-toolopts">
+          {tool === "sign" && (
+            <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
+              title={sigImg ? "Change signature" : "Create signature"}
+              onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
+          )}
+          {tool === "stamp" && (
+            <select className="rb-sel" value={stampText} onChange={(e) => setStampText(e.target.value)} title="Stamp text">
+              {STAMPS.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-            <select className="rb-sel" style={{ width: 52 }} value={tbSize} onChange={(e) => setTbSize(Number(e.target.value))} title="Font size">
-              {[8, 9, 10, 12, 14, 18, 24].map((s) => <option key={s} value={s}>{s}pt</option>)}
-            </select>
-          </>
-        )}
-        {tool === "field" && (
-          <select className="rb-sel" value={fieldKind} onChange={(e) => setFieldKind(e.target.value as FieldKind)} title="Field kind">
-            <option value="text">Text field</option>
-            <option value="checkbox">Checkbox</option>
-            <option value="radio">Radio</option>
-            <option value="dropdown">Dropdown</option>
-            <option value="list">List box</option>
-            <option value="signature">Signature</option>
-            <option value="barcode">Barcode</option>
-          </select>
-        )}
-        {tool === "field" && (
-          <button className="rb" title="Auto-detect blank fields (underscores, checkbox glyphs)"
-            onClick={() => void detectFields()}>⚡ Detect</button>
-        )}
-        {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && tool !== "caret" && (
-          <div className="rb-colors">
-            {MARKUP_COLORS.map((c) => (
-              <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
-            ))}
-            <input type="color" className="sw-custom" title="Custom color" value={toolColor}
-              onChange={(e) => setToolColor(e.target.value)} />
-          </div>
-        )}
-        {(tool === "check" || tool === "cross") && (
-          <div className="rb-size" title="Mark size (points)">
-            <button className="rb" onClick={() => setMarkSize((s) => Math.max(8, s - 4))}>−</button>
-            <span className="rb-sz">{markSize}</span>
-            <button className="rb" onClick={() => setMarkSize((s) => Math.min(96, s + 4))}>+</button>
-          </div>
-        )}
-        <div className="rb-sep" />
-        <button className="rb" onClick={undo} title="Undo">↶</button>
-        <button className="rb" onClick={redo} title="Redo">↷</button>
-        <div className="rb-sep" />
-        <button className="rb" title="Zoom out" onClick={() => setScale((s) => Math.max(0.4, +(s - 0.2).toFixed(2)))}>−</button>
-        <select className="rb-sel" style={{ width: 76 }} value={scale} onChange={(e) => setScale(Number(e.target.value))}>
-          {[0.5, 0.75, 1, 1.1, 1.25, 1.5, 2, 3].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
-        </select>
-        <button className="rb" title="Zoom in" onClick={() => setScale((s) => Math.min(4, +(s + 0.2).toFixed(2)))}>＋</button>
-        <button className="rb" title="Fit width" onClick={() => void fitWidth()}>⇤⇥</button>
-        <button className="rb" title="Fit page" onClick={() => void fitPage()}>⛶</button>
-        <button className="rb" title="Rotate view (session only)" onClick={() => setViewRot((r) => (r + 90) % 360)}>⟳</button>
-        <button className="rb" title="Reading view: continuous / single / two-page" onClick={() => setViewMode((m) => m === "cont" ? "single" : m === "single" ? "two" : "cont")}>{viewMode === "cont" ? "📜" : viewMode === "single" ? "📄" : "📑"}</button>
-        {viewMode === "two" && (
-          <button className={`rb ${cover ? "on" : ""}`} title="Two-page cover — show page 1 alone"
-            onClick={() => setCover((c) => !c)}>🅲</button>
-        )}
-        <button className={`rb ${viewMode === "reflow" ? "on" : ""}`} title="Reflow — extract text into a readable column"
-          onClick={() => setViewMode((m) => m === "reflow" ? "cont" : "reflow")}>🔤</button>
-        <button className={`rb ${dark ? "on" : ""}`} title="Dark render" onClick={() => setDark((d) => !d)}>🌙</button>
-        <button className="rb" title="Fullscreen" onClick={() => scrollRef.current?.closest(".editor")?.requestFullscreen?.().catch(() => {})}>⛶</button>
-        <span className="rb-info">Page <input className="pg-in" key={`pg${curPage}`} defaultValue={pageLabels?.[curPage - 1] ?? curPage}
-          title={pageLabels?.[curPage - 1] ? `Label ${pageLabels[curPage - 1]} — page ${curPage} of ${numPages}` : `${curPage} of ${numPages}`}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return;
-            const v = e.currentTarget.value.trim();
-            const li = pageLabels?.findIndex((l) => l.toLowerCase() === v.toLowerCase()) ?? -1;
-            const n = li >= 0 ? li + 1 : parseInt(v, 10);
-            if (!isNaN(n)) scrollToPage(Math.max(1, Math.min(numPages, n)));
-            else e.currentTarget.value = pageLabels?.[curPage - 1] ?? String(curPage);
-          }}
-          onBlur={(e) => { e.target.value = pageLabels?.[curPage - 1] ?? String(curPage); }} /> / {numPages}</span>
-        <div className="rb-sep" />
-        <button className={`rb ${speaking ? "on" : ""}`} title="Read page aloud (text-to-speech)" onClick={() => void speakPage()}>{speaking ? "⏸" : "🔊"}</button>
-        <button className={`rb ${panel === "compare" ? "on" : ""}`} title="Compare with another PDF" onClick={() => cmpRef.current?.click()}>⇄</button>
-        <input ref={cmpRef} type="file" accept=".pdf" hidden
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void runCompare(f); e.target.value = ""; }} />
-        <input ref={openFileRef} type="file" accept=".pdf,application/pdf" hidden
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void openFromComputer(f); e.target.value = ""; }} />
-        <button className="rb" title="OCR this page — recognize text on scans (searchable/selectable)"
-          disabled={!canEdit || ocrBusy} onClick={() => void runOcr()}>{ocrBusy ? "⏳" : "OCR"}</button>
-        <button className="rb" title="Add comment" onClick={() => { setPanel("comments"); }}>💬+</button>
-        {panel === "organize" && (
-          <>
-            <div className="rb-sep" />
-            <span className="rb-info" style={{ fontSize: 11 }}>{orgSel.size ? `${orgSel.size} selected` : "Click pages · drag to reorder"}</span>
-            <button className="rb" title="Delete selected pages" disabled={!orgSel.size} onClick={orgDelete}>🗑</button>
-            <button className="rb" title="Rotate left 90°" disabled={!orgSel.size} onClick={() => void orgRotate(270)}>↺</button>
-            <button className="rb" title="Rotate right 90°" disabled={!orgSel.size} onClick={() => void orgRotate(90)}>↻</button>
-            <button className="rb" title="Insert blank page after current" onClick={() => void orgInsertBlank()}>＋▤</button>
-            <button className="rb" title="Merge another PDF at the end" onClick={() => mergeRef.current?.click()}>⇤📄</button>
-            <button className="rb" title="Insert images as new pages at the end" onClick={() => imgPageRef.current?.click()}>＋🖼</button>
-            <button className="rb" title="Extract selected pages → new PDF" disabled={!orgSel.size} onClick={() => void orgExtract()}>⤓</button>
-            <button className="rb" title={`Split at page ${curPage} → two PDFs`} disabled={curPage <= 1} onClick={() => void orgSplit()}>✂</button>
-            <input ref={mergeRef} type="file" accept=".pdf" hidden
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
-            <input ref={imgPageRef} type="file" accept="image/png,image/jpeg" multiple hidden
-              onChange={(e) => { if (e.target.files?.length) void orgInsertImages(e.target.files); e.target.value = ""; }} />
-            <span className="rb-info" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-              <input className="pg-in" style={{ width: 180 }} placeholder="https://… → pages (PDF-13.4)"
-                value={webUrl} onChange={(e) => setWebUrl(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void insertWebPage(); }} />
-              <button className="rb" title="Fetch web page and append as text pages" disabled={!webUrl.trim()}
-                onClick={() => void insertWebPage()}>🌐</button>
-            </span>
-          </>
-        )}
-        <input ref={imgFileRef} type="file" accept="image/png,image/jpeg" hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0]; const pend = imgPending.current; e.target.value = "";
-            if (!f || !pend) return;
-            const fr = new FileReader();
-            fr.onload = () => addAnn(pend.page, { type: "image", rects: [pend.rect], img: String(fr.result) });
-            fr.readAsDataURL(f);
-            imgPending.current = null;
-          }} />
-        <input ref={fdfRef} type="file" accept=".fdf,.xfdf" hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0]; e.target.value = "";
-            if (!f) return;
-            void f.text().then((t) => import("./fdf").then(({ parseFdf }) => {
-              const imported = parseFdf(t);
-              if (!imported.length) { toast("No annotations found in that FDF"); return; }
-              mutate((d) => { d.annotations.push(...imported); });
-              toast(`Imported ${imported.length} annotation${imported.length === 1 ? "" : "s"}`);
-            }));
-          }} />
-      </div>
+          )}
+          {tool === "textbox" && (
+            <>
+              <select className="rb-sel" value={tbFont} onChange={(e) => setTbFont(e.target.value as typeof tbFont)} title="Textbox font">
+                <option value="helv">Helvetica</option><option value="times">Times</option><option value="courier">Courier</option>
+              </select>
+              <select className="rb-sel" style={{ width: 52 }} value={tbSize} onChange={(e) => setTbSize(Number(e.target.value))} title="Font size">
+                {[8, 9, 10, 12, 14, 18, 24].map((s) => <option key={s} value={s}>{s}pt</option>)}
+              </select>
+            </>
+          )}
+          {tool === "field" && (
+            <>
+              <select className="rb-sel" value={fieldKind} onChange={(e) => setFieldKind(e.target.value as FieldKind)} title="Field kind">
+                <option value="text">Text field</option>
+                <option value="checkbox">Checkbox</option>
+                <option value="radio">Radio</option>
+                <option value="dropdown">Dropdown</option>
+                <option value="list">List box</option>
+                <option value="signature">Signature</option>
+                <option value="barcode">Barcode</option>
+              </select>
+              <button className="rb" title="Auto-detect blank fields (underscores, checkbox glyphs)"
+                onClick={() => void detectFields()}>⚡ Detect</button>
+            </>
+          )}
+          {MARKUP_TOOLS.has(tool) && tool !== "stamp" && tool !== "whiteout" && tool !== "image" && tool !== "measure" && tool !== "edittext" && tool !== "field" && tool !== "redact" && tool !== "caret" && (
+            <div className="rb-colors">
+              {MARKUP_COLORS.map((c) => (
+                <button key={c} className={`sw ${toolColor === c ? "on" : ""}`} style={{ background: c }} onClick={() => setToolColor(c)} />
+              ))}
+              <input type="color" className="sw-custom" title="Custom color" value={toolColor}
+                onChange={(e) => setToolColor(e.target.value)} />
+            </div>
+          )}
+          {(tool === "check" || tool === "cross") && (
+            <div className="rb-size" title="Mark size (points)">
+              <button className="rb" onClick={() => setMarkSize((s) => Math.max(8, s - 4))}>−</button>
+              <span className="rb-sz">{markSize}</span>
+              <button className="rb" onClick={() => setMarkSize((s) => Math.min(96, s + 4))}>+</button>
+            </div>
+          )}
+        </div>
+      )}
+      <input ref={cmpRef} type="file" accept=".pdf" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void runCompare(f); e.target.value = ""; }} />
+      <input ref={openFileRef} type="file" accept=".pdf,application/pdf" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void openFromComputer(f); e.target.value = ""; }} />
+      <input ref={mergeRef} type="file" accept=".pdf" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void orgMerge(f); e.target.value = ""; }} />
+      <input ref={imgPageRef} type="file" accept="image/png,image/jpeg" multiple hidden
+        onChange={(e) => { if (e.target.files?.length) void orgInsertImages(e.target.files); e.target.value = ""; }} />
+      <input ref={imgFileRef} type="file" accept="image/png,image/jpeg" hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]; const pend = imgPending.current; e.target.value = "";
+          if (!f || !pend) return;
+          const fr = new FileReader();
+          fr.onload = () => addAnn(pend.page, { type: "image", rects: [pend.rect], img: String(fr.result) });
+          fr.readAsDataURL(f);
+          imgPending.current = null;
+        }} />
+      <input ref={fdfRef} type="file" accept=".fdf,.xfdf" hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]; e.target.value = "";
+          if (!f) return;
+          void f.text().then((t) => import("./fdf").then(({ parseFdf }) => {
+            const imported = parseFdf(t);
+            if (!imported.length) { toast("No annotations found in that FDF"); return; }
+            mutate((d) => { d.annotations.push(...imported); });
+            toast(`Imported ${imported.length} annotation${imported.length === 1 ? "" : "s"}`);
+          }));
+        }} />
 
       <div className="work">
         {panel !== "none" && panel !== "comments" && panel !== "versions" && (
@@ -3983,62 +4024,6 @@ function PrintDeck({ doc, anns, fields, onDone }: { doc: PDFDocumentProxy | null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
   return createPortal(<div className="print-deck" ref={ref} />, document.body);
-}
-
-/** Labeled tool-group dropdown for the PDF ribbon — replaces the flat icon row
- *  so every tool is discoverable by name (Acrobat/Office-style grouping). */
-function ToolMenu({ label, tools, tool, canEdit, onPick }: {
-  label: string;
-  tools: { id: Tool; ico: string; label: string; viewer?: boolean }[];
-  tool: Tool;
-  canEdit: boolean;
-  onPick: (t: Tool) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLSpanElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
-  }, [open]);
-  const enabled = tools.filter((t) => canEdit || t.viewer);
-  const active = tools.find((t) => t.id === tool);
-  if (tools.length === 1) {
-    const t = tools[0];
-    return (
-      <button className={`rb rb-group${t.id === tool ? " on" : ""}`} disabled={!canEdit && !t.viewer}
-        title={t.label} onClick={() => onPick(t.id)}>
-        <span aria-hidden>{t.ico}</span>
-        <span className="rb-group-label">{label}</span>
-      </button>
-    );
-  }
-  return (
-    <span className={`menu-root${open ? " open" : ""}`} ref={rootRef}>
-      <button className={`rb rb-group${open ? " open" : ""}${active ? " on" : ""}`}
-        disabled={!enabled.length} title={active ? `${label}: ${active.label}` : `${label} tools`}
-        onClick={() => setOpen((o) => !o)}>
-        <span aria-hidden>{active ? active.ico : tools[0]?.ico}</span>
-        <span className="rb-group-label">{label}</span>
-        <span className="rb-caret">▾</span>
-      </button>
-      {open && (
-        <div className="menu-drop" role="menu">
-          {tools.map((t) => (
-            <div key={t.id} role="menuitem" className={`menu-item${t.id === tool ? " on" : ""}${!canEdit && !t.viewer ? " disabled" : ""}`}
-              onClick={() => { if (canEdit || t.viewer) { setOpen(false); onPick(t.id); } }}>
-              <span className="menu-check">{t.id === tool ? "✓" : ""}</span>
-              <span className="mi-ico" aria-hidden>{t.ico}</span>
-              <span>{t.label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </span>
-  );
 }
 
 // ---------- PDF-5: annotation list row (author · status · replies) ----------
