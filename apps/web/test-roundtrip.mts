@@ -37,6 +37,7 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
       { type: "paragraph", attrs: { textAlign: "center", spaceBefore: 12, indent: 2 }, content: [
         { type: "text", text: "Centered para with footnote" },
         { type: "footnote", attrs: { note: "note body" } },
+        { type: "text", marks: [{ type: "textStyle", attrs: { fontFamily: "'Georgia'", color: "#1A1A2E", fontSize: "22pt" } }], text: " styled run" },
       ] },
       { type: "taskList", content: [
         { type: "taskItem", attrs: { checked: true }, content: [{ type: "paragraph", content: [{ type: "text", text: "Done item" }] }] },
@@ -118,6 +119,12 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     check("docx: vAlign reimport", /vertical-align:middle/.test(html));
     check("docx: th from tblHeader", /<th\b/.test(html));
     check("docx: page-break node", html.includes('data-type="page-break"'));
+    // direct formatting (w:jc / w:spacing / rPr) survives export→import —
+    // mammoth drops it; the sentinel pass must restore it
+    check("docx: direct align reimport", /<p[^>]*style="[^"]*text-align:center/.test(html));
+    check("docx: direct spacing reimport", /margin-top:12px/.test(html));
+    check("docx: direct run font reimport", /font-family:'Georgia'/.test(html));
+    check("docx: direct run size+color", /font-size:22pt/.test(html) && /color:#1A1A2E/i.test(html));
     // vMerge alignment: c2's XML cell follows a vMerge-continue placeholder that
     // mammoth drops — the annotator must skip it so #00FF00 lands on c2, not c3
     {

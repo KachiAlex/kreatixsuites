@@ -741,6 +741,8 @@ interface NumberingInfo { fmt: string; start?: number }
 interface DocxMeta {
   /** OOXML styleId → parsed paragraph style. */
   styles: Map<string, ImportedStyle>;
+  /** OOXML character styleId → direct-format props (w:rStyle → run payload). */
+  charStyles: Map<string, { props: Record<string, unknown>; basedOn?: string }>;
   /** "numId:ilvl" → number format + start. */
   numFmt: Map<string, NumberingInfo>;
   comments: { id: string; author?: string; date?: string; body: string }[];
@@ -801,6 +803,23 @@ function parseStylesXml(xml: string): Map<string, ImportedStyle> {
   return out;
 }
 
+/** Parse word/styles.xml character styles → run-prop payloads, so a run's
+ *  w:rStyle contributes its font/size/color when mammoth drops the style. */
+function parseCharStylesXml(xml: string): DocxMeta["charStyles"] {
+  const out: DocxMeta["charStyles"] = new Map();
+  for (const m of xml.matchAll(/<w:style\b[^>]*w:type="character"[\s\S]*?<\/w:style>/g)) {
+    const s = m[0];
+    const id = s.match(/w:styleId="([^"]+)"/)?.[1];
+    if (!id) continue;
+    const rpr = s.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "";
+    out.set(id, {
+      props: readRunProps(rpr),
+      basedOn: wAttr(s.match(/<w:basedOn\b[^>]*>/)?.[0] ?? "", "val"),
+    });
+  }
+  return out;
+}
+
 /** Parse word/numbering.xml → "numId:ilvl" → fmt + start. */
 function parseNumberingXml(xml: string): Map<string, NumberingInfo> {
   const out = new Map<string, NumberingInfo>();
@@ -850,6 +869,9 @@ function parseCoreXml(xml: string): DocProps {
   };
 }
 
+const sentinel = (text: string) =>
+  `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
+
 /** Rewrite math zones + break constructs in document.xml as sentinel text
  *  runs; returns the (possibly rewritten) package and the rewritten xml. */
 async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string; meta: DocxMeta }> {
@@ -857,6 +879,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
   const zip = await JSZip.loadAsync(arrayBuffer);
   const meta: DocxMeta = {
     styles: parseStylesXml(await zip.file("word/styles.xml")?.async("text") ?? ""),
+    charStyles: parseCharStylesXml(await zip.file("word/styles.xml")?.async("text") ?? ""),
     numFmt: parseNumberingXml(await zip.file("word/numbering.xml")?.async("text") ?? ""),
     comments: parseCommentsXml(await zip.file("word/comments.xml")?.async("text") ?? ""),
     docProps: parseCoreXml(await zip.file("docProps/core.xml")?.async("text") ?? ""),
@@ -873,8 +896,6 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
 
   // w:pStyle / w:numPr / comment ranges → sentinel runs (mammoth drops the
   // original constructs; the sentinels survive as literal text we post-process).
-  const sentinel = (text: string) =>
-    `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
   docXml = docXml.replace(
     /<w:pPr>(?:(?!<\/w:pPr>)[\s\S])*?<w:pStyle\b[^>]*w:val="([^"]+)"[^>]*\/?>[\s\S]*?<\/w:pPr>/g,
     (m, id) => `${m}${sentinel(`KXPS:${id}`)}`,
@@ -986,6 +1007,8 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     if (boxes.length)
       docXml = docXml.replace(/<\/w:body>/, `${boxes.join("")}</w:body>`);
   }
+
+  docXml = injectFormatSentinels(docXml, meta);
 
   if (docXml === original) return { buffer: arrayBuffer, docXml, meta };
   zip.file("word/document.xml", docXml);
@@ -1334,6 +1357,244 @@ function commentMarkersToHtml(html: string): string {
   return html.replace(/⟦KX[CS][SE]:\d+⟧/g, "");
 }
 
+// ---- direct formatting (w:pPr / w:rPr direct props) -------------------------
+// Mammoth reads w:jc, w:sz, w:rFonts, w:color, w:spacing, w:ind into its
+// document model but emits none of them — a centered 22pt title collapses to
+// body text. Encode direct props as sentinel runs (same pattern as pStyle /
+// breaks) and rebuild them as inline CSS / data attrs on the HTML afterwards.
+
+const HI_COLOR: Record<string, string> = {
+  yellow: "yellow", green: "green", cyan: "cyan", magenta: "magenta",
+  blue: "blue", red: "red", black: "black", white: "white",
+  lightGray: "lightgray", darkGray: "darkgray", darkYellow: "#808000",
+  darkGreen: "darkgreen", darkCyan: "teal", darkMagenta: "purple",
+  darkBlue: "darkblue", darkRed: "darkred",
+};
+
+const U_DECO: Record<string, string> = {
+  single: "solid", double: "double", thick: "solid", dotted: "dotted",
+  dash: "dashed", dotDash: "dashed", dotDotDash: "dashed", wave: "wavy",
+  wavyHeavy: "wavy", wavyDouble: "wavy", dashHeavy: "dashed", dashLong: "dashed",
+};
+
+const on = (tag: string) => !/w:val="(0|false|off|none|nil)"/.test(tag);
+
+/** w:rPr fragment → compact payload (f=font, s=pt, c/h=colors, ls=pt,
+ *  caps/scaps/hid/ds flags, us/uc underline style+color). */
+function readRunProps(rpr: string): Record<string, unknown> {
+  const p: Record<string, unknown> = {};
+  const attr = (tag: string, a: string) =>
+    rpr.match(new RegExp(`<w:${tag}\\b[^>]*w:${a}="([^"]*)"`))?.[1];
+  const flag = (tag: string) => {
+    const t = rpr.match(new RegExp(`<w:${tag}\\b[^>]*>`))?.[0];
+    return t ? on(t) : false;
+  };
+  const font = attr("rFonts", "ascii") ?? attr("rFonts", "hAnsi");
+  if (font) p.f = font;
+  const sz = attr("sz", "val");
+  if (sz && /^\d+$/.test(sz)) p.s = parseInt(sz) / 2;
+  const color = attr("color", "val");
+  if (color && color !== "auto") p.c = `#${color}`;
+  const hl = attr("highlight", "val");
+  if (hl && hl !== "none") p.h = HI_COLOR[hl] ?? "yellow";
+  const shd = attr("shd", "fill");
+  if (shd && shd !== "auto" && shd !== "clear" && !p.h) p.h = `#${shd}`;
+  const sp = attr("spacing", "val");
+  if (sp && /^-?\d+$/.test(sp)) p.ls = parseInt(sp) / 20; // twentieths of a pt
+  if (flag("caps")) p.caps = 1;
+  if (flag("smallCaps")) p.scaps = 1;
+  if (flag("vanish")) p.hid = 1;
+  if (flag("dstrike")) p.ds = 1;
+  const u = attr("u", "val");
+  if (u && u !== "none" && u !== "single") p.us = U_DECO[u] ?? "solid";
+  const uc = attr("u", "color");
+  if (uc && uc !== "auto") p.uc = `#${uc}`;
+  return p;
+}
+
+/** w:pPr fragment → compact payload (a=align, sb/sa=px, lh="mode:value",
+ *  il/ir/fl px, pbb/kn/kl/wo flags, bg, dir). Borders → ParaBorders shape. */
+function readParaProps(ppr: string): Record<string, unknown> {
+  const p: Record<string, unknown> = {};
+  const attr = (tag: string, a: string) =>
+    ppr.match(new RegExp(`<w:${tag}\\b[^>]*w:${a}="([^"]*)"`))?.[1];
+  const flag = (tag: string) => {
+    const t = ppr.match(new RegExp(`<w:${tag}\\b[^>]*>`))?.[0];
+    return t ? on(t) : false;
+  };
+  const JC: Record<string, string> = {
+    center: "center", right: "right", end: "right",
+    both: "justify", distribute: "justify", mediumKashida: "justify",
+  };
+  const jc = attr("jc", "val");
+  if (jc && JC[jc]) p.a = JC[jc];
+  const spacing = ppr.match(/<w:spacing\b[^>]*\/?>/)?.[0] ?? "";
+  const sv = (n: string) => spacing.match(new RegExp(`w:${n}="(-?\\d+)"`))?.[1];
+  const sb = sv("before"), sa = sv("after"), line = sv("line");
+  if (sb) p.sb = Math.round(parseInt(sb) / 15);
+  if (sa) p.sa = Math.round(parseInt(sa) / 15);
+  if (line) {
+    const rule = spacing.match(/w:lineRule="([^"]+)"/)?.[1] ?? "auto";
+    p.lh = rule === "auto" ? `multiple:${+(parseInt(line) / 240).toFixed(2)}`
+      : `${rule === "exact" ? "exact" : "atLeast"}:${Math.round(parseInt(line) / 15)}px`;
+  }
+  const ind = ppr.match(/<w:ind\b[^>]*\/?>/)?.[0] ?? "";
+  const iv = (n: string) => ind.match(new RegExp(`w:${n}="(-?\\d+)"`))?.[1];
+  const il = iv("left") ?? iv("start"), ir = iv("right") ?? iv("end");
+  const fl = iv("firstLine"), hang = iv("hanging");
+  if (il) p.il = Math.round(parseInt(il) / 15);
+  if (ir) p.ir = Math.round(parseInt(ir) / 15);
+  if (fl) p.fl = Math.round(parseInt(fl) / 15);
+  else if (hang) p.fl = -Math.round(parseInt(hang) / 15);
+  if (flag("pageBreakBefore")) p.pbb = 1;
+  if (flag("keepNext")) p.kn = 1;
+  if (flag("keepLines")) p.kl = 1;
+  if (flag("widowControl")) p.wo = 1;
+  const shd = attr("shd", "fill");
+  if (shd && shd !== "auto" && shd !== "clear") p.bg = `#${shd}`;
+  if (flag("bidi")) p.dir = "rtl";
+  const tabsXml = ppr.match(/<w:tabs>[\s\S]*?<\/w:tabs>/)?.[0];
+  if (tabsXml) {
+    const TVAL: Record<string, string> = {
+      left: "left", start: "left", center: "center",
+      right: "right", end: "right", decimal: "decimal",
+    };
+    const LEAD: Record<string, string> = {
+      dot: "dot", middleDot: "dot", hyphen: "dash", underscore: "line",
+      heavy: "line", none: "none",
+    };
+    const tabs = [...tabsXml.matchAll(/<w:tab\b[^>]*\/?>/g)]
+      .map((t) => ({
+        pos: Math.round(parseInt(t[0].match(/w:pos="(-?\d+)"/)?.[1] ?? "0") / 15),
+        align: TVAL[t[0].match(/w:val="([^"]*)"/)?.[1] ?? "left"] ?? "left",
+        ...(t[0].match(/w:leader="([^"]*)"/)?.[1]
+          ? { leader: LEAD[t[0].match(/w:leader="([^"]*)"/)?.[1] ?? "none"] ?? "dot" } : {}),
+      }))
+      .filter((t) => t.pos > 0);
+    if (tabs.length) p.tabs = tabs;
+  }
+  const pBdr = ppr.match(/<w:pBdr>[\s\S]*?<\/w:pBdr>/)?.[0];
+  if (pBdr) {
+    const borders: Record<string, { style: string; width: number; color: string }> = {};
+    for (const side of ["top", "right", "bottom", "left"]) {
+      const t = pBdr.match(new RegExp(`<w:${side}\\b[^>]*>`))?.[0];
+      if (!t) continue;
+      const val = t.match(/w:val="([^"]*)"/)?.[1];
+      if (!val || val === "nil" || val === "none") continue;
+      borders[side] = {
+        style: BSTYLE_IN[val] ?? "solid",
+        width: Math.max(1, Math.round(parseInt(t.match(/w:sz="(\d+)"/)?.[1] ?? "8") / 8)),
+        color: "#" + (t.match(/w:color="([^"]*)"/)?.[1] ?? "auto").replace(/^auto$/, "000000"),
+      };
+    }
+    if (Object.keys(borders).length) p.pb = borders;
+  }
+  return p;
+}
+
+/** Character-style rPr (following w:basedOn a few levels) merged into a run
+ *  payload — direct formatting still wins over it. */
+function charStyleProps(meta: DocxMeta, id: string, depth = 0): Record<string, unknown> {
+  const s = meta.charStyles.get(id);
+  if (!s || depth > 4) return {};
+  return { ...(s.basedOn ? charStyleProps(meta, s.basedOn, depth + 1) : {}), ...s.props };
+}
+
+/** Inject ⟦KXPF⟧/⟦KXRF⟧ sentinels for direct formatting into every w:p. */
+function injectFormatSentinels(docXml: string, meta: DocxMeta): string {
+  return docXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pXml) => {
+    // wrap each formatted run in ⟦KXRF:props⟧…⟦KXRF⟧
+    let body = pXml.replace(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g, (rXml) => {
+      const rpr = rXml.match(/^<w:r\b[^>]*>(<w:rPr>[\s\S]*?<\/w:rPr>)/)?.[1];
+      if (!rpr) return rXml;
+      // runs whose only child is a page/column break carry no text to style —
+      // leaving them bare keeps the break sentinel unpolluted
+      if (!/<w:t[\s>]/.test(rXml)) return rXml;
+      const rStyle = rpr.match(/<w:rStyle\b[^>]*w:val="([^"]+)"/)?.[1];
+      const props = { ...(rStyle ? charStyleProps(meta, rStyle) : {}), ...readRunProps(rpr) };
+      return Object.keys(props).length
+        ? `${sentinel(`KXRF:${b64enc(JSON.stringify(props))}`)}${rXml}${sentinel("KXRF:")}`
+        : rXml;
+    });
+    // paragraph direct props → ⟦KXPF:props⟧ right after pPr
+    const ppr = body.match(/^<w:p\b[^>]*>(<w:pPr>[\s\S]*?<\/w:pPr>)/)?.[1];
+    if (ppr) {
+      const props = readParaProps(ppr);
+      if (Object.keys(props).length)
+        body = body.replace(/<\/w:pPr>/, `</w:pPr>${sentinel(`KXPF:${b64enc(JSON.stringify(props))}`)}`);
+    }
+    return body;
+  });
+}
+
+/** payload → inline CSS for the run span (props map onto textStyle/highlight
+ *  mark attrs via el.style parsing). */
+function runPropsCss(p: Record<string, unknown>): string {
+  const css: string[] = [];
+  if (p.f) css.push(`font-family:'${String(p.f).replace(/['"\\]/g, "")}'`);
+  if (p.s) css.push(`font-size:${p.s}pt`);
+  if (p.c) css.push(`color:${p.c}`);
+  if (p.h) css.push(`background-color:${p.h}`);
+  if (p.ls) css.push(`letter-spacing:${p.ls}pt`);
+  if (p.caps) css.push("text-transform:uppercase");
+  if (p.scaps) css.push("font-variant:small-caps");
+  const decoLine = [p.us ? "underline" : "", p.ds ? "line-through" : ""].filter(Boolean).join(" ");
+  if (decoLine) css.push(`text-decoration-line:${decoLine}`);
+  if (p.us) css.push(`text-decoration-style:${p.us}`);
+  if (p.uc) css.push(`text-decoration-color:${p.uc}`);
+  return css.join(";");
+}
+
+/** ⟦KXRF:b64⟧…⟦KXRF:⟧ → styled <span> carrying Word's direct run props. */
+function runFmtMarkersToHtml(html: string): string {
+  return html
+    .replace(/⟦KXRF:([A-Za-z0-9+/=]*)⟧([\s\S]*?)⟦KXRF:⟧/g, (_m, b, body) => {
+      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      const css = runPropsCss(p);
+      const hid = p.hid ? ` data-hidden="1"` : "";
+      return `<span style="${css}"${hid}>${body}</span>`;
+    })
+    .replace(/⟦KXRF:([A-Za-z0-9+/=]*)?⟧/g, "");
+}
+
+/** ⟦KXPF:b64⟧ at a block's start → style/data attrs on the element. Tolerates
+ *  other sentinels (KXPS, KXN, comment marks) sitting ahead of it. */
+function paraFmtMarkersToHtml(html: string): string {
+  html = html.replace(
+    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?:<[^>]+>)|⟦KX[A-Z]+(?::[^⟧]*)?⟧)*)⟦KXPF:([A-Za-z0-9+/=]*)⟧/g,
+    (_m, tag, attrs: string, lead: string, b: string) => {
+      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      let style = "";
+      if (p.a) style += `text-align:${p.a};`;
+      if (p.sb != null) style += `margin-top:${p.sb}px;`;
+      if (p.sa != null) style += `margin-bottom:${p.sa}px;`;
+      if (p.il != null) style += `margin-left:${p.il}px;`;
+      if (p.ir != null) style += `margin-right:${p.ir}px;`;
+      if (p.fl != null) style += `text-indent:${p.fl}px;`;
+      if (p.bg) style += `background-color:${p.bg};`;
+      if (p.lh) {
+        const v = String(p.lh).split(":")[1];
+        style += `line-height:${v};`;
+        attrs += ` data-line-rule="${attrEsc(String(p.lh))}"`;
+      }
+      if (p.pbb) attrs += ` data-pb-before="1"`;
+      if (p.kn) attrs += ` data-keep-next="1"`;
+      if (p.kl) attrs += ` data-keep-lines="1"`;
+      if (p.wo) attrs += ` data-widow-orphan="1"`;
+      if (p.dir) attrs += ` dir="${p.dir}"`;
+      if (p.pb) attrs += ` data-p-borders="${attrEsc(JSON.stringify(p.pb))}"`;
+      if (p.tabs) attrs += ` data-tabs="${attrEsc(JSON.stringify(p.tabs))}"`;
+      if (style) {
+        attrs = /style="([^"]*)"/.test(attrs)
+          ? attrs.replace(/style="([^"]*)"/, `style="$1;${style}"`)
+          : `${attrs} style="${style.slice(0, -1)}"`;
+      }
+      return `<${tag}${attrs}>${lead}`;
+    },
+  );
+  return html.replace(/⟦KXPF:[A-Za-z0-9+/=]*⟧/g, "");
+}
+
 /** Reject non-docx payloads with a user-readable reason before they reach
  *  mammoth — legacy .doc (OLE), RTF and ODF files all get routed to Writer by
  *  the open-file flow but can't be converted here. */
@@ -1371,6 +1632,8 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
   const result = await mammoth.convertToHtml({ arrayBuffer: buffer }).catch(() =>
     mammoth.convertToHtml({ buffer: Buffer.from(buffer) } as never));
   let html = breakMarkersToHtml(mathMarkersToHtml(result.value));
+  html = runFmtMarkersToHtml(html);
+  html = paraFmtMarkersToHtml(html);
   const { idToKey, styles } = buildStyleMaps(meta);
   let degraded = false;
   if (docXml) {
