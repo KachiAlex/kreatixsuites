@@ -10,6 +10,8 @@ import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
 import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
+import { createDoc } from "../lib/create";
+import { openLocalFile } from "../lib/offline/openLocal";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
@@ -1398,6 +1400,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
       if (e.key === "F9") { e.preventDefault(); if (wbRef.current) setCalcWb(wbRef.current); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
+      if (k === "s") { e.preventDefault(); void flushSave(); return; }
       if (k === "g") {
         e.preventDefault();
         nameBoxRef.current?.focus();
@@ -1423,7 +1426,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [canEdit, toast]);
+  }, [canEdit, toast, flushSave]);
 
   const rename = useCallback(async (name: string) => {
     await api.patch(`/api/drive/${item.id}`, { name });
@@ -1495,6 +1498,12 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
           </>}
           tabs={[
             { id: "file", label: "File", icon: "📁", menu: [
+              { label: "New spreadsheet", onClick: () => void createDoc("sheets").then((d) => navigate(`/edit/${d.id}`)).catch(() => toast("Couldn't create spreadsheet")) },
+              { label: "Open…", onClick: () => navigate("/drive") },
+              { label: "Open from this computer…", onClick: () => void openLocalFile().then((id) => id && navigate(`/edit/${id}`)).catch((e) => toast((e as Error).message)) },
+              { divider: true },
+              { label: "Save", shortcut: "Ctrl+S", onClick: () => void flushSave() },
+              { divider: true },
               { label: "Import CSV…", onClick: () => csvRef.current?.click() },
               { label: "Import XLSX / ODS…", onClick: () => xlsxRef.current?.click() },
               { label: "Link external workbook…", onClick: () => linkRef.current?.click() },

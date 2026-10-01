@@ -27,6 +27,8 @@ import { api } from "../lib/api";
 import { saveContent } from "../lib/drafts";
 import { useAuth } from "../lib/auth";
 import { isCoarse } from "../lib/mobile";
+import { createDoc } from "../lib/create";
+import { openLocalFile } from "../lib/offline/openLocal";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
@@ -1620,9 +1622,18 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
     if (!ed) return [];
     const fileItems: MenuItem[] = [
       ...(canMutate ? [
+        { label: "New document", onClick: () => void createDoc("writer").then((d) => navigate(`/edit/${d.id}`)).catch(() => toast("Couldn't create document")) },
+        { label: "Open…", shortcut: "Ctrl+O", onClick: () => navigate("/drive") },
+        { label: "Open from this computer…", onClick: () => void openLocalFile().then((id) => id && navigate(`/edit/${id}`)).catch((e) => toast((e as Error).message)) },
+        { divider: true } as MenuItem,
+        { label: "Save", shortcut: "Ctrl+S", onClick: () => void flushSave() },
+        { divider: true } as MenuItem,
         { label: "Import .docx…", onClick: () => importRef.current?.click() },
         { label: "Import text (.md / .txt / .html)…", onClick: () => textImportRef.current?.click() },
-      ] : []),
+      ] : [
+        { label: "Open…", onClick: () => navigate("/drive") },
+        { divider: true } as MenuItem,
+      ]),
       {
         label: "Download", submenu: [
           { label: "Microsoft Word (.docx)", onClick: () => void download("docx") },

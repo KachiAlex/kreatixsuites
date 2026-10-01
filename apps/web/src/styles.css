@@ -259,6 +259,9 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .ribbon-tab .rt-ico{display:none;font-size:15px;line-height:1}
 .ribbon-collapse{margin-left:auto;flex-shrink:0;align-self:center;width:30px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
 .ribbon-collapse:hover{background:var(--subtle);color:var(--ink)}
+/* File-tab dropdown — position:fixed (set inline) escapes .ribbon-tabs' overflow-x clip.
+   Double class beats .menu-drop's absolute positioning regardless of source order. */
+.menu-drop.ribbon-menu-drop{position:fixed;max-height:min(72vh,480px);overflow:auto}
 .ribbon-panel{border-bottom:1px solid var(--line)}
 .ribbon-tabs+.ribbon-panel{border-bottom:1px solid var(--line)}
 .rbg{display:flex;flex-direction:column;justify-content:space-between;padding:0 8px;border-right:1px solid var(--line);position:relative;flex-shrink:0}
@@ -1985,4 +1988,11 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
   .rs-handle{width:14px!important;height:14px!important}
   .rail-ops button{width:34px;height:34px;font-size:14px}
   .btn-ghost.btn-sm,.btn-primary.btn-sm{height:36px;padding:0 14px;font-size:13px}
+}
+
+/* phones: nested menus can't overflow the viewport — render submenus as an
+   in-flow accordion under their parent item instead of left:100% flyouts */
+@media (max-width:768px){
+  .menu-item{flex-wrap:wrap}
+  .menu-drop.sub{position:static;width:100%;flex-basis:100%;border:0;border-left:2px solid var(--line);border-radius:0;margin:4px 0 2px 14px;box-shadow:none;padding:2px 0 2px 4px}
 }

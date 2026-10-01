@@ -9,10 +9,14 @@
         <item name="colorAccent">@color/colorAccent</item>
     </style>
 
-    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- DayNight → dark app theme + light web page = WebView algorithmic
+         darkening, which painted the sidebar dark under dark text. Pin Light
+         and forbid force-dark; the page has its own [data-theme] dark mode. -->
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 
 

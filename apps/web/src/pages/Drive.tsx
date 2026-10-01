@@ -6,6 +6,7 @@ import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { prefetchEditorsFor } from "./editors";
+import { openLocalFile } from "../lib/offline/openLocal";
 
 const TITLES: Record<string, string> = {
   recent: "Recent",
@@ -35,6 +36,14 @@ export function Drive() {
       </div>
       <div className="section-head" style={{ marginTop: 0 }}>
         <h2>{folderId ? "Folder" : TITLES[view] ?? view}</h2>
+        {view !== "trash" && (
+          <button className="btn-ghost" style={{ marginLeft: "auto" }}
+            onClick={() => void openLocalFile()
+              .then((id) => { if (id) navigate(`/edit/${id}`); })
+              .catch((e) => toast((e as Error).message))}>
+            📂 Open from this computer…
+          </button>
+        )}
       </div>
       <FileList items={items} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions} toast={toast} />
 

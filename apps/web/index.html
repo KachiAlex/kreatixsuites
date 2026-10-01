@@ -8,7 +8,9 @@
     <meta name="author" content="Kreatix" />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#F2782E" />
-    <meta name="color-scheme" content="light" />
+    <!-- light dark → the page supports both schemes (via [data-theme]), so
+         Android WebView must NOT apply algorithmic force-darkening -->
+    <meta name="color-scheme" content="light dark" />
     <script src="/theme-init.js"></script>
     <link rel="canonical" href="https://suites.kreatixtech.com/" />
 

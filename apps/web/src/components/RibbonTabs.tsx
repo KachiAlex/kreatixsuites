@@ -53,6 +53,9 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
   const [inner, setInner] = useState<string>(() => load(`kx-ribtab-${persistKey}`) ?? "");
   const [collapsed, setCollapsed] = useState(() => load(`kx-ribcol-${persistKey}`) === "1");
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  // anchored position for the File-style dropdown — it must be position:fixed
+  // because .ribbon-tabs scrolls horizontally (overflow-x:auto clips overflow-y)
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   const activeId = active ?? (tabs.some((t) => t.id === inner && !t.menu) ? inner : firstPanel);
   const rootRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -91,8 +94,22 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
     });
   };
 
+  const openMenu = (tab: RibbonTab) => {
+    const r = tabRefs.current.get(tab.id)?.getBoundingClientRect();
+    if (r) {
+      // keep the drop inside the viewport on narrow screens
+      const left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - 264));
+      setMenuPos({ left, top: r.bottom + 2 });
+    } else setMenuPos({ left: 8, top: 60 });
+    setMenuOpen(tab.id);
+  };
+
   const onTabClick = (tab: RibbonTab) => {
-    if (tab.menu) { setMenuOpen(menuOpen === tab.id ? null : tab.id); return; }
+    if (tab.menu) {
+      if (menuOpen === tab.id) setMenuOpen(null);
+      else openMenu(tab);
+      return;
+    }
     setMenuOpen(null);
     if (activeId === tab.id && !collapsed) toggleCollapse();
     else { pick(tab.id); if (collapsed) toggleCollapse(); }
@@ -111,6 +128,21 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
   };
 
   const activeTab = tabs.find((t) => t.id === activeId && !t.menu);
+  const openMenuTab = tabs.find((t) => t.id === menuOpen && t.menu);
+
+  // track the anchor tab on resize so the fixed drop stays attached
+  useEffect(() => {
+    if (!menuOpen || !openMenuTab) return;
+    const move = () => {
+      const r = tabRefs.current.get(openMenuTab.id)?.getBoundingClientRect();
+      if (r) setMenuPos({
+        left: Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - 264)),
+        top: r.bottom + 2,
+      });
+    };
+    window.addEventListener("resize", move);
+    return () => window.removeEventListener("resize", move);
+  }, [menuOpen, openMenuTab]);
 
   return (
     <div className="ribbon-wrap" ref={rootRef}>
@@ -134,11 +166,6 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
                 {tab.icon && <span className="rt-ico" aria-hidden>{tab.icon}</span>}
                 <span className="rt-label">{tab.label}</span>
               </button>
-              {isMenu && selected && (
-                <div className="menu-drop" role="menu">
-                  <MenuList items={tab.menu!} close={() => setMenuOpen(null)} depth={0} />
-                </div>
-              )}
             </div>
           );
         })}
@@ -149,6 +176,12 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
           onClick={toggleCollapse}
         >{collapsed ? "⌄" : "⌃"}</button>
       </div>
+      {/* File-style dropdown — fixed positioning escapes the scrollable tab row's clip */}
+      {openMenuTab && menuPos && (
+        <div className="menu-drop ribbon-menu-drop" role="menu" style={{ left: menuPos.left, top: menuPos.top }}>
+          <MenuList items={openMenuTab.menu!} close={() => setMenuOpen(null)} depth={0} />
+        </div>
+      )}
       {!collapsed && activeTab && (
         <div className="ribbon ribbon-panel" role="tabpanel" aria-label={activeTab.label}>
           {activeTab.groups?.map((g) => (

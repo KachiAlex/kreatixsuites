@@ -1,7 +1,8 @@
-// Local-file open flow (desktop only): a path handed over by Windows
-// (double-click / "Open with" / second-instance) is read through the preload
-// bridge, imported into Drive, then routed to the matching editor. Offline,
-// the upload falls through to the mirror + outbox and still opens locally.
+// Local-file open flow: on desktop a path handed over by Windows (double-click,
+// "Open with", second-instance, or the open dialog) is read through the preload
+// bridge; in the browser/Android shell a <input type=file> picker supplies the
+// bytes directly. Either way the file is imported into Drive — offline the
+// upload falls through to the mirror + outbox and still opens locally.
 import { api } from "../api";
 import { desktop } from "../platform";
 import { b64, store } from "./store";
@@ -24,6 +25,45 @@ const MIME_BY_EXT: Record<string, string> = {
 
 export const kindForPath = (p: string): string | null =>
   KIND_BY_EXT[p.split(".").pop()?.toLowerCase() ?? ""] ?? null;
+
+const ALL_EXTS = ".docx,.doc,.odt,.rtf,.txt,.xlsx,.xls,.csv,.ods,.pptx,.odp,.pdf";
+
+/** Upload a picked File into Drive and return the new item's id. */
+export async function importLocalFile(f: File): Promise<string> {
+  const kind = kindForPath(f.name);
+  if (!kind) throw new Error(`Kreatix can't open .${f.name.split(".").pop() ?? "?"} files`);
+  const up = await api.upload<{ item: { id: string } }>(
+    `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
+  return up.item.id;
+}
+
+/** Browser/Android file picker — resolves null when the user cancels. */
+export function pickLocalFile(accept = ALL_EXTS): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+/**
+ * "Open from this computer…" — desktop uses the native open dialog +
+ * readFile bridge; browser/Android uses a file input. Returns the imported
+ * Drive item id, or null when the picker was cancelled. Throws on failure.
+ */
+export async function openLocalFile(): Promise<string | null> {
+  if (desktop) {
+    const p = await desktop.openDialog();
+    if (!p) return null;
+    return importLocalPath(p);
+  }
+  const f = await pickLocalFile();
+  if (!f) return null;
+  return importLocalFile(f);
+}
 
 /**
  * Import a local file path into Drive and return the Drive item id to open.

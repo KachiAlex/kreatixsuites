@@ -10,6 +10,8 @@ import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { writeKx, readKx } from "../lib/clipboard";
 import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
+import { createDoc } from "../lib/create";
+import { openLocalFile } from "../lib/offline/openLocal";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
@@ -824,6 +826,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
         e.preventDefault();
         pasteObjects(slide.objects.filter((o) => selection.has(o.id)));
       }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); void flushSave(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); setFindOpen((v) => !v); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m" && canEdit) { e.preventDefault(); addSlide(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
@@ -943,6 +946,12 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
           </>}
           tabs={[
             { id: "file", label: "File", icon: "📁", menu: [
+              { label: "New presentation", onClick: () => void createDoc("present").then((d) => navigate(`/edit/${d.id}`)).catch(() => toast("Couldn't create presentation")) },
+              { label: "Open…", onClick: () => navigate("/drive") },
+              { label: "Open from this computer…", onClick: () => void openLocalFile().then((id) => id && navigate(`/edit/${id}`)).catch((e) => toast((e as Error).message)) },
+              { divider: true },
+              { label: "Save", shortcut: "Ctrl+S", onClick: () => void flushSave() },
+              { divider: true },
               { label: "Import PPTX / ODP…", onClick: () => pptxRef.current?.click() },
               { divider: true },
               { label: "Export PDF", submenu: [

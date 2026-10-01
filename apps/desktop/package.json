@@ -76,6 +76,7 @@
     },
     "appx": {
       "identityName": "KreatixTechnologies.KreatixSuites",
+      "publisher": "CN=Kreatix Suites Dev",
       "publisherDisplayName": "Kreatix Technologies",
       "applicationId": "KreatixSuites"
     }

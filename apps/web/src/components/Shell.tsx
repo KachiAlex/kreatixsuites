@@ -10,6 +10,7 @@ import { TemplatesDialog } from "./TemplatesDialog";
 import { useToast } from "../pages/Home";
 import { AnonBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
+import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
 export function Shell() {
   const [palette, setPalette] = useState(false);
@@ -44,7 +45,8 @@ export function Shell() {
   }, []);
 
   const upload = async (f: File) => {
-    const kind = f.type === "application/pdf" || f.name.endsWith(".pdf") ? "pdf" : "file";
+    // office types get their editor kind so they open in the right app on click
+    const kind = (kindForPath(f.name) ?? (f.type === "application/pdf" ? "pdf" : "file")) as FileKind;
     try {
       await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
       navigate("/drive/all");
@@ -55,7 +57,7 @@ export function Shell() {
   return (
     <div className="shell">
       <Rail />
-      <Sidebar onTemplates={() => setTemplates(true)} open={navOpen} onClose={() => setNavOpen(false)} />
+      <Sidebar onTemplates={() => setTemplates(true)} open={navOpen} onClose={() => setNavOpen(false)} toast={toast} />
       {isMobile && navOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}
       <main>
         <Topbar onPalette={() => setPalette(true)} onNav={() => setNavOpen(true)} />
@@ -138,7 +140,7 @@ function Rail() {
   );
 }
 
-function Sidebar({ onTemplates, open, onClose }: { onTemplates: () => void; open: boolean; onClose: () => void }) {
+function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => void; open: boolean; onClose: () => void; toast: (m: string) => void }) {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -176,10 +178,20 @@ function Sidebar({ onTemplates, open, onClose }: { onTemplates: () => void; open
 
   const upload = async (f: File) => {
     setMenuOpen(false);
-    const kind = f.type === "application/pdf" || f.name.endsWith(".pdf") ? "pdf" : "file";
-    await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
-    navigate("/drive");
-    window.dispatchEvent(new Event("kreatix:refresh"));
+    // office types get their editor kind so they open in the right app on click
+    const kind = (kindForPath(f.name) ?? (f.type === "application/pdf" ? "pdf" : "file")) as FileKind;
+    try {
+      await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
+      navigate("/drive");
+      window.dispatchEvent(new Event("kreatix:refresh"));
+    } catch { toast("Upload failed"); }
+  };
+
+  const openFromComputer = () => {
+    setMenuOpen(false);
+    void openLocalFile()
+      .then((id) => { if (id) navigate(`/edit/${id}`); })
+      .catch((e) => toast((e as Error).message));
   };
 
   const navCls = ({ isActive }: { isActive: boolean }) => `nav ${isActive ? "active" : ""}`;
@@ -200,6 +212,7 @@ function Sidebar({ onTemplates, open, onClose }: { onTemplates: () => void; open
             <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>
             <hr />
             <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>New folder</button>
+            <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>Open file from this computer…</button>
             <button onClick={() => fileInput.current?.click()}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>Upload file / PDF</button>
           </div>
         )}
