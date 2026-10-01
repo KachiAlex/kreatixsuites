@@ -12,6 +12,7 @@ import { AppIcon } from "../components/AppIcon";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
+import { clampToViewport } from "../lib/mobile";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario, RichRun } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
@@ -164,6 +165,14 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
   const [renamingTab, setRenamingTab] = useState<number | null>(null);
   const [tabMenu, setTabMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   const dragTab = useRef<number | null>(null);
+  // long-press on a tab → context menu on touch devices
+  const tabLp = useRef<number>(0);
+  useEffect(() => {
+    const cancel = () => window.clearTimeout(tabLp.current);
+    window.addEventListener("pointerup", cancel);
+    window.addEventListener("pointercancel", cancel);
+    return () => { window.removeEventListener("pointerup", cancel); window.removeEventListener("pointercancel", cancel); };
+  }, []);
   const undoStack = useRef<Workbook[]>([]);
   const redoStack = useRef<Workbook[]>([]);
   const [, forceUi] = useState(0);
@@ -1749,8 +1758,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
             commented: commentedCells,
             showChanges,
             pageBreaks: pbPreview,
-            onCellMenu: (ref: string, x: number, y: number) => setCellMenu({ ref, x, y }),
-            onFilterClick: (col: number, x: number, y: number) => setFilterMenu({ col, x, y }),
+            onCellMenu: (ref: string, x: number, y: number) => setCellMenu({ ref, ...clampToViewport(x, y, 240, 400) }),
+            onFilterClick: (col: number, x: number, y: number) => setFilterMenu({ col, ...clampToViewport(x, y, 240, 360) }),
             onOutlineToggle: (axis: "row" | "col", end: number) => mutateSheet((s) => toggleOutline(s, axis, end)),
             listDrop: canEdit && activeList ? { ref: anchorRef, items: activeList } : undefined,
             onCommit: commitCell, onClear: clearCells, onPaste: pasteTsv, onPasteImage: pasteImage, onFillHandle: fillHandle,
@@ -1821,7 +1830,13 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
             }}
             onClick={() => setActive(i)}
             onDoubleClick={() => canEdit && setRenamingTab(i)}
-            onContextMenu={(e) => { e.preventDefault(); if (canEdit) setTabMenu({ i, x: e.clientX, y: e.clientY }); }}>
+            onPointerDown={(e) => {
+              if (e.pointerType === "mouse" || !canEdit) return;
+              const x = e.clientX, y = e.clientY;
+              window.clearTimeout(tabLp.current);
+              tabLp.current = window.setTimeout(() => setTabMenu({ i, ...clampToViewport(x, y, 240, 380) }), 520);
+            }}
+            onContextMenu={(e) => { e.preventDefault(); if (canEdit) setTabMenu({ i, ...clampToViewport(e.clientX, e.clientY, 240, 380) }); }}>
             {renamingTab === i ? (
               <input autoFocus defaultValue={s.name}
                 onBlur={(e) => {
@@ -1842,7 +1857,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
         ))}
         {wb.sheets.some((s) => s.hidden) && (
           <button className="tab-add" title="Unhide sheets"
-            onClick={(e) => setTabMenu({ i: -1, x: e.clientX, y: e.clientY })}>👁</button>
+            onClick={(e) => setTabMenu({ i: -1, ...clampToViewport(e.clientX, e.clientY, 240, 380) })}>👁</button>
         )}
       </div>
 
@@ -1904,7 +1919,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
         onClose={() => setCfOpen(false)} />}
       {pasteSpec && <PasteSpecialDialog onPick={pasteSpecial} onClose={() => setPasteSpec(false)} />}
       {cellMenu && (
-        <div className="ctx-back" onMouseDown={() => setCellMenu(null)} onContextMenu={(e) => e.preventDefault()}>
+        <div className="ctx-back" onPointerDown={() => setCellMenu(null)} onContextMenu={(e) => e.preventDefault()}>
           <div className="hmenu" style={{ left: cellMenu.x, top: cellMenu.y, position: "fixed" }}
             onMouseDown={(e) => e.stopPropagation()}>
             {/* S19.1 — link actions surface when the cell carries a link */}
@@ -1978,7 +1993,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
           onMutate={mutate} onClose={() => setNameMgr(false)} toast={toast} />
       )}
       {filterMenu && sheet.filter && (
-        <div className="ctx-back" onMouseDown={() => setFilterMenu(null)} onContextMenu={(e) => e.preventDefault()}>
+        <div className="ctx-back" onPointerDown={() => setFilterMenu(null)} onContextMenu={(e) => e.preventDefault()}>
           <FilterMenu wb={wb} sheet={sheet} col={filterMenu.col} x={filterMenu.x} y={filterMenu.y}
             onSet={setFilterCol} onSort={sortFilterCol} onClose={() => setFilterMenu(null)} />
         </div>

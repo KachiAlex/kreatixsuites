@@ -25,6 +25,8 @@ export function Presenter({ deck, theme, startIndex, presenterView, showSlides, 
   const [strokes, setStrokes] = useState<Map<number, InkStroke[]>>(new Map());
   const [laser, setLaser] = useState<{ x: number; y: number } | null>(null);
   const curStroke = useRef<InkStroke | null>(null);
+  // touch swipe → advance/rewind (click/tap already advances)
+  const swipeX = useRef<number | null>(null);
   // P5.2 — rehearse: ms spent per subset-position
   const [rehearsing, setRehearsing] = useState(false);
   const timesRef = useRef<Map<number, number>>(new Map());
@@ -197,7 +199,13 @@ export function Presenter({ deck, theme, startIndex, presenterView, showSlides, 
 
   if (!presenterView) {
     return (
-      <div className="presenter-full" onClick={() => { if (inkTool === "none") go(1); }} onContextMenu={(e) => { e.preventDefault(); if (inkTool === "none") go(-1); }}>
+      <div className="presenter-full" onClick={() => { if (inkTool === "none") go(1); }} onContextMenu={(e) => { e.preventDefault(); if (inkTool === "none") go(-1); }}
+        onPointerDown={(e) => { if (e.pointerType === "touch") swipeX.current = e.clientX; }}
+        onPointerUp={(e) => {
+          if (e.pointerType !== "touch" || swipeX.current === null) return;
+          const dx = e.clientX - swipeX.current; swipeX.current = null;
+          if (Math.abs(dx) > 60) { e.preventDefault(); go(dx < 0 ? 1 : -1); }
+        }}>
         {blank !== "none" ? <div className="blank" style={{ background: blank === "black" ? "#000" : "#fff" }} /> : renderSlide(slide, mainScale, true)}
         <div className="pres-hud">
           <span>{counter}</span>

@@ -9,13 +9,28 @@ import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { useToast } from "../pages/Home";
 import { AnonBanner } from "./Desktop";
+import { useIsMobile } from "../lib/mobile";
 
 export function Shell() {
   const [palette, setPalette] = useState(false);
   const [templates, setTemplates] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const isMobile = useIsMobile();
   const { msg, toast } = useToast();
+
+  // close the nav drawer on navigation + lock body scroll while it's open
+  useEffect(() => { setNavOpen(false); }, [pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setNavOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => { document.body.style.overflow = prev; document.removeEventListener("keydown", onKey); };
+  }, [navOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,9 +55,10 @@ export function Shell() {
   return (
     <div className="shell">
       <Rail />
-      <Sidebar onTemplates={() => setTemplates(true)} />
+      <Sidebar onTemplates={() => setTemplates(true)} open={navOpen} onClose={() => setNavOpen(false)} />
+      {isMobile && navOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}
       <main>
-        <Topbar onPalette={() => setPalette(true)} />
+        <Topbar onPalette={() => setPalette(true)} onNav={() => setNavOpen(true)} />
         <AnonBanner />
         <BillingBanner />
         <Outlet />
@@ -122,7 +138,7 @@ function Rail() {
   );
 }
 
-function Sidebar({ onTemplates }: { onTemplates: () => void }) {
+function Sidebar({ onTemplates, open, onClose }: { onTemplates: () => void; open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -168,9 +184,10 @@ function Sidebar({ onTemplates }: { onTemplates: () => void }) {
 
   const navCls = ({ isActive }: { isActive: boolean }) => `nav ${isActive ? "active" : ""}`;
   return (
-    <aside className="sidebar" style={{ position: "sticky" }}>
+    <aside className={`sidebar${open ? " open" : ""}`}>
       <div className="brand-name">
         <BrandLockup size={34} />
+        <button className="sidebar-close iconbtn" onClick={onClose} aria-label="Close navigation">✕</button>
       </div>
       <div ref={menuRef} style={{ position: "relative" }}>
         <button className="create" onClick={() => setMenuOpen((v) => !v)} disabled={creating}>
@@ -278,7 +295,7 @@ function MentionsBell() {
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
-function Topbar({ onPalette }: { onPalette: () => void }) {
+function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [q, setQ] = useState("");
@@ -319,10 +336,11 @@ function Topbar({ onPalette }: { onPalette: () => void }) {
 
   return (
     <div className="topbar">
+      <button className="iconbtn nav-burger" onClick={onNav} aria-label="Open navigation">☰</button>
       <div className="search" ref={boxRef} style={{ position: "relative" }}>
         <span style={{ color: "var(--muted)" }}>⌕</span>
         <input
-          placeholder="Search your workspace or ask Kreatix AI…"
+          placeholder="Search your workspace…"
           aria-label="Search your workspace"
           value={q}
           onChange={(e) => setQ(e.target.value)}

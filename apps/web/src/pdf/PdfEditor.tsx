@@ -131,7 +131,8 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const canEdit = permission === "owner" || permission === "editor";
   const [title, setTitle] = useState(item.name);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [panel, setPanel] = useState<Panel>("thumbs");
+  // rail overlays the document on small screens — start closed there
+  const [panel, setPanel] = useState<Panel>(() => (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches ? "none" : "thumbs"));
   const [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
@@ -1979,6 +1980,9 @@ export function PdfEditor({ item, initialDoc, permission }: {
       </div>
 
       <div className="work">
+        {panel !== "none" && panel !== "comments" && panel !== "versions" && (
+          <div className="rail-backdrop" onPointerDown={() => setPanel("none")} />
+        )}
         {panel !== "none" && panel !== "comments" && panel !== "versions" && (
           <div className="pdf-rail">
             {panel === "thumbs" && doc && Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (

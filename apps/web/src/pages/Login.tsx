@@ -2,11 +2,10 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { startAnonymousSession } from "../lib/offline/trial";
 import { BrandLockup } from "../components/AppIcon";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
-  const { login, register, loginWithToken } = useAuth();
+  const { login, register, loginWithToken, enterAnonymous } = useAuth();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [email, setEmail] = useState("");
@@ -88,7 +87,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
           <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
         )}
         <button type="button" className="btn-ghost anon-btn"
-          onClick={() => { void startAnonymousSession().then(() => navigate("/home")); }}>
+          onClick={() => { void enterAnonymous().then(() => navigate("/home")); }}>
           Continue without an account — 14 days free
         </button>
         <div className="auth-switch">

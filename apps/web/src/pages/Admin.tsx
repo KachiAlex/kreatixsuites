@@ -361,7 +361,7 @@ export function Admin() {
                   </div>
                 )}
                 {billing.payments.length > 0 && (
-                  <table className="admin-table" style={{ marginTop: 14 }}>
+                  <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
                     <thead><tr><th>When</th><th>Amount</th><th>Seats</th><th>Method</th><th>Status</th></tr></thead>
                     <tbody>
                       {billing.payments.map((p) => (
@@ -374,7 +374,7 @@ export function Admin() {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                  </table></div>
                 )}
               </>
             );
@@ -399,7 +399,7 @@ export function Admin() {
             </span>
           ))}
         </div>
-        <table className="admin-table">
+        <div className="tbl-scroll"><table className="admin-table">
           <thead><tr><th></th><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
           <tbody>
             {members.map((m) => (
@@ -430,7 +430,7 @@ export function Admin() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section className="admin-card">
@@ -443,7 +443,7 @@ export function Admin() {
           />
           <button className="btn-secondary" onClick={() => void load()}>Refresh</button>
         </div>
-        <table className="admin-table">
+        <div className="tbl-scroll"><table className="admin-table">
           <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>File</th><th>Detail</th></tr></thead>
           <tbody>
             {filtered.map((e) => (
@@ -459,7 +459,7 @@ export function Admin() {
               <tr><td colSpan={5} style={{ color: "var(--sub)", textAlign: "center" }}>No activity recorded</td></tr>
             )}
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       {isSuper && (
@@ -511,7 +511,7 @@ export function Admin() {
           {saPayments.length > 0 && (
             <section className="admin-card">
               <h2>Pending payments</h2>
-              <table className="admin-table">
+              <div className="tbl-scroll"><table className="admin-table">
                 <thead><tr><th>When</th><th>Workspace</th><th>Amount</th><th>Method</th><th></th></tr></thead>
                 <tbody>
                   {saPayments.map((p) => (
@@ -529,13 +529,13 @@ export function Admin() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </section>
           )}
 
           <section className="admin-card">
             <h2>Workspaces</h2>
-            <table className="admin-table">
+            <div className="tbl-scroll"><table className="admin-table">
               <thead><tr><th>Workspace</th><th>Seats</th><th>State</th><th>Monthly</th><th>Created</th><th></th></tr></thead>
               <tbody>
                 {saOrgs.map((o) => (
@@ -552,7 +552,7 @@ export function Admin() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           </section>
         </>
       )}

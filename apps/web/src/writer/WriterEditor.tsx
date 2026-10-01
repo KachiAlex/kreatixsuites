@@ -26,6 +26,7 @@ import type { Comment, DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { saveContent } from "../lib/drafts";
 import { useAuth } from "../lib/auth";
+import { isCoarse } from "../lib/mobile";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
@@ -451,6 +452,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
       : Math.min((canvas.clientWidth - 96) / pw, (canvas.clientHeight - 60) / ph);
     setZoom(Math.round(Math.min(3, Math.max(0.4, z)) * 100));
   }, []);
+
+  // touch devices: default to fit-width so the page isn't a tiny strip
+  useEffect(() => {
+    if (!editor || !isCoarse()) return;
+    const t = window.setTimeout(() => zoomFit("width"), 60);
+    return () => window.clearTimeout(t);
+  }, [editor, zoomFit]);
 
   // seed the shared doc from canonical JSON — exactly once, lowest clientID wins
   useEffect(() => {
@@ -2527,13 +2535,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
         <div className="modal-overlay" onClick={() => setWordCountOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Word count">
             <h3>Word count</h3>
-            <table className="kv-table"><tbody>
+            <div className="tbl-scroll"><table className="kv-table"><tbody>
               <tr><td>Words</td><td>{state?.words ?? 0}</td></tr>
               <tr><td>Characters</td><td>{state?.chars ?? 0}</td></tr>
               <tr><td>Characters (no spaces)</td><td>{wcStats?.noSpaces ?? 0}</td></tr>
               <tr><td>Paragraphs</td><td>{wcStats?.paras ?? 0}</td></tr>
               <tr><td>Reading time</td><td>~{wcStats?.mins ?? 1} min</td></tr>
-            </tbody></table>
+            </tbody></table></div>
             <button className="btn-primary btn-sm" onClick={() => setWordCountOpen(false)}>Close</button>
           </div>
         </div>
@@ -2542,7 +2550,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
         <div className="modal-overlay" onClick={() => setShortcutsOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Keyboard shortcuts">
             <h3>Keyboard shortcuts</h3>
-            <table className="kv-table"><tbody>
+            <div className="tbl-scroll"><table className="kv-table"><tbody>
               {[
                 ["Bold", "Ctrl+B"], ["Italic", "Ctrl+I"], ["Underline", "Ctrl+U"],
                 ["Insert link", "Ctrl+K"], ["Find", "Ctrl+F"], ["Find & replace", "Ctrl+H"],
@@ -2556,7 +2564,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
                 ["Copy / paint format", "Ctrl+Shift+C / V"],
                 ["Go to (page/line/bookmark/…)", "Ctrl+G"], ["Exit focus / read mode", "Esc"],
               ].map(([label, k]) => <tr key={label}><td>{label}</td><td><kbd>{k}</kbd></td></tr>)}
-            </tbody></table>
+            </tbody></table></div>
             <button className="btn-primary btn-sm" onClick={() => setShortcutsOpen(false)}>Close</button>
           </div>
         </div>

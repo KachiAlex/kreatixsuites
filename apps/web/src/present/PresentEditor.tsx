@@ -18,6 +18,7 @@ import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLID
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
 import { exportPptx } from "./export";
+import { useIsMobile } from "../lib/mobile";
 import { exportVideo } from "./video";
 import { importPptx, importOdp } from "./import";
 
@@ -848,8 +849,49 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
     if (el) setZoom(Math.min((el.clientWidth - 60) / SLIDE_W, (el.clientHeight - 60) / SLIDE_H));
   };
   useEffect(fitZoom, []);
+  const isMobile = useIsMobile();
 
-  const thumbScale = 0.145;
+  // touch: pinch-zoom the slide canvas + single-finger pan on empty space.
+  // Slide objects stopPropagation on pointerdown, so pans only start on the
+  // slide background / wrap.
+  const cPtrs = useRef(new Map<number, { x: number; y: number }>());
+  const cGest = useRef<{ d0: number; z0: number; lx: number; ly: number } | null>(null);
+  const canvasDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    cPtrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (cPtrs.current.size === 2) {
+      const [a, b] = [...cPtrs.current.values()];
+      cGest.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: zoom, lx: 0, ly: 0 };
+    } else if (cPtrs.current.size === 1) {
+      cGest.current = { d0: 0, z0: zoom, lx: e.clientX, ly: e.clientY };
+    }
+  };
+  const canvasMove = (e: React.PointerEvent) => {
+    if (!cPtrs.current.has(e.pointerId)) return;
+    cPtrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const g = cGest.current, wrap = canvasWrap.current;
+    if (!g || !wrap) return;
+    if (cPtrs.current.size === 2 && g.d0 > 0) {
+      const [a, b] = [...cPtrs.current.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      setZoom(Math.min(3, Math.max(0.1, g.z0 * (d / g.d0))));
+    } else if (cPtrs.current.size === 1 && g.d0 === 0) {
+      // single-finger pan scrolls the wrap
+      wrap.scrollLeft += g.lx - e.clientX;
+      wrap.scrollTop += g.ly - e.clientY;
+      g.lx = e.clientX; g.ly = e.clientY;
+    }
+  };
+  const canvasUp = (e: React.PointerEvent) => {
+    cPtrs.current.delete(e.pointerId);
+    if (cPtrs.current.size === 0) cGest.current = null;
+    else if (cPtrs.current.size === 1) {
+      const [a] = [...cPtrs.current.values()];
+      cGest.current = { d0: 0, z0: zoom, lx: a.x, ly: a.y };
+    }
+  };
+
+  const thumbScale = isMobile ? 0.1 : 0.145;
   const saveLabel: Record<SaveState, string> = {
     saved: "All changes saved", saving: "Saving…", unsaved: "Unsaved changes", error: "Save failed",
   };
@@ -1421,7 +1463,9 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission }: {
           </div>
         ) : (
         <div className="canvas-col">
-          <div className="canvas-wrap" ref={canvasWrap}>
+          <div className="canvas-wrap" ref={canvasWrap}
+            onPointerDown={canvasDown} onPointerMove={canvasMove}
+            onPointerUp={canvasUp} onPointerCancel={canvasUp}>
             <div style={{ width: dims.w * zoom, height: dims.h * zoom, position: "relative", boxShadow: "0 16px 48px rgba(23,18,15,.18)" }}>
               <SlideCanvas slide={editSlide} theme={theme} scale={zoom} interactive size={dims}
                 under={masterView === "off" ? underObjs(slide) : undefined}

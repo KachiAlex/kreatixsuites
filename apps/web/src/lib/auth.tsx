@@ -3,7 +3,7 @@ import type { User } from "@kreatix/shared";
 import { api, getToken, setToken } from "./api";
 import { isDesktop } from "./platform";
 import { clearEntitlement, refreshEntitlement } from "./offline/license";
-import { ANON_USER, endAnonymousSession, isAnonymous } from "./offline/trial";
+import { ANON_USER, endAnonymousSession, isAnonymous, startAnonymousSession } from "./offline/trial";
 
 interface AuthState {
   user: User | null;
@@ -11,6 +11,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName: string, orgName?: string, invite?: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
+  enterAnonymous: () => Promise<void>;
   logout: () => void;
 }
 
@@ -76,13 +77,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void convertAnonymous(wasAnon);
   };
 
+  /** Anonymous tier — stamp the install clock and adopt the local pseudo-user
+   *  in-place (no reload needed: Protected would bounce a null user). */
+  const enterAnonymous = async () => {
+    await startAnonymousSession();
+    setUser(ANON_USER as User);
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
     if (isDesktop) void clearEntitlement();
   };
 
-  return <Ctx.Provider value={{ user, loading, login, register, loginWithToken, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, login, register, loginWithToken, enterAnonymous, logout }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

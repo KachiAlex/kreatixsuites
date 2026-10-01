@@ -71,10 +71,10 @@ body{
 }
 button,input,textarea,select{font:inherit}
 a{color:var(--k-orange-dark)}
-.shell{display:grid;grid-template-columns:76px 252px minmax(0,1fr);min-height:100vh}
+.shell{display:grid;grid-template-columns:76px 252px minmax(0,1fr);min-height:100vh;min-height:100dvh}
 .rail{
-  background:var(--rail);color:var(--ink);padding:14px 12px 18px;display:flex;flex-direction:column;
-  align-items:center;gap:9px;position:sticky;top:0;height:100vh;z-index:10;
+  background:var(--rail);color:var(--ink);padding:14px 12px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;
+  align-items:center;gap:9px;position:sticky;top:0;height:100vh;height:100dvh;z-index:10;
   border-right:1px solid var(--line);
 }
 .brand-mark{width:48px;height:48px;border-radius:15px;overflow:hidden;box-shadow:0 9px 25px rgba(242,120,46,.28);margin:4px 0 10px;background:var(--k-orange);display:grid;place-items:center;color:#fff;font-weight:900;font-size:22px}
@@ -84,7 +84,7 @@ a{color:var(--k-orange-dark)}
 .spacer{flex:1}
 .sidebar{
   background:var(--sidebar);backdrop-filter:blur(18px);border-right:1px solid var(--line);
-  position:sticky;top:0;height:100vh;overflow:auto;padding:20px 17px;
+  position:sticky;top:0;height:100vh;height:100dvh;overflow:auto;padding:20px 17px;
 }
 .brand-name{display:flex;align-items:center;gap:11px;padding:6px 7px 17px}
 .mini-logo{width:36px;height:36px;border-radius:11px;overflow:hidden;box-shadow:0 6px 18px rgba(242,120,46,.18);background:var(--k-orange);display:grid;place-items:center;color:#fff;font-weight:900}
@@ -196,9 +196,9 @@ main{padding:19px 28px 50px;min-width:0}
 footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 
 /* ---------- auth ---------- */
-.auth-wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
+.auth-wrap{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px}
 .auth-brand{display:flex;justify-content:center;background:#161616;border-radius:18px;padding:10px 22px;margin-bottom:18px;box-shadow:0 12px 30px rgba(20,20,20,.18)}
-.auth-card{width:400px;background:var(--surface);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:30px}
+.auth-card{width:min(400px,calc(100vw - 32px));background:var(--surface);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:30px}
 .auth-card .brand-mark{margin:0 auto 14px}
 .auth-card h1{font-size:20px;text-align:center;margin:0 0 4px;letter-spacing:-.4px}
 .auth-card>p{text-align:center;color:var(--muted);font-size:12px;margin:0 0 20px}
@@ -211,7 +211,7 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .auth-switch{text-align:center;font-size:12px;color:var(--muted);margin-top:16px}
 
 /* ---------- editor chrome ---------- */
-.editor-shell{display:flex;flex-direction:column;height:100vh;background:var(--bg)}
+.editor-shell{display:flex;flex-direction:column;height:100vh;height:100dvh;background:var(--bg);overscroll-behavior:none}
 .editor-top{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--surface);border-bottom:1px solid var(--line)}
 .editor-top .back{border:0;background:transparent;font-size:16px;color:var(--muted);cursor:pointer;border-radius:9px;padding:6px 8px}
 .editor-top .back:hover{background:var(--subtle)}
@@ -221,15 +221,14 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .save-state.saving{color:var(--k-orange-dark)}
 .editor-top .spacer{flex:1}
 .ribbon{display:flex;align-items:center;gap:4px;padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
-.rb{width:34px;height:34px;border:0;border-radius:9px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer;display:grid;place-items:center;font-weight:600}
+.rb{width:34px;height:34px;border:0;border-radius:9px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer;display:grid;place-items:center;font-weight:600;position:relative}
 .rb:hover{background:var(--subtle)}
 .rb.on{background:var(--k-orange-soft);color:var(--k-orange-dark)}
 .rb:disabled{opacity:.4;cursor:default}
 .rb-sep{width:1px;height:22px;background:var(--line);margin:0 6px}
 .rb-sel{height:32px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px;padding:0 8px;color:var(--ink)}
 .doc-canvas{overflow:auto;padding:22px 20px 80px;flex:1;min-height:0}
-.ribbon{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
-.ribbon::-webkit-scrollbar{display:none}
+/* mobile overrides live in the consolidated block at the end of this file */
 /* a scroll container clips absolutely-positioned menus — drop clipping while any dropdown is open */
 .ribbon:has(.rb-drop-menu),.ribbon:has(.menu-drop){overflow:visible}
 /* PDF ribbon tool-group dropdowns (labeled categories instead of flat icons) */
@@ -245,10 +244,7 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .ruler-wrap{display:flex;justify-content:center;position:sticky;top:4px;z-index:4;margin-bottom:8px}
 .ruler{display:block;overflow:visible;border-radius:2px}
 .ribbon-end{margin-left:auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;position:sticky;right:0;background:var(--surface)}
-@media (max-width:1180px){.word-count{display:none}}
-@media (max-width:1330px){.rb-opt{display:none}}
-@media (max-width:1200px){.rb-opt2{display:none}}
-@media (max-width:1020px){.ribbon{flex-wrap:wrap;row-gap:2px}.ribbon-end{position:static}}
+/* responsive ribbon rules moved to the consolidated mobile block at end of file */
 .word-count{font-size:10px;color:var(--muted);cursor:pointer;white-space:nowrap;padding-right:2px}
 .doc-page{background:var(--surface);width:min(860px,100%);margin:0 auto;box-shadow:0 10px 40px rgba(46,35,29,.10);border:1px solid var(--line);border-radius:4px;min-height:1100px;padding:76px 84px}
 .doc-page .ProseMirror{outline:none;font-size:14px;line-height:1.7;color:var(--ink);min-height:900px}
@@ -465,17 +461,9 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .perm-badge{font-size:9px;font-weight:800;padding:3px 8px;border-radius:999px;background:var(--subtle);color:var(--ink);text-transform:uppercase;letter-spacing:.06em}
 .perm-badge.owner{background:var(--k-orange-soft);color:var(--k-orange-dark)}
 
-@media(max-width:1180px){
-  .shell{grid-template-columns:72px 220px minmax(0,1fr)}
-  .apps,.templates{grid-template-columns:repeat(2,1fr)}
-  .content-grid{grid-template-columns:1fr}
-}
-@media(max-width:880px){
-  .shell{grid-template-columns:64px minmax(0,1fr)}
-  .sidebar{display:none}
-  main{padding:16px}
-  .hero-orange,.hero-shape{opacity:.28}
-}
+.nav-burger{display:none;flex-shrink:0}
+.sidebar-close{display:none;margin-left:auto;width:36px;height:36px}
+/* all mobile overrides consolidated at end of file so they win the cascade */
 
 /* ===== Kreatix Sheets ===== */
 .sheet-workspace{flex:1;position:relative;overflow:auto;background:var(--subtle)}
@@ -498,7 +486,21 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .grid-table .cell.in-sel{background:rgba(31,157,102,.08) !important}
 .grid-table .cell.err{color:#C12E42 !important;font-weight:600}
 .sel-frame{position:absolute;border:2px solid var(--sheets);pointer-events:none;z-index:18;box-sizing:border-box}
-.fill-handle{position:absolute;right:-4px;bottom:-4px;width:8px;height:8px;background:var(--sheets);border:1.5px solid var(--line);border-radius:2px;cursor:crosshair;pointer-events:auto}
+.fill-handle{position:absolute;right:-4px;bottom:-4px;width:8px;height:8px;background:var(--sheets);border:1.5px solid var(--line);border-radius:2px;cursor:crosshair;pointer-events:auto;touch-action:none}
+/* touch range handles — only visible on coarse pointers */
+.sel-th{display:none;position:absolute;width:22px;height:22px;border-radius:50%;background:var(--sheets);border:2px solid var(--surface);box-shadow:0 2px 8px rgba(23,18,15,.3);pointer-events:auto;touch-action:none}
+.sel-th-tl{left:-11px;top:-11px;cursor:nwse-resize}
+.sel-th-br{right:-11px;bottom:-11px;cursor:nwse-resize}
+@media (pointer: coarse) {
+  .sel-th{display:block}
+  .fill-handle{width:12px;height:12px;right:-6px;bottom:-6px}
+  .grip-c{width:14px;right:-7px}
+  .grip-r{height:14px;bottom:-7px}
+  .grid-table .col-h{height:34px;font-size:11px}
+  .grid-table .row-h{width:36px;min-width:36px}
+  .grid-table .cell{font-size:13px}
+}
+.grip-c,.grip-r{touch-action:none}
 .cell-editor{position:absolute;z-index:25;border:2px solid var(--sheets);border-radius:2px;font-size:12px;padding:3px 5px;background:var(--surface);box-shadow:0 8px 24px rgba(23,18,15,.16)}
 .cell-editor:focus{outline:none}
 .freeze-v{position:absolute;top:0;bottom:0;width:2px;background:var(--sheets);opacity:.7;z-index:16;pointer-events:none}
@@ -862,6 +864,7 @@ textarea.inp{padding:8px 10px;height:auto}
 @keyframes m-color{0%,100%{filter:none}50%{filter:hue-rotate(120deg) saturate(1.6)}}
 
 /* ===================== Kreatix PDF ===================== */
+.rail-backdrop{display:none}
 .pdf-rail{width:152px;min-width:152px;flex-shrink:0;background:var(--sidebar,#FBF9F7);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden;padding:10px 8px;display:flex;flex-direction:column;gap:8px}
 .pdf-thumb{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border:1.5px solid transparent;border-radius:10px;cursor:pointer}
 .pdf-thumb:hover{background:var(--subtle)}
@@ -914,6 +917,9 @@ textarea.inp{padding:8px 10px;height:auto}
 .pdf-page .textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;z-index:2}
 .pdf-page .annotationLayer{position:absolute;inset:0;z-index:3}
 .ann-layer{position:absolute;inset:0;z-index:4}
+/* an active draw tool claims the gesture — page must not pan while drawing */
+.pdf-page.draw{touch-action:none}
+.sig-pad{touch-action:none}
 .pdf-pageno{position:absolute;bottom:6px;right:10px;font-size:10px;color:var(--muted);z-index:5;pointer-events:none}
 
 /* status bar + selection popup + shortcuts overlay + field highlight */
@@ -1576,38 +1582,21 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .pdf-reflowpage-no{font-size:11px;color:var(--muted);text-align:center;margin-bottom:14px;letter-spacing:.06em}
 .pdf-reflowpage p{margin:0 0 6px;line-height:1.55}
 
-/* ---------- mobile / small screens ---------- */
-@media (max-width: 900px) {
-  /* rail becomes an overlay drawer instead of squeezing the document */
-  .editor .work{position:relative}
-  .pdf-rail{position:absolute;inset:0 auto 0 0;z-index:30;width:196px;min-width:196px;box-shadow:10px 0 32px rgba(0,0,0,.22)}
-  .side-panel{width:min(330px,96vw)}
-  .dlg{max-width:calc(100vw - 24px)!important;max-height:calc(100dvh - 32px);overflow-y:auto}
-  .modal-card{max-width:calc(100vw - 24px)}
-  /* chrome rows scroll horizontally instead of overflowing */
-  .menubar,.editor .topbar{overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap}
-  .menubar::-webkit-scrollbar,.editor .topbar::-webkit-scrollbar{display:none}
-  .editor .topbar{gap:7px;margin-bottom:0;padding:7px 10px}
-  .editor .doc-title{min-width:0;flex:0 1 160px}
-  .pdf-status{gap:9px;overflow-x:auto;scrollbar-width:none;white-space:nowrap}
-  .pdf-status::-webkit-scrollbar{display:none}
-  .pdf-sigbanner{flex-wrap:wrap;row-gap:2px}
-  .ann-pop{width:min(190px,72vw)}
-  .menu-drop,.rb-drop-menu{max-width:calc(100vw - 16px)}
-  .pdf-pages{gap:16px;padding:16px 12px}
-}
-@media (max-width: 560px) {
-  /* touch-friendly targets */
-  .rb{min-width:36px;width:36px;height:36px}
-  .rb-sep{margin:0 3px}
-  .rb-sel{height:34px}
-  .sel-pop button{min-width:32px;height:30px;font-size:14px}
-  .pdf-vmnav{position:sticky;bottom:8px}
-  .pdf-loupe{display:none} /* pinch-zoom covers magnification on touch devices */
-  .pdf-ruler{display:none} /* rulers are desktop-oriented; keep pages clean */
-  .editor .topbar .btn-ghost{padding:4px 7px}
-  .presence-label{display:none}
-}
+/* mobile blocks removed — see the consolidated responsive section at end of file */
+
+/* BottomSheet component */
+.sheet-back{position:fixed;inset:0;background:rgba(23,18,15,.45);z-index:120;display:flex;align-items:flex-end;justify-content:center}
+.sheet-card{width:100%;max-width:560px;max-height:88vh;max-height:88dvh;background:var(--surface);border-radius:20px 20px 0 0;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;touch-action:none;padding-bottom:env(safe-area-inset-bottom)}
+.sheet-grip{padding:10px 0 6px;display:grid;place-items:center;cursor:grab;touch-action:none;flex-shrink:0}
+.sheet-grip-bar{width:42px;height:5px;border-radius:99px;background:var(--line)}
+.sheet-title{font-size:14px;font-weight:700;padding:2px 18px 8px;color:var(--ink)}
+.sheet-body{overflow-y:auto;padding:4px 12px 14px;touch-action:pan-y}
+.sheet-body button{display:block;width:100%;border:0;background:transparent;text-align:left;padding:12px 10px;border-radius:10px;font-size:14px;cursor:pointer;color:var(--ink)}
+.sheet-body button:hover{background:var(--subtle)}
+.sheet-body button.danger{color:var(--danger)}
+.sheet-body .menu-title{padding:8px 10px 4px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+/* dialog/sheet mobile rules moved to the consolidated section at end of file */
 
 /* ===== Word-parity dialogs (MoreDialogs) ===== */
 .modal-wide{max-width:640px;min-width:420px;max-height:86vh;overflow-y:auto}
@@ -1742,7 +1731,7 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .lp-foot{display:flex;align-items:center;gap:18px;justify-content:center;padding:26px 5vw;border-top:1px solid var(--line,#EDE6E0);color:var(--muted);font-size:13px}
 .lp-foot a{color:var(--muted);text-decoration:none;font-weight:600}
 .lp-foot a:hover{color:var(--k-orange)}
-@media (max-width:640px){.lp-nav nav{gap:12px}.lp-nav a:not(.lp-cta):nth-child(2){display:none}}
+/* landing nav mobile rule moved to consolidated section at end of file */
 
 /* workspace billing banner */
 .billing-banner{display:flex;align-items:center;gap:12px;padding:8px 16px;font-size:13px;flex:none;border-bottom:1px solid var(--line,var(--line))}
@@ -1759,3 +1748,210 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .entitlement-card p{color:var(--muted);font-size:14px;line-height:1.6;margin:0 0 20px}
 .entitlement-card .btn-primary{width:100%}
 .auth-card .anon-btn{width:100%;margin-top:10px;font-size:12px}
+
+/* ======================================================================
+   RESPONSIVE / TOUCH OVERRIDES — consolidated at end of file on purpose:
+   same-specificity base rules defined above must lose to these.
+   ====================================================================== */
+
+/* ---- document canvas ---- */
+@media(max-width:768px){
+  .doc-canvas{padding:12px 10px 60px}
+  .doc-page{padding:clamp(20px,7vw,44px) clamp(14px,5vw,40px);min-height:70vh}
+  .ruler-wrap{display:none}
+  .mode-exit{top:calc(10px + env(safe-area-inset-top));right:12px;min-width:40px;min-height:40px}
+  .ribbon{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
+  .ribbon::-webkit-scrollbar{display:none}
+}
+
+/* ---- ribbon density breakpoints ---- */
+@media (max-width:1180px){.word-count{display:none}}
+@media (max-width:1330px){.rb-opt{display:none}}
+@media (max-width:1200px){.rb-opt2{display:none}}
+@media (min-width:769px) and (max-width:1020px){.ribbon{flex-wrap:wrap;row-gap:2px}.ribbon-end{position:static}}
+
+/* ---- shell ---- */
+@media(max-width:1180px){
+  .shell{grid-template-columns:72px 220px minmax(0,1fr)}
+  .apps,.templates{grid-template-columns:repeat(2,1fr)}
+  .content-grid{grid-template-columns:1fr}
+}
+@media(max-width:880px){
+  .shell{grid-template-columns:64px minmax(0,1fr)}
+  /* sidebar becomes an overlay drawer — reachable via the topbar hamburger */
+  .sidebar{position:fixed;inset:0 auto 0 0;width:min(300px,86vw);z-index:100;transform:translateX(-106%);transition:transform .22s ease;box-shadow:12px 0 40px rgba(23,18,15,.25);height:100vh;height:100dvh}
+  .sidebar.open{transform:none}
+  .sidebar-backdrop{position:fixed;inset:0;background:rgba(23,18,15,.4);z-index:99}
+  .sidebar-close{display:grid}
+  main{padding:16px}
+  .hero-orange,.hero-shape{opacity:.28}
+}
+@media(max-width:768px){
+  /* single column: rail hidden, drawer carries all navigation */
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .rail{display:none}
+  .nav-burger{display:grid}
+  .topbar{margin-bottom:16px}
+  .topbar .search{height:44px}
+  .topbar .search kbd{display:none}
+  main{padding:14px 14px 40px}
+  /* file rows: icon + name + kebab; meta folds into the subtitle */
+  .file,.file.folder-row{grid-template-columns:38px minmax(0,1fr) 30px}
+  .file .meta{display:none}
+  .file .people{display:none}
+  .file-menu{max-width:calc(100vw - 20px)}
+  /* home / drive cards */
+  .apps,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hero{border-radius:20px;min-height:0}
+  .hero h1{font-size:clamp(22px,6vw,32px);max-width:none}
+  .hero p{max-width:none}
+  .hero-content{padding:22px;max-width:none}
+  .hero-actions{flex-wrap:wrap}
+  .hero-actions .btn-primary,.hero-actions .btn-ghost{height:44px}
+  .section-head h2{font-size:15px}
+  /* admin + wide tables scroll inside a wrapper — keeps column alignment */
+  .tbl-scroll{overflow-x:auto;margin:0 -4px;padding:0 4px}
+  .tbl-scroll .admin-table,.tbl-scroll .kv-table,.tbl-scroll .read-table{white-space:nowrap;min-width:100%}
+  .audit-bar{flex-wrap:wrap}
+  .audit-bar input{flex:1 1 150px;min-width:0}
+  .role-badge{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle}
+  .admin-page{padding:20px 12px 60px}
+  .admin-card{padding:14px}
+  .flag{flex:1 1 150px;min-width:0}
+  .flag span{overflow-wrap:anywhere}
+  .crumbs{overflow-x:auto;white-space:nowrap;scrollbar-width:none;padding-bottom:4px}
+  .ai-panel{margin-top:14px}
+  .billing-banner{flex-wrap:wrap;font-size:11px}
+}
+
+/* ---- shared editor chrome ---- */
+@media(max-width:768px){
+  /* top bar becomes a single scrollable strip — keeps the canvas tall */
+  .editor-top{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding:8px 12px;gap:7px}
+  .editor-top::-webkit-scrollbar{display:none}
+  .editor-top>*{flex-shrink:0}
+  .doc-title{min-width:0;flex:1 1 120px;font-size:15px}
+  .editor-top .spacer{display:none}
+  .editor-top .perm-badge{flex-shrink:0}
+  .save-state{flex-shrink:0}
+  /* ribbon stays a single scrollable strip — wrapping produces a wall of buttons */
+  .ribbon{flex-wrap:nowrap!important;overflow-x:auto;row-gap:0;padding:6px 10px}
+  .menubar{padding:0 10px}
+  .status-bar,.sheet-status{padding-left:10px;padding-right:10px;overflow-x:auto;scrollbar-width:none;gap:8px}
+  .status-bar::-webkit-scrollbar,.sheet-status::-webkit-scrollbar{display:none}
+  .sb-zoom{width:84px;flex-shrink:0}
+  .sb-item{flex-shrink:0}
+  /* fixed/floating panels cover the small screen fully */
+  .find-bar{left:8px;right:8px;width:auto}
+  .draft-banner{flex-wrap:wrap;font-size:12px}
+  /* sheets chrome compaction */
+  .formula-bar{padding:5px 10px;gap:6px}
+  .formula-bar .name-box{width:64px;font-size:11px}
+  .formula-bar .fx-val{max-width:110px}
+  .sheet-tabs{padding:4px 8px}
+  .sheet-status{gap:8px;overflow-x:auto;scrollbar-width:none;white-space:nowrap;font-size:10px}
+  .sheet-status::-webkit-scrollbar{display:none}
+  .sheet-tables-bar{overflow-x:auto;scrollbar-width:none}
+  /* context/header menus can grow tall — cap + scroll, always on-screen */
+  .hmenu{max-height:min(60vh,60dvh);overflow-y:auto;max-width:calc(100vw - 16px)}
+  .border-menu{max-width:calc(100vw - 16px);max-height:60dvh;overflow-y:auto}
+  .slicer-panel{max-width:calc(100vw - 20px)}
+  /* present: slide rail becomes a bottom filmstrip */
+  .present-body{flex-direction:column}
+  .slide-rail{width:100%;min-width:0;height:auto;max-height:120px;flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:8px;border-right:0;border-top:1px solid var(--line);order:2}
+  .rail-slide{flex-shrink:0;display:flex;flex-direction:row;align-items:center;gap:4px}
+  .rail-thumb{margin-left:0}
+  .rail-num{position:static}
+  .rail-ops{flex-direction:column;padding:0 4px;gap:2px}
+  .canvas-wrap{padding:12px}
+  .outline{display:none}
+  /* speaker notes collapse to a tap-to-expand strip */
+  .notes-box{max-height:38px;transition:max-height .18s ease}
+  .notes-box:focus{max-height:150px}
+}
+
+/* ---- PDF + small-screen chrome ---- */
+@media (max-width: 900px) {
+  /* rail becomes an overlay drawer instead of squeezing the document */
+  .editor .work{position:relative}
+  .pdf-rail{position:absolute;inset:0 auto 0 0;z-index:30;width:196px;min-width:196px;box-shadow:10px 0 32px rgba(0,0,0,.22)}
+  .rail-backdrop{display:block;position:absolute;inset:0;z-index:29;background:rgba(23,18,15,.28)}
+  .side-panel{width:min(330px,96vw)}
+  .dlg{max-width:calc(100vw - 24px)!important;max-height:calc(100dvh - 32px);overflow-y:auto}
+  .modal-card{max-width:calc(100vw - 24px)}
+  /* chrome rows scroll horizontally instead of overflowing */
+  .menubar,.editor .topbar{overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap}
+  .menubar::-webkit-scrollbar,.editor .topbar::-webkit-scrollbar{display:none}
+  .editor .topbar{gap:7px;margin-bottom:0;padding:7px 10px}
+  .editor .doc-title{min-width:0;flex:0 1 160px}
+  .pdf-status{gap:9px;overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+  .pdf-status::-webkit-scrollbar{display:none}
+  .pdf-sigbanner{flex-wrap:wrap;row-gap:2px}
+  .ann-pop{width:min(190px,72vw)}
+  .menu-drop,.rb-drop-menu{max-width:calc(100vw - 16px)}
+  .pdf-pages{gap:16px;padding:16px 12px}
+}
+@media (max-width: 560px) {
+  /* touch-friendly targets */
+  .rb{min-width:36px;width:36px;height:36px}
+  .rb-sep{margin:0 3px}
+  .rb-sel{height:34px}
+  .sel-pop button{min-width:32px;height:30px;font-size:14px}
+  .pdf-vmnav{position:sticky;bottom:8px}
+  .pdf-loupe{display:none} /* pinch-zoom covers magnification on touch devices */
+  .pdf-ruler{display:none} /* rulers are desktop-oriented; keep pages clean */
+  .editor .topbar .btn-ghost{padding:4px 7px}
+  .presence-label{display:none}
+}
+
+/* ---- dialogs become bottom sheets on phones ---- */
+@media (max-width: 768px) {
+  .dlg-back{align-items:flex-end;display:flex}
+  .dlg-back .dlg,.dlg-back .modal-wide{width:100%;max-width:100vw!important;min-width:0;border-radius:20px 20px 0 0;max-height:88dvh;overflow-y:auto;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+  /* command palette stays top-anchored — it's a search, not a menu */
+  .dlg-back.palette-back{align-items:flex-start;padding-top:8dvh}
+  .palette{width:100%;border-radius:14px;max-height:70dvh}
+  .palette-input{font-size:16px}
+  .dlg-grid2{grid-template-columns:1fr}
+  .modal-wide{min-width:0}
+  /* side panels become full-screen sheets */
+  .side-panel{width:100vw;left:0;border-left:0}
+  .side-panel .sp-head,.side-panel .panel-head{padding-top:calc(10px + env(safe-area-inset-top))}
+  /* toast above the gesture bar */
+  .toast{bottom:calc(14px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px)}
+}
+
+/* ---- landing ---- */
+@media (max-width:640px){.lp-nav nav{gap:12px}.lp-nav a:not(.lp-cta):nth-child(2){display:none}}
+
+/* ---- coarse pointer (touch) ---- */
+@media (pointer: coarse) {
+  /* present canvas owns its gestures — pinch zooms, single-finger drag pans */
+  .canvas-wrap{touch-action:none}
+  /* sheets: bigger grips + selection handles */
+  .sel-th{display:block}
+  .fill-handle{width:12px;height:12px;right:-6px;bottom:-6px}
+  .grip-c{width:14px;right:-7px}
+  .grip-r{height:14px;bottom:-7px}
+  .grid-table .col-h{height:34px;font-size:11px}
+  .grid-table .row-h{width:36px;min-width:36px}
+  .grid-table .cell{font-size:13px}
+  /* iOS Safari auto-zooms on inputs < 16px — bump interactive text on touch */
+  input,textarea,select,[contenteditable]{font-size:max(1em,16px)}
+  .fx-input,.cell-editor,.doc-title,.search input,.prompt textarea{font-size:16px}
+  .rb{min-width:40px;width:40px;height:40px;font-size:15px}
+  .rb-dropbtn{width:auto;min-width:40px;padding:0 10px;display:flex;align-items:center;white-space:nowrap}
+  .rb-sel{height:40px;font-size:13px}
+  .iconbtn{width:44px;height:44px}
+  .nav{padding:12px 11px}
+  .rail-btn{width:44px;height:44px}
+  .kebab{padding:10px;font-size:16px}
+  .sheet-tab{padding:10px 16px}
+  .tab-add{width:36px;height:36px}
+  .kx-tbl-grip{width:24px;height:24px}
+  .kx-tbl-corner{width:14px;height:14px}
+  .kx-tbl-ins .kx-ins-btn{width:24px;height:24px}
+  .rs-handle{width:14px!important;height:14px!important}
+  .rail-ops button{width:34px;height:34px;font-size:14px}
+  .btn-ghost.btn-sm,.btn-primary.btn-sm{height:36px;padding:0 14px;font-size:13px}
+}

@@ -1,4 +1,4 @@
-import { useMemo, type JSX, type MouseEvent } from "react";
+import { useMemo, type JSX } from "react";
 import type { ChartSpec, SheetData, Workbook } from "./model";
 import { parseRange, parseA1, toA1 } from "./model";
 import { evaluateSheet, evaluateSheetIn } from "./engine";
@@ -329,14 +329,19 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
     });
   }
 
-  const drag = (e: MouseEvent) => {
+  const drag = (e: React.PointerEvent) => {
     if (!onMove) return;
     e.preventDefault();
     const sx = e.clientX, sy = e.clientY, ox = spec.x, oy = spec.y;
-    const move = (ev: globalThis.MouseEvent) => onMove(spec.id, ox + ev.clientX - sx, oy + ev.clientY - sy);
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    const move = (ev: globalThis.PointerEvent) => onMove(spec.id, ox + ev.clientX - sx, oy + ev.clientY - sy);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   const legendEl = legendPos !== "none" && series.length > 0 && (
@@ -354,7 +359,7 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
 
   return (
     <div className="chart-card" style={{ left: spec.x, top: spec.y }}>
-      <div className="chart-head" onMouseDown={drag}>
+      <div className="chart-head" onPointerDown={drag} style={{ touchAction: "none" }}>
         <b>{spec.title || spec.range}</b>
         <span>
           {onEdit && <button title="Chart settings" onMouseDown={(e) => e.stopPropagation()}

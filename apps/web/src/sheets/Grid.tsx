@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type MouseEvent, type CSSProperties } from "react";
+import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type CSSProperties } from "react";
 import type { SheetData, Range, Ref, Workbook, SheetObject, RichRun, CellStyle } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden, richStyleRuns, richRunsMatch, richRunsForEdit } from "./model";
 import type { EvalResult } from "./engine";
@@ -6,6 +6,7 @@ import { formatValue } from "./format";
 import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects, columnSuggestions } from "./io";
 import { FxInput } from "./FxInput";
 import { SparklineView } from "./Chart";
+import { clampToViewport } from "../lib/mobile";
 
 const HEADER_H = 26;
 const OVERSCAN_ROWS = 6;
@@ -391,10 +392,44 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     onPaste({ col: selection.c1, row: selection.r1 }, text, html.includes("<table") ? html : undefined);
   };
 
-  const cellMouse = (c: number, r: number, e: MouseEvent) => {
+  // touch long-press → context menu (iOS doesn't reliably fire contextmenu)
+  const lp = useRef<{ t: number; x: number; y: number } | null>(null);
+  const cancelLp = () => {
+    if (lp.current) { window.clearTimeout(lp.current.t); lp.current = null; }
+  };
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      if (lp.current && Math.hypot(e.clientX - lp.current.x, e.clientY - lp.current.y) > 10) cancelLp();
+    };
+    const end = () => cancelLp();
+    window.addEventListener("pointermove", move, { passive: true });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, []);
+
+  const cellMouse = (c: number, r: number, e: React.MouseEvent | React.PointerEvent) => {
     const merge = mergeMaps.covered.get(toA1(c, r)) ?? mergeMaps.heads.get(toA1(c, r));
     const box: Range = merge ?? { c1: c, r1: r, c2: c, r2: r };
-    if (e.type === "mousedown") {
+    const ref = toA1(c, r);
+    if (e.type === "pointerdown") {
+      const pe = e as React.PointerEvent;
+      const touch = pe.pointerType === "touch";
+      if (touch) {
+        // long-press → cell context menu; drag stays native pan-scroll
+        if (onCellMenu) {
+          cancelLp();
+          lp.current = { t: window.setTimeout(() => { onCellMenu(ref, pe.clientX, pe.clientY); }, 520), x: pe.clientX, y: pe.clientY };
+        }
+        if (selObj) setSelObj(null);
+        setSelection(box);
+        containerRef.current?.focus();
+        return;
+      }
       if (selObj) setSelObj(null);
       if (e.shiftKey) {
         extendSelection?.({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
@@ -407,7 +442,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         setDragging(true);
       }
       containerRef.current?.focus();
-    } else if (e.type === "mouseenter" && dragging) {
+    } else if (e.type === "pointerenter" && dragging) {
       const next = { c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) };
       if (extendSelection && allSels.length > 1) extendSelection(next);
       else setSelection(next);
@@ -418,8 +453,33 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   useEffect(() => {
     const up = () => setDragging(false);
     window.addEventListener("mouseup", up);
-    return () => window.removeEventListener("mouseup", up);
+    window.addEventListener("pointerup", up);
+    return () => { window.removeEventListener("mouseup", up); window.removeEventListener("pointerup", up); };
   }, []);
+
+  /** Touch range-extend: drag a selection-handle to grow/shrink the range. */
+  const startTouchExtend = (corner: "tl" | "br", e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const src = { ...selRef.current };
+    const move = (ev: PointerEvent) => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("td.cell") as HTMLElement | null;
+      if (!el || el.dataset.c === undefined || el.dataset.r === undefined) return;
+      const cc = Number(el.dataset.c), rr = Number(el.dataset.r);
+      const next = corner === "br"
+        ? { ...src, c2: Math.max(src.c1, cc), r2: Math.max(src.r1, rr) }
+        : { ...src, c1: Math.min(src.c2, cc), r1: Math.min(src.r2, rr) };
+      setSelection(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
   useEffect(() => {
     if (!hMenu) return;
     const close = () => setHMenu(null);
@@ -435,25 +495,27 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   const frozenTop = HEADER_H + (fz.rows ? rowY[fz.rows - 1] + rowH(fz.rows - 1) : 0);
 
   // ---- resize grips ----
-  const startResize = (axis: "col" | "row", i: number, e: MouseEvent) => {
+  const startResize = (axis: "col" | "row", i: number, e: React.PointerEvent) => {
     if (!onGeom) return;
     e.preventDefault();
     e.stopPropagation();
     const start = axis === "col" ? e.clientX : e.clientY;
     const size0 = axis === "col" ? colW(i) : rowH(i);
-    const move = (ev: globalThis.MouseEvent) => {
+    const move = (ev: globalThis.PointerEvent) => {
       const delta = (axis === "col" ? ev.clientX : ev.clientY) - start;
       setResizePrev({ axis, i, size: Math.max(axis === "col" ? 24 : 12, size0 + delta) });
     };
-    const up = (ev: globalThis.MouseEvent) => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+    const up = (ev: globalThis.PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       const delta = (axis === "col" ? ev.clientX : ev.clientY) - start;
       onGeom(axis, i, Math.max(axis === "col" ? 24 : 12, size0 + delta));
       setResizePrev(null);
     };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   /** Double-click grip → autofit: widest rendered text in the column. */
@@ -571,8 +633,8 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           borderBottom: borderCss(s.borders?.bottom), borderLeft: borderCss(s.borders?.left),
         }}
         role="gridcell" aria-selected={sel || undefined} aria-colindex={c + 1}
-        onMouseDown={(e) => cellMouse(c, r, e)}
-        onMouseEnter={(e) => cellMouse(c, r, e)}
+        onPointerDown={(e) => cellMouse(c, r, e)}
+        onPointerEnter={(e) => cellMouse(c, r, e)}
         onDoubleClick={(e) => cellMouse(c, r, e)}
         title={[
           sheet.notes?.[ref] ?? "",
@@ -650,12 +712,12 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                     return (
                       <th key={c} className={`col-h ${allSels.some((s) => c >= s.c1 && c <= s.c2) ? "sel" : ""} ${w === 0 ? "hid" : ""}`}
                         style={{ position: "sticky", top: 0, zIndex: 20, width: w, minWidth: w, padding: 0 }}
-                        onMouseDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-c")) setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 }); }}
-                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ x: e.clientX, y: e.clientY, axis: "col", index: c }); }}>
+                        onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-c")) setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 }); }}
+                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "col", index: c }); }}>
                         {w > 0 ? colLabel(c) : ""}
                         {canEdit && onGeom && w > 0 && (
                           <span className="grip-c" title="Drag to resize — double-click to autofit"
-                            onMouseDown={(e) => startResize("col", c, e)}
+                            onPointerDown={(e) => startResize("col", c, e)}
                             onDoubleClick={(e) => { e.stopPropagation(); autofitCol(c); }} />
                         )}
                       </th>
@@ -681,12 +743,12 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                     <tr key={r} style={{ height: h }}>
                       <td className={`row-h ${allSels.some((s) => r >= s.r1 && r <= s.r2) ? "sel" : ""} ${h === 0 ? "hid" : ""}`}
                         style={{ position: "sticky", left: 0, zIndex: 15, padding: 0, ...(r < fz.rows ? { top: HEADER_H + rowY[r] } : {}) }}
-                        onMouseDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-r")) setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r }); }}
-                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ x: e.clientX, y: e.clientY, axis: "row", index: r }); }}>
+                        onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-r")) setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r }); }}
+                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "row", index: r }); }}>
                         {h > 0 ? r + 1 : ""}
                         {canEdit && onGeom && h > 0 && (
                           <span className="grip-r" title="Drag to resize — double-click to reset"
-                            onMouseDown={(e) => startResize("row", r, e)}
+                            onPointerDown={(e) => startResize("row", r, e)}
                             onDoubleClick={(e) => { e.stopPropagation(); autofitRow(r); }} />
                         )}
                       </td>
@@ -730,12 +792,19 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                 )}
               </span>
             )}
+            {/* touch range handles — corner dots that drag-extend on coarse pointers */}
+            {si === allSels.length - 1 && canEdit && (
+              <>
+                <div className="sel-th sel-th-tl" onPointerDown={(e) => startTouchExtend("tl", e)} />
+                <div className="sel-th sel-th-br" onPointerDown={(e) => startTouchExtend("br", e)} />
+              </>
+            )}
             {si === allSels.length - 1 && canEdit && <div className="fill-handle"
-            onMouseDown={(e) => {
+            onPointerDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
               const src = { ...selection };
-              const move = (ev: globalThis.MouseEvent) => {
+              const move = (ev: globalThis.PointerEvent) => {
                 const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("td.cell") as HTMLElement | null;
                 if (el?.dataset.c !== undefined && el.dataset.r !== undefined) {
                   const cc = Number(el.dataset.c), rr = Number(el.dataset.r);
@@ -743,13 +812,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                 }
               };
               const up = () => {
-                window.removeEventListener("mousemove", move as never);
-                window.removeEventListener("mouseup", up);
+                window.removeEventListener("pointermove", move as never);
+                window.removeEventListener("pointerup", up);
+                window.removeEventListener("pointercancel", up);
                 const dst = selRef.current;
                 if (dst.c2 - dst.c1 !== src.c2 - src.c1 || dst.r2 - dst.r1 !== src.r2 - src.r1) onFillHandle(src, dst);
               };
-              window.addEventListener("mousemove", move as never);
-              window.addEventListener("mouseup", up);
+              window.addEventListener("pointermove", move as never);
+              window.addEventListener("pointerup", up);
+              window.addEventListener("pointercancel", up);
             }} />}
           </div>
         ))}
@@ -858,12 +929,12 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         {(sheet.objects ?? []).map((o) => {
           const d = objDrag?.id === o.id ? objDrag : null;
           const pos = { x: d?.x ?? o.x, y: d?.y ?? o.y, w: d?.w ?? o.w, h: d?.h ?? o.h };
-          const startDrag = (e: MouseEvent, mode: "move" | "size") => {
+          const startDrag = (e: React.PointerEvent, mode: "move" | "size") => {
             if (!canEdit || !onObjects) return;
             e.stopPropagation(); e.preventDefault();
             setSelObj(o.id);
             const sx = e.clientX, sy = e.clientY;
-            const move = (ev: globalThis.MouseEvent) => {
+            const move = (ev: globalThis.PointerEvent) => {
               setObjDrag({
                 id: o.id, mode, dx: 0, dy: 0,
                 x: mode === "move" ? Math.max(0, o.x + ev.clientX - sx) : o.x,
@@ -872,9 +943,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                 h: mode === "size" ? Math.max(24, o.h + ev.clientY - sy) : o.h,
               });
             };
-            const up = (ev: globalThis.MouseEvent) => {
-              window.removeEventListener("mousemove", move as never);
-              window.removeEventListener("mouseup", up);
+            const up = (ev: globalThis.PointerEvent) => {
+              window.removeEventListener("pointermove", move as never);
+              window.removeEventListener("pointerup", up);
+              window.removeEventListener("pointercancel", up);
               setObjDrag((cur) => {
                 if (cur) {
                   const next = (sheet.objects ?? []).map((ob) =>
@@ -885,18 +957,19 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
               });
               void ev;
             };
-            window.addEventListener("mousemove", move as never);
-            window.addEventListener("mouseup", up);
+            window.addEventListener("pointermove", move as never);
+            window.addEventListener("pointerup", up);
+            window.addEventListener("pointercancel", up);
           };
           return (
             <div key={o.id} className={`sheet-obj ${selObj === o.id ? "sel" : ""}`}
               style={{ left: HEADER_W + pos.x, top: HEADER_H + pos.y, width: pos.w, height: pos.h }}
-              onMouseDown={(e) => startDrag(e, "move")}
+              onPointerDown={(e) => startDrag(e, "move")}
               onContextMenu={(e) => { e.preventDefault(); setSelObj(o.id); }}>
               <img src={o.src} alt={o.alt ?? ""} draggable={false} />
               {canEdit && selObj === o.id && (
                 <>
-                  <span className="obj-grip" title="Drag to resize" onMouseDown={(e) => startDrag(e, "size")} />
+                  <span className="obj-grip" title="Drag to resize" onPointerDown={(e) => startDrag(e, "size")} />
                   <button className="obj-del" title="Delete object"
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={() => { onObjects?.((sheet.objects ?? []).filter((ob) => ob.id !== o.id)); setSelObj(null); }}>✕</button>

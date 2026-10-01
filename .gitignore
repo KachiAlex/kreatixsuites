@@ -13,3 +13,6 @@ srs.txt
 apps/web/public/tesseract/
 # electron-builder output
 apps/desktop/release/
+
+# mobile audit artifacts
+apps/web/mobile-audit/

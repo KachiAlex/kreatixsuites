@@ -34,9 +34,9 @@ export function ReadabilityDialog({ editor, onClose }: { editor: Editor; onClose
               <div className="read-sub">US school grade needed to read this</div>
             </div>
           </div>
-          <table className="read-table">
+          <div className="tbl-scroll"><table className="read-table">
             <tbody>{rows.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody>
-          </table>
+          </table></div>
         </div>
         <div className="tp-actions"><button className="btn-primary btn-sm" onClick={onClose}>Close</button></div>
       </div>
