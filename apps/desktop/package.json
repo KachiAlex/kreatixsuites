@@ -61,10 +61,7 @@
       }
     ],
     "win": {
-      "target": [
-        "nsis",
-        "appx"
-      ],
+      "target": "nsis",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "nsis": {
@@ -73,12 +70,6 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    },
-    "appx": {
-      "identityName": "KreatixTechnologies.KreatixSuites",
-      "publisher": "CN=Kreatix Suites Dev",
-      "publisherDisplayName": "Kreatix Technologies",
-      "applicationId": "KreatixSuites"
     }
   },
   "devDependencies": {
