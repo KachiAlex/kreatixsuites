@@ -10,6 +10,11 @@ import { pathToFileURL } from "node:url";
 
 const API_BASE = "https://suites.kreatixtech.com";
 const SCHEME = "kx";
+
+// The app manages its own theme via [data-theme] — Chromium's algorithmic
+// auto-dark (WebContentsForceDark) repaints light surfaces navy when the OS
+// flips to dark, producing the dark-on-dark sidebar seen on Windows.
+app.commandLine.appendSwitch("disable-features", "WebContentsForceDark");
 const HOST = "app";
 const APP_URL = `${SCHEME}://${HOST}/`;
 

@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type * as pdfjsTypes from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import "pdfjs-dist/web/pdf_viewer.css";
+import pdfViewerCss from "pdfjs-dist/web/pdf_viewer.css?inline";
 import type { DriveItem, Comment } from "@kreatix/shared";
 import { api, getToken } from "../lib/api";
 import { saveContent } from "../lib/drafts";
@@ -28,6 +28,23 @@ const flattenMod = () => import("./flatten");
 
 // pdf.js is heavy (~430KB) — lazy-loaded only when a PDF is actually opened
 let pdfjs!: typeof pdfjsTypes;
+
+// pdf_viewer.css ships global, unprefixed class names (.sidebar, .dialog,
+// .page, .hidden …) that collide with the app shell — under
+// prefers-color-scheme:dark its .sidebar rule paints our app sidebar navy.
+// Inject it inside @scope so it only applies within the editor subtree.
+// Its :root vars (light-dark flip) remap to :scope = the editor root.
+{
+  const style = document.createElement("style");
+  style.id = "pdfjs-viewer-scoped";
+  // :root vars → :scope so the light-dark flip still works inside the subtree;
+  // relative url(images/…) → the pdfjs icons copied into /pdfjs-images
+  const scoped = pdfViewerCss
+    .replace(/:root/g, ":scope")
+    .replace(/url\((['"]?)images\//g, "url($1/pdfjs-images/");
+  style.textContent = `@scope (.pdfjs-scope) {\n${scoped}\n}`;
+  document.head.appendChild(style);
+}
 let pdfjsReady: Promise<void> | null = null;
 const ensurePdfjs = () => (pdfjsReady ??= import("pdfjs-dist").then((m) => {
   pdfjs = m;
@@ -1563,7 +1580,7 @@ export function PdfEditor({ item, initialDoc, permission }: {
   const saveLabel = { saved: "Saved", saving: "Saving…", unsaved: "Unsaved", error: "Save failed" }[saveState];
 
   return (
-    <div className={`editor${readMode ? " read-mode" : ""}`}>
+    <div className={`editor pdfjs-scope${readMode ? " read-mode" : ""}`}>
       <div className="topbar">
         <button className="back" onClick={() => navigate(-1)} title="Back">←</button>
         <AppIcon kind="pdf" size={34} />

@@ -218,6 +218,9 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         )}
         <input ref={fileInput} type="file" hidden
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+        <button className="open-local" onClick={openFromComputer} title="Open a document from this device">
+          📂 Open from this computer…
+        </button>
       </div>
 
       <div className="section-label">Workspace</div>

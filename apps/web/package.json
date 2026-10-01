@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/copy-tesseract.mjs && vite",
-    "build": "node scripts/copy-tesseract.mjs && tsc -b && vite build && tsx --tsconfig tsconfig.app.json scripts/prerender-landing.mts",
+    "dev": "node scripts/copy-tesseract.mjs && node scripts/copy-pdfjs-assets.mjs && vite",
+    "build": "node scripts/copy-tesseract.mjs && node scripts/copy-pdfjs-assets.mjs && tsc -b && vite build && tsx --tsconfig tsconfig.app.json scripts/prerender-landing.mts",
     "lint": "oxlint",
     "typecheck": "tsc -b --noEmit",
     "test:roundtrip": "tsx test-roundtrip.mts",
