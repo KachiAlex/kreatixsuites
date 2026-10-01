@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PMNode } from "@tiptap/pm/model";
-import { checkWord, addToDict, type Miss } from "../proofing";
+import { checkWord, addToDict, ensureDictionary, dictionaryPending, type Miss } from "../proofing";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -23,6 +23,9 @@ declare module "@tiptap/core" {
 export const SPELL_KEY = new PluginKey<Miss[]>("kxSpell");
 
 function computeMisses(doc: PMNode, ignored: Set<string>): Miss[] {
+  // the real dictionary is still loading — flagging now would squiggle
+  // legitimate words the hunspell pass is about to clear
+  if (dictionaryPending()) return [];
   const out: Miss[] = [];
   doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return true;
@@ -42,6 +45,15 @@ export const Spellcheck = Extension.create({
 
   addStorage() {
     return { enabled: true, ignored: new Set<string>() };
+  },
+
+  onCreate() {
+    // warm the real dictionary in the background; refresh decorations once it
+    // lands so fallback-flagged words get re-evaluated
+    void ensureDictionary().then(() => {
+      if (!this.editor.isDestroyed)
+        this.editor.view.dispatch(this.editor.state.tr.setMeta("kxSpellForce", true));
+    });
   },
 
   addCommands() {

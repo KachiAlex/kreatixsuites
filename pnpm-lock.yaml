@@ -223,6 +223,9 @@ importers:
       '@tiptap/starter-kit':
         specifier: ^3.31.3
         version: 3.31.3
+      dictionary-en:
+        specifier: ^4.0.0
+        version: 4.0.0
       docx:
         specifier: ^9.7.2
         version: 9.7.2
@@ -244,6 +247,9 @@ importers:
       node-forge:
         specifier: 1.3.1
         version: 1.3.1
+      nspell:
+        specifier: ^2.1.5
+        version: 2.1.5
       pdf-lib:
         specifier: 1.17.1
         version: 1.17.1
@@ -2958,6 +2964,9 @@ packages:
   devtools-protocol@0.0.1687809:
     resolution: {integrity: sha512-t7kSb+UKYdyxcmqy98U2P86ne6rCve3DIJ4+lp54i/hhClgFuG35JrLj23rO14Jw3sWDsp7i+22QhNU0+/qk8g==}
 
+  dictionary-en@4.0.0:
+    resolution: {integrity: sha512-3NHnE1uq33ZE/CIwaZ6gqxa4BnglHnxeAcTM0GJ7cmtRGcvX9InMK/IqLtYcUMFCUpUNgybH+DzkqdgAo3F1zg==}
+
   dingbat-to-unicode@1.0.2:
     resolution: {integrity: sha512-R0bRerYzy/EZP6QzD3Hkl6JjUDA1Mnn+pd928w0nWjPzihnbAR6dcjGJGiRyznj5E4S1duEKzWrTqw02DPcdzg==}
 
@@ -3507,6 +3516,10 @@ packages:
     resolution: {integrity: sha512-wa56o2/ElJMYqjCjGkXri7it5FbebW5usLw/nPmCMs5DeZ7eziSYZhSmPRn0txqeW4LnAmQQU7FgqLpsEFKM4A==}
     engines: {node: '>= 0.4'}
 
+  is-buffer@2.0.5:
+    resolution: {integrity: sha512-i2R6zNFDwgEHJyQUtJEk0XFi1i0dPFn/oqjK3/vPCcDeJvW5NQ83V8QbicfF1SupOaB0h8ntgBC2YiE7dfyctQ==}
+    engines: {node: '>=4'}
+
   is-callable@1.2.7:
     resolution: {integrity: sha512-1BC0BVFhS/p0qtw6enp8e+8OD0UrK0oFLztSjNzhcKA3WDuJxxAPXzPuPtKkjEY9UUoEWlX/8fgKeu2S8i9JTA==}
     engines: {node: '>= 0.4'}
@@ -4036,6 +4049,9 @@ packages:
   normalize-url@6.1.0:
     resolution: {integrity: sha512-DlL+XwOy3NxAQ8xuC0okPgK46iuVNAK01YN7RueYBqqFeGsBjV9XmCAzAdgt+667bCl5kPh9EqKKDwnaPG1I7A==}
     engines: {node: '>=10'}
+
+  nspell@2.1.5:
+    resolution: {integrity: sha512-PSStyugKMiD9mHmqI/CR5xXrSIGejUXPlo88FBRq5Og1kO5QwQ5Ilu8D8O5I/SHpoS+mibpw6uKA8rd3vXd2Sg==}
 
   nth-check@3.0.1:
     resolution: {integrity: sha512-GX0gsdbGVCgnRgbeGaubfjpBXyYRWOOCVeYh08bSQvDZqxz5ndXs1OTfAt/h36G1xvI94YIspsI0sVFqAV9+RQ==}
@@ -7850,6 +7866,8 @@ snapshots:
 
   devtools-protocol@0.0.1687809: {}
 
+  dictionary-en@4.0.0: {}
+
   dingbat-to-unicode@1.0.2: {}
 
   dir-compare@4.2.0:
@@ -8606,6 +8624,8 @@ snapshots:
       call-bound: 1.0.4
       has-tostringtag: 1.0.2
 
+  is-buffer@2.0.5: {}
+
   is-callable@1.2.7: {}
 
   is-core-module@2.17.0:
@@ -9096,6 +9116,10 @@ snapshots:
       abbrev: 4.0.0
 
   normalize-url@6.1.0: {}
+
+  nspell@2.1.5:
+    dependencies:
+      is-buffer: 2.0.5
 
   nth-check@3.0.1:
     dependencies:

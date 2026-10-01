@@ -300,7 +300,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
       saveTimer.current = setTimeout(flushSave, 1200);
     },
     editorProps: {
-      attributes: { "aria-label": "Document editor", spellcheck: "true" },
+      // native browser spellcheck stays off — the kx-spell decoration layer is
+      // authoritative (a native squiggle would ignore our dictionary + menu)
+      attributes: { "aria-label": "Document editor", spellcheck: "false" },
       // paste / drag-drop an image → upload to Drive as doc media
       handlePaste: (_view, event) => {
         if (!canMutate) return false;
@@ -1069,9 +1071,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
         }
         loadComments();
       }
-      toast(`Imported ${f.name}`);
-    } catch {
-      toast("Could not import that file");
+      toast(res.degraded
+        ? `Imported ${f.name} — some content was recovered as plain text`
+        : `Imported ${f.name}`);
+    } catch (e) {
+      toast(e instanceof Error && e.message ? e.message : "Could not import that file");
     }
   };
 
@@ -2369,7 +2373,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission }: {
                 ...sugg.map((s) => ({
                   label: s, onClick: () => {
                     if (!hit) return;
-                    editor.chain().focus().insertContentAt({ from: hit.from, to: hit.to }, s).run();
+                    // match the flagged word's casing so a sentence-initial fix
+                    // doesn't come back lowercase
+                    const fix = word === word.toUpperCase() ? s.toUpperCase()
+                      : /^[A-Z]/.test(word) ? s[0].toUpperCase() + s.slice(1) : s;
+                    editor.chain().focus().insertContentAt({ from: hit.from, to: hit.to }, fix).run();
                   },
                 })),
                 ...(sugg.length ? [] : [{ label: "(no suggestions)", onClick: () => {} }]),

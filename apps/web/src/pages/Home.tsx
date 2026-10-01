@@ -4,6 +4,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { FileList } from "../components/FileList";
 import { AppIcon } from "../components/AppIcon";
+import { openLocalFile } from "../lib/offline/openLocal";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 
@@ -58,6 +59,15 @@ export function Home() {
     navigate(`/edit/${r.item.id}`);
   };
 
+  const openDoc = async () => {
+    try {
+      const id = await openLocalFile();
+      if (id) navigate(`/edit/${id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not open that file");
+    }
+  };
+
   const apps = [
     { cls: "writer", name: "Kreatix Writer", desc: "Documents & reports", kind: "writer" },
     { cls: "sheets", name: "Kreatix Sheets", desc: "Data & analysis", kind: "sheets" },
@@ -75,6 +85,7 @@ export function Home() {
           <p>Write, calculate, present, review and collaborate from one connected productivity environment designed around the Kreatix way of working.</p>
           <div className="hero-actions">
             <button className="btn-primary" onClick={createDoc}>＋ Create a file</button>
+            <button className="btn-secondary" onClick={() => void openDoc()}>📂 Open document</button>
             <button className="btn-secondary">✦ Ask Kreatix AI</button>
           </div>
         </div>

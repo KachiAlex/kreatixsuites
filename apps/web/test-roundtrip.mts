@@ -300,5 +300,70 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("pptx: speaker notes", (back.slides[0].notes ?? "").includes("speaker notes"));
 }
 
+// ---------- DOCX salvage / format guards ----------
+{
+  const JSZip = (await import("jszip")).default;
+  const CT = `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`;
+  const RELS = `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
+  const para = (t: string) => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`;
+  const zipOf = async (documentXml: string) => {
+    const z = new JSZip();
+    z.file("[Content_Types].xml", CT);
+    z.file("_rels/.rels", RELS);
+    z.file("word/document.xml", documentXml);
+    return z.generateAsync({ type: "arraybuffer" });
+  };
+  const doc = (body: string) =>
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr/></w:body></w:document>`;
+
+  // text living only in a w:txbxContent text box must not open blank
+  const txbx = await zipOf(doc(
+    `${para("Body text.")}<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox><w:txbxContent>${para("Text box content.")}</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>`));
+  const txRes = await importDocx(fileOf(txbx, "textbox.docx"));
+  check("docx: text box content imported", txRes.html.includes("Text box content."));
+
+  // w:sdt content controls must be unwrapped, not dropped
+  const sdt = await zipOf(doc(
+    `<w:sdt><w:sdtPr/><w:sdtContent>${para("Content control text.")}</w:sdtContent></w:sdt>`));
+  const sdtRes = await importDocx(fileOf(sdt, "sdt.docx"));
+  check("docx: sdt content imported", sdtRes.html.includes("Content control text."));
+
+  // legacy .doc (OLE compound) → descriptive error, not a blank document
+  const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]);
+  let oleMsg = "";
+  await importDocx(fileOf(ole, "old.doc")).catch((e) => { oleMsg = (e as Error).message; });
+  check("docx: .doc rejected with readable error", oleMsg.includes(".doc"));
+
+  // RTF → descriptive error
+  const rtf = new TextEncoder().encode("{\\rtf1\\ansi hello}");
+  let rtfMsg = "";
+  await importDocx(fileOf(rtf, "note.rtf")).catch((e) => { rtfMsg = (e as Error).message; });
+  check("docx: .rtf rejected with readable error", rtfMsg.includes("RTF"));
+}
+
+// ---------- spellcheck dictionary ----------
+{
+  const fs = await import("node:fs");
+  const { loadDictionary, checkWord, suggest, docVocabulary } = await import("./src/writer/proofing");
+  await loadDictionary(
+    fs.readFileSync("src/writer/dict-en/en_US.aff"),
+    fs.readFileSync("src/writer/dict-en/en_US.dic"),
+  );
+  // words a real document uses that the old ~1.5k-word list flagged
+  const common = ["platform", "development", "streaming", "infrastructure", "ownership",
+    "stakeholders", "launching", "economically", "resilience", "proposal"];
+  check("spellcheck: common words pass", common.every((w) => checkWord(w)));
+  check("spellcheck: real typos still fail", !checkWord("platfrom") && !checkWord("infrastrcture"));
+  const sugg = suggest("platfrom", docVocabulary(""), 5);
+  check("spellcheck: suggestion offered", sugg.includes("platform"));
+  // accepting a suggestion must clear the squiggle → every suggestion must
+  // itself pass the checker
+  check("spellcheck: suggestions all pass checkWord", sugg.every((s) => checkWord(s)));
+  // doc-vocabulary must not feed flagged words back as suggestions
+  const vocab = docVocabulary("platfrom is not a word and neither is qwzxv");
+  check("spellcheck: doc vocab filtered", !vocab.has("platfrom") && !vocab.has("qwzxv"));
+  check("spellcheck: proper nouns + acronyms pass", checkWord("Sairtek") && checkWord("NASA"));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

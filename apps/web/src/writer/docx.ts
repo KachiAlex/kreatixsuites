@@ -43,6 +43,9 @@ export interface DocxImportResult {
   docProps: DocProps;
   /** Anchored comments from comments.xml → post to the comments API. */
   comments: { anchor: string; body: string; author?: string; createdAt?: string }[];
+  /** True when the converter dropped all text and raw document.xml text was
+   *  salvaged instead — formatting fidelity is reduced. */
+  degraded?: boolean;
 }
 
 const HEADINGS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
@@ -859,7 +862,13 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     docProps: parseCoreXml(await zip.file("docProps/core.xml")?.async("text") ?? ""),
   };
   let docXml = await zip.file("word/document.xml")?.async("text");
-  if (!docXml) return { buffer: arrayBuffer, docXml: "", meta };
+  if (!docXml) {
+    // a zip that isn't a word package — name the actual format if we can
+    const mime = (await zip.file("mimetype")?.async("text") ?? "").trim();
+    if (mime.includes("opendocument"))
+      throw new Error("ODF files (.odt) can't be imported yet — save as .docx and try again");
+    throw new Error("This file isn't a Word .docx document");
+  }
   const original = docXml;
 
   // w:pStyle / w:numPr / comment ranges → sentinel runs (mammoth drops the
@@ -952,6 +961,30 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
         (_, tail) => `${tail}<w:r><w:t xml:space="preserve">⟦KXSB:${payloads[mi++] ?? ""}⟧</w:t></w:r>`,
       );
     }
+  }
+
+  // mammoth silently drops w:sdt content controls and w:txbxContent text
+  // boxes — a doc built from them opens blank. Unwrap controls in place and
+  // hoist text-box paragraphs to the end of the body so their content survives.
+  {
+    let prev = "";
+    while (prev !== docXml) {
+      prev = docXml;
+      docXml = docXml.replace(
+        /<w:sdt\b[^>]*>((?:(?!<w:sdt)[\s\S])*)<\/w:sdt>/g,
+        (_, inner: string) => inner.match(/<w:sdtContent[^>]*>([\s\S]*?)<\/w:sdtContent>/)?.[1] ?? "",
+      );
+    }
+    const boxes: string[] = [];
+    do {
+      prev = docXml;
+      docXml = docXml.replace(
+        /<w:txbxContent[^>]*>((?:(?!<w:txbxContent)[\s\S])*)<\/w:txbxContent>/g,
+        (_, inner: string) => { boxes.push(inner); return ""; },
+      );
+    } while (prev !== docXml);
+    if (boxes.length)
+      docXml = docXml.replace(/<\/w:body>/, `${boxes.join("")}</w:body>`);
   }
 
   if (docXml === original) return { buffer: arrayBuffer, docXml, meta };
@@ -1301,23 +1334,57 @@ function commentMarkersToHtml(html: string): string {
   return html.replace(/⟦KX[CS][SE]:\d+⟧/g, "");
 }
 
-const EMPTY_META: DocxMeta = { styles: new Map(), numFmt: new Map(), comments: [], docProps: {} };
+/** Reject non-docx payloads with a user-readable reason before they reach
+ *  mammoth — legacy .doc (OLE), RTF and ODF files all get routed to Writer by
+ *  the open-file flow but can't be converted here. */
+function sniffDocxFormat(arrayBuffer: ArrayBuffer) {
+  const head = new Uint8Array(arrayBuffer.slice(0, Math.min(8, arrayBuffer.byteLength)));
+  if (head[0] === 0x50 && head[1] === 0x4b) return; // PK zip — a real OOXML package
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(arrayBuffer.slice(0, 16));
+  if (head[0] === 0xd0 && head[1] === 0xcf)
+    throw new Error("This is a legacy .doc file — save it as .docx and open it again");
+  if (text.startsWith("{\\rtf"))
+    throw new Error("RTF files can't be imported yet — save as .docx and try again");
+  throw new Error("This file isn't a Word .docx document");
+}
+
+/** Last-resort text salvage: pull every w:p's w:t runs straight from
+ *  document.xml when the structured conversion produced no visible text. */
+function salvageDocxText(docXml: string): string {
+  const paras: string[] = [];
+  for (const p of docXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)) {
+    const text = [...p[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)]
+      .map((t) => xmlUnescape(t[1])).join("").replace(/⟦KX[^\]]*⟧/g, "").trim();
+    if (text) paras.push(text);
+  }
+  return paras
+    .map((t) => `<p>${t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`)
+    .join("");
+}
 
 /** .docx file → editor HTML + recovered package metadata. */
 export async function importDocx(file: File): Promise<DocxImportResult> {
   const arrayBuffer = await file.arrayBuffer();
-  const { buffer, docXml, meta } = await preprocessDocx(arrayBuffer)
-    .catch(() => ({ buffer: arrayBuffer, docXml: "", meta: EMPTY_META }));
+  sniffDocxFormat(arrayBuffer);
+  const { buffer, docXml, meta } = await preprocessDocx(arrayBuffer);
   // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
   const result = await mammoth.convertToHtml({ arrayBuffer: buffer }).catch(() =>
     mammoth.convertToHtml({ buffer: Buffer.from(buffer) } as never));
   let html = breakMarkersToHtml(mathMarkersToHtml(result.value));
   const { idToKey, styles } = buildStyleMaps(meta);
+  let degraded = false;
   if (docXml) {
     html = annotateTableHtml(html, extractXmlTables(docXml));
     html = styleMarkersToHtml(html, idToKey);
     html = numMarkersToHtml(html, meta);
     html = commentMarkersToHtml(html);
+    // conversion came back textless but the package has real text (text boxes,
+    // content controls, exotic runs mammoth skipped) — salvage it so the file
+    // doesn't open as a blank page
+    if (!html.replace(/<[^>]+>/g, "").trim()) {
+      const salvaged = salvageDocxText(docXml);
+      if (salvaged) { html = salvaged; degraded = true; }
+    }
   }
   return {
     html,
@@ -1326,6 +1393,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
     comments: meta.comments.map((c) => ({
       anchor: `docx-${c.id}`, body: c.body, author: c.author, createdAt: c.date,
     })),
+    degraded,
   };
 }
 

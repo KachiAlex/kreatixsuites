@@ -1,7 +1,9 @@
 // Proofing layer: lightweight spell engine, thesaurus, readability, a11y checks.
-// Offline-first — no network lookups. The dictionary combines a baked-in core
-// vocabulary, morphology expansion (plural/tense/suffix), every correctly-cased
-// word already in the document, and the user's custom dictionary (localStorage).
+// Offline-first — no network lookups. The dictionary is a lazily-loaded hunspell
+// en_US (~50k stems + affix rules); until it arrives a baked-in core vocabulary,
+// morphology expansion, and the user's custom dictionary (localStorage) act as
+// the fallback.
+import type { Spell } from "nspell";
 
 const CORE_WORDS = new Set((
   // supplemental common words not in the base list
@@ -26,7 +28,40 @@ export function addToDict(word: string) {
   const d = getCustomDict();
   d.add(word.toLowerCase());
   customDict = d;
+  spell?.add(word.toLowerCase());
   localStorage.setItem(DICT_KEY, JSON.stringify([...d]));
+}
+
+// ---- spellcheck dictionary ----
+// A real hunspell dictionary (~50k stems + affix rules, vendored in dict-en/)
+// is lazily loaded so the writer chunk doesn't carry it. Until it resolves the
+// CORE_WORDS + morphology rules below act as the fallback; test harnesses can
+// inject the dictionary directly via loadDictionary().
+let spell: Spell | null = null;
+let dictState: "idle" | "loading" | "ready" | "failed" = "idle";
+let dictPromise: Promise<void> | null = null;
+
+/** True while the hunspell dictionary is still being fetched/parsed —
+ *  callers can suppress decorations rather than flash false squiggles. */
+export const dictionaryPending = () => dictState === "loading";
+
+export async function loadDictionary(aff: string | Uint8Array, dic: string | Uint8Array): Promise<void> {
+  const nspell = (await import("nspell")).default;
+  spell = nspell(aff, dic);
+  for (const w of getCustomDict()) spell.add(w);
+  dictState = "ready";
+}
+
+export function ensureDictionary(): Promise<void> {
+  if (dictState === "idle") {
+    dictState = "loading";
+    dictPromise = Promise.all([
+      import("./dict-en/en_US.aff?raw"),
+      import("./dict-en/en_US.dic?raw"),
+    ]).then(([a, d]) => loadDictionary(a.default, d.default))
+      .catch(() => { dictState = "failed"; });
+  }
+  return dictPromise ?? Promise.resolve();
 }
 
 const VOWELISH = /[aeiou]/;
@@ -39,8 +74,15 @@ export function checkWord(word: string): boolean {
   if (!isWord(word)) return true;                     // numbers/symbols
   if (word.length <= 2) return true;                  // I, an, TV…
   const lower = word.toLowerCase();
-  if (CORE_WORDS.has(lower)) return true;
   if (getCustomDict().has(lower)) return true;
+  if (spell) {
+    // hunspell: checks the word + affix expansions (~150k forms)
+    if (spell.correct(word) || spell.correct(lower)) return true;
+    if (word === word.toUpperCase()) return true;      // acronyms: NASA, FAQ
+    if (/^[A-Z]/.test(word)) return true;              // proper nouns pass
+    return false;
+  }
+  if (CORE_WORDS.has(lower)) return true;
   // morphology: strip a suffix and re-check
   for (const suf of MORPH_SUFFIXES) {
     if (lower.endsWith(suf) && lower.length - suf.length >= 3) {
@@ -64,7 +106,9 @@ export function checkWord(word: string): boolean {
  *  are fine as suggestion sources — a typo can still match a real in-doc word). */
 export function docVocabulary(text: string): Set<string> {
   const s = new Set<string>();
-  for (const m of text.matchAll(/[A-Za-z][A-Za-z'’-]+/g)) s.add(m[0].toLowerCase());
+  // only words that pass the spellcheck may feed suggestions — anything else
+  // would produce "corrections" the checker immediately re-flags
+  for (const m of text.matchAll(/[A-Za-z][A-Za-z'’-]+/g)) if (checkWord(m[0])) s.add(m[0].toLowerCase());
   for (const w of CORE_WORDS) s.add(w);
   for (const w of getCustomDict()) s.add(w);
   return s;
@@ -72,6 +116,10 @@ export function docVocabulary(text: string): Set<string> {
 
 // edits-distance-1/2 suggestion generation against known vocabulary
 export function suggest(word: string, vocab: Set<string>, max = 6): string[] {
+  if (spell) {
+    const s = spell.suggest(word).filter((x) => checkWord(x));
+    if (s.length) return s.slice(0, max);
+  }
   const w = word.toLowerCase();
   const out = new Set<string>();
   const letters = "abcdefghijklmnopqrstuvwxyz";
@@ -103,8 +151,10 @@ export function suggest(word: string, vocab: Set<string>, max = 6): string[] {
       if (out.size >= max * 3) break;
     }
   }
-  // rank by length similarity then alphabetically
-  return [...out].sort((a, b) => Math.abs(a.length - w.length) - Math.abs(b.length - w.length) || a.localeCompare(b)).slice(0, max);
+  // rank by length similarity then alphabetically; only offer words the
+  // checker itself accepts so a picked suggestion can't stay squiggled
+  return [...out].filter((c) => checkWord(c))
+    .sort((a, b) => Math.abs(a.length - w.length) - Math.abs(b.length - w.length) || a.localeCompare(b)).slice(0, max);
 }
 
 /** Spell-check a text range — returns misspellings with positions. */
