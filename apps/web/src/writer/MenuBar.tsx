@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 
 export interface MenuItem {
@@ -60,8 +60,25 @@ export function MenuBar({ items }: MenuBarProps) {
   );
 }
 
+/** Anchored flyout position for a submenu — position:fixed escapes the
+ *  overflow:auto clipping on .menu-drop containers (a left:100% flyout inside
+ *  a scroller is clipped invisible). Flips to the parent item's left edge when
+ *  there's no room on the right; height clamps inside the viewport. */
+export function subMenuStyle(rect: DOMRect): CSSProperties {
+  const W = 244;
+  const flip = rect.right + W > window.innerWidth - 8 && rect.left - W > 8;
+  const top = Math.max(8, Math.min(rect.top, window.innerHeight - 224));
+  return {
+    position: "fixed",
+    left: flip ? Math.max(8, rect.left - W + 2) : rect.right - 2,
+    top,
+    maxHeight: window.innerHeight - top - 8,
+    overflowY: "auto",
+  };
+}
+
 export function MenuList({ items, close, depth }: { items: MenuItem[]; close: () => void; depth: number }) {
-  const [sub, setSub] = useState<number | null>(null);
+  const [sub, setSub] = useState<{ i: number; rect: DOMRect } | null>(null);
   return (
     <>
       {items.map((item, i) => {
@@ -74,10 +91,10 @@ export function MenuList({ items, close, depth }: { items: MenuItem[]; close: ()
             className={`menu-item ${item.disabled ? "disabled" : ""}`}
             role="menuitem"
             aria-disabled={item.disabled}
-            onMouseEnter={() => setSub(hasSub ? i : null)}
+            onMouseEnter={(e) => setSub(hasSub ? { i, rect: e.currentTarget.getBoundingClientRect() } : null)}
             onClick={(e) => {
               if (item.disabled) return;
-              if (hasSub) { e.stopPropagation(); setSub(sub === i ? null : i); return; }
+              if (hasSub) { e.stopPropagation(); setSub(sub?.i === i ? null : { i, rect: e.currentTarget.getBoundingClientRect() }); return; }
               item.onClick?.();
               close();
             }}
@@ -86,8 +103,8 @@ export function MenuList({ items, close, depth }: { items: MenuItem[]; close: ()
             <span className="menu-label">{item.icon}{item.label}</span>
             {item.shortcut && <span className="menu-shortcut">{item.shortcut}</span>}
             {hasSub && <span className="menu-sub-arrow">▸</span>}
-            {hasSub && sub === i && (
-              <div className="menu-drop sub" role="menu" style={{ top: -4 }}>
+            {hasSub && sub?.i === i && (
+              <div className="menu-drop sub" role="menu" style={subMenuStyle(sub.rect)}>
                 <MenuList items={item.submenu!} close={close} depth={depth + 1} />
               </div>
             )}

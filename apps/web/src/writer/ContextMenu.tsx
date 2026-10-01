@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { MenuItem } from "./MenuBar";
+import { subMenuStyle, type MenuItem } from "./MenuBar";
 
 export interface ContextMenuState {
   x: number;
@@ -47,7 +47,7 @@ export function ContextMenu({ menu, onClose }: { menu: ContextMenuState; onClose
 }
 
 function CtxList({ items, close }: { items: MenuItem[]; close: () => void }) {
-  const [sub, setSub] = useState<number | null>(null);
+  const [sub, setSub] = useState<{ i: number; rect: DOMRect } | null>(null);
   return (
     <>
       {items.map((item, i) => {
@@ -59,10 +59,10 @@ function CtxList({ items, close }: { items: MenuItem[]; close: () => void }) {
             className={`menu-item ${item.disabled ? "disabled" : ""} ${item.danger ? "danger" : ""}`}
             role="menuitem"
             aria-disabled={item.disabled}
-            onMouseEnter={() => setSub(hasSub ? i : null)}
+            onMouseEnter={(e) => setSub(hasSub ? { i, rect: e.currentTarget.getBoundingClientRect() } : null)}
             onClick={(e) => {
               if (item.disabled) return;
-              if (hasSub) { e.stopPropagation(); setSub(sub === i ? null : i); return; }
+              if (hasSub) { e.stopPropagation(); setSub(sub?.i === i ? null : { i, rect: e.currentTarget.getBoundingClientRect() }); return; }
               item.onClick?.();
               close();
             }}
@@ -71,8 +71,8 @@ function CtxList({ items, close }: { items: MenuItem[]; close: () => void }) {
             <span className="menu-label">{item.icon}{item.label}</span>
             {item.shortcut && <span className="menu-shortcut">{item.shortcut}</span>}
             {hasSub && <span className="menu-sub-arrow">▸</span>}
-            {hasSub && sub === i && (
-              <div className="menu-drop sub" role="menu" style={{ top: -4 }}>
+            {hasSub && sub?.i === i && (
+              <div className="menu-drop sub" role="menu" style={subMenuStyle(sub.rect)}>
                 <CtxList items={item.submenu!} close={close} />
               </div>
             )}

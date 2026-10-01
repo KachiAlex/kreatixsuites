@@ -161,6 +161,9 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
                 aria-haspopup={isMenu ? "menu" : undefined}
                 tabIndex={selected ? 0 : -1}
                 onClick={() => onTabClick(tab)}
+                // menubar convention: while a menu is open, hovering another
+                // menu tab switches the open menu to it
+                onMouseEnter={() => { if (isMenu && menuOpen && menuOpen !== tab.id) openMenu(tab); }}
                 onDoubleClick={() => !isMenu && toggleCollapse()}
               >
                 {tab.icon && <span className="rt-ico" aria-hidden>{tab.icon}</span>}

@@ -229,7 +229,7 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .rb:disabled{opacity:.4;cursor:default}
 .rb-sep{width:1px;height:22px;background:var(--line);margin:0 6px}
 .rb-sel{height:32px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px;padding:0 8px;color:var(--ink)}
-.doc-canvas{overflow:auto;padding:22px 20px 80px;flex:1;min-height:0}
+.doc-canvas{overflow:auto;padding:0 20px 80px;flex:1;min-height:0}
 /* mobile overrides live in the consolidated block at the end of this file */
 /* a scroll container clips absolutely-positioned menus — drop clipping while any dropdown is open */
 .ribbon:has(.rb-drop-menu),.ribbon:has(.menu-drop){overflow:visible}
@@ -243,8 +243,8 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .mi-ico{display:inline-flex;min-width:20px;justify-content:center;color:var(--ink);font-weight:700}
 .fmt-swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;border:1px solid rgba(0,0,0,.12)}
 .doc-zoom{min-width:fit-content}
-.ruler-wrap{display:flex;justify-content:center;position:sticky;top:4px;z-index:4;margin-bottom:8px}
-.ruler{display:block;overflow:visible;border-radius:2px}
+.ruler-wrap{display:flex;justify-content:center;position:sticky;top:0;z-index:4;padding-bottom:8px;background:var(--bg)}
+.ruler{display:block;overflow:visible;border-radius:2px;border:1px solid var(--line);border-top:0;border-radius:0 0 4px 4px;background:var(--surface)}
 .ribbon-end{margin-left:auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;position:sticky;right:0;background:var(--surface)}
 /* ---- tabbed ribbon (Excel-style) ---- */
 .ribbon-wrap{flex-shrink:0;background:var(--surface)}
@@ -275,6 +275,8 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 /* responsive ribbon rules moved to the consolidated mobile block at end of file */
 .word-count{font-size:10px;color:var(--muted);cursor:pointer;white-space:nowrap;padding-right:2px}
 .doc-page{background:var(--surface);width:min(860px,100%);margin:0 auto;box-shadow:0 10px 40px rgba(46,35,29,.10);border:1px solid var(--line);border-radius:4px;min-height:1100px;padding:76px 84px}
+/* breathing room below the ruler / ribbon when the ruler is hidden */
+.doc-zoom > .doc-page:first-child{margin-top:14px}
 .doc-page .ProseMirror{outline:none;font-size:14px;line-height:1.7;color:var(--ink);min-height:900px}
 .ProseMirror h1{font-size:27px;letter-spacing:-.5px;margin:22px 0 10px}
 .ProseMirror h2{font-size:21px;letter-spacing:-.3px;margin:18px 0 8px}
