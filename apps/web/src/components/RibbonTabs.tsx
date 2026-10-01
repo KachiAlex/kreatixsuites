@@ -226,12 +226,47 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
             </div>
           );
         })}
+        <div className="ribbon-corner">
+        {!!activeTab?.groups?.length && (
+          <div className="ribbon-cust" ref={custRef}>
+            <button
+              ref={custBtnRef}
+              className={`ribbon-cust-btn${custOpen ? " on" : ""}`}
+              title="Add or Remove Buttons — choose which groups appear on this tab"
+              aria-haspopup="menu"
+              aria-expanded={custOpen}
+              onClick={() => (custOpen ? setCustOpen(false) : openCust())}
+            >&raquo;</button>
+            {custOpen && custPos && (
+              <div className="menu-drop ribbon-cust-drop" role="menu" style={{ left: custPos.left, top: custPos.top }}>
+                <div className="drop-head">Add or Remove Buttons — {activeTab.label}</div>
+                {activeTab.groups.map((g) => (
+                  <button key={g.id} className="menu-li ribbon-cust-li" role="menuitemcheckbox"
+                    aria-checked={!hiddenIds.has(g.id)}
+                    onClick={() => toggleGroup(g.id)}>
+                    <span className="ribbon-cust-check">{hiddenIds.has(g.id) ? "" : "✓"}</span>
+                    {g.label ?? g.id}
+                  </button>
+                ))}
+                <div className="menu-divider" />
+                <button className="menu-li" onClick={() => {
+                  setHidden((h) => {
+                    const next = { ...h, [activeId]: [] };
+                    save(`kx-ribhide-${persistKey}`, JSON.stringify(next));
+                    return next;
+                  });
+                }}>Show all buttons</button>
+              </div>
+            )}
+          </div>
+        )}
         <button
           className="ribbon-collapse"
           title={collapsed ? "Expand ribbon" : "Collapse ribbon"}
           aria-expanded={!collapsed}
           onClick={toggleCollapse}
         >{collapsed ? "⌄" : "⌃"}</button>
+        </div>
       </div>
       {/* File-style dropdown — fixed positioning escapes the scrollable tab row's clip */}
       {openMenuTab && menuPos && (
@@ -244,44 +279,7 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
           {visibleGroups?.map((g) => (
             <RibbonGroupView key={g.id} group={g} />
           ))}
-          {(end || activeTab.groups?.length) ? (
-            <div className="ribbon-end">
-              {end}
-              {!!activeTab.groups?.length && (
-                <div className="ribbon-cust" ref={custRef}>
-                  <button
-                    ref={custBtnRef}
-                    className={`rb ribbon-cust-btn${custOpen ? " on" : ""}`}
-                    title="Add or Remove Buttons"
-                    aria-haspopup="menu"
-                    aria-expanded={custOpen}
-                    onClick={() => (custOpen ? setCustOpen(false) : openCust())}
-                  >»</button>
-                  {custOpen && custPos && (
-                    <div className="menu-drop ribbon-cust-drop" role="menu" style={{ left: custPos.left, top: custPos.top }}>
-                      <div className="drop-head">Add or Remove Buttons — {activeTab.label}</div>
-                      {activeTab.groups.map((g) => (
-                        <button key={g.id} className="menu-li ribbon-cust-li" role="menuitemcheckbox"
-                          aria-checked={!hiddenIds.has(g.id)}
-                          onClick={() => toggleGroup(g.id)}>
-                          <span className="ribbon-cust-check">{hiddenIds.has(g.id) ? "" : "✓"}</span>
-                          {g.label ?? g.id}
-                        </button>
-                      ))}
-                      <div className="menu-divider" />
-                      <button className="menu-li" onClick={() => {
-                        setHidden((h) => {
-                          const next = { ...h, [activeId]: [] };
-                          save(`kx-ribhide-${persistKey}`, JSON.stringify(next));
-                          return next;
-                        });
-                      }}>Show all buttons</button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : null}
+          {end && <div className="ribbon-end">{end}</div>}
         </div>
       )}
     </div>

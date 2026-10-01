@@ -259,14 +259,17 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .ribbon-tab.ctx{color:var(--k-orange);font-weight:700}
 .ribbon-tab.ctx[aria-selected="true"]{border-bottom-color:var(--k-orange)}
 .ribbon-tab .rt-ico{display:none;font-size:15px;line-height:1}
-.ribbon-collapse{margin-left:auto;flex-shrink:0;align-self:center;width:30px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+.ribbon-collapse{flex-shrink:0;align-self:center;width:30px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
 .ribbon-collapse:hover{background:var(--subtle);color:var(--ink)}
 /* File-tab dropdown — position:fixed (set inline) escapes .ribbon-tabs' overflow-x clip.
    Double class beats .menu-drop's absolute positioning regardless of source order. */
 .menu-drop.ribbon-menu-drop{position:fixed;max-height:min(72vh,480px);overflow:auto}
-/* "Add or Remove Buttons" — Word-style chevron at the panel's right edge */
+/* "Add or Remove Buttons" — Word-style chevron in the tab row's right corner */
+.ribbon-corner{margin-left:auto;display:flex;align-items:center;gap:2px;flex-shrink:0}
 .ribbon-cust{display:flex;align-items:center}
-.ribbon-cust-btn{font-weight:700;letter-spacing:-1px}
+.ribbon-cust-btn{flex-shrink:0;align-self:center;height:26px;padding:0 7px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--ink);font-size:15px;font-weight:800;line-height:1;cursor:pointer}
+.ribbon-cust-btn:hover{background:var(--subtle);color:var(--ink)}
+.ribbon-cust-btn.on{background:var(--k-orange-soft);color:var(--k-orange-dark)}
 .menu-drop.ribbon-cust-drop{position:fixed;max-height:min(72vh,480px);overflow:auto;min-width:200px}
 .ribbon-cust-li{display:flex;align-items:center;gap:8px}
 .ribbon-cust-check{width:14px;text-align:center;color:var(--k-orange);font-weight:800;flex-shrink:0}
