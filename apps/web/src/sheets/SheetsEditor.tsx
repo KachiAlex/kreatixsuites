@@ -28,7 +28,7 @@ import { ChartCard } from "./Chart";
 import { FxInput } from "./FxInput";
 import { LinkDialog, SymbolDialog, FunctionWizard, PictureDialog, ScenarioDialog, DataTableDialog, SolverDialog, SpellPanel, CommentDialog, RichTextDialog } from "./SheetsDialogs";
 import { captureScenario } from "./whatif";
-import { spellcheckText } from "../writer/proofing";
+import { spellcheckText, ensureDictionary, dictionaryPending } from "../writer/proofing";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -910,16 +910,24 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission }: {
     });
   }, [mutateSheet, anyLocked]);
 
+  // warm the real dictionary when the underline layer is switched on; the
+  // tick re-runs the scan once hunspell lands so fallback flags clear
+  const [dictTick, setDictTick] = useState(0);
+  useEffect(() => {
+    if (spellOn) void ensureDictionary().then(() => setDictTick((t) => t + 1));
+  }, [spellOn]);
+
   // S19.4 — misspelled refs for the wavy underline (only while enabled)
   const spellMisses = useMemo(() => {
-    if (!spellOn) return undefined;
+    if (!spellOn || dictionaryPending()) return undefined;
     const out = new Set<string>();
     for (const [ref, cell] of Object.entries(sheet.cells)) {
       if (cell.f || typeof cell.v !== "string") continue;
       if (spellcheckText(cell.v, 0).length) out.add(ref);
     }
     return out;
-  }, [spellOn, sheet.cells]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spellOn, sheet.cells, dictTick]);
   const spellFix = useCallback((ref: string, from: number, to: number, word: string) => {
     mutateSheet((s) => {
       const cur = s.cells[ref];
