@@ -10,6 +10,7 @@ import { encryptionEnabled, decryptField } from "../crypto.js";
 import { metrics } from "../metrics.js";
 import { activeCollabRooms, collabPeers } from "../collab.js";
 import { ssoEnabled } from "./sso.js";
+import { samlEnabled } from "./saml.js";
 import { sendMailSafe, tpl } from "../email.js";
 
 const policiesSchema = z.object({
@@ -207,7 +208,7 @@ export function adminRoutes(app: FastifyInstance) {
         aiActions: await count("SELECT COUNT(*) n FROM ai_actions"),
         indexRows: await count("SELECT COUNT(*) n FROM search_index"),
       },
-      security: { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled },
+      security: { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled, saml: samlEnabled },
       memory: process.memoryUsage().heapUsed,
     };
   });

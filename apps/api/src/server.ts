@@ -17,6 +17,7 @@ import { searchRoutes } from "./routes/search.js";
 import { aiRoutes } from "./routes/ai.js";
 import { adminRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
+import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
 import { billingRoutes } from "./routes/billing.js";
 import { superadminRoutes } from "./routes/superadmin.js";
@@ -122,6 +123,7 @@ async function main() {
   app.register(aiRoutes);
   app.register(adminRoutes);
   app.register(ssoRoutes);
+  app.register(samlRoutes);
   app.register(billingRoutes);
   app.register(superadminRoutes);
   app.register(collabRoutes);

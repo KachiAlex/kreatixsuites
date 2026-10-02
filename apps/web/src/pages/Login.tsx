@@ -15,6 +15,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState(false);
+  const [saml, setSaml] = useState(false);
   const [inviteOrg, setInviteOrg] = useState<string | null>(null);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
@@ -37,6 +38,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     api.get<{ enabled: boolean }>("/api/auth/sso/status")
       .then((r) => setSso(r.enabled))
       .catch(() => setSso(false));
+    api.get<{ enabled: boolean }>("/api/auth/saml/status")
+      .then((r) => setSaml(r.enabled))
+      .catch(() => setSaml(false));
     if (invite) {
       api.get<{ orgName: string }>(`/api/auth/invite/${invite}`)
         .then((r) => setInviteOrg(r.orgName))
@@ -109,6 +113,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         )}
         {sso && mode === "login" && (
           <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
+        )}
+        {saml && mode === "login" && (
+          <a className="btn-secondary sso-btn" href="/api/auth/saml">Continue with SAML SSO</a>
         )}
         <button type="button" className="btn-ghost anon-btn"
           onClick={() => { void enterAnonymous().then(() => navigate("/home")); }}>

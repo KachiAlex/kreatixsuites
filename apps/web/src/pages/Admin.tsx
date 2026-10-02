@@ -61,7 +61,7 @@ interface Metrics {
   requests: { total: number; errors5xx: number; byStatus: Record<string, number> };
   collab: { rooms: number; peers: number };
   data: Record<string, number>;
-  security: { encryptionAtRest: boolean; sso: boolean };
+  security: { encryptionAtRest: boolean; sso: boolean; saml?: boolean };
   memory: number;
 }
 
@@ -270,6 +270,10 @@ export function Admin() {
           <div className={`flag ${metrics?.security.sso ? "on" : "off"}`}>
             <b>Single sign-on</b>
             <span>{metrics?.security.sso ? "OIDC provider configured" : "Not configured — set KREATIX_OIDC_*"}</span>
+          </div>
+          <div className={`flag ${metrics?.security.saml ? "on" : "off"}`}>
+            <b>SAML 2.0</b>
+            <span>{metrics?.security.saml ? "IdP configured — metadata at /api/auth/saml/metadata" : "Not configured — set KREATIX_SAML_*"}</span>
           </div>
         </div>
       </section>
