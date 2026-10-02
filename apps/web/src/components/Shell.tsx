@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { useI18n, LOCALES } from "../lib/i18n";
 import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
@@ -22,6 +23,7 @@ export function Shell() {
   const { pathname } = useLocation();
   const isMobile = useIsMobile();
   const { msg, toast } = useToast();
+  const t = useI18n().t;
 
   // close the nav drawer on navigation + lock body scroll while it's open
   useEffect(() => { setNavOpen(false); }, [pathname]);
@@ -52,7 +54,7 @@ export function Shell() {
       await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
       navigate("/drive/all");
       window.dispatchEvent(new Event("kreatix:refresh"));
-    } catch { toast("Upload failed"); }
+    } catch { toast(t("shell.uploadFailed")); }
   };
 
   return (
@@ -83,6 +85,7 @@ export function Shell() {
 function BillingBanner() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const t = useI18n().t;
   const [sub, setSub] = useState<{ state: string; daysLeft: number | null } | null>(null);
 
   useEffect(() => {
@@ -98,24 +101,26 @@ function BillingBanner() {
   if (sub.state === "locked") {
     return (
       <div className="billing-banner locked">
-        Subscription expired — this workspace is read-only.
-        {isAdmin && <button onClick={go}>Renew subscription</button>}
+        {t("billing.locked")}
+        {isAdmin && <button onClick={go}>{t("shell.renewSub")}</button>}
       </div>
     );
   }
   if (sub.state === "grace") {
+    const days = sub.daysLeft ?? 0;
     return (
       <div className="billing-banner warn">
-        Payment overdue — {sub.daysLeft ?? 0} day{sub.daysLeft === 1 ? "" : "s"} left before the workspace locks.
-        {isAdmin && <button onClick={go}>Pay now</button>}
+        {t(days === 1 ? "billing.grace.one" : "billing.grace.other", { days })}
+        {isAdmin && <button onClick={go}>{t("shell.payNow")}</button>}
       </div>
     );
   }
   if (sub.state === "trialing" && (sub.daysLeft ?? 99) <= 14) {
+    const days = sub.daysLeft ?? 0;
     return (
       <div className="billing-banner info">
-        Free trial ends in {sub.daysLeft} day{sub.daysLeft === 1 ? "" : "s"}.
-        {isAdmin && <button onClick={go}>Set up billing</button>}
+        {t(days === 1 ? "billing.trial.one" : "billing.trial.other", { days })}
+        {isAdmin && <button onClick={go}>{t("shell.setupBilling")}</button>}
       </div>
     );
   }
@@ -126,6 +131,7 @@ function Rail({ toast }: { toast: (m: string) => void }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { t, locale, setLocale } = useI18n();
   const [menu, setMenu] = useState(false);
   const [security, setSecurity] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -143,8 +149,8 @@ function Rail({ toast }: { toast: (m: string) => void }) {
     try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
   };
   const items = [
-    { to: "/", icon: "⌂", title: "Home" },
-    { to: "/drive", icon: "▣", title: "Kreatix Drive" },
+    { to: "/", icon: "⌂", title: t("nav.home") },
+    { to: "/drive", icon: "▣", title: t("nav.drive") },
   ];
   return (
     <aside className="rail">
@@ -155,18 +161,24 @@ function Rail({ toast }: { toast: (m: string) => void }) {
       ))}
       <div className="spacer" />
       <div ref={ref} style={{ position: "relative" }}>
-        <button className="rail-btn" title="Settings" aria-haspopup="menu" aria-expanded={menu}
+        <button className="rail-btn" title={t("shell.settings")} aria-haspopup="menu" aria-expanded={menu}
           onClick={() => setMenu((v) => !v)}>⚙</button>
         {menu && (
           <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
-            <button onClick={() => { setMenu(false); toggleTheme(); }}>Toggle dark / light theme</button>
+            <button onClick={() => { setMenu(false); toggleTheme(); }}>{t("shell.toggleTheme")}</button>
             {user && user.id !== "local" && (
-              <button onClick={() => { setMenu(false); setSecurity(true); }}>Security &amp; two-factor…</button>
+              <button onClick={() => { setMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
             )}
             {(user?.role === "owner" || user?.role === "admin") && (
-              <button onClick={() => { setMenu(false); navigate("/admin"); }}>Administration</button>
+              <button onClick={() => { setMenu(false); navigate("/admin"); }}>{t("nav.admin")}</button>
             )}
-            <button onClick={() => { setMenu(false); logout(); navigate("/login"); }}>Sign out</button>
+            <div className="um-lang">
+              <label>{t("shell.language")}</label>
+              <select value={locale} onChange={(e) => setLocale(e.target.value)}>
+                {LOCALES.map((l) => <option key={l.tag} value={l.tag}>{l.label}</option>)}
+              </select>
+            </div>
+            <button onClick={() => { setMenu(false); logout(); navigate("/login"); }}>{t("shell.signOut")}</button>
           </div>
         )}
       </div>
@@ -178,6 +190,7 @@ function Rail({ toast }: { toast: (m: string) => void }) {
 function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => void; open: boolean; onClose: () => void; toast: (m: string) => void }) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const t = useI18n().t;
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -195,11 +208,11 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
     setMenuOpen(false);
     setCreating(true);
     const names: Record<string, string> = {
-      writer: "Untitled document", sheets: "Untitled spreadsheet",
-      present: "Untitled presentation", folder: "New folder",
+      writer: t("home.untitledDoc"), sheets: t("home.untitledSheet"),
+      present: t("home.untitledDeck"), folder: t("nav.newFolder"),
     };
     try {
-      const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[kind] ?? "Untitled", kind });
+      const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[kind] ?? t("nav.untitled"), kind });
       if (kind === "folder") {
         navigate("/drive");
         window.dispatchEvent(new Event("kreatix:refresh"));
@@ -219,7 +232,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       await api.upload(`/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
       navigate("/drive");
       window.dispatchEvent(new Event("kreatix:refresh"));
-    } catch { toast("Upload failed"); }
+    } catch { toast(t("shell.uploadFailed")); }
   };
 
   const openFromComputer = () => {
@@ -237,10 +250,10 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       const f = r.items.find((i) => i.kind !== "folder");
       if (f) navigate(`/edit/${f.id}?ai=`);
       else {
-        const c = await api.post<{ item: DriveItem }>("/api/drive", { name: "Untitled document", kind: "writer" });
+        const c = await api.post<{ item: DriveItem }>("/api/drive", { name: t("home.untitledDoc"), kind: "writer" });
         navigate(`/edit/${c.item.id}?ai=`);
       }
-    } catch { toast("Couldn't open Kreatix AI"); }
+    } catch { toast(t("shell.aiOpenFailed")); }
   };
 
   const navCls = ({ isActive }: { isActive: boolean }) => `nav ${isActive ? "active" : ""}`;
@@ -248,11 +261,11 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
     <aside className={`sidebar${open ? " open" : ""}`}>
       <div className="brand-name">
         <BrandLockup size={34} />
-        <button className="sidebar-close iconbtn" onClick={onClose} aria-label="Close navigation">✕</button>
+        <button className="sidebar-close iconbtn" onClick={onClose} aria-label={t("shell.closeNav")}>✕</button>
       </div>
       <div ref={menuRef} style={{ position: "relative" }}>
         <button className="create" onClick={() => setMenuOpen((v) => !v)} disabled={creating}>
-          ＋ {creating ? "Creating…" : "Create new"}
+          ＋ {creating ? t("nav.creating") : t("nav.createNew")}
         </button>
         {menuOpen && (
           <div className="create-menu">
@@ -260,42 +273,42 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
             <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>
             <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>
             <hr />
-            <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>New folder</button>
-            <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>Open file from this computer…</button>
-            <button onClick={() => fileInput.current?.click()}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>Upload file / PDF</button>
+            <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>{t("nav.newFolder")}</button>
+            <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>{t("nav.openFile")}</button>
+            <button onClick={() => fileInput.current?.click()}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>{t("nav.upload")}</button>
           </div>
         )}
         <input ref={fileInput} type="file" hidden
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
-        <button className="open-local" onClick={openFromComputer} title="Open a document from this device">
-          📂 Open from this computer…
+        <button className="open-local" onClick={openFromComputer} title={t("nav.openFromDeviceTitle")}>
+          📂 {t("nav.openFromDevice")}
         </button>
       </div>
 
-      <div className="section-label">Workspace</div>
-      <NavLink to="/home" end className={navCls}><span className="dot" />Home</NavLink>
-      <NavLink to="/drive" className={navCls}><span className="dot" />Recent</NavLink>
-      <NavLink to="/drive/starred" className={navCls}><span className="dot" />Starred</NavLink>
-      <NavLink to="/drive/all" className={navCls}><span className="dot" />Kreatix Drive</NavLink>
-      <NavLink to="/drive/shared" className={navCls}><span className="dot" />Shared with me</NavLink>
-      <NavLink to="/drive/trash" className={navCls}><span className="dot" />Recycle bin</NavLink>
+      <div className="section-label">{t("nav.workspace")}</div>
+      <NavLink to="/home" end className={navCls}><span className="dot" />{t("nav.home")}</NavLink>
+      <NavLink to="/drive" className={navCls}><span className="dot" />{t("nav.recent")}</NavLink>
+      <NavLink to="/drive/starred" className={navCls}><span className="dot" />{t("nav.starred")}</NavLink>
+      <NavLink to="/drive/all" className={navCls}><span className="dot" />{t("nav.drive")}</NavLink>
+      <NavLink to="/drive/shared" className={navCls}><span className="dot" />{t("nav.shared")}</NavLink>
+      <NavLink to="/drive/trash" className={navCls}><span className="dot" />{t("nav.trash")}</NavLink>
 
-      <div className="section-label">Applications</div>
-      <button type="button" className="nav" onClick={() => createFile("writer")}><AppIcon kind="writer" size={18} />Writer</button>
-      <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />Sheets</button>
-      <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />Present</button>
+      <div className="section-label">{t("nav.applications")}</div>
+      <button type="button" className="nav" onClick={() => createFile("writer")}><AppIcon kind="writer" size={18} />{t("nav.writer")}</button>
+      <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />{t("nav.sheets")}</button>
+      <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>
       <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
 
-      <div className="section-label">Workspace tools</div>
-      <button type="button" className="nav" onClick={onTemplates}><span className="dot" />Templates</button>
+      <div className="section-label">{t("nav.workspaceTools")}</div>
+      <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
       {(user?.role === "owner" || user?.role === "admin") && (
-        <NavLink to="/admin" className={navCls}><span className="dot" />Administration</NavLink>
+        <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
       )}
 
       <div className="ai-card">
         <div className="tag">Kreatix AI</div>
-        <h4>Your intelligent work companion across the entire suite.</h4>
-        <button onClick={() => void openAi()}>Open AI workspace</button>
+        <h4>{t("nav.aiTagline")}</h4>
+        <button onClick={() => void openAi()}>{t("nav.openAi")}</button>
       </div>
     </aside>
   );
@@ -309,6 +322,7 @@ interface Mention {
 
 function MentionsBell() {
   const navigate = useNavigate();
+  const t = useI18n().t;
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
@@ -337,14 +351,14 @@ function MentionsBell() {
 
   return (
     <div ref={boxRef} style={{ position: "relative" }}>
-      <button className="iconbtn" title="Notifications" onClick={toggle} style={{ position: "relative" }}>
+      <button className="iconbtn" title={t("shell.notifications")} onClick={toggle} style={{ position: "relative" }}>
         ♢
         {unread > 0 && <span className="mention-badge">{unread > 9 ? "9+" : unread}</span>}
       </button>
       {open && (
         <div className="user-menu" style={{ width: 300, maxHeight: 380, overflow: "auto" }}>
-          <div className="um-head"><b>Mentions</b></div>
-          {!mentions.length && <div style={{ padding: "14px 16px", fontSize: 12, color: "var(--muted)" }}>No mentions yet.</div>}
+          <div className="um-head"><b>{t("shell.mentions")}</b></div>
+          {!mentions.length && <div style={{ padding: "14px 16px", fontSize: 12, color: "var(--muted)" }}>{t("shell.noMentions")}</div>}
           {mentions.map((m) => (
             <button key={m.id} style={{ textAlign: "left", opacity: m.read ? 0.65 : 1 }}
               onClick={() => { setOpen(false); navigate(`/edit/${m.fileId}`); }}>
@@ -362,6 +376,7 @@ type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
 function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void }) {
   const { user, logout } = useAuth();
+  const t = useI18n().t;
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchItem[]>([]);
@@ -401,12 +416,12 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
 
   return (
     <div className="topbar">
-      <button className="iconbtn nav-burger" onClick={onNav} aria-label="Open navigation">☰</button>
+      <button className="iconbtn nav-burger" onClick={onNav} aria-label={t("shell.openNav")}>☰</button>
       <div className="search" ref={boxRef} style={{ position: "relative" }}>
         <span style={{ color: "var(--muted)" }}>⌕</span>
         <input
-          placeholder="Search your workspace…"
-          aria-label="Search your workspace"
+          placeholder={t("shell.search")}
+          aria-label={t("shell.searchAria")}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => results.length && setOpen(true)}
@@ -426,16 +441,16 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
         )}
       </div>
       <button className="iconbtn" onClick={toggleTheme}
-        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-        aria-label="Toggle theme">{theme === "dark" ? "☾" : "☼"}</button>
+        title={theme === "dark" ? t("shell.toLight") : t("shell.toDark")}
+        aria-label={t("shell.toggleThemeAria")}>{theme === "dark" ? "☾" : "☼"}</button>
       <MentionsBell />
       <div style={{ position: "relative" }}>
-        <button className="user" aria-label="Account menu" aria-haspopup="menu" aria-expanded={userMenu}
+        <button className="user" aria-label={t("shell.accountMenu")} aria-haspopup="menu" aria-expanded={userMenu}
           onClick={() => setUserMenu((v) => !v)}>{user?.initials ?? "…"}</button>
         {userMenu && (
           <div className="user-menu">
             <div className="um-head"><b>{user?.displayName}</b><span>{user?.email}</span></div>
-            <button onClick={() => { logout(); navigate("/login"); }}>Sign out</button>
+            <button onClick={() => { logout(); navigate("/login"); }}>{t("shell.signOut")}</button>
           </div>
         )}
       </div>

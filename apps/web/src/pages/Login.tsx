@@ -2,10 +2,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
   const { login, register, loginWithToken, enterAnonymous, completeMfaLogin } = useAuth();
+  const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [email, setEmail] = useState("");
@@ -30,9 +32,9 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       api.post<{ token: string }>("/api/auth/sso/exchange", {})
         .then((r) => loginWithToken(r.token))
         .then(() => navigate("/", { replace: true }))
-        .catch(() => setError("SSO sign-in failed"));
+        .catch(() => setError(t("auth.ssoExchangeFailed")));
     } else if (ssoError) {
-      setError(`Single sign-on failed: ${ssoError}`);
+      setError(t("auth.ssoFailed", { msg: ssoError }));
       setParams({}, { replace: true });
     }
     api.get<{ enabled: boolean }>("/api/auth/sso/status")
@@ -44,7 +46,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     if (invite) {
       api.get<{ orgName: string }>(`/api/auth/invite/${invite}`)
         .then((r) => setInviteOrg(r.orgName))
-        .catch(() => setError("This invite link is expired or invalid"));
+        .catch(() => setError(t("auth.inviteExpired")));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -64,7 +66,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       }
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      setError(err instanceof Error ? err.message : t("auth.genericError"));
       if (mfaToken && err instanceof Error && /expired/i.test(err.message)) setMfaToken(null);
     } finally {
       setBusy(false);
@@ -76,55 +78,61 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       <div>
         <div className="auth-brand"><BrandLockup light size={64} /></div>
         <form className="auth-card" onSubmit={submit}>
-        <h1>{mfaToken ? "Two-factor authentication" : mode === "login" ? "Welcome back" : inviteOrg ? `Join ${inviteOrg}` : "Create your workspace"}</h1>
-        <p>{mfaToken ? "Enter the code from your authenticator app, or a backup code." : "Kreatix Suites · Writer · Sheets · Present · PDF"}</p>
+        <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : inviteOrg ? t("auth.joinOrg", { org: inviteOrg }) : t("auth.createWorkspace")}</h1>
+        <p>{mfaToken ? t("auth.mfaPrompt") : t("auth.tagline")}</p>
         {error && <div className="auth-error">{error}</div>}
         {mfaToken ? (
           <>
-            <div className="field"><label>Authentication code</label>
+            <div className="field"><label>{t("auth.mfaCode")}</label>
               <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required autoFocus
                 inputMode="numeric" autoComplete="one-time-code" placeholder="123456 or abcd-ef01" /></div>
-            <button className="btn-primary" disabled={busy}>{busy ? "Verifying…" : "Verify"}</button>
+            <button className="btn-primary" disabled={busy}>{busy ? t("auth.verifying") : t("auth.verify")}</button>
             <button type="button" className="btn-ghost anon-btn"
               onClick={() => { setMfaToken(null); setMfaCode(""); setError(""); }}>
-              Back to sign in
+              {t("auth.backToSignIn")}
             </button>
           </>
         ) : (
           <>
         {mode === "register" && (
           <>
-            <div className="field"><label>Full name</label>
+            <div className="field"><label>{t("auth.fullName")}</label>
               <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Bolanle Johnson" /></div>
             {!invite && (
-              <div className="field"><label>Organization (optional)</label>
+              <div className="field"><label>{t("auth.orgOptional")}</label>
                 <input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="Kreatix Technologies" /></div>
             )}
           </>
         )}
-        <div className="field"><label>Email</label>
+        <div className="field"><label>{t("auth.email")}</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@company.com" /></div>
-        <div className="field"><label>Password</label>
+        <div className="field"><label>{t("auth.password")}</label>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="••••••••" /></div>
         <button className="btn-primary" disabled={busy}>
-          {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
+          {busy ? t("auth.pleaseWait") : mode === "login" ? t("auth.signIn") : t("auth.createAccount")}
         </button>
           </>
         )}
         {sso && mode === "login" && (
-          <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
+          <a className="btn-secondary sso-btn" href="/api/auth/sso">{t("auth.ssoContinue")}</a>
         )}
         {saml && mode === "login" && (
-          <a className="btn-secondary sso-btn" href="/api/auth/saml">Continue with SAML SSO</a>
+          <a className="btn-secondary sso-btn" href="/api/auth/saml">{t("auth.samlContinue")}</a>
         )}
         <button type="button" className="btn-ghost anon-btn"
           onClick={() => { void enterAnonymous().then(() => navigate("/home")); }}>
-          Continue without an account — 14 days free
+          {t("auth.anon")}
         </button>
         <div className="auth-switch">
           {mode === "login"
-            ? <>New to Kreatix? <Link to="/register">Create an account</Link></>
-            : <>Already have an account? <Link to="/login">Sign in</Link></>}
+            ? <>{t("auth.newToKreatix")} <Link to="/register">{t("auth.createAccountLink")}</Link></>
+            : <>{t("auth.haveAccount")} <Link to="/login">{t("auth.signInLink")}</Link></>}
+        </div>
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>{t("shell.language")}</label>
+          <select value={locale} onChange={(e) => setLocale(e.target.value)}>
+            {LOCALES.map((l) => <option key={l.tag} value={l.tag}>{l.label}</option>)}
+          </select>
         </div>
       </form>
       </div>

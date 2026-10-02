@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { I18nProvider, useT } from "./lib/i18n";
 import { Shell } from "./components/Shell";
 import { Login } from "./pages/Login";
 import { Home } from "./pages/Home";
@@ -15,7 +16,8 @@ import type { ReactNode } from "react";
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="auth-wrap"><div className="empty">Loading workspace…</div></div>;
+  const t = useT();
+  if (loading) return <div className="auth-wrap"><div className="empty">{t("app.loading")}</div></div>;
   if (!user) return <Navigate to="/login" replace />;
   return <EntitlementGate>{children}</EntitlementGate>;
 }
@@ -42,13 +44,15 @@ function TitleSync() {
 /** Public landing for guests, workspace home for signed-in users. */
 function LandingOrHome() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="auth-wrap"><div className="empty">Loading workspace…</div></div>;
+  const t = useT();
+  if (loading) return <div className="auth-wrap"><div className="empty">{t("app.loading")}</div></div>;
   return user ? <Navigate to="/home" replace /> : <Landing />;
 }
 
 export default function App() {
   useGlobalModalA11y(); // retrofit focus-trap/Escape/aria onto every dlg/overlay
   return (
+    <I18nProvider>
     <AuthProvider>
       <BrowserRouter>
         <TitleSync />
@@ -70,5 +74,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </AuthProvider>
+    </I18nProvider>
   );
 }
