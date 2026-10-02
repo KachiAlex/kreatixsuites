@@ -29,6 +29,7 @@ import { useAuth } from "../lib/auth";
 import { isCoarse } from "../lib/mobile";
 import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
+import { OpenCancelledError } from "../lib/passwordPrompt";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
@@ -837,7 +838,8 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       editor.commands.setContent(marked);
       setMarkupMode("all");
       toast(`Compared with ${f.name} — differences shown as markup`);
-    } catch {
+    } catch (e) {
+      if (e instanceof OpenCancelledError) return;
       toast("Could not compare that file");
     }
   };
@@ -1102,8 +1104,10 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         editor?.commands.setContent(`<p>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p>`);
       }
       toast(`Imported ${f.name}`);
-    } catch {
-      toast("Could not import that file");
+    } catch (e) {
+      if (e instanceof OpenCancelledError) return;
+      toast(e instanceof Error && e.message.includes("older Office encryption")
+        ? e.message : "Could not import that file");
     }
   };
 

@@ -13,6 +13,7 @@ import type { Editor } from "@tiptap/core";
 import { DEFAULT_STYLES, loadStyleDefs, styleDefsOf, type StyleDef } from "./extensions/styles";
 import type { DocProps } from "./DocProps";
 import { applyPageSetup, readPageSetup, type PageSetup } from "./PageSetup";
+import { ensureDecryptedFile } from "../lib/passwordPrompt";
 
 type Json = Record<string, unknown>;
 
@@ -1917,6 +1918,7 @@ function salvageDocxText(docXml: string): string {
 
 /** .docx file → editor HTML + recovered package metadata. */
 export async function importDocx(file: File): Promise<DocxImportResult> {
+  file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
   const arrayBuffer = await file.arrayBuffer();
   sniffDocxFormat(arrayBuffer);
   const { buffer, docXml, meta } = await preprocessDocx(arrayBuffer);

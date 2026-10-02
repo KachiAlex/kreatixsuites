@@ -23,6 +23,7 @@ pnpm dev:web                       # Vite on :5173 (proxies /api → :3001)
 pnpm build                         # builds web dist + api bundle
 pnpm typecheck
 pnpm --filter @kreatix/web test:roundtrip   # OOXML DOCX/XLSX/PPTX export→import harness
+pnpm --filter @kreatix/web test:encryption  # ECMA-376 agile (password-protected OOXML) decrypt harness
 ```
 
 API serves `apps/web/dist` automatically in production (single process on `:3001`).

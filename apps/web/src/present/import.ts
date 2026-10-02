@@ -1,5 +1,6 @@
 import type { Deck, Slide, SlideObject, Theme } from "./model";
 import { newId } from "./model";
+import { ensureDecryptedFile } from "../lib/passwordPrompt";
 
 // OOXML DrawingML units → px (960×540 deck, 96dpi)
 const EMU = 1 / 9525;
@@ -415,6 +416,7 @@ async function parsePartObjects(zip: import("jszip"), parser: DOMParser, path: s
 /** Import a .pptx/.potx file into a Deck (best-effort OOXML mapping) */
 export async function importPptx(file: File): Promise<Deck> {
   const JSZip = (await import("jszip")).default;
+  file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const parser = new DOMParser();
   const { theme: importedTheme, scheme } = await parseTheme(zip);

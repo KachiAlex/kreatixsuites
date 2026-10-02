@@ -8,6 +8,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
 import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, Range, Ref } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
+import { ensureDecryptedFile } from "../lib/passwordPrompt";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -287,6 +288,7 @@ export function richRunsFromHtml(html: string): RichRun[] | undefined {
 
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const XLSX = await xlsxLib();
+  file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { cellFormula: true, cellStyles: true, cellHTML: true });
   const sheets: SheetData[] = wb.SheetNames.map((name) => {

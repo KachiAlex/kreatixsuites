@@ -12,6 +12,7 @@ import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
 import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
+import { OpenCancelledError } from "../lib/passwordPrompt";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../pages/Home";
@@ -1329,8 +1330,10 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); });
       setActive(0);
       toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}`);
-    } catch {
-      toast("Could not read that workbook");
+    } catch (e) {
+      if (e instanceof OpenCancelledError) return;
+      toast(e instanceof Error && e.message.includes("older Office encryption")
+        ? e.message : "Could not read that workbook");
     }
   };
   // Native-binary item opened from Drive/desktop — run the import once so the
@@ -1350,7 +1353,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       const imported = await xlsxToWorkbook(f);
       mutate((w) => { (w.externs ??= {})[f.name] = imported; });
       toast(`Linked ${f.name} — [${f.name}]Sheet!A1 refs now resolve`);
-    } catch {
+    } catch (e) {
+      if (e instanceof OpenCancelledError) return;
       toast("Could not read that workbook");
     }
   };

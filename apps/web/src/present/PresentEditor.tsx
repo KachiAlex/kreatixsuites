@@ -8,6 +8,7 @@ import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { writeKx, readKx } from "../lib/clipboard";
+import { OpenCancelledError } from "../lib/passwordPrompt";
 import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
 import { createDoc } from "../lib/create";
@@ -463,8 +464,10 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
       setSlideIdx(0);
       setSelection(new Set());
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
-    } catch {
-      toast(`Could not read ${f.name}`);
+    } catch (e) {
+      if (e instanceof OpenCancelledError) return;
+      toast(e instanceof Error && e.message.includes("older Office encryption")
+        ? e.message : `Could not read ${f.name}`);
     }
   };
   // Native-binary item opened from Drive/desktop — import once so a
