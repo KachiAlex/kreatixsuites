@@ -5,6 +5,7 @@ import { createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { decryptOoxml, ooxmlEncScheme, WrongPasswordError } from "./ooxmlCrypto";
+import { Modal } from "../components/Modal";
 
 export class OpenCancelledError extends Error {
   constructor() { super("Open cancelled"); this.name = "OpenCancelledError"; }
@@ -16,15 +17,14 @@ function PasswordForm({ fileName, wrong, onSubmit, onCancel }: {
 }) {
   const [pw, setPw] = useState("");
   return (
-    <div className="dlg-back" onClick={onCancel}>
-      <div className="dlg" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onCancel} label="Password required" skin="dlg">
         <h3>Password required</h3>
         <p style={{ fontSize: 12, color: "var(--muted)", margin: "8px 0 14px" }}>
           {wrong ? "Incorrect password — try again."
             : <><b>{fileName}</b> is password-protected. Enter the password to open it.</>}
         </p>
         <form onSubmit={(e) => { e.preventDefault(); onSubmit(pw); }}>
-          <input type="password" autoFocus value={pw} placeholder="Password"
+          <input type="password" autoFocus value={pw} placeholder="Password" aria-label="File password"
             onChange={(e) => setPw(e.target.value)}
             style={{ width: "100%", height: 40, border: "1px solid var(--line)", borderRadius: 11, padding: "0 11px", fontSize: 12, background: "#FBFAF9", boxSizing: "border-box" }} />
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
@@ -32,8 +32,7 @@ function PasswordForm({ fileName, wrong, onSubmit, onCancel }: {
             <button type="submit" className="btn-primary" style={{ height: 34, padding: "0 18px" }}>Open</button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -71,8 +70,8 @@ export async function ensureDecryptedFile(file: File): Promise<File> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const scheme = ooxmlEncScheme(bytes);
   if (!scheme) return file;
-  if (scheme !== "agile")
-    throw new Error("This file uses an older Office encryption scheme that Kreatix can't open yet");
+  if (scheme === "extensible")
+    throw new Error("This file uses an Office encryption scheme that Kreatix can't open yet");
   let wrong = false;
   for (;;) {
     const pw = await askPassword(file.name, wrong);

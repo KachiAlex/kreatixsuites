@@ -28,7 +28,7 @@ check("enc docx flagged", isEncryptedOoxml(encDocx));
 check("enc xlsx flagged", isEncryptedOoxml(encXlsx));
 check("scheme = agile", ooxmlEncScheme(encDocx) === "agile" && ooxmlEncScheme(encXlsx) === "agile");
 
-for (const [name, bytes, pw] of [
+for (const [name, bytes] of [
   ["docx", encDocx, "Verify42!"],
   ["xlsx", encXlsx, "Sheet99!"],
 ] as const) {
@@ -50,5 +50,14 @@ check("imported sheet name", wb.sheets[0].name === "S1");
 check("imported cell A1 = 42", wb.sheets[0].cells["A1"]?.v === 42);
 check("imported cell B1 = hi", wb.sheets[0].cells["B1"]?.v === "hi");
 
-console.log(`${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ---------- standard scheme (real fixture from msoffcrypto-tool) ----------
+const encStd = fx("standard-password.docx"), plainStd = fx("standard-plain.docx");
+check("std flagged", isEncryptedOoxml(encStd));
+check("scheme = standard", ooxmlEncScheme(encStd) === "standard");
+let stdThrew = false;
+try { await decryptOoxml(encStd, "wrong"); } catch (e) { stdThrew = e instanceof WrongPasswordError; }
+check("std wrong password → WrongPasswordError", stdThrew);
+const stdT0 = Date.now();
+check("std decrypt byte-identical", sameBytes(await decryptOoxml(encStd, "Password1234_"), plainStd));
+console.log(`std decrypt elapsed ${Date.now() - stdT0}ms`);
+console.log(`${passed} passed, ${failed} failed`); process.exit(failed ? 1 : 0);

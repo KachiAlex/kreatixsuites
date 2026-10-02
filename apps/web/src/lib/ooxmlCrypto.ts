@@ -15,6 +15,7 @@
 
 import * as CFB from "cfb";
 import { sha512 as sha512sum } from "@noble/hashes/sha2";
+import { sha1 } from "@noble/hashes/sha1";
 
 const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
@@ -75,33 +76,36 @@ const INV_SBOX = new Uint8Array(256);
   }
 }
 
-/** Expand an AES-256 key into the 15 round keys (60 words → 240 bytes). */
-function aes256Expand(key: Uint8Array): Uint8Array {
-  const w = new Uint8Array(240);
+/** Expand an AES-128/192/256 key into round keys (Nk = 4/6/8 words). */
+function aesExpand(key: Uint8Array): Uint8Array {
+  const nk = key.length / 4;
+  const words = 4 * (nk + 7);
+  const w = new Uint8Array(words * 4);
   w.set(key);
   let rcon = 1;
-  for (let i = 8; i < 60; i++) {
+  for (let i = nk; i < words; i++) {
     let t0 = w[4 * i - 4], t1 = w[4 * i - 3], t2 = w[4 * i - 2], t3 = w[4 * i - 1];
-    if (i % 8 === 0) {
+    if (i % nk === 0) {
       const r = t0;
       t0 = SBOX[t1] ^ rcon; t1 = SBOX[t2]; t2 = SBOX[t3]; t3 = SBOX[r];
       rcon = gm(rcon, 2);
-    } else if (i % 8 === 4) {
+    } else if (nk > 6 && i % nk === 4) {
       t0 = SBOX[t0]; t1 = SBOX[t1]; t2 = SBOX[t2]; t3 = SBOX[t3];
     }
-    w[4 * i] = w[4 * i - 32] ^ t0;
-    w[4 * i + 1] = w[4 * i - 31] ^ t1;
-    w[4 * i + 2] = w[4 * i - 30] ^ t2;
-    w[4 * i + 3] = w[4 * i - 29] ^ t3;
+    w[4 * i] = w[4 * (i - nk)] ^ t0;
+    w[4 * i + 1] = w[4 * (i - nk) + 1] ^ t1;
+    w[4 * i + 2] = w[4 * (i - nk) + 2] ^ t2;
+    w[4 * i + 3] = w[4 * (i - nk) + 3] ^ t3;
   }
   return w;
 }
 
 /** AES inverse cipher on one 16-byte block (state is column-major). */
 function aesBlockDecrypt(rk: Uint8Array, blk: Uint8Array): Uint8Array {
+  const nr = rk.length / 16 - 1; // 10/12/14 for 128/192/256
   const s = new Uint8Array(16);
   // start with the last round key applied to the ciphertext
-  for (let i = 0; i < 16; i++) s[i] = blk[i] ^ rk[224 + i];
+  for (let i = 0; i < 16; i++) s[i] = blk[i] ^ rk[nr * 16 + i];
   const invShiftSub = () => {
     const t = s.slice();
     for (let r = 0; r < 4; r++)
@@ -117,7 +121,7 @@ function aesBlockDecrypt(rk: Uint8Array, blk: Uint8Array): Uint8Array {
       s[4 * c + 3] = gm(a, 11) ^ gm(b, 13) ^ gm(d, 9)  ^ gm(e, 14);
     }
   };
-  for (let round = 13; round >= 1; round--) {
+  for (let round = nr - 1; round >= 1; round--) {
     invShiftSub();
     for (let i = 0; i < 16; i++) s[i] ^= rk[round * 16 + i];
     invMix();
@@ -127,9 +131,9 @@ function aesBlockDecrypt(rk: Uint8Array, blk: Uint8Array): Uint8Array {
   return s;
 }
 
-/** AES-256-CBC decrypt of arbitrary block-aligned data — no padding removal. */
+/** AES-CBC decrypt of block-aligned data — no padding removal. */
 function aesCbcDecrypt(key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8Array {
-  const rk = aes256Expand(key);
+  const rk = aesExpand(key);
   const out = new Uint8Array(data.length);
   let prev = iv;
   for (let off = 0; off < data.length; off += 16) {
@@ -138,6 +142,15 @@ function aesCbcDecrypt(key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8
     for (let i = 0; i < 16; i++) out[off + i] = dec[i] ^ prev[i];
     prev = blk;
   }
+  return out;
+}
+
+/** AES-ECB decrypt of block-aligned data (ECMA-376 "standard" scheme). */
+function aesEcbDecrypt(key: Uint8Array, data: Uint8Array): Uint8Array {
+  const rk = aesExpand(key);
+  const out = new Uint8Array(data.length);
+  for (let off = 0; off + 16 <= data.length; off += 16)
+    out.set(aesBlockDecrypt(rk, data.subarray(off, off + 16)), off);
   return out;
 }
 
@@ -158,13 +171,15 @@ const utf16le = (s: string): Uint8Array => {
 const le32 = (n: number): Uint8Array =>
   new Uint8Array([n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff]);
 
-const sha512 = (...parts: Uint8Array[]): Uint8Array => {
-  const len = parts.reduce((n, p) => n + p.length, 0);
-  const cat = new Uint8Array(len);
+const concatBytes = (...parts: Uint8Array[]): Uint8Array => {
+  const cat = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let off = 0;
   for (const p of parts) { cat.set(p, off); off += p.length; }
-  return sha512sum(cat);
+  return cat;
 };
+
+const sha512 = (...parts: Uint8Array[]): Uint8Array => sha512sum(concatBytes(...parts));
+const sha1sum = (...parts: Uint8Array[]): Uint8Array => sha1(concatBytes(...parts));
 
 /** Pull a named attribute out of the EncryptionInfo XML (per-element scope). */
 function xmlAttr(el: string, name: string): string | null {
@@ -190,9 +205,9 @@ export class WrongPasswordError extends Error {
 }
 
 /**
- * Decrypt an agile-encrypted OOXML container. Returns the plain ZIP bytes
- * (the .docx/.xlsx/.pptx content). Throws WrongPasswordError when the
- * verifier check fails, or Error for schemes we don't support.
+ * Decrypt an encrypted OOXML container (agile or standard scheme). Returns
+ * the plain ZIP bytes. Throws WrongPasswordError when the verifier check
+ * fails, or Error for schemes we don't support.
  */
 export async function decryptOoxml(bytes: Uint8Array, password: string): Promise<Uint8Array> {
   const cfb = CFB.read(bytes, { type: "array" });
@@ -204,8 +219,11 @@ export async function decryptOoxml(bytes: Uint8Array, password: string): Promise
   const pkgBytes = new Uint8Array(pkg.content);
   const dv = new DataView(infoBytes.buffer, infoBytes.byteOffset);
   const major = dv.getUint16(0, true), minor = dv.getUint16(2, true);
+  if (minor === 3 || (major === 2 && minor !== 2))
+    throw new Error("This file uses an extensible Office encryption scheme that Kreatix can't open yet");
+  if (minor === 2) return decryptStandard(infoBytes, pkgBytes, password);
   if (major !== 4 || minor !== 4)
-    throw new Error("This file uses an older Office encryption scheme that Kreatix can't open yet");
+    throw new Error("This file uses an Office encryption scheme that Kreatix can't open yet");
 
   const xml = new TextDecoder("utf-8").decode(infoBytes.subarray(8));
   const keyData = xmlEl(xml, "keyData");
@@ -257,6 +275,62 @@ export async function decryptOoxml(bytes: Uint8Array, password: string): Promise
     out.set(plain.subarray(0, Math.min(plain.length, totalLen - seg * 4096)), seg * 4096);
   }
   if (out[0] !== 0x50 || out[1] !== 0x4b) // 'PK' — sanity check on the ZIP
+    throw new Error("Decryption produced invalid data");
+  return out;
+}
+
+// ------------------------------------------------------------ standard ----
+
+/**
+ * Decrypt a "standard"-scheme (ECMA-376, EncryptionInfo v3.2/4.2) container —
+ * the pre-2010 default. Binary EncryptionInfo header, SHA-1 50k-spin KDF,
+ * AES-ECB verifier + package. RC4-era (alId 0x6801) is rejected.
+ */
+async function decryptStandard(infoBytes: Uint8Array, pkgBytes: Uint8Array, password: string): Promise<Uint8Array> {
+  const dv = new DataView(infoBytes.buffer, infoBytes.byteOffset);
+  const hdrSize = dv.getUint32(8, true);
+  // EncryptionHeader starts at byte 12: flags, sizeExtra, algId, algIdHash,
+  // keySize(bits), providerType, reserved×2, cspName(utf-16)
+  const algId = dv.getUint32(12 + 8, true);
+  const keyBits = dv.getUint32(12 + 16, true);
+  if ((algId & 0xff00) !== 0x6600)
+    throw new Error("This file uses RC4 encryption — too old to open");
+  const keyBytes = keyBits / 8;
+  // EncryptionVerifier follows the header: saltSize, salt(16),
+  // encryptedVerifier(16), verifierHashSize, encryptedVerifierHash(32 AES)
+  const v = 12 + hdrSize;
+  const salt = infoBytes.subarray(v + 4, v + 20);
+  const encVerifier = infoBytes.subarray(v + 20, v + 36);
+  const encVerifierHash = infoBytes.subarray(v + 40, v + 72);
+
+  // KDF: sha1(salt + pw), 50000× sha1(i || h), then sha1(h || 0)
+  let h = sha1sum(salt, utf16le(password));
+  for (let i = 0; i < 50000; i++) h = sha1sum(le32(i), h);
+  const hfinal = sha1sum(h, le32(0));
+
+  // key = (sha1(hfinal⊕0x36..) || sha1(hfinal⊕0x5c..)) truncated — HMAC-style pads
+  const xorPad = (hf: Uint8Array, byte: number): Uint8Array => {
+    const b = new Uint8Array(64).fill(byte);
+    for (let i = 0; i < hf.length; i++) b[i] ^= hf[i];
+    return b;
+  };
+  const key = concatBytes(sha1sum(xorPad(hfinal, 0x36)), sha1sum(xorPad(hfinal, 0x5c)))
+    .subarray(0, keyBytes);
+
+  // verify: ECB-decrypt verifier, hash it, compare against decrypted hash
+  const verifier = aesEcbDecrypt(key, encVerifier);
+  const expected = sha1sum(verifier);
+  const verifierHash = aesEcbDecrypt(key, encVerifierHash).subarray(0, 20);
+  for (let i = 0; i < 20; i++)
+    if (expected[i] !== verifierHash[i]) throw new WrongPasswordError();
+
+  // package: u32 totalSize, pad, ECB-decrypt the rest, take totalSize
+  const pkgDv = new DataView(pkgBytes.buffer, pkgBytes.byteOffset);
+  const totalLen = pkgDv.getUint32(0, true);
+  const body = pkgBytes.subarray(8);
+  const out = aesEcbDecrypt(key, body.subarray(0, body.length - (body.length % 16)))
+    .subarray(0, totalLen);
+  if (out[0] !== 0x50 || out[1] !== 0x4b)
     throw new Error("Decryption produced invalid data");
   return out;
 }

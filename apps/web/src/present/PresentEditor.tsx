@@ -466,7 +466,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
     } catch (e) {
       if (e instanceof OpenCancelledError) return;
-      toast(e instanceof Error && e.message.includes("older Office encryption")
+      toast(e instanceof Error && /encryption|RC4/i.test(e.message)
         ? e.message : `Could not read ${f.name}`);
     }
   };
