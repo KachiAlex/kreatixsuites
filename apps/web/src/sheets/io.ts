@@ -790,7 +790,7 @@ export function sheetToPrintHTML(sheet: SheetData, wb: Workbook | undefined, opt
       const cell = sheet.cells[ref];
       const res = evals.get(ref);
       const s = cell?.s ?? {};
-      const text = formatValue(cell?.f ? res?.value : cell?.v, s.fmt);
+      const text = formatValue(cell?.f ? res?.value : cell?.v, s.fmt, wb?.locale);
       const m = sheet.merges?.find((mm) => mm.c1 === c && mm.r1 === r);
       const css = [
         opts.gridlines ? "border:1px solid #D8D2CC" : "",

@@ -394,6 +394,10 @@ export interface Workbook {
     maxIterations?: number;
     maxChange?: number;
   };
+  /** BCP-47 locale for number/date display (e.g. "de-DE") — thousands
+   *  separators, decimal mark, month/day names. Defaults to en-US;
+   *  `[$-xxxx]` tags inside a format code override per cell. */
+  locale?: string;
   /** S15.1 — lock workbook structure (no sheet add/remove/rename/reorder) */
   protectStructure?: boolean;
   /** S15.1 — SHA-256 hex of the open password; gate the editor until unlocked */

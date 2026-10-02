@@ -563,7 +563,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     // the anchor keeps the whole matrix so flatten to its top-left
     const rawV = cell?.f || (!cell && res) ? res?.value : cell?.v;
     let content: string | number | null = editing?.ref.col === c && editing.ref.row === r ? null
-      : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt);
+      : res?.error ?? formatValue(Array.isArray(rawV) ? (rawV[0] as unknown[])?.[0] ?? null : rawV, s.fmt, wb?.locale);
     // S19.2 — show formulas renders the expression, not the result (Ctrl+`)
     if (showFormulas && cell?.f) content = `=${cell.f}`;
     // S19.11 — "fill" alignment repeats the text to fill the cell width
@@ -606,7 +606,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
             : fn === "avg" ? (nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : "")
             : fn === "min" ? (nums.length ? Math.min(...nums) : "")
             : fn === "max" ? (nums.length ? Math.max(...nums) : "") : "";
-          if (typeof content === "number") content = formatValue(content, s.fmt);
+          if (typeof content === "number") content = formatValue(content, s.fmt, wb?.locale);
         }
       }
     }

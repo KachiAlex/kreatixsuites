@@ -127,7 +127,11 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const wbRef = useRef<Workbook | undefined>(undefined);
   const [wb, setWb] = useState<Workbook>(() => {
     const d = initialDoc as { workbook?: Workbook } | null;
-    return d?.workbook?.sheets?.length ? d.workbook : { sheets: [{ name: "Sheet1", cells: {} }] };
+    const wb = d?.workbook?.sheets?.length ? d.workbook : { sheets: [{ name: "Sheet1", cells: {} }] };
+    // new workbooks inherit the browser locale for number/date display
+    if (!wb.locale && typeof navigator !== "undefined" && navigator.language && !/^en-us$/i.test(navigator.language))
+      wb.locale = navigator.language;
+    return wb;
   });
   // S15.1 — open-password gate (S8.4 workbook-level lock)
   const [pwLocked, setPwLocked] = useState(() => !!wb.passwordHash);
@@ -1005,7 +1009,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
         const s = cell?.s ?? {};
         const res = evals.get(ref);
         const v = cell?.f ? res?.value : cell?.v;
-        const txt = res?.error ?? formatValue(Array.isArray(v) ? "" : v, s.fmt);
+        const txt = res?.error ?? formatValue(Array.isArray(v) ? "" : v, s.fmt, wb?.locale);
         if (s.bg) { ctx.fillStyle = s.bg; ctx.fillRect(x, y, w, h); }
         ctx.strokeRect(x, y, w, h);
         ctx.fillStyle = s.color ?? "#26221F";
@@ -1031,7 +1035,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       a.download = "range.png"; a.click();
       toast("Downloaded range.png (clipboard images not permitted)");
     }
-  }, [selection, sheet, evals, toast]);
+  }, [selection, sheet, evals, toast, wb.locale]);
 
   // S12.6 Flash Fill — anchor cell holds a worked example; infer the
   // transform from the other values on its row and fill the column down
@@ -1642,6 +1646,11 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   {NUM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
                   <option value="custom">Custom code…</option>
                 </select>
+                <select className="rb-sel" value={wb.locale ?? "en-US"} style={{ width: 76 }}
+                  title="Workbook locale — separators & month names (a [$-xxxx] tag in a custom code overrides per cell)"
+                  onChange={(e) => setWb({ ...wb, locale: e.target.value === "en-US" ? undefined : e.target.value })}>
+                  {["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ru-RU", "ja-JP", "zh-CN", "ar-SA", "hi-IN", "tr-TR", "sv-SE"].map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
               </>},
               { id: "styles", label: "Styles", node: <>
                 <select className="rb-sel" value="" title="Cell style preset (replaces formatting)" style={{ width: 84 }}
@@ -1814,7 +1823,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
             else if (e.key === "Escape") (e.target as HTMLInputElement).blur();
           }}
           onBlur={() => fxValue !== cellEditText(anchorCell) && commitCell(fxAnchor.current, fxValue)} />
-        <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt)}` : ""}</span>
+        <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt, wb?.locale)}` : ""}</span>
         {anchorInputMsg && <span className="fx-val" style={{ color: "#7A6A5C", fontStyle: "italic" }} title="Input message">{anchorInputMsg}</span>}
       </div>
 
