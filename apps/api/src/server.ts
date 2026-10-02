@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ZodError } from "zod";
 import { authRoutes } from "./routes/auth.js";
+import { accountRoutes } from "./routes/account.js";
 import { driveRoutes } from "./routes/drive.js";
 import { contentRoutes } from "./routes/content.js";
 import { sharingRoutes } from "./routes/sharing.js";
@@ -110,6 +111,7 @@ async function main() {
   });
 
   app.register(authRoutes);
+  app.register(accountRoutes);
   app.register(driveRoutes);
   app.register(contentRoutes);
   app.register(sharingRoutes);
