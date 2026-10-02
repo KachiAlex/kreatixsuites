@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { ZodError } from "zod";
 import { authRoutes } from "./routes/auth.js";
 import { accountRoutes } from "./routes/account.js";
+import { scimRoutes } from "./routes/scim.js";
 import { driveRoutes } from "./routes/drive.js";
 import { contentRoutes } from "./routes/content.js";
 import { sharingRoutes } from "./routes/sharing.js";
@@ -29,7 +30,7 @@ import { encryptionEnabled } from "./crypto.js";
 async function main() {
   await migrate(); // Postgres schema — idempotent, auto-creates the database
   await ensureSuperAdmin(); // seeds admin@…/env-password if configured
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
+  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, trustProxy: true });
 
   await app.register(cors, { origin: true, credentials: true });
   // br/gzip for JSON API + statics — the host nginx has no brotli module, so
@@ -112,6 +113,7 @@ async function main() {
 
   app.register(authRoutes);
   app.register(accountRoutes);
+  app.register(scimRoutes);
   app.register(driveRoutes);
   app.register(contentRoutes);
   app.register(sharingRoutes);

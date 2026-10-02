@@ -84,6 +84,8 @@ export function Admin() {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [filter, setFilter] = useState("");
+  const [scimTokens, setScimTokens] = useState<{ id: string; label: string | null; created_at: string }[]>([]);
+  const [newScimToken, setNewScimToken] = useState("");
   // superadmin (platform) state
   const [saOverview, setSaOverview] = useState<SaOverview | null>(null);
   const [saOrgs, setSaOrgs] = useState<SaOrg[]>([]);
@@ -101,14 +103,16 @@ export function Admin() {
       api.get<Metrics>("/api/admin/metrics"),
       api.get<{ invites: Invite[] }>("/api/admin/invites"),
       api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
+      api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
     ];
-    const [m, p, a, mx, inv, bill] = await Promise.all(reqs) as [
+    const [m, p, a, mx, inv, bill, scim] = await Promise.all(reqs) as [
       { members: Member[] },
       { policies: Policies; encryptionAtRest: boolean },
       { entries: AuditEntry[] },
       Metrics,
       { invites: Invite[] },
       { subscription: BillingSub; payments: Payment[] },
+      { tokens: { id: string; label: string | null; created_at: string }[] },
     ];
     setMembers(m.members);
     setPolicies(p.policies);
@@ -117,6 +121,7 @@ export function Admin() {
     setMetrics(mx);
     setInvites(inv.invites);
     setBilling(bill);
+    setScimTokens(scim.tokens);
     if (isSuper) {
       const [ov, og, pay, cfg] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
@@ -174,6 +179,20 @@ export function Admin() {
   const revokeInvite = async (id: string) => {
     await api.del(`/api/admin/invites/${id}`).catch(() => {});
     setInvites((xs) => xs.filter((i) => i.id !== id));
+  };
+
+  const createScimToken = async () => {
+    const r = await api.post<{ id: string; token: string }>("/api/admin/scim/tokens", {})
+      .catch((e: Error) => { toast(e.message || "Failed to create token"); return null; });
+    if (!r) return;
+    setScimTokens((xs) => [...xs, { id: r.id, label: null, created_at: new Date().toISOString() }]);
+    setNewScimToken(r.token);
+    try { await navigator.clipboard.writeText(r.token); } catch { /* clipboard denied */ }
+  };
+
+  const revokeScimToken = async (id: string) => {
+    await api.del(`/api/admin/scim/tokens/${id}`).catch(() => {});
+    setScimTokens((xs) => xs.filter((t) => t.id !== id));
   };
 
   const checkout = async () => {
@@ -435,6 +454,37 @@ export function Admin() {
             ))}
           </tbody>
         </table></div>
+      </section>
+
+      <section className="admin-card">
+        <h2>SCIM provisioning</h2>
+        <div className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
+          <span>
+            <b>Endpoint</b> <code>{location.origin}/scim/v2</code>
+            <em style={{ display: "block" }}>Point your identity provider (Okta, Entra ID, OneLogin) at this URL with a bearer token below. Supports Users create/update/deactivate/delete.</em>
+          </span>
+        </div>
+        <div className="audit-bar" style={{ marginTop: 8 }}>
+          <button className="btn-secondary" onClick={() => void createScimToken()}>+ Provisioning token</button>
+          {scimTokens.map((t) => (
+            <span key={t.id} className="role-badge" title={new Date(t.created_at).toLocaleString()}>
+              {t.label || `token …${t.id.slice(0, 6)}`}
+              <button style={{ marginLeft: 6, border: 0, background: "none", cursor: "pointer" }}
+                onClick={() => void revokeScimToken(t.id)}>✕</button>
+            </span>
+          ))}
+        </div>
+        {newScimToken && (
+          <div className="pol-row" style={{ marginTop: 8 }}>
+            <span>
+              <b>Copy this token now — it is shown once:</b>
+              <code style={{ display: "block", wordBreak: "break-all", marginTop: 4 }}>{newScimToken}</code>
+              <button className="btn-secondary" style={{ marginTop: 6 }}
+                onClick={() => { void navigator.clipboard.writeText(newScimToken); toast("Copied"); }}>Copy</button>
+              <button className="btn-ghost" style={{ marginTop: 6, marginLeft: 6 }} onClick={() => setNewScimToken("")}>Dismiss</button>
+            </span>
+          </div>
+        )}
       </section>
 
       <section className="admin-card">

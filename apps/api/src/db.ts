@@ -174,6 +174,15 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_org ON activity(org_id, created_at DESC);
 
+-- SCIM 2.0 provisioning bearer tokens (per-org, SHA-256 hashed)
+CREATE TABLE IF NOT EXISTS scim_tokens (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  label TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS collab_states (
   file_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
   state BYTEA NOT NULL,
@@ -278,6 +287,8 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backups TEXT`);
+  // SCIM externalId correlation (IdP-side user id)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS scim_external_id TEXT`);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);

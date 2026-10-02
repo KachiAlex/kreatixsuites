@@ -2,7 +2,7 @@
 // All endpoints require owner or admin role.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { q as dbq, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies } from "../policies.js";
@@ -120,6 +120,31 @@ export function adminRoutes(app: FastifyInstance) {
   app.delete("/api/admin/invites/:id", async (req) => {
     const { user } = req as AuthedRequest;
     await run("DELETE FROM org_invites WHERE id = $1 AND org_id = $2", [(req.params as { id: string }).id, user.orgId]);
+    return { ok: true };
+  });
+
+  /** SCIM provisioning tokens — plaintext shown once at creation. */
+  app.get("/api/admin/scim/tokens", async (req) => {
+    const { user } = req as AuthedRequest;
+    return {
+      tokens: await dbq("SELECT id, label, created_at FROM scim_tokens WHERE org_id = $1 ORDER BY created_at", [user.orgId]),
+      endpoint: "/scim/v2",
+    };
+  });
+
+  app.post("/api/admin/scim/tokens", async (req) => {
+    const { user } = req as AuthedRequest;
+    const { label } = (req.body ?? {}) as { label?: string };
+    const token = `kxscim_${randomBytes(24).toString("base64url")}`;
+    const id = randomUUID();
+    await run("INSERT INTO scim_tokens (id, org_id, token_hash, label, created_at) VALUES ($1,$2,$3,$4,$5)",
+      [id, user.orgId, createHash("sha256").update(token).digest("hex"), label?.slice(0, 80) ?? null, now()]);
+    return { id, token };
+  });
+
+  app.delete("/api/admin/scim/tokens/:id", async (req) => {
+    const { user } = req as AuthedRequest;
+    await run("DELETE FROM scim_tokens WHERE id = $1 AND org_id = $2", [(req.params as { id: string }).id, user.orgId]);
     return { ok: true };
   });
 
