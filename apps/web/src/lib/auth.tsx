@@ -8,9 +8,14 @@ import { ANON_USER, endAnonymousSession, isAnonymous, startAnonymousSession } fr
 interface AuthState {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  /** Resolves null on success, or the short-lived mfaToken when the account
+   *  requires a second factor — the caller then completes via completeMfaLogin. */
+  login: (email: string, password: string) => Promise<string | null>;
+  completeMfaLogin: (mfaToken: string, code: string) => Promise<void>;
   register: (email: string, password: string, displayName: string, orgName?: string, invite?: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
+  /** Re-fetch /api/auth/me — e.g. after changing security settings. */
+  refreshUser: () => Promise<void>;
   enterAnonymous: () => Promise<void>;
   logout: () => void;
 }
@@ -45,12 +50,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void syncNow().catch(() => {});
   };
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<string | null> => {
     // desktop sessions get a 30d token so the 14-day offline grace can't
     // strand a signed-in user mid-offline-period
     const wasAnon = localStorage.getItem("kx.anon") === "1";
-    const r = await api.post<{ token: string; user: User }>("/api/auth/login",
+    const r = await api.post<{ token?: string; user?: User; mfaRequired?: boolean; mfaToken?: string }>("/api/auth/login",
       { email, password, ...(isDesktop ? { client: "desktop" } : {}) });
+    if (r.mfaRequired) return r.mfaToken ?? null;
+    setToken(r.token!);
+    setUser(r.user!);
+    if (isDesktop) void refreshEntitlement();
+    void convertAnonymous(wasAnon);
+    return null;
+  };
+
+  const completeMfaLogin = async (mfaToken: string, code: string) => {
+    const wasAnon = localStorage.getItem("kx.anon") === "1";
+    const r = await api.post<{ token: string; user: User }>("/api/auth/mfa/login",
+      { mfaToken, code, ...(isDesktop ? { client: "desktop" } : {}) });
     setToken(r.token);
     setUser(r.user);
     if (isDesktop) void refreshEntitlement();
@@ -84,13 +101,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(ANON_USER as User);
   };
 
+  const refreshUser = async () => {
+    const r = await api.get<{ user: User }>("/api/auth/me");
+    setUser(r.user);
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
     if (isDesktop) void clearEntitlement();
   };
 
-  return <Ctx.Provider value={{ user, loading, login, register, loginWithToken, enterAnonymous, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, enterAnonymous, logout }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

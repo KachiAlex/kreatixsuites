@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { BrandLockup } from "../components/AppIcon";
 
 export function Login({ mode }: { mode: "login" | "register" }) {
-  const { login, register, loginWithToken, enterAnonymous } = useAuth();
+  const { login, register, loginWithToken, enterAnonymous, completeMfaLogin } = useAuth();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [email, setEmail] = useState("");
@@ -16,6 +16,8 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState(false);
   const [inviteOrg, setInviteOrg] = useState<string | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
   const invite = params.get("invite") ?? undefined;
 
   // SSO callback lands here: ?sso=1 (token in HttpOnly cookie) or ?sso_error=<msg>
@@ -48,11 +50,18 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     setError("");
     setBusy(true);
     try {
-      if (mode === "login") await login(email, password);
-      else await register(email, password, name, org || undefined, invite);
+      if (mfaToken) {
+        await completeMfaLogin(mfaToken, mfaCode);
+      } else if (mode === "login") {
+        const pending = await login(email, password);
+        if (pending) { setMfaToken(pending); setBusy(false); return; }
+      } else {
+        await register(email, password, name, org || undefined, invite);
+      }
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
+      if (mfaToken && err instanceof Error && /expired/i.test(err.message)) setMfaToken(null);
     } finally {
       setBusy(false);
     }
@@ -63,9 +72,22 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       <div>
         <div className="auth-brand"><BrandLockup light size={64} /></div>
         <form className="auth-card" onSubmit={submit}>
-        <h1>{mode === "login" ? "Welcome back" : inviteOrg ? `Join ${inviteOrg}` : "Create your workspace"}</h1>
-        <p>Kreatix Suites · Writer · Sheets · Present · PDF</p>
+        <h1>{mfaToken ? "Two-factor authentication" : mode === "login" ? "Welcome back" : inviteOrg ? `Join ${inviteOrg}` : "Create your workspace"}</h1>
+        <p>{mfaToken ? "Enter the code from your authenticator app, or a backup code." : "Kreatix Suites · Writer · Sheets · Present · PDF"}</p>
         {error && <div className="auth-error">{error}</div>}
+        {mfaToken ? (
+          <>
+            <div className="field"><label>Authentication code</label>
+              <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required autoFocus
+                inputMode="numeric" autoComplete="one-time-code" placeholder="123456 or abcd-ef01" /></div>
+            <button className="btn-primary" disabled={busy}>{busy ? "Verifying…" : "Verify"}</button>
+            <button type="button" className="btn-ghost anon-btn"
+              onClick={() => { setMfaToken(null); setMfaCode(""); setError(""); }}>
+              Back to sign in
+            </button>
+          </>
+        ) : (
+          <>
         {mode === "register" && (
           <>
             <div className="field"><label>Full name</label>
@@ -83,6 +105,8 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         <button className="btn-primary" disabled={busy}>
           {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
         </button>
+          </>
+        )}
         {sso && mode === "login" && (
           <a className="btn-secondary sso-btn" href="/api/auth/sso">Continue with single sign-on</a>
         )}

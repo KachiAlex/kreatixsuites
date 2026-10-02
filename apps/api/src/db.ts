@@ -275,6 +275,9 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
+  // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backups TEXT`);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);

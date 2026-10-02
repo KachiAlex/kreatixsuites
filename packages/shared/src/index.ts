@@ -12,6 +12,8 @@ export interface User {
   orgId: string;
   role: UserRole;
   isSuper?: boolean;
+  /** TOTP second factor enrolled */
+  mfaEnabled?: boolean;
   createdAt: string;
 }
 

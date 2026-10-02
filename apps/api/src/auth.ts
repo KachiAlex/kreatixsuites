@@ -48,9 +48,28 @@ export async function signEntitlement(claims: {
     .sign(entitlementSecret);
 }
 
+/** Short-lived token between password check and TOTP challenge — NOT a
+ *  session token; requireAuth rejects it via the audience check below. */
+export async function signMfaToken(userId: string): Promise<string> {
+  return new SignJWT({ sub: userId })
+    .setProtectedHeader({ alg: "HS256" })
+    .setAudience("kreatix-mfa")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(secret);
+}
+
+export async function verifyMfaToken(token: string): Promise<string | null> {
+  try {
+    const { payload } = await jwtVerify(token, secret, { audience: "kreatix-mfa" });
+    return (payload.sub as string) ?? null;
+  } catch { return null; }
+}
+
 export async function verifyToken(token: string): Promise<{ sub?: string } | null> {
   try {
     const { payload } = await jwtVerify(token, secret);
+    if (payload.aud === "kreatix-mfa") return null;
     return payload as { sub?: string };
   } catch { return null; }
 }
@@ -72,6 +91,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   }
   try {
     const { payload } = await jwtVerify(token, secret);
+    if (payload.aud === "kreatix-mfa") throw new Error("mfa-pending token is not a session");
     const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
     if (!user || user.disabled) throw new Error("unknown user");
     (req as AuthedRequest).user = toUser(user);
@@ -90,6 +110,8 @@ export interface UserRow {
   role: UserRole;
   is_super: boolean;
   disabled: boolean;
+  totp_secret: string | null;
+  totp_backups: string | null;
   created_at: string;
 }
 
@@ -102,6 +124,7 @@ export function toUser(row: UserRow): User {
     initials: row.initials,
     role: row.role,
     isSuper: row.is_super,
+    mfaEnabled: !!row.totp_secret,
     createdAt: row.created_at,
   };
 }

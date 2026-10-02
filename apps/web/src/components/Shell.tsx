@@ -7,6 +7,7 @@ import { KIND_META } from "../lib/format";
 import { CommandPalette, renderSnippet } from "./CommandPalette";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
+import { SecurityDialog } from "./SecurityDialog";
 import { useToast } from "../pages/Home";
 import { AnonBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
@@ -56,7 +57,7 @@ export function Shell() {
 
   return (
     <div className="shell">
-      <Rail />
+      <Rail toast={toast} />
       <Sidebar onTemplates={() => setTemplates(true)} open={navOpen} onClose={() => setNavOpen(false)} toast={toast} />
       {isMobile && navOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}
       <main>
@@ -121,11 +122,12 @@ function BillingBanner() {
   return null;
 }
 
-function Rail() {
+function Rail({ toast }: { toast: (m: string) => void }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [menu, setMenu] = useState(false);
+  const [security, setSecurity] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menu) return;
@@ -158,6 +160,9 @@ function Rail() {
         {menu && (
           <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
             <button onClick={() => { setMenu(false); toggleTheme(); }}>Toggle dark / light theme</button>
+            {user && user.id !== "local" && (
+              <button onClick={() => { setMenu(false); setSecurity(true); }}>Security &amp; two-factor…</button>
+            )}
             {(user?.role === "owner" || user?.role === "admin") && (
               <button onClick={() => { setMenu(false); navigate("/admin"); }}>Administration</button>
             )}
@@ -165,6 +170,7 @@ function Rail() {
           </div>
         )}
       </div>
+      {security && <SecurityDialog onClose={() => setSecurity(false)} toast={toast} />}
     </aside>
   );
 }
