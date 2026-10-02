@@ -86,10 +86,12 @@ export const Tof = Node.create({
       const render = () => {
         const label = (node.attrs.label as string) || undefined;
         const items = collectCaptions(editor.state.doc, editor, label);
-        dom.innerHTML = items.length
+        const html = items.length
           ? items.map((c) =>
               `<div class="tof-item"><span>${esc(c.label)} ${esc(c.num)}${c.text ? ` — ${esc(c.text)}` : ""}</span><span class="tof-page">${c.page ?? ""}</span></div>`).join("")
           : `<div class="toc-item toc-empty">No captions yet</div>`;
+        if (dom.innerHTML === html) return; // unchanged — don't churn the DOM
+        dom.innerHTML = html;
       };
       render();
       editor.on("update", render);

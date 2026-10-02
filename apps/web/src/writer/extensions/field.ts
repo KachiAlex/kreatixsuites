@@ -2,7 +2,7 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { EditorView } from "@tiptap/pm/view";
-import { measureBands, bandIndexAt } from "../banding";
+import { measureBands, bandIndexAt, type Bands } from "../banding";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -46,9 +46,9 @@ export function collectTargets(doc: PMNode): Map<string, FieldTarget> {
 }
 
 /** Page number (1-based) of a doc position via pagination bands; null if unknown. */
-export function pageOfPos(view: EditorView, pos: number): number | null {
+export function pageOfPos(view: EditorView, pos: number, bands?: Bands | null): number | null {
   try {
-    const bands = measureBands(view.dom as HTMLElement);
+    bands ??= measureBands(view.dom as HTMLElement);
     if (!bands || !bands.starts.length) return null;
     const y = view.coordsAtPos(pos).top - view.dom.getBoundingClientRect().top;
     return bandIndexAt(bands, y) + 1;
@@ -58,9 +58,9 @@ export function pageOfPos(view: EditorView, pos: number): number | null {
 }
 
 /** Total rendered page count. */
-export function pageCount(view: EditorView): number | null {
+export function pageCount(view: EditorView, bands?: Bands | null): number | null {
   try {
-    const bands = measureBands(view.dom as HTMLElement);
+    bands ??= measureBands(view.dom as HTMLElement);
     return bands?.starts.length ? bands.starts.length : null;
   } catch {
     return null;
@@ -78,16 +78,24 @@ function fieldsInDoc(doc: PMNode): FieldOcc[] {
   return out;
 }
 
+/** Shared per-pass context — collecting targets/fields/bands once instead of
+ *  per field turns F×doc-scan into one scan per update. */
+export interface FieldCtx {
+  targets: Map<string, FieldTarget>;
+  fields: FieldOcc[];
+  bands: Bands | null;
+}
+
 /** Evaluate a field instruction. Doc-only fields need `doc`; page fields need `view`. */
-export function evalField(instr: string, doc: PMNode, view: EditorView | null, selfPos: number): string {
+export function evalField(instr: string, doc: PMNode, view: EditorView | null, selfPos: number, ctx?: FieldCtx): string {
   const parts = instr.trim().split(/\s+/);
   const code = (parts[0] ?? "").toUpperCase();
-  const targets = collectTargets(doc);
+  const targets = ctx?.targets ?? collectTargets(doc);
   switch (code) {
     case "SEQ": {
       // "SEQ Figure" → ordinal of this field among same-label SEQ fields
       const label = parts.slice(1).join(" ").replace(/\\\*.*/, "").trim();
-      const all = fieldsInDoc(doc).filter((f) =>
+      const all = (ctx?.fields ?? fieldsInDoc(doc)).filter((f) =>
         (f.node.attrs.instr as string).trim().toUpperCase().startsWith(`SEQ ${label.toUpperCase()}`));
       const idx = all.findIndex((f) => f.pos === selfPos);
       return String(idx < 0 ? all.length : idx + 1);
@@ -100,13 +108,13 @@ export function evalField(instr: string, doc: PMNode, view: EditorView | null, s
     case "PAGEREF": {
       const t = targets.get(parts[1] ?? "");
       if (!t || !view) return "?";
-      const p = pageOfPos(view, t.pos);
+      const p = pageOfPos(view, t.pos, ctx?.bands);
       return p ? String(p) : "?";
     }
     case "PAGE":
-      return view ? String(pageOfPos(view, selfPos) ?? 1) : "1";
+      return view ? String(pageOfPos(view, selfPos, ctx?.bands) ?? 1) : "1";
     case "NUMPAGES":
-      return view ? String(pageCount(view) ?? 1) : "1";
+      return view ? String(pageCount(view, ctx?.bands) ?? 1) : "1";
     case "DATE":
       return new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
     case "TIME":
@@ -205,10 +213,17 @@ export const Field = Node.create({
         view(view) {
           let raf = 0;
           const run = () => {
+            const fields = fieldsInDoc(view.state.doc);
+            if (!fields.length) return;
+            const ctx: FieldCtx = {
+              targets: collectTargets(view.state.doc),
+              fields,
+              bands: measureBands(view.dom as HTMLElement),
+            };
             const tr = view.state.tr.setMeta("addToHistory", false);
             let changed = false;
-            for (const { pos, node } of fieldsInDoc(view.state.doc)) {
-              const v = evalField(node.attrs.instr as string, view.state.doc, view, pos);
+            for (const { pos, node } of fields) {
+              const v = evalField(node.attrs.instr as string, view.state.doc, view, pos, ctx);
               if (v !== node.attrs.cached) { tr.setNodeMarkup(pos, undefined, { ...node.attrs, cached: v }); changed = true; }
             }
             if (changed) view.dispatch(tr);

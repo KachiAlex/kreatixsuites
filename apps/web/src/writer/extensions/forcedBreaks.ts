@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import {
-  bandPadBottom, bandPadTop, keepNextPadTop, splitPadTop, vAlignPadTop,
+  bandPadBottom, bandPadTop, keepNextPadTop, measureBands, splitPadTop, vAlignPadTop,
 } from "../banding";
 
 const PADS_META = "kx-pads";
@@ -95,21 +95,27 @@ export const ForcedBreaks = Extension.create({
               want.set(loc.pos, cur);
             };
 
+            // measure the band layout ONCE per pass — each helper used to
+            // re-query every .breaker rect, so N decorated blocks × W walls
+            // forced N×W synchronous reflows on every keystroke
+            const bands = measureBands(root);
+
             for (const el of root.querySelectorAll<HTMLElement>("[data-pb-before]")) {
-              add(el, bandPadTop(el, root), null);
+              add(el, bandPadTop(el, root, bands), null);
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-force-break]")) {
               const oe = el.getAttribute("data-odd-even");
               add(el, null, bandPadBottom(
                 el, root, 0,
                 oe === "oddPage" ? { skipTo: "odd" } : oe === "evenPage" ? { skipTo: "even" } : undefined,
+                bands,
               ));
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-keep-next]")) {
-              add(el, keepNextPadTop(el, root), null);
+              add(el, keepNextPadTop(el, root, bands), null);
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-keep-lines],[data-widow-orphan]")) {
-              add(el, splitPadTop(el, root, el.hasAttribute("data-keep-lines")), null);
+              add(el, splitPadTop(el, root, el.hasAttribute("data-keep-lines"), bands), null);
             }
             // section vertical alignment: the break div introduces the
             // section → pad its first content block; a vAlign'd block is
@@ -122,7 +128,7 @@ export const ForcedBreaks = Extension.create({
                   : el;
               while (target && !posOfEl(target))
                 target = target.nextElementSibling as HTMLElement | null;
-              if (target) add(target, vAlignPadTop(target, root, mode), null);
+              if (target) add(target, vAlignPadTop(target, root, mode, bands), null);
             }
 
             const ops: PadOp[] = [];

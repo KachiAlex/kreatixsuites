@@ -29,14 +29,19 @@ function computeMisses(doc: PMNode, ignored: Set<string>): Miss[] {
   const out: Miss[] = [];
   doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return true;
-    for (const m of node.text.matchAll(/[A-Za-z][A-Za-z'’-]*/g)) {
-      const w = m[0];
-      if (ignored.has(w.toLowerCase())) continue;
-      if (!checkWord(w)) out.push({ word: w, from: pos + (m.index ?? 0), to: pos + (m.index ?? 0) + w.length });
-    }
+    scanNode(node, pos, ignored, out);
     return true;
   });
   return out;
+}
+
+function scanNode(node: PMNode, pos: number, ignored: Set<string>, out: Miss[]) {
+  if (!node.isText || !node.text) return;
+  for (const m of node.text.matchAll(/[A-Za-z][A-Za-z'’-]*/g)) {
+    const w = m[0];
+    if (ignored.has(w.toLowerCase())) continue;
+    if (!checkWord(w)) out.push({ word: w, from: pos + (m.index ?? 0), to: pos + (m.index ?? 0) + w.length });
+  }
 }
 
 /** Red-squiggle decorations for words not in core vocab + custom dict + doc vocab. */
@@ -91,12 +96,56 @@ export const Spellcheck = Extension.create({
         state: {
           init: () => [] as Miss[],
           apply(tr, cur) {
-            // recompute on doc change or forced refresh; positions map through tr
-            const mapped = tr.docChanged ? cur.map((m) => ({ word: m.word, from: tr.mapping.map(m.from), to: tr.mapping.map(m.to) })) : cur;
-            if (tr.docChanged || tr.getMeta("kxSpellForce")) {
+            if (tr.getMeta("kxSpellForce"))
               return enabled() ? computeMisses(tr.doc, ignored()) : [];
+            if (!tr.docChanged) return cur;
+            if (!enabled()) return [];
+
+            // incremental: remap misses through the transaction, then rescan
+            // only the textblocks the edit touched — a full-doc descent per
+            // keystroke was the dominant typing cost on long documents
+            const mapped = cur
+              .map((m) => ({ word: m.word, from: tr.mapping.map(m.from), to: tr.mapping.map(m.to) }))
+              .filter((m) => m.from < m.to && m.to <= tr.doc.content.size);
+
+            // changed ranges, expressed in the final doc's coordinates
+            const ranges: [number, number][] = [];
+            tr.steps.forEach((step, i) => {
+              step.getMap().forEach((_oS, _oE, nS, nE) => {
+                let a = nS, b = nE;
+                for (let j = i + 1; j < tr.steps.length; j++) {
+                  const sm = tr.steps[j].getMap();
+                  a = sm.map(a, -1);
+                  b = sm.map(b, 1);
+                }
+                ranges.push([a, b]);
+              });
+            });
+            if (!ranges.length) return mapped;
+
+            // expand each range to its enclosing textblock bounds
+            const docSize = tr.doc.content.size;
+            const spans: [number, number][] = [];
+            for (const [a, b] of ranges) {
+              try {
+                const $a = tr.doc.resolve(Math.max(0, Math.min(a, docSize - 1)));
+                const $b = tr.doc.resolve(Math.max(0, Math.min(Math.max(b, a), docSize - 1)));
+                const from = $a.depth ? $a.start() : 0;
+                const to = $b.depth ? $b.end() : docSize;
+                spans.push([from, to]);
+              } catch { spans.push([a, b]); }
             }
-            return mapped;
+
+            const ig = ignored();
+            const kept = mapped.filter((m) => !spans.some(([s, e]) => m.from < e && m.to > s));
+            const added: Miss[] = [];
+            for (const [s, e] of spans) {
+              tr.doc.nodesBetween(s, e, (node, pos) => {
+                scanNode(node, pos, ig, added);
+                return true;
+              });
+            }
+            return kept.concat(added);
           },
         },
         props: {

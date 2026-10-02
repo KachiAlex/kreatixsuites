@@ -140,15 +140,25 @@ export const Footnote = Node.create({
           let prevSig = "";
           const run = () => {
             const root = view.dom as HTMLElement;
-            const bands = measureBands(root);
             const fn = notesIn(view.state.doc, "footnote");
             const en = notesIn(view.state.doc, "endnote");
+            // bail before any layout work — without this the update path ran
+            // measureBands + coordsAtPos on every textblock for every keystroke
+            // even in documents with no notes at all
+            if (!fn.length && !en.length) {
+              const cur = NOTES_KEY.getState(view.state);
+              if (cur && (cur.fnByBand.size || cur.end.length)) {
+                view.dispatch(view.state.tr.setMeta(NOTES_KEY, { fnByBand: new Map(), end: [], bandEnds: [] }).setMeta("addToHistory", false));
+              }
+              return;
+            }
+            const bands = measureBands(root);
             const fFmt = root.dataset.fnfmt ?? "decimal";
             const eFmt = root.dataset.enfmt ?? "lower-roman";
             const restart = root.dataset.fnrestart === "1";
             const fnByBand = new Map<number, { n: string; note: string }[]>();
             const bandEnds: number[] = [];
-            if (bands) {
+            if (bands && fn.length) {
               // page band of each footnote (restart optionally renumbers per page)
               const perBand = new Map<number, number>();
               fn.forEach((f, i) => {

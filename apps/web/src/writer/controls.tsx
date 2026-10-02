@@ -194,8 +194,18 @@ export function StatusBar({ editor, words, zoom, onZoom, paged, onTogglePaged, r
   const [page, setPage] = useState({ cur: 1, total: 1 });
 
   useEffect(() => {
-    const measure = () => {
+    let lastScroll = -1;
+    let lastWallCount = -1;
+    const measure = (force = false) => {
       if (editor.isDestroyed) return;
+      const canvas = document.querySelector(".doc-canvas");
+      const scrollTop = canvas?.scrollTop ?? 0;
+      const wallCount = editor.view.dom.querySelectorAll(".rm-page-break").length;
+      // skip the per-wall rect reads when nothing moved — on a long doc this
+      // ran 300+ getBoundingClientRect calls every 800ms while idle
+      if (!force && scrollTop === lastScroll && wallCount === lastWallCount) return;
+      lastScroll = scrollTop;
+      lastWallCount = wallCount;
       const walls = editor.view.dom.querySelectorAll(".rm-page-break");
       if (!walls.length || !paged) { setPage((p) => (p.total === 1 && p.cur === 1 ? p : { cur: 1, total: 1 })); return; }
       const mid = window.innerHeight / 2;
@@ -204,11 +214,12 @@ export function StatusBar({ editor, words, zoom, onZoom, paged, onTogglePaged, r
       const total = walls.length;
       setPage({ cur: Math.min(cur, total), total });
     };
-    measure();
+    measure(true);
     const canvas = document.querySelector(".doc-canvas");
-    canvas?.addEventListener("scroll", measure, { passive: true });
+    const onScroll = () => measure();
+    canvas?.addEventListener("scroll", onScroll, { passive: true });
     const t = setInterval(measure, 800);
-    return () => { canvas?.removeEventListener("scroll", measure); clearInterval(t); };
+    return () => { canvas?.removeEventListener("scroll", onScroll); clearInterval(t); };
   }, [editor, paged]);
 
   return (

@@ -199,7 +199,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const textImportRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
-  const pendingJson = useRef<unknown>(null);
+  // staged save payload — a thunk so per-keystroke updates don't pay the
+  // full getJSON() serialization before the debounce window even elapses
+  const pendingJson = useRef<unknown | (() => unknown)>(null);
   const editorRef = useRef<Editor | null>(null);
   // collab docs start empty until the Y.Doc syncs/seeds — staging a save before
   // that would overwrite the canonical head with an empty doc
@@ -296,7 +298,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     onUpdate: ({ editor }) => {
       // never serialize the pre-sync empty collab doc over the canonical head
       if (sessionRef.current && !collabReady.current) return;
-      pendingJson.current = { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current };
+      pendingJson.current = () => ({ kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current });
       setSaveState("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(flushSave, 1200);
@@ -413,13 +415,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   // page-setup changes only mutate extension storage — stage the save manually
   const savePageSetup = useCallback(() => {
     if (!editorRef.current || (sessionRef.current && !collabReady.current)) return;
-    pendingJson.current = {
+    pendingJson.current = () => ({
       kind: "writer",
-      doc: editorRef.current.getJSON(),
-      pageSetup: readPageSetup(editorRef.current),
-      styles: serializeStyles(editorRef.current),
+      doc: editorRef.current!.getJSON(),
+      pageSetup: readPageSetup(editorRef.current!),
+      styles: serializeStyles(editorRef.current!),
       docProps: docPropsRef.current,
-    };
+    });
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 800);
@@ -503,7 +505,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   const flushSave = useCallback(async () => {
     if (!pendingJson.current) return;
-    const payload = pendingJson.current;
+    const payload = typeof pendingJson.current === "function" ? pendingJson.current() : pendingJson.current;
     pendingJson.current = null;
     setSaveState("saving");
     const ok = await saveContent(item.id, payload, !!session);
@@ -1366,7 +1368,8 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!editor) return;
     try {
       const r = await api.post<{ item: { id: string } }>("/api/drive", { name: `Copy of ${title}`, kind: "writer" });
-      const payload = pendingJson.current ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current };
+      const staged = pendingJson.current;
+      const payload = (typeof staged === "function" ? staged() : staged) ?? { kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current };
       await api.put(`/api/files/${r.item.id}/content`, { content: payload });
       toast("Copy created");
       navigate(`/edit/${r.item.id}`);

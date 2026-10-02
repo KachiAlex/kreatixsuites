@@ -88,10 +88,7 @@ export const Toc = Node.create({
         const leader = (node.attrs.leader as string) || "dots";
         const pageNums = node.attrs.pageNums !== false;
         const items = collectHeadings(editor.state.doc, editor, lo, hi);
-        dom.className = `doc-toc toc-leader-${leader}`;
-        dom.setAttribute("data-type", "toc");
-        dom.setAttribute("data-leader", leader);
-        dom.innerHTML = items.length
+        const html = items.length
           ? items.map((h, i) =>
               `<div class="toc-item toc-l${h.level}" data-i="${i}" style="padding-left:${(h.level - lo) * 14}px">` +
               `<span class="toc-text">${escapeHtml(h.text)}</span>` +
@@ -99,6 +96,14 @@ export const Toc = Node.create({
               (pageNums ? `<span class="toc-page">${h.page ?? ""}</span>` : "") +
               `</div>`).join("")
           : `<div class="toc-item toc-empty">No headings yet</div>`;
+        // skip the DOM write when nothing changed — rewriting innerHTML on the
+        // poll interval produced childList mutations that re-armed the
+        // forced-breaks MutationObserver every 2s
+        if (dom.innerHTML === html && dom.className === `doc-toc toc-leader-${leader}`) return;
+        dom.className = `doc-toc toc-leader-${leader}`;
+        dom.setAttribute("data-type", "toc");
+        dom.setAttribute("data-leader", leader);
+        dom.innerHTML = html;
         // click → jump to heading
         dom.querySelectorAll<HTMLElement>(".toc-item[data-i]").forEach((el) => {
           el.onclick = () => {

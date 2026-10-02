@@ -102,9 +102,9 @@ const applied = (el: HTMLElement, side: "Top" | "Bottom"): number =>
  */
 export function bandPadBottom(
   el: HTMLElement, root: HTMLElement, extraBelow = 0,
-  bandParity?: { skipTo: "odd" | "even" },
+  bandParity?: { skipTo: "odd" | "even" }, bands?: Bands | null,
 ): number | null {
-  const bands = measureBands(root);
+  bands ??= measureBands(root);
   if (!bands) return null;
   const bottom = flowY(el, root) + el.offsetHeight
     - applied(el, "Top") - applied(el, "Bottom") + extraBelow;
@@ -123,8 +123,8 @@ export function bandPadBottom(
  * Desired padding-top so the element's content starts at the next band's
  * start (page-break-before semantics). Returns null when unmeasurable.
  */
-export function bandPadTop(el: HTMLElement, root: HTMLElement): number | null {
-  const bands = measureBands(root);
+export function bandPadTop(el: HTMLElement, root: HTMLElement, bands?: Bands | null): number | null {
+  bands ??= measureBands(root);
   if (!bands) return null;
   const top = flowY(el, root); // border-box top ignores paddingTop
   const i = bandIndexAt(bands, top);
@@ -137,8 +137,8 @@ export function bandPadTop(el: HTMLElement, root: HTMLElement): number | null {
  * Keep-with-next: desired padding-top moving the element to the sibling's
  * band when the two are split across a wall. Null when unmeasurable.
  */
-export function keepNextPadTop(el: HTMLElement, root: HTMLElement): number | null {
-  const bands = measureBands(root);
+export function keepNextPadTop(el: HTMLElement, root: HTMLElement, bands?: Bands | null): number | null {
+  bands ??= measureBands(root);
   if (!bands) return null;
   const sib = el.nextElementSibling as HTMLElement | null;
   if (!sib || sib.classList.contains("rm-pages-wrapper")) return 0;
@@ -154,8 +154,8 @@ export function keepNextPadTop(el: HTMLElement, root: HTMLElement): number | nul
  * below the wall when it would otherwise split with too little on one side.
  * Null when unmeasurable, 0 when it fits.
  */
-export function splitPadTop(el: HTMLElement, root: HTMLElement, keepLines: boolean): number | null {
-  const bands = measureBands(root);
+export function splitPadTop(el: HTMLElement, root: HTMLElement, keepLines: boolean, bands?: Bands | null): number | null {
+  bands ??= measureBands(root);
   if (!bands) return null;
   const top = flowY(el, root);
   const h = el.offsetHeight - applied(el, "Top") - applied(el, "Bottom");
@@ -184,12 +184,12 @@ export function splitPadTop(el: HTMLElement, root: HTMLElement, keepLines: boole
  * multi-page sections render top-aligned. "both" (justified) approximates to
  * centered — true inter-paragraph spreading isn't representable.
  */
-export function vAlignPadTop(el: HTMLElement, root: HTMLElement, mode: string): number | null {
+export function vAlignPadTop(el: HTMLElement, root: HTMLElement, mode: string, bands?: Bands | null): number | null {
   if (mode !== "center" && mode !== "bottom" && mode !== "both") return 0;
   // only meaningful on a top-level flow block — an element nested inside a
   // table/columns cell has no page band to center within
   if (el.parentElement !== root) return null;
-  const bands = measureBands(root);
+  bands ??= measureBands(root);
   if (!bands) return null;
   const top = flowY(el, root);
   const i = bandIndexAt(bands, top);
