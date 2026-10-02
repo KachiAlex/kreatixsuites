@@ -4,11 +4,12 @@ import { useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { Modal } from "./Modal";
 
-type View = "status" | "enroll" | "codes" | "disable" | "regen";
+type View = "status" | "enroll" | "codes" | "disable" | "regen" | "delete";
 
 export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast: (m: string) => void }) {
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, logout } = useAuth();
   const [view, setView] = useState<View>("status");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -57,6 +58,29 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
     } catch (e) { setError(e instanceof Error ? e.message : "Invalid code"); } finally { setBusy(false); }
   };
 
+  const exportData = async () => {
+    setBusy(true); setError("");
+    try {
+      const blob = await api.get<Blob>("/api/me/export");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `kreatix-export-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("Data export downloaded");
+    } catch { setError("Export failed"); } finally { setBusy(false); }
+  };
+
+  const deleteAccount = async () => {
+    setBusy(true); setError("");
+    try {
+      await api.post("/api/me/delete", { password, code: code.trim() || undefined });
+      toast("Account deleted");
+      onClose();
+      logout();
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed"); } finally { setBusy(false); }
+  };
+
   const copyCodes = () => {
     navigator.clipboard.writeText(codes.join("\n")).then(() => toast("Backup codes copied")).catch(() => {});
   };
@@ -71,8 +95,7 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
   };
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog">
+    <Modal onClose={onClose} label="Security settings">
         <h2>Security</h2>
         <p className="d-sub">Two-factor authentication for {user?.email}</p>
         {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
@@ -94,6 +117,18 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
                 </button>
               )}
               <button className="btn-ghost" onClick={onClose}>Close</button>
+            </div>
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 18, paddingTop: 14 }}>
+              <p className="d-sub" style={{ marginBottom: 8 }}>Your data</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn-ghost btn-sm" onClick={exportData} disabled={busy}>
+                  {busy ? "Working…" : "Export my data (.zip)"}
+                </button>
+                <button className="btn-ghost btn-sm" style={{ color: "#C0392B" }}
+                  onClick={() => { setView("delete"); setPassword(""); setCode(""); }}>
+                  Delete account…
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -141,6 +176,33 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
           </>
         )}
 
+        {view === "delete" && (
+          <>
+            <p className="d-sub" style={{ marginBottom: 10, color: "#C0392B" }}>
+              Permanently delete your account and all files you own. This can't be undone.
+            </p>
+            <div className="field">
+              <label>Password</label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+            </div>
+            {user?.mfaEnabled && (
+              <div className="field">
+                <label>Authenticator or backup code</label>
+                <input value={code} onChange={(e) => setCode(e.target.value)}
+                  inputMode="numeric" autoComplete="one-time-code" placeholder="123456" />
+              </div>
+            )}
+            <div className="d-actions" style={{ display: "flex", gap: 8 }}>
+              <button className="btn-primary btn-sm" style={{ background: "#C0392B" }}
+                disabled={busy || !password || (!!user?.mfaEnabled && !code.trim())}
+                onClick={deleteAccount}>
+                {busy ? "Deleting…" : "Delete my account"}
+              </button>
+              <button className="btn-ghost" onClick={() => setView("status")}>Back</button>
+            </div>
+          </>
+        )}
+
         {(view === "disable" || view === "regen") && (
           <>
             {view === "disable" && (
@@ -163,7 +225,6 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
             </div>
           </>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

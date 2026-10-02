@@ -10,6 +10,7 @@ import { Editor } from "./pages/Editor";
 import { SharedLink } from "./pages/SharedLink";
 import { Admin } from "./pages/Admin";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
+import { useGlobalModalA11y } from "./lib/a11y";
 import type { ReactNode } from "react";
 
 function Protected({ children }: { children: ReactNode }) {
@@ -46,6 +47,7 @@ function LandingOrHome() {
 }
 
 export default function App() {
+  useGlobalModalA11y(); // retrofit focus-trap/Escape/aria onto every dlg/overlay
   return (
     <AuthProvider>
       <BrowserRouter>

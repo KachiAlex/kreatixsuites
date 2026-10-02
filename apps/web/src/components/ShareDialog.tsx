@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DriveItem, FileShare, ShareLink } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { Modal } from "./Modal";
 
 export function ShareDialog({ item, onClose, toast }: {
   item: DriveItem; onClose: () => void; toast: (m: string) => void;
@@ -45,8 +46,7 @@ export function ShareDialog({ item, onClose, toast }: {
   };
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog">
+    <Modal onClose={onClose} label={`Share ${item.name}`}>
         <h2>Share "{item.name}"</h2>
         <p className="d-sub">Invite people or create a share link. Permissions follow view / review / edit modes.</p>
 
@@ -104,7 +104,6 @@ export function ShareDialog({ item, onClose, toast }: {
         <div className="d-actions">
           <button className="btn-ghost" onClick={onClose}>Done</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

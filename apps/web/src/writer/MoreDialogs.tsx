@@ -4,6 +4,7 @@ import { FONTS, ensureFont } from "./fonts";
 import { SHAPES, type ShapeKind, type ChartAttrs, parseChartAttrs, chartSvg, shapeSvg, collectIndex } from "./extensions/extras";
 import { collectTargets, pageOfPos } from "./extensions/field";
 import type { PageSetup } from "./PageSetup";
+import { parseCsv } from "../sheets/io";
 
 const Overlay = ({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) => (
   <div className="modal-overlay" onClick={onClose}>
@@ -588,7 +589,7 @@ export function WordArtDialog({ editor, onClose }: { editor: Editor; onClose: ()
 
 /* ============================================================ MAIL MERGE */
 
-interface JsonNode { type?: string; text?: string; attrs?: Record<string, unknown>; content?: JsonNode[] }
+interface JsonNode { type: string; text?: string; attrs?: Record<string, unknown>; content?: JsonNode[] }
 
 function mergeJson(content: JsonNode[], row: Record<string, string>): JsonNode[] {
   return content.map((n) => {
@@ -602,34 +603,56 @@ function mergeJson(content: JsonNode[], row: Record<string, string>): JsonNode[]
 export function MergeDialog({ editor, initialCsv, onSaveCsv, onClose }:
   { editor: Editor; initialCsv: string; onSaveCsv: (csv: string) => void; onClose: () => void }) {
   const [csv, setCsv] = useState(initialCsv || "Name,Email\nAda Lovelace,ada@example.com\nGrace Hopper,grace@example.com");
+  const [recIdx, setRecIdx] = useState(0);
+  const [exporting, setExporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const rows = useMemo(() => {
-    const lines = csv.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) return { fields: [] as string[], rows: [] as Record<string, string>[] };
-    const fields = lines[0].split(",").map((x) => x.trim());
+  const data = useMemo(() => {
+    const tbl = parseCsv(csv).filter((r) => r.some((c) => c.trim()));
+    if (tbl.length < 2) return { fields: [] as string[], rows: [] as Record<string, string>[] };
+    const fields = tbl[0].map((x) => x.trim());
     return {
       fields,
-      rows: lines.slice(1).map((l) => {
-        const cells = l.split(",").map((x) => x.trim());
+      rows: tbl.slice(1).map((cells) => {
         const r: Record<string, string> = {};
-        fields.forEach((f, i) => { r[f] = cells[i] ?? ""; });
+        fields.forEach((f, i) => { r[f] = (cells[i] ?? "").trim(); });
         return r;
       }),
     };
   }, [csv]);
+  const row = data.rows[Math.min(recIdx, Math.max(0, data.rows.length - 1))];
+
+  /** merged copies of the template, page-break separated */
+  const mergedContent = () => {
+    const src = editor.getJSON().content as JsonNode[];
+    const out: JsonNode[] = [];
+    data.rows.forEach((r, i) => {
+      out.push(...mergeJson(JSON.parse(JSON.stringify(src)), r));
+      if (i < data.rows.length - 1) out.push({ type: "pageBreak" });
+    });
+    return out;
+  };
 
   const merge = () => {
-    const src = editor.getJSON().content as JsonNode[];
-    // append each merged copy after the template, separated by page breaks
-    // (the template stays at the top so fields remain reusable)
-    const out: JsonNode[] = [{ type: "pageBreak" }];
-    rows.rows.forEach((row, i) => {
-      out.push(...mergeJson(JSON.parse(JSON.stringify(src)), row));
-      if (i < rows.rows.length - 1) out.push({ type: "pageBreak" });
-    });
-    editor.chain().setTextSelection(editor.state.doc.content.size).insertContent(out).run();
+    editor.chain().setTextSelection(editor.state.doc.content.size)
+      .insertContent([{ type: "pageBreak" }, ...mergedContent()]).run();
     onSaveCsv(csv);
     onClose();
+  };
+
+  const exportMerged = async () => {
+    setExporting(true);
+    try {
+      const { exportDocxBytes } = await import("./docx");
+      const { readPageSetup } = await import("./PageSetup");
+      const blob = await exportDocxBytes({ type: "doc", content: mergedContent() }, "merged",
+        { pageSetup: readPageSetup(editor) });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "merged.docx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      onSaveCsv(csv);
+    } finally { setExporting(false); }
   };
 
   return (
@@ -645,22 +668,37 @@ export function MergeDialog({ editor, initialCsv, onSaveCsv, onClose }:
         <button className="btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>Load .csv…</button>
         <input ref={fileRef} type="file" accept=".csv,.txt" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setCsv); e.target.value = ""; }} />
-        <span className="dlg-note">{rows.rows.length} record(s)</span>
+        <span className="dlg-note">{data.rows.length} record(s)</span>
       </div>
-      {rows.fields.length > 0 && (
+      {data.fields.length > 0 && (
         <div className="dlg-row">
           <label>Insert field</label>
           <div className="dlg-inline" style={{ flexWrap: "wrap" }}>
-            {rows.fields.map((f) => (
+            {data.fields.map((f) => (
               <button key={f} className="btn-ghost btn-sm" onClick={() => editor.chain().focus().insertContent(`{{${f}}}`).run()}>{f}</button>
             ))}
           </div>
         </div>
       )}
+      {row && (
+        <div className="dlg-row">
+          <label>Record preview</label>
+          <div className="dlg-inline">
+            <button className="btn-ghost btn-sm" disabled={recIdx <= 0} onClick={() => setRecIdx(recIdx - 1)}>‹</button>
+            <span className="dlg-note">{recIdx + 1} / {data.rows.length}</span>
+            <button className="btn-ghost btn-sm" disabled={recIdx >= data.rows.length - 1} onClick={() => setRecIdx(recIdx + 1)}>›</button>
+          </div>
+          <div className="dlg-note" style={{ marginTop: 4 }}>
+            {data.fields.map((f) => <div key={f}><b>{f}:</b> {row[f] || <i>(empty)</i>}</div>)}
+          </div>
+        </div>
+      )}
       <div className="dlg-actions">
         <button className="btn-ghost" onClick={() => { onSaveCsv(csv); onClose(); }}>Cancel</button>
-        <button className="btn-primary" disabled={!rows.rows.length}
-          onClick={merge}>Merge to document ({rows.rows.length})</button>
+        <button className="btn-ghost" disabled={!data.rows.length || exporting}
+          onClick={() => void exportMerged()}>{exporting ? "Exporting…" : "Download .docx"}</button>
+        <button className="btn-primary" disabled={!data.rows.length}
+          onClick={merge}>Merge to document ({data.rows.length})</button>
       </div>
     </Overlay>
   );

@@ -1106,7 +1106,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       toast(`Imported ${f.name}`);
     } catch (e) {
       if (e instanceof OpenCancelledError) return;
-      toast(e instanceof Error && e.message.includes("older Office encryption")
+      toast(e instanceof Error && /encryption|RC4/i.test(e.message)
         ? e.message : "Could not import that file");
     }
   };

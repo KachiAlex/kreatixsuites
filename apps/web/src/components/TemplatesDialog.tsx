@@ -3,6 +3,7 @@ import { TEMPLATES, type Template } from "../lib/templates";
 import { createDoc } from "../lib/create";
 import { useState } from "react";
 import { AppIcon } from "./AppIcon";
+import { Modal } from "./Modal";
 
 const KIND_STYLE: Record<string, string> = { writer: "writer", sheets: "sheets", present: "present" };
 const KIND_LABEL: Record<string, string> = { writer: "Writer", sheets: "Sheets", present: "Present" };
@@ -28,8 +29,7 @@ export function TemplatesDialog({ onClose, toast }: { onClose: () => void; toast
   }));
 
   return (
-    <div className="dlg-back" onClick={onClose}>
-      <div className="dlg tpl-dlg" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose} label="Templates" skin="dlg" className="tpl-dlg">
         <div className="sp-head" style={{ padding: "0 0 12px", borderBottom: "1px solid var(--line)" }}>
           <h3>Templates</h3>
           <button className="sp-close" onClick={onClose}>✕</button>
@@ -48,7 +48,6 @@ export function TemplatesDialog({ onClose, toast }: { onClose: () => void; toast
             </div>
           </div>
         ))}
-      </div>
-    </div>
+    </Modal>
   );
 }

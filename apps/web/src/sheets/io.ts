@@ -38,8 +38,9 @@ export function sheetToCSV(sheet: SheetData, wb?: Workbook): string {
   return rows.join("\r\n");
 }
 
-export function csvToSheet(name: string, text: string): SheetData {
-  const cells: Record<string, CellData> = {};
+/** RFC-4180 CSV parse — handles quoted fields, escaped quotes, embedded
+ *  newlines. Shared by sheet import and Writer mail merge. */
+export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let cur: string[] = [], field = "", inQ = false;
   for (let i = 0; i <= text.length; i++) {
@@ -56,7 +57,12 @@ export function csvToSheet(name: string, text: string): SheetData {
       rows.push(cur); cur = [];
     } else field += ch;
   }
-  rows.forEach((cols, r) => cols.forEach((raw, c) => {
+  return rows;
+}
+
+export function csvToSheet(name: string, text: string): SheetData {
+  const cells: Record<string, CellData> = {};
+  parseCsv(text).forEach((cols, r) => cols.forEach((raw, c) => {
     if (raw !== "") cells[toA1(c, r)] = { v: raw };
   }));
   return { name, cells };

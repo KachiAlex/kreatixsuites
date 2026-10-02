@@ -9,13 +9,14 @@ import { SYMBOL_GROUPS } from "../writer/SpecialChars";
 import { checkWord, suggest, addToDict, getCustomDict, spellcheckText, docVocabulary } from "../writer/proofing";
 import { refsInRangeText, runDataTable, runSolver, type SolverConstraint } from "./whatif";
 import type { ReactNode } from "react";
+import { Modal } from "../components/Modal";
 
 const inp: CSSProperties = { width: "100%", padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, boxSizing: "border-box" };
 const sel: CSSProperties = { padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, background: "var(--surface)" };
-const Back = ({ onClose, children, width }: { onClose: () => void; children: ReactNode; width?: number }) => (
-  <div className="dlg-back" onClick={onClose}>
-    <div className="dlg" style={width ? { width } : undefined} onClick={(e) => e.stopPropagation()}>{children}</div>
-  </div>
+const Back = ({ onClose, children, width, label }: { onClose: () => void; children: ReactNode; width?: number; label?: string }) => (
+  <Modal onClose={onClose} label={label ?? "Dialog"} skin="dlg" style={width ? { width } : undefined}>
+    {children}
+  </Modal>
 );
 
 // ---------- S19.1 Insert Link ----------
@@ -33,7 +34,7 @@ export function LinkDialog({ wb, sheetName, initialText, initialLink, onInsert, 
   const [dest, setDest] = useState(() => internal ? url.slice(1) : `${sheetName}!A1`);
   const ok = internal ? !!parseRefListDest(dest, wb) : url.trim().length > 0;
   return (
-    <Back onClose={onClose} width={400}>
+    <Back onClose={onClose} label="Insert link" width={400}>
       <h3>Insert link</h3>
       <label className="frow" style={{ display: "block", fontSize: 12 }}>
         Text to display
@@ -88,7 +89,7 @@ export function CommentDialog({ cellRef, thread, me, canEdit, onReply, onResolve
   const [text, setText] = useState("");
   const replies = thread?.replies ?? [];
   return (
-    <Back onClose={onClose} width={360}>
+    <Back onClose={onClose} label="Comments" width={360}>
       <h3>Comments — {cellRef}</h3>
       {thread?.resolved && <p style={{ fontSize: 11, color: "#1E7B3C", margin: "0 0 6px" }}>✓ Resolved</p>}
       <div style={{ maxHeight: 260, overflowY: "auto" }}>
@@ -125,7 +126,7 @@ export function CommentDialog({ cellRef, thread, me, canEdit, onReply, onResolve
 export function SymbolDialog({ onPick, onClose }: { onPick: (ch: string) => void; onClose: () => void }) {
   const [group, setGroup] = useState<keyof typeof SYMBOL_GROUPS>("Symbols");
   return (
-    <Back onClose={onClose} width={360}>
+    <Back onClose={onClose} label="Insert symbol" width={360}>
       <h3>Insert symbol</h3>
       <div className="sc-tabs">
         {(Object.keys(SYMBOL_GROUPS) as (keyof typeof SYMBOL_GROUPS)[]).map((g) => (
@@ -223,7 +224,7 @@ export function RichTextDialog({ cell, onSave, onClose }: {
     onClose();
   };
   return (
-    <Back onClose={onClose} width={440}>
+    <Back onClose={onClose} label="Format cell text" width={440}>
       <h3>Format cell text</h3>
       <div className="frow" style={{ gap: 4, marginTop: 6 }}>
         <button className="btn-ghost btn-sm" style={{ fontWeight: 700 }} onMouseDown={(e) => e.preventDefault()} onClick={() => fmt("bold")}>B</button>
@@ -368,7 +369,7 @@ export function FunctionWizard({ wb: _wb, initial, onInsert, onClose }: {
   const argText = sigArgs.map((_, i) => argVals[i] ?? "").join(",").replace(/(, *)+$/, "");
   const formula = `${fn}(${argText})`;
   return (
-    <Back onClose={onClose} width={520}>
+    <Back onClose={onClose} label="Insert function" width={520}>
       <h3>Insert function</h3>
       <input style={inp} placeholder="Search for a function…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
       <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
@@ -421,7 +422,7 @@ export function PictureDialog({ onInsert, onClose }: { onInsert: (obj: Omit<Shee
   };
   const size = nat ? Math.min(1, 320 / Math.max(nat.w, nat.h)) : 1;
   return (
-    <Back onClose={onClose} width={380}>
+    <Back onClose={onClose} label="Insert picture" width={380}>
       <h3>Insert picture</h3>
       <div className="frow" style={{ gap: 8 }}>
         <button className="btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>From file…</button>
@@ -460,7 +461,7 @@ export function ScenarioDialog({ sheet, selection, onAdd, onShow, onDelete, onCl
   const [name, setName] = useState("");
   const scenarios = sheet.scenarios ?? [];
   return (
-    <Back onClose={onClose} width={420}>
+    <Back onClose={onClose} label="Scenario Manager" width={420}>
       <h3>Scenario Manager</h3>
       {scenarios.length === 0 && <p style={{ fontSize: 12, color: "var(--muted)" }}>No scenarios yet. Select the input cells you want to vary, then add a scenario.</p>}
       {scenarios.map((sc) => (
@@ -523,7 +524,7 @@ export function DataTableDialog({ wb, sheetName, onApply, onClose }: {
     onClose();
   };
   return (
-    <Back onClose={onClose} width={440}>
+    <Back onClose={onClose} label="Data Table" width={440}>
       <h3>Data Table</h3>
       <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 10px" }}>
         Re-evaluates a formula while substituting input values — the what-if
@@ -588,7 +589,7 @@ export function SolverDialog({ wb, sheetName, anchorRef, onApply, onClose }: {
     if (res.ok && res.values) onApply(res.values);
   };
   return (
-    <Back onClose={onClose} width={480}>
+    <Back onClose={onClose} label="Solver" width={480}>
       <h3>Solver</h3>
       <label className="frow" style={{ display: "block", fontSize: 12 }}>
         Set objective
@@ -661,7 +662,7 @@ export function SpellPanel({ sheet, onFix, onJump, onClose }: {
   }, [sheet.cells]);
   const cur = misses[Math.min(sel, misses.length - 1)];
   return (
-    <Back onClose={onClose} width={400}>
+    <Back onClose={onClose} label="Spelling" width={400}>
       <h3>Spelling</h3>
       {!misses.length && <p style={{ fontSize: 12, color: "var(--muted)" }}>Spell check complete — no issues found.</p>}
       {cur && (
