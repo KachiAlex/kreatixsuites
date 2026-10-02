@@ -633,6 +633,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           borderBottom: borderCss(s.borders?.bottom), borderLeft: borderCss(s.borders?.left),
         }}
         role="gridcell" aria-selected={sel || undefined} aria-colindex={c + 1}
+        aria-label={content !== null && content !== undefined && content !== "" ? `${ref} ${content}` : `${ref} blank`}
         onPointerDown={(e) => cellMouse(c, r, e)}
         onPointerEnter={(e) => cellMouse(c, r, e)}
         onDoubleClick={(e) => cellMouse(c, r, e)}
@@ -698,7 +699,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         <table className="grid-table" cellSpacing={0}>
           <thead>
             <tr role="row">
-              <th className="corner" style={{ position: "sticky", left: 0, top: 0, zIndex: 30 }}
+              <th className="corner" role="columnheader" style={{ position: "sticky", left: 0, top: 0, zIndex: 30 }}
                 aria-label="Select all"
                 onMouseDown={() => setSelection({ c1: 0, r1: 0, c2: cols - 1, r2: rows - 1 })} />
               {colRuns.map((run) => (
@@ -710,7 +711,8 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                     const c = run.start + i;
                     const w = colW(c);
                     return (
-                      <th key={c} className={`col-h ${allSels.some((s) => c >= s.c1 && c <= s.c2) ? "sel" : ""} ${w === 0 ? "hid" : ""}`}
+                      <th key={c} role="columnheader" className={`col-h ${allSels.some((s) => c >= s.c1 && c <= s.c2) ? "sel" : ""} ${w === 0 ? "hid" : ""}`}
+                        aria-label={`Column ${colLabel(c)}`}
                         style={{ position: "sticky", top: 0, zIndex: 20, width: w, minWidth: w, padding: 0 }}
                         onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-c")) setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 }); }}
                         onContextMenu={(e) => { e.preventDefault(); if (onHeader) setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "col", index: c }); }}>
@@ -740,8 +742,9 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                   const r = run.start + i;
                   const h = rowH(r);
                   return (
-                    <tr key={r} style={{ height: h }}>
-                      <td className={`row-h ${allSels.some((s) => r >= s.r1 && r <= s.r2) ? "sel" : ""} ${h === 0 ? "hid" : ""}`}
+                    <tr key={r} role="row" aria-rowindex={r + 2} style={{ height: h }}>
+                      <td role="rowheader" className={`row-h ${allSels.some((s) => r >= s.r1 && r <= s.r2) ? "sel" : ""} ${h === 0 ? "hid" : ""}`}
+                        aria-label={`Row ${r + 1}`}
                         style={{ position: "sticky", left: 0, zIndex: 15, padding: 0, ...(r < fz.rows ? { top: HEADER_H + rowY[r] } : {}) }}
                         onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-r")) setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r }); }}
                         onContextMenu={(e) => { e.preventDefault(); if (onHeader) setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "row", index: r }); }}>

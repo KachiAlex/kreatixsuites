@@ -73,7 +73,7 @@ export function Shell() {
       {templates && <TemplatesDialog onClose={() => setTemplates(false)} toast={toast} />}
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );
 }

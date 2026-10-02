@@ -2704,7 +2704,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
           setTool("sign");
         }} onClose={() => setSigPadOpen(false)} />
       )}
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );
 }
@@ -2778,7 +2778,7 @@ function SignPad({ initial, onDone, onClose }: { initial: string | null; onDone:
           {tab === "draw" && <button className="btn-ghost btn-sm" onClick={clear}>Clear</button>}
         </div>
         {tab === "draw" ? (
-          <canvas ref={cvRef} width={W} height={H} className="sig-pad"
+          <canvas ref={cvRef} width={W} height={H} className="sig-pad" role="img" aria-label="Signature pad — draw your signature"
             onPointerDown={(e) => { drawing.current = true; cvRef.current!.setPointerCapture(e.pointerId); const [x, y] = pt(e); cvRef.current!.getContext("2d")!.beginPath(); cvRef.current!.getContext("2d")!.moveTo(x, y); }}
             onPointerMove={(e) => { if (!drawing.current) return; const [x, y] = pt(e); const c = cvRef.current!.getContext("2d")!; c.lineTo(x, y); c.stroke(); }}
             onPointerUp={() => { drawing.current = false; }} />
@@ -2833,7 +2833,7 @@ function Thumb({ doc, page, active, onClick }: { doc: PDFDocumentProxy; page: nu
   }, [doc, page, done]);
   return (
     <div className={`pdf-thumb ${active ? "active" : ""}`} onClick={onClick}>
-      <canvas ref={ref} />
+      <canvas ref={ref} aria-hidden="true" />
       <span>{page}</span>
     </div>
   );
@@ -3371,7 +3371,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onPointerDown={(e) => { setSelPop(null); onPointerDown(e); }} onPointerMove={(e) => { onPointerMove(e); onPolylineHover(e); }} onPointerUp={onPointerUp} onMouseUp={onMouseUp}
       onPointerLeave={() => setLoupe(null)}
       onDoubleClick={() => { if (tool === "polyline" && plPts.length > 1) finishPolyline(plPts.slice(0, -1)); }}>
-      <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} />
+      <canvas ref={canvasRef} className={`pdf-canvas ${dark ? "dark" : ""}`} role="img" aria-label={`PDF page ${pageNum}`} />
       <div ref={textRef} />
       <div ref={formRef} />
       {/* View ▸ Rulers — inch rulers hanging off the page edges, scale-aware */}
@@ -3479,7 +3479,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       {readout && <div className="pdf-measure">📏 {readout}</div>}
       {loupe && tool === "loupe" && (
         <div className="pdf-loupe" style={{ left: loupe[0] + 16, top: loupe[1] + 16, width: LOUPE, height: LOUPE }}>
-          <canvas ref={loupeRef} />
+          <canvas ref={loupeRef} aria-hidden="true" />
         </div>
       )}
       {/* html-rendered anns: notes, textboxes, stamps */}

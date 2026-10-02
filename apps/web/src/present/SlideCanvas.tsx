@@ -243,7 +243,18 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
   });
 
   return (
-    <div ref={boxRef} className="slide-box" style={{
+    <div ref={boxRef} className="slide-box"
+      {...(interactive
+        ? {
+            role: "document",
+            "aria-label": (() => {
+              const t = slide.objects.find((o) => o.type === "text" && o.html)?.html;
+              const plain = t ? String(t).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
+              return plain ? `Slide: ${plain.slice(0, 80)}` : "Slide";
+            })(),
+          }
+        : { role: "img", "aria-hidden": "true" })}
+      style={{
       width: size?.w ?? SLIDE_W, height: size?.h ?? SLIDE_H, transform: `scale(${scale})`,
       background: slide.bg ?? theme.bg,
       // P2.5 — `bg` may be a gradient string; bgImage layers a picture over it

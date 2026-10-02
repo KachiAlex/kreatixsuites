@@ -2448,7 +2448,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
           applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );
 }

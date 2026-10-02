@@ -216,7 +216,7 @@ export function Home() {
       {sharing && <ShareDialog item={sharing} onClose={() => setSharing(null)} toast={toast} />}
       {versions && <VersionsPanel item={versions} onClose={() => setVersions(null)} toast={toast} />}
       {tplOpen && <TemplatesDialog onClose={() => setTplOpen(false)} toast={toast} />}
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );
 }

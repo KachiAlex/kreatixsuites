@@ -49,7 +49,7 @@ export function Drive() {
 
       {sharing && <ShareDialog item={sharing} onClose={() => setSharing(null)} toast={toast} />}
       {versions && <VersionsPanel item={versions} onClose={() => setVersions(null)} onRestore={refresh} toast={toast} />}
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );
 }

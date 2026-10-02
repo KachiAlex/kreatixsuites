@@ -307,7 +307,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     editorProps: {
       // native browser spellcheck stays off — the kx-spell decoration layer is
       // authoritative (a native squiggle would ignore our dictionary + menu)
-      attributes: { "aria-label": "Document editor", spellcheck: "false" },
+      attributes: { "aria-label": "Document editor", role: "textbox", "aria-multiline": "true", spellcheck: "false" },
       // paste / drag-drop an image → upload to Drive as doc media
       handlePaste: (_view, event) => {
         if (!canMutate) return false;
@@ -2631,7 +2631,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           `.ProseMirror ins[data-author-id="${id}"],.ProseMirror del[data-author-id="${id}"],.ProseMirror .formatChange[data-author-id="${id}"]{display:none!important}`).join("\n")}
         </style>
       )}
-      {msg && <div className="toast">{msg}</div>}
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );
 }

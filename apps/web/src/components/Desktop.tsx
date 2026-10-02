@@ -34,7 +34,7 @@ export function DesktopBootstrap() {
     return () => { off(); stopSync(); };
   }, [navigate, toast]);
 
-  return msg ? <div className="toast">{msg}</div> : null;
+  return msg ? <div className="toast" role="status" aria-live="polite">{msg}</div> : null;
 }
 
 /**
