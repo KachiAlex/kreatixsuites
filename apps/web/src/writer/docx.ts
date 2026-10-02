@@ -1,7 +1,9 @@
 import {
   AlignmentType, ColumnBreak as DocxColumnBreak, CommentRangeEnd, CommentRangeStart,
   CommentReference, Document, Footer, FootnoteReferenceRun,
-  Header, HeadingLevel, ImageRun, LevelFormat, LevelSuffix, Math as DocxMath, MathRun,
+  Header, HeadingLevel, ImageRun, ImportedXmlComponent, LevelFormat, LevelSuffix,
+  Math as DocxMath, MathFraction, MathFunction, MathRadical, MathRun,
+  MathSubScript, MathSubSuperScript, MathSuperScript, type MathComponent,
   Packer, PageBreak as DocxPageBreak, PageOrientation, Paragraph, SectionType,
   Table, TableCell, TableRow,
   TextDirection, TextRun, VerticalAlignSection, VerticalAlignTable, WidthType,
@@ -93,9 +95,19 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
     return [new FootnoteReferenceRun(footnoteSeq)];
   }
   if (n.type === "inlineMath") {
-    // native OMML equation zone — Word renders it as a real equation object
-    // and can rebuild the LaTeX source from its equation editor
-    return [new DocxMath({ children: [new MathRun((n.attrs?.latex as string) ?? "")] })];
+    const omml = (n.attrs?.omml as string) || "";
+    if (omml) {
+      try {
+        const x = b64dec(omml);
+        if (x.startsWith("<m:oMath")) {
+          // imported equation — emit its original OMML byte-for-byte
+          return [ImportedXmlComponent.fromXmlString(x) as unknown as Run];
+        }
+      } catch { /* fall through to structured rebuild */ }
+    }
+    // authored equation — build real OMML structure (sSup/f/rad/…) from the
+    // linear source so Word renders actual math, not literal "x^2" text
+    return [new DocxMath({ children: linearToOmml((n.attrs?.latex as string) ?? "") })];
   }
   if (n.type === "image") {
     const src = (n.attrs?.src as string) ?? "";
@@ -134,12 +146,36 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
   })];
 }
 
+/** sdt mark → <w:sdt> component wrapping a live sdtContent the caller pushes
+ *  runs into. The raw sdtPr XML is stored in the mark attr (base64) so every
+ *  control property survives the round-trip byte-for-byte; checkboxes get
+ *  their w14:checked state patched to the toggled value. */
+function sdtComponent(mark: Mark): { root: ImportedXmlComponent; content: ImportedXmlComponent } {
+  let prXml = b64dec(String(mark.attrs?.pr ?? ""));
+  if (mark.attrs?.kind === "checkbox" && mark.attrs?.checked != null) {
+    const on = mark.attrs.checked === "1" || mark.attrs.checked === true ? "1" : "0";
+    prXml = /<w14:checked\b/.test(prXml)
+      ? prXml.replace(/(<w14:checked\b[^>]*?w14:val=")[^"]*"/, `$1${on}"`)
+      : prXml.replace(/<w14:checkbox\b[^>]*>/, (m) => `${m}<w14:checked w14:val="${on}"/>`);
+  }
+  const root = new ImportedXmlComponent("w:sdt");
+  root.push(ImportedXmlComponent.fromXmlString(prXml));
+  const content = new ImportedXmlComponent("w:sdtContent");
+  root.push(content);
+  return { root, content };
+}
+
 /** Inline nodes → Paragraph children, interleaving comment range boundaries
- *  (commentRangeStart/End + a trailing commentReference run per comment). */
+ *  (commentRangeStart/End + a trailing commentReference run per comment) and
+ *  wrapping runs that carry an `sdt` mark in a real <w:sdt> control. */
 function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): ParagraphChild[] {
   const out: ParagraphChild[] = [];
   let open: string | null = null;
   const used = new Set<string>();
+  let sdtRun: { key: string; root: ImportedXmlComponent; content: ImportedXmlComponent } | null = null;
+  const flushSdt = () => {
+    if (sdtRun) { out.push(sdtRun.root as unknown as ParagraphChild); sdtRun = null; }
+  };
   const setOpen = (next: string | null) => {
     if (open != null) { out.push(new CommentRangeEnd(commentNum(open))); open = null; }
     if (next != null) { out.push(new CommentRangeStart(commentNum(next))); open = next; used.add(next); }
@@ -149,8 +185,17 @@ function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Paragr
     if (!runs.length) continue;
     const cid = ((n.marks ?? []).find((m) => m.type === "comment")?.attrs?.commentId as string | undefined) ?? null;
     if (cid !== open) setOpen(cid);
-    out.push(...runs);
+    const sdt = (n.marks ?? []).find((m) => m.type === "sdt");
+    const sdtKey = sdt ? `${sdt.attrs?.pr ?? ""}|${sdt.attrs?.checked ?? ""}` : null;
+    if (!sdtKey || sdtKey !== sdtRun?.key) flushSdt();
+    if (sdt) {
+      if (!sdtRun) sdtRun = { key: sdtKey!, ...sdtComponent(sdt) };
+      for (const r of runs) sdtRun.content.push(r as never);
+    } else {
+      out.push(...runs);
+    }
   }
+  flushSdt();
   setOpen(null);
   for (const c of used) out.push(new TextRun({ children: [new CommentReference(commentNum(c))] }));
   return out;
@@ -359,11 +404,19 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
     case "sectionBreak":
       // handled at section-splitting level in exportDocxBytes
       return [];
-    case "blockMath":
-      return [new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new DocxMath({ children: [new MathRun((node.attrs?.latex as string) ?? "")] })] as never,
-      })];
+    case "blockMath": {
+      const omml = (node.attrs?.omml as string) || "";
+      if (omml) {
+        try {
+          const x = b64dec(omml);
+          const whole = x.startsWith("<m:oMathPara") ? x : `<m:oMathPara>${x}</m:oMathPara>`;
+          return [ImportedXmlComponent.fromXmlString(whole) as unknown as Paragraph];
+        } catch { /* fall through to structured rebuild */ }
+      }
+      const ommlPara = new ImportedXmlComponent("m:oMathPara");
+      ommlPara.push(new DocxMath({ children: linearToOmml((node.attrs?.latex as string) ?? "") }) as never);
+      return [ommlPara as unknown as Paragraph];
+    }
     case "toc": {
       // TOC is live in-editor; export a static snapshot of headings
       return [];
@@ -598,12 +651,18 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
   // our in-editor model); a `columns` node becomes its own continuous section.
   const sections: ISectionOptions[] = [];
   let cur: (Paragraph | Table)[] = [];
+  // block-level content controls wrap consecutive blocks sharing one sdtPr
+  let sdtAcc: { key: string; root: ImportedXmlComponent; content: ImportedXmlComponent } | null = null;
+  const flushSdtBlock = () => {
+    if (sdtAcc) { cur.push(sdtAcc.root as unknown as Paragraph); sdtAcc = null; }
+  };
   let pending: {
     properties: ISectionPropertiesOptions;
     headers?: ISectionOptions["headers"];
     footers?: ISectionOptions["footers"];
   } | null = null;
   const flush = () => {
+    flushSdtBlock();
     const p = pending;
     pending = null;
     sections.push({
@@ -627,11 +686,25 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
         children: ((node.content ?? []) as Block[]).flatMap(blockToParagraphs),
       });
       pending = { properties: { type: SectionType.CONTINUOUS } }; // resume single-column
-    } else if (node.type === "table") {
-      const t = tableOf(node);
-      if (t) cur.push(t);
     } else {
-      cur.push(...blockToParagraphs(node));
+      const kids: (Paragraph | Table)[] =
+        node.type === "table" ? (tableOf(node) ? [tableOf(node)!] : []) : blockToParagraphs(node);
+      const sdtKey = (node.attrs?.sdt as string | undefined) ?? null;
+      if (sdtKey && kids.length) {
+        if ((sdtAcc as { key: string } | null)?.key !== sdtKey) {
+          flushSdtBlock();
+          const root = new ImportedXmlComponent("w:sdt");
+          root.push(ImportedXmlComponent.fromXmlString(b64dec(sdtKey)));
+          const content = new ImportedXmlComponent("w:sdtContent");
+          root.push(content);
+          sdtAcc = { key: sdtKey, root, content };
+        }
+        const acc = sdtAcc as { content: ImportedXmlComponent };
+        for (const k of kids) acc.content.push(k as never);
+      } else {
+        flushSdtBlock();
+        cur.push(...kids);
+      }
     }
   }
   flush();
@@ -744,6 +817,236 @@ const xmlUnescape = (s: string) =>
  *  linear-format text for foreign OMML). */
 const mathText = (xml: string) =>
   xmlUnescape([...xml.matchAll(/<m:t[^>]*>([\s\S]*?)<\/m:t>/g)].map((m) => m[1]).join(""));
+
+/** OMML → linear math text: recovers a LaTeX-ish source for editor display.
+ *  The raw OMML rides alongside in the node's `omml` attr for verbatim
+ *  re-export, so this only needs to be a good human-facing approximation. */
+function ommlToLinear(xml: string): string {
+  /** index of `</m:tag>` matching the open tag that ends at `from` (depth-aware).
+   *  Open detection checks a boundary so <m:f> doesn't match <m:fPr>. */
+  const closeAt = (s: string, tag: string, from: number): number => {
+    const open = `<m:${tag}`, close = `</m:${tag}>`;
+    let depth = 1, j = from;
+    for (;;) {
+      let o = s.indexOf(open, j);
+      while (o >= 0 && !" \t\n\r/>".includes(s[o + open.length] ?? "")) o = s.indexOf(open, o + 1);
+      const c = s.indexOf(close, j);
+      if (c < 0) return s.length;
+      if (o >= 0 && o < c) {
+        const gt = s.indexOf(">", o);
+        if (gt >= 0 && s[gt - 1] === "/") { j = gt + 1; continue; }
+        depth++; j = gt + 1;
+      } else {
+        if (--depth === 0) return c;
+        j = c + close.length;
+      }
+    }
+  };
+  /** inner XML of the first paired <m:tag> in s ("" when absent/self-closing). */
+  const take = (s: string, tag: string): string => {
+    const m = new RegExp(`<m:${tag}\\b[^>]*?>`).exec(s);
+    if (!m || m[0].endsWith("/>")) return "";
+    const start = m.index + m[0].length;
+    return s.slice(start, closeAt(s, tag, start));
+  };
+  const takeAll = (s: string, tag: string): string[] => {
+    const out: string[] = [];
+    const re = new RegExp(`<m:${tag}\\b[^>]*?>`, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(s))) {
+      if (m[0].endsWith("/>")) continue;
+      const start = m.index + m[0].length;
+      const end = closeAt(s, tag, start);
+      out.push(s.slice(start, end));
+      re.lastIndex = end + tag.length + 5;
+    }
+    return out;
+  };
+  const NARY: Record<string, string> = {
+    "∑": "\\sum", "∏": "\\prod", "∐": "\\coprod", "∫": "\\int", "∬": "\\iint",
+    "∭": "\\iiint", "∮": "\\oint", "⋃": "\\bigcup", "⋂": "\\bigcap",
+    "⋁": "\\bigvee", "⋀": "\\bigwedge", "⨁": "\\bigoplus", "⨂": "\\bigotimes",
+  };
+  const FUNCS = new Set(("sin cos tan cot sec csc arcsin arccos arctan sinh cosh tanh coth " +
+    "log ln lg lim liminf limsup exp arg deg det dim gcd inf sup hom ker Pr").split(" "));
+  /** script argument: a single char stays bare (x^2), longer gets braces. */
+  const arg = (t: string) => (t.length === 1 ? t : `{${t}}`);
+  const val = (s: string, tag: string) =>
+    new RegExp(`<m:${tag}\\b[^>]*?\\b(?:m|w):val="([^"]*)"`).exec(s)?.[1] ?? null;
+
+  const emit = (tag: string, body: string): string => {
+    switch (tag) {
+      case "t": return xmlUnescape(body);
+      case "f": return `\\frac{${conv(take(body, "num"))}}{${conv(take(body, "den"))}}`;
+      case "sSup": return `${conv(take(body, "e"))}^${arg(conv(take(body, "sup")))}`;
+      case "sSub": return `${conv(take(body, "e"))}_${arg(conv(take(body, "sub")))}`;
+      case "sSubSup":
+        return `${conv(take(body, "e"))}_${arg(conv(take(body, "sub")))}^${arg(conv(take(body, "sup")))}`;
+      case "pre":
+        return `{}_${arg(conv(take(body, "sub")))}^${arg(conv(take(body, "sup")))}${conv(take(body, "e"))}`;
+      case "rad": {
+        const deg = conv(take(body, "deg"));
+        const e = conv(take(body, "e"));
+        return deg ? `\\sqrt[${deg}]{${e}}` : `\\sqrt{${e}}`;
+      }
+      case "nary": {
+        const chr = xmlUnescape(val(body, "chr") ?? "∑");
+        let s = NARY[chr] ?? chr;
+        const sub = conv(take(body, "sub")), sup = conv(take(body, "sup")), e = conv(take(body, "e"));
+        if (sub) s += `_${arg(sub)}`;
+        if (sup) s += `^${arg(sup)}`;
+        return e ? `${s} ${e}` : s;
+      }
+      case "d": {
+        const beg = val(body, "begChr") ?? "(", end = val(body, "endChr") ?? ")";
+        return `${beg}${conv(take(body, "e"))}${end}`;
+      }
+      case "func": {
+        const name = conv(take(body, "fName"));
+        const e = conv(take(body, "e"));
+        return `${FUNCS.has(name) ? `\\${name}` : name}${e ? ` ${e}` : ""}`;
+      }
+      case "limLow": return `${conv(take(body, "e"))}_{${conv(take(body, "lim"))}}`;
+      case "limUpp": return `${conv(take(body, "e"))}^{${conv(take(body, "lim"))}}`;
+      case "m": {
+        const rows = takeAll(body, "mr").map((r) => takeAll(r, "e").map(conv).join("&"));
+        return `\\begin{matrix}${rows.join("\\\\")}\\end{matrix}`;
+      }
+      default: return conv(body);  // containers (e/r/oMath/…) and *Pr props
+    }
+  };
+  const conv = (s: string): string => {
+    let out = "", i = 0;
+    for (;;) {
+      const lt = s.indexOf("<", i);
+      if (lt < 0) break;
+      const head = /^<m:([A-Za-z]+)\b[^>]*?>/.exec(s.slice(lt));
+      if (!head) { i = lt + 1; continue; }
+      const tag = head[1];
+      if (head[0].endsWith("/>")) { i = lt + head[0].length; continue; }
+      const start = lt + head[0].length;
+      const end = closeAt(s, tag, start);
+      out += emit(tag, s.slice(start, end));
+      i = Math.min(end + tag.length + 5, s.length);
+    }
+    return out;
+  };
+  return conv(xml);
+}
+
+/** Linear math source (Word UnicodeMath / our LaTeX-ish editor text) →
+ *  structured OMML components, so authored equations open in Word as real
+ *  equation objects rather than literal "x^2" text. Covers scripts, \frac,
+ *  \sqrt, functions, delimiters and Greek/symbol names; anything unknown
+ *  passes through as literal math text. */
+function linearToOmml(src: string): MathComponent[] {
+  const SYMS: Record<string, string> = {
+    alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", zeta: "ζ", eta: "η",
+    theta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π",
+    rho: "ρ", sigma: "σ", tau: "τ", upsilon: "υ", phi: "φ", chi: "χ", psi: "ψ", omega: "ω",
+    varepsilon: "ε", varphi: "φ", vartheta: "ϑ", varsigma: "ς",
+    Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ",
+    Upsilon: "Υ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+    pm: "±", mp: "∓", times: "×", div: "÷", cdot: "·", ast: "∗", circ: "∘", bullet: "•",
+    leq: "≤", le: "≤", geq: "≥", ge: "≥", neq: "≠", ne: "≠", equiv: "≡", approx: "≈",
+    sim: "∼", simeq: "≃", cong: "≅", propto: "∝",
+    infty: "∞", partial: "∂", nabla: "∇", aleph: "ℵ", hbar: "ℏ", ell: "ℓ",
+    forall: "∀", exists: "∃", nexists: "∄", neg: "¬", lnot: "¬", therefore: "∴", because: "∵",
+    in: "∈", notin: "∉", ni: "∋", subset: "⊂", supset: "⊃", subseteq: "⊆", supseteq: "⊇",
+    cup: "∪", cap: "∩", setminus: "∖", emptyset: "∅", varnothing: "∅",
+    to: "→", rightarrow: "→", leftarrow: "←", Rightarrow: "⇒", Leftarrow: "⇐",
+    leftrightarrow: "↔", Leftrightarrow: "⇔", mapsto: "↦", uparrow: "↑", downarrow: "↓",
+    ldots: "…", cdots: "⋯", vdots: "⋮", ddots: "⋱",
+    angle: "∠", perp: "⊥", parallel: "∥", mid: "∣",
+    sum: "∑", prod: "∏", coprod: "∐", int: "∫", iint: "∬", iiint: "∭", oint: "∮",
+    bigcup: "⋃", bigcap: "⋂", bigoplus: "⨁", bigotimes: "⨂",
+    oplus: "⊕", ominus: "⊖", otimes: "⊗", odot: "⊙",
+    lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉", langle: "⟨", rangle: "⟩",
+  };
+  const FUNCS = new Set(("sin cos tan cot sec csc arcsin arccos arctan sinh cosh tanh coth " +
+    "log ln lg lim liminf limsup exp arg deg det dim gcd inf sup min max hom ker Pr mod").split(" "));
+  let i = 0;
+  const n = src.length;
+  const ws = () => { while (i < n && src[i] === " ") i++; };
+  const run = (t: string): MathComponent[] => [new MathRun(t)];
+  const atom = (): MathComponent[] => {
+    ws();
+    if (i >= n) return [];
+    const c = src[i];
+    if (c === "_" || c === "^") return [];  // seq() applies it to an empty base
+    if (c === "{") { i++; return seq("}"); }
+    if (c === "\\") {
+      i++;
+      if (i < n && /[A-Za-z]/.test(src[i])) {
+        const st = i;
+        while (i < n && /[A-Za-z]/.test(src[i])) i++;
+        const name = src.slice(st, i);
+        if (name === "frac" || name === "dfrac" || name === "tfrac") {
+          return [new MathFraction({ numerator: atom(), denominator: atom() })];
+        }
+        if (name === "sqrt") {
+          ws();
+          let degree: MathComponent[] | undefined;
+          if (src[i] === "[") { i++; degree = seq("]"); }
+          const children = atom();
+          return [new MathRadical(degree ? { children, degree } : { children })];
+        }
+        if (name === "left" || name === "right" || /^[bB]ig[glr]?$/.test(name)) {
+          ws();
+          if (src[i] === "\\") i++;
+          if (i < n) { const d = src[i++]; return d === "." ? [] : run(d); }
+          return [];
+        }
+        if (/^(?:overline|underline|vec|bar|hat|tilde|dot|ddot|text|mathrm|mathbf|mathit|mathbb|mathcal|operatorname)$/.test(name)) {
+          return atom();  // accents/style wrappers — content survives, style is visual-only
+        }
+        if (name === "quad" || name === "qquad") return run("    ");
+        if (FUNCS.has(name)) return [new MathFunction({ name: run(name), children: atom() })];
+        if (SYMS[name]) return run(SYMS[name]);
+        return run(`\\${name}`);  // unknown command — keep the source visible
+      }
+      if (i >= n) return [];
+      const d = src[i++];
+      return run(" ,;:!".includes(d) ? " " : d);  // thin spaces / escaped chars
+    }
+    i++;
+    return run(c);
+  };
+  const seq = (close?: string): MathComponent[] => {
+    const out: MathComponent[] = [];
+    for (;;) {
+      ws();
+      if (i >= n || (close !== undefined && src[i] === close)) {
+        if (i < n && close !== undefined) i++;
+        break;
+      }
+      let comps = atom();
+      for (;;) {
+        ws();
+        if (i >= n || (src[i] !== "_" && src[i] !== "^")) break;
+        const sub = src[i++] === "_";
+        const first = atom();
+        ws();
+        if (i < n && src[i] === (sub ? "^" : "_")) {  // x_i^2 / x^2_i → sSubSup
+          i++;
+          const second = atom();
+          comps = [new MathSubSuperScript({
+            children: comps,
+            subScript: sub ? first : second,
+            superScript: sub ? second : first,
+          })];
+        } else {
+          comps = sub
+            ? [new MathSubScript({ children: comps, subScript: first })]
+            : [new MathSuperScript({ children: comps, superScript: first })];
+        }
+      }
+      out.push(...comps);
+    }
+    return out;
+  };
+  return seq();
+}
 
 const MATH_I = /⟦KXMI:([A-Za-z0-9+/=]*)⟧/g;
 
@@ -1007,10 +1310,18 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     .replace(/<w:r>(?:(?!<\/w:r>)[\s\S])*?<w:commentReference\b[^>]*\/?>[\s\S]*?<\/w:r>/g, "");
 
   if (docXml.includes("<m:oMath")) {
+    // payload carries {t: linear source for display, x: raw OMML for verbatim re-export}
     const run = (body: string, tag: string) =>
-      `<w:r><w:t xml:space="preserve">⟦${tag}:${b64enc(mathText(body))}⟧</w:t></w:r>`;
+      `<w:r><w:t xml:space="preserve">⟦${tag}:${b64enc(JSON.stringify({ t: ommlToLinear(body) || mathText(body), x: body }))}⟧</w:t></w:r>`;
     docXml = docXml
-      .replace(/<m:oMathPara\b[\s\S]*?<\/m:oMathPara>/g, (m) => run(m, "KXMB"))
+      .replace(/<m:oMathPara\b[\s\S]*?<\/m:oMathPara>/g, (m, off: number, whole: string) => {
+        const r = run(m, "KXMB");
+        // block-level oMathPara needs a w:p wrapper for mammoth to keep it;
+        // one nested inside a w:p already gets run-level treatment
+        const before = whole.slice(0, off);
+        const inP = Math.max(before.lastIndexOf("<w:p>"), before.lastIndexOf("<w:p ")) > before.lastIndexOf("</w:p>");
+        return inP ? r : `<w:p>${r}</w:p>`;
+      })
       .replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (m) => run(m, "KXMI"));
   }
 
@@ -1099,11 +1410,24 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
       prev = docXml;
       docXml = docXml.replace(/<mc:Fallback\b[^>]*>[\s\S]*?<\/mc:Fallback>/g, "");
     }
+    prev = "";
     while (prev !== docXml) {
       prev = docXml;
       docXml = docXml.replace(
-        /<w:sdt\b[^>]*>((?:(?!<w:sdt)[\s\S])*)<\/w:sdt>/g,
-        (_, inner: string) => inner.match(/<w:sdtContent[^>]*>([\s\S]*?)<\/w:sdtContent>/)?.[1] ?? "",
+        // `(?!<w:sdt[\s>])` blocks only nested <w:sdt> opens — sdtPr /
+        // sdtContent share the prefix and must be consumable
+        /<w:sdt\b[^>]*>((?:(?!<w:sdt[\s>])[\s\S])*)<\/w:sdt\s*>/g,
+        (_, inner: string) => {
+          const pr = inner.match(/<w:sdtPr\b[^>]*>[\s\S]*?<\/w:sdtPr>/)?.[0] ?? "";
+          const content = inner.match(/<w:sdtContent\b[^>]*>([\s\S]*?)<\/w:sdtContent>/)?.[1] ?? "";
+          if (!pr) return content; // no properties → nothing worth round-tripping
+          const b64 = b64enc(pr);
+          // block-level controls wrap whole paragraphs/tables — bracket them
+          // with sentinel paragraphs so each enclosed block gets data-sdt
+          if (/^\s*<w:(p|tbl)\b/.test(content))
+            return `<w:p>${sentinel(`KXSDB:${b64}`)}</w:p>${content}<w:p>${sentinel("KXSDE")}</w:p>`;
+          return `${sentinel(`KXSD:${b64}`)}${content}${sentinel("KXSDE")}`;
+        },
       );
     }
 
@@ -1255,13 +1579,27 @@ const b64dec = (s: string) =>
 const attrEsc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
-/** Markers → the math extensions' parse HTML (div/span[data-type=*-math]). */
+/** Markers → the math extensions' parse HTML (div/span[data-type=*-math]).
+ *  data-omml carries the original OMML (b64 — attribute-safe) so export can
+ *  emit the equation byte-for-byte. */
 function mathMarkersToHtml(html: string): string {
+  const dec = (b: string): { t: string; x: string } => {
+    const s = b64dec(b);
+    try {
+      const o = JSON.parse(s) as { t?: string; x?: string };
+      if (o && typeof o === "object") return { t: o.t ?? "", x: o.x ?? "" };
+    } catch { /* legacy payload: bare linear text */ }
+    return { t: s, x: "" };
+  };
   return html
-    .replace(/<p>⟦KXMB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_, b) =>
-      `<div data-type="block-math" data-latex="${attrEsc(b64dec(b))}"></div>`)
-    .replace(MATH_I, (_, b) =>
-      `<span data-type="inline-math" data-latex="${attrEsc(b64dec(b))}"></span>`);
+    .replace(/<p>⟦KXMB:([A-Za-z0-9+/=]*)⟧<\/p>/g, (_, b) => {
+      const m = dec(b);
+      return `<div data-type="block-math" data-latex="${attrEsc(m.t)}" data-omml="${m.x ? b64enc(m.x) : ""}"></div>`;
+    })
+    .replace(MATH_I, (_, b) => {
+      const m = dec(b);
+      return `<span data-type="inline-math" data-latex="${attrEsc(m.t)}" data-omml="${m.x ? b64enc(m.x) : ""}"></span>`;
+    });
 }
 
 interface SectMarkerProps {
@@ -1590,6 +1928,65 @@ function commentMarkersToHtml(html: string): string {
     );
   }
   return html.replace(/⟦KX[CS][SE]:\d+⟧/g, "");
+}
+
+// ---- content controls (w:sdt) -----------------------------------------------
+
+const SDT_KINDS = [
+  "checkbox", "dropDownList", "comboBox", "date", "docPartObj",
+  "buildingBlockGallery", "repeatingSection", "entityPicker", "bibliography",
+  "citation", "equation", "picture", "group", "richText", "text",
+] as const;
+
+/** sdtPr XML → the bits the editor surface needs (the raw XML is kept whole
+ *  in the mark attr — every other property round-trips untouched). */
+function sdtMeta(prXml: string): { kind: string; alias: string; checked: string | null } {
+  let kind = "text";
+  for (const k of SDT_KINDS) {
+    if (new RegExp(`<w(?:14)?:${k}\\b`).test(prXml)) { kind = k; break; }
+  }
+  const alias = prXml.match(/<w:alias\b[^>]*?w:val="([^"]*)"/)?.[1] ?? "";
+  const checked = kind === "checkbox"
+    ? (prXml.match(/<w14:checked\b[^>]*?w14:val="([^"]*)"/)?.[1] ?? "0")
+    : null;
+  return { kind, alias, checked };
+}
+
+/** ⟦KXSD:b64⟧…⟦KXSDE⟧ → <span data-sdt> marks; ⟦KXSDB:b64⟧…⟦KXSDE⟧ sentinel
+ *  paragraphs → data-sdt attrs on the enclosed block elements. Stack-matched
+ *  so nested controls pair correctly. */
+function sdtMarkersToHtml(html: string): string {
+  type Pair = { s: number; slen: number; e: number; elen: number; b64: string };
+  const pairUp = (openRe: RegExp, closeTok: string): Pair[] => {
+    const re = new RegExp(`${openRe.source}|${closeTok.replace(/[⟦⟧]/g, (c) => `\\${c}`)}`, "g");
+    const stack: { pos: number; len: number; b64: string }[] = [];
+    const pairs: Pair[] = [];
+    for (const m of html.matchAll(re)) {
+      const tok = m[0];
+      if (tok === closeTok) {
+        const open = stack.pop();
+        if (open) pairs.push({ s: open.pos, slen: open.len, e: m.index!, elen: tok.length, b64: open.b64 });
+      } else {
+        stack.push({ pos: m.index!, len: tok.length, b64: m[1]! });
+      }
+    }
+    return pairs.sort((a, b) => b.s - a.s); // last→first keeps offsets valid
+  };
+
+  // block-level first so its marker paragraphs can't confuse the inline pass
+  for (const p of pairUp(/<p>⟦KXSDB:([A-Za-z0-9+/=]*)⟧<\/p>/g, "<p>⟦KXSDE⟧</p>")) {
+    const inner = html.slice(p.s + p.slen, p.e)
+      .replace(/<(p|h[1-6]|ul|ol|table|blockquote|div)\b(?![^>]*\bdata-sdt=)/g, `<$1 data-sdt="${p.b64}"`);
+    html = html.slice(0, p.s) + inner + html.slice(p.e + p.elen);
+  }
+  for (const p of pairUp(/⟦KXSD:([A-Za-z0-9+/=]*)⟧/g, "⟦KXSDE⟧")) {
+    const meta = sdtMeta(b64dec(p.b64));
+    const attrs = `data-sdt="${p.b64}" data-sdt-kind="${meta.kind}"` +
+      (meta.alias ? ` data-sdt-alias="${attrEsc(meta.alias)}"` : "") +
+      (meta.checked != null ? ` data-sdt-checked="${meta.checked}"` : "");
+    html = html.slice(0, p.s) + `<span ${attrs}>` + html.slice(p.s + p.slen, p.e) + "</span>" + html.slice(p.e + p.elen);
+  }
+  return html.replace(/⟦KXSD[^⟧]*⟧/g, "").replace(/⟦KXSDE⟧/g, "");
 }
 
 // ---- direct formatting (w:pPr / w:rPr direct props) -------------------------
@@ -1935,6 +2332,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
     html = styleMarkersToHtml(html, idToKey);
     html = numMarkersToHtml(html, meta);
     html = commentMarkersToHtml(html);
+    html = sdtMarkersToHtml(html);
     html = floatMarkersToHtml(html);
     html = firstSectionMarkerToHtml(html);
     // conversion came back textless but the package has real text (text boxes,

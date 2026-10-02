@@ -82,8 +82,9 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
     const JSZip = (await import("jszip")).default;
     const zip = await JSZip.loadAsync(await blob.arrayBuffer());
     const xml = await zip.file("word/document.xml")?.async("text");
-    check("docx: math as OMML", !!xml && xml.includes("oMath") && xml.includes("x^2+y^2"));
+    check("docx: math as OMML", !!xml && xml.includes("oMathPara") && xml.includes("<m:sSup>"));
     check("docx: math round-trips", /data-type="(inline|block)-math"[^>]*data-latex="x\^2\+y\^2"/.test(html));
+    check("docx: math keeps omml attr", /data-type="block-math"[^>]*data-omml="[A-Za-z0-9+/=]+"/.test(html));
     // table props in the exported OOXML
     check("docx: tbl center align", !!xml && /<w:jc w:val="center"\/>/.test(xml));
     check("docx: tbl width pct", !!xml && /<w:tblW [^>]*w:w="60%"/.test(xml));
@@ -141,7 +142,126 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
 }
 
-// ---------- DOCX: styles.xml / numbering.xml / comments / doc-props ----------
+// ---------- DOCX: w:sdt content controls round-trip ----------
+{
+  const JSZip = (await import("jszip")).default;
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  const PR_TEXT = `<w:sdtPr><w:alias w:val="Customer name"/><w:tag w:val="customer"/><w:id w:val="111"/><w:text/></w:sdtPr>`;
+  const PR_CHECK = `<w:sdtPr><w:id w:val="222"/><w14:checkbox><w14:checked w14:val="0"/><w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/></w14:checkbox></w:sdtPr>`;
+  const PR_DROP = `<w:sdtPr><w:alias w:val="Pick a color"/><w:id w:val="333"/><w:dropDownList><w:listItem w:displayText="Red" w:value="1"/><w:listItem w:displayText="Blue" w:value="2"/></w:dropDownList></w:sdtPr>`;
+  const PR_BLOCK = `<w:sdtPr><w:alias w:val="Section group"/><w:id w:val="444"/><w:group/></w:sdtPr>`;
+  const doc = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [
+        { type: "text", text: "Name: " },
+        { type: "text", marks: [{ type: "sdt", attrs: { pr: b64(PR_TEXT), kind: "text", alias: "Customer name" } }], text: "Ada Lovelace" },
+        { type: "text", text: " tail" },
+      ] },
+      { type: "paragraph", content: [
+        { type: "text", marks: [{ type: "sdt", attrs: { pr: b64(PR_CHECK), kind: "checkbox", checked: "1" } }], text: "☒" },
+      ] },
+      { type: "paragraph", content: [
+        { type: "text", marks: [{ type: "sdt", attrs: { pr: b64(PR_DROP), kind: "dropDownList" } }], text: "Blue" },
+      ] },
+      { type: "paragraph", attrs: { sdt: b64(PR_BLOCK) }, content: [{ type: "text", text: "Inside grouped block" }] },
+      { type: "paragraph", attrs: { sdt: b64(PR_BLOCK) }, content: [{ type: "text", text: "Second grouped para" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Outside" }] },
+    ],
+  };
+  const blob = await exportDocxBytes(doc as never, "sdt");
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const xml = (await zip.file("word/document.xml")?.async("text")) ?? "";
+  check("sdt export: inline <w:sdt>", /<w:sdt>/.test(xml));
+  check("sdt export: sdtPr verbatim", xml.includes('w:val="Customer name"') && xml.includes('w:val="customer"'));
+  check("sdt export: content wraps run", /<w:sdtContent>[\s\S]*?Ada Lovelace[\s\S]*?<\/w:sdtContent>/.test(xml));
+  check("sdt export: checkbox val patched", xml.includes("w14:checkbox") && /<w14:checked w14:val="1"\/>/.test(xml));
+  check("sdt export: listItems survive", xml.includes('w:displayText="Red"') && xml.includes('w:displayText="Blue"'));
+  check("sdt export: block groups paras", /<w:sdt>[\s\S]*?<w:group\/>[\s\S]*?<w:sdtContent>[\s\S]*?Inside grouped block[\s\S]*?Second grouped para[\s\S]*?<\/w:sdtContent>/.test(xml));
+  check("sdt export: single block wrapper", (xml.match(/<w:group\/>/g) ?? []).length === 1);
+
+  // real Word markup in — mammoth drops the control, sentinels carry it
+  const CRAFT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+<w:body>
+<w:p><w:r><w:t>Name: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="Customer name"/><w:tag w:val="customer"/><w:id w:val="111"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Ada Lovelace</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t> tail</w:t></w:r></w:p>
+<w:p><w:sdt><w:sdtPr><w:id w:val="222"/><w14:checkbox><w14:checked w14:val="1"/><w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/></w14:checkbox></w:sdtPr><w:sdtContent><w:r><w:rPr><w:rFonts w:ascii="MS Gothic"/></w:rPr><w:t>☒</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t> agree</w:t></w:r></w:p>
+<w:sdt><w:sdtPr><w:alias w:val="Section group"/><w:id w:val="444"/><w:group/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>Inside grouped block</w:t></w:r></w:p><w:p><w:r><w:t>Second grouped para</w:t></w:r></w:p></w:sdtContent></w:sdt>
+<w:p><w:r><w:t>Outside</w:t></w:r></w:p>
+</w:body></w:document>`;
+  const zip2 = await JSZip.loadAsync(await blob.arrayBuffer());
+  zip2.file("word/document.xml", CRAFT);
+  const html = (await importDocx(new File([await zip2.generateAsync({ type: "arraybuffer" })], "sdt-in.docx"))).html;
+  check("sdt import: inline span", /<span data-sdt="[^"]+" data-sdt-kind="text" data-sdt-alias="Customer name">Ada Lovelace<\/span>/.test(html));
+  check("sdt import: checkbox kind+state", /data-sdt-kind="checkbox" data-sdt-checked="1"/.test(html));
+  check("sdt import: block paras carry attr", /<p data-sdt="[^"]+">Inside grouped block/.test(html) && /<p data-sdt="[^"]+">Second grouped para/.test(html));
+  check("sdt import: outside para clean", /<p>Outside<\/p>/.test(html));
+  check("sdt import: no sentinel leak", !html.includes("⟦"));
+}
+
+// ---------- DOCX: OMML equations round-trip ----------
+{
+  const JSZip = (await import("jszip")).default;
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+
+  // authored linear math → real structured OMML (not literal "x^2" text)
+  const doc = { type: "doc", content: [
+    { type: "paragraph", content: [
+      { type: "text", text: "Energy: " },
+      { type: "inlineMath", attrs: { latex: "E = mc^2" } },
+    ] },
+    { type: "paragraph", content: [
+      { type: "inlineMath", attrs: { latex: "\\frac{a+b}{c}" } },
+    ] },
+    { type: "paragraph", content: [
+      { type: "inlineMath", attrs: { latex: "\\sqrt{x_i} + \\sum_{i=1}^{n} x_i" } },
+    ] },
+    { type: "blockMath", attrs: { latex: "\\alpha + \\beta \\geq \\gamma" } },
+  ] };
+  const xml = await (async () => {
+    const zip = await JSZip.loadAsync(await (await exportDocxBytes(doc as never, "eq")).arrayBuffer());
+    return (await zip.file("word/document.xml")?.async("text")) ?? "";
+  })();
+  check("omml export: superscript structure", /<m:sSup>[\s\S]*?<m:t[^>]*>c<\/m:t>[\s\S]*?<m:t[^>]*>2<\/m:t>/.test(xml));
+  check("omml export: fraction structure", /<m:f>[\s\S]*?<m:num>[\s\S]*?<m:t[^>]*>a<\/m:t>[\s\S]*?<\/m:num>[\s\S]*?<m:den>/.test(xml));
+  check("omml export: radical structure", /<m:rad>[\s\S]*?<m:sSub>/.test(xml));
+  check("omml export: n-ary limits", /<m:sSubSup>[\s\S]*?∑[\s\S]*?<\/m:sSubSup>/.test(xml));
+  check("omml export: greek glyphs", xml.includes("α") && xml.includes("≥") && xml.includes("γ"));
+  check("omml export: block → oMathPara", /<m:oMathPara>[\s\S]*?<m:oMath>/.test(xml));
+  check("omml export: no literal caret leak", !xml.includes("mc^2"));
+
+  // foreign OMML in → linear source + verbatim OMML out
+  const OMATH = `<m:oMath><m:f><m:fPr><m:ctrlPr/></m:fPr><m:num><m:r><m:t>a+b</m:t></m:r></m:num><m:den><m:r><m:t>c-d</m:t></m:r></m:den></m:f><m:r><m:t>≈</m:t></m:r><m:sSup><m:e><m:r><m:t>π</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>`;
+  const OPARA = `<m:oMathPara><m:oMathParaPr><m:jc m:val="center"/></m:oMathParaPr><m:oMath><m:sSub><m:e><m:r><m:t>a</m:t></m:r></m:e><m:sub><m:r><m:t>n</m:t></m:r></m:sub></m:sSub></m:oMath></m:oMathPara>`;
+  const CRAFT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+<w:body>
+<w:p><w:r><w:t>Ratio </w:t></w:r>${OMATH}<w:r><w:t> done.</w:t></w:r></w:p>
+${OPARA}
+<w:p><w:r><w:t>after</w:t></w:r></w:p>
+</w:body></w:document>`;
+  const carrier = await exportDocxBytes({ type: "doc", content: [{ type: "paragraph" }] } as never, "carrier");
+  const zin = await JSZip.loadAsync(await carrier.arrayBuffer());
+  zin.file("word/document.xml", CRAFT);
+  const htmlIn = (await importDocx(fileOf(await zin.generateAsync({ type: "arraybuffer" }), "foreign.docx"))).html;
+  check("omml import: inline zone", htmlIn.includes('data-type="inline-math"'));
+  check("omml import: block zone", htmlIn.includes('data-type="block-math"'));
+  check("omml import: linear source recovered", htmlIn.includes('\\frac{a+b}{c-d}') && htmlIn.includes('π^2'));
+  check("omml import: subscript recovered", htmlIn.includes('data-latex="a_n"'));
+  const ommlB64 = /data-omml="([^"]+)"/.exec(htmlIn)?.[1] ?? "";
+  check("omml import: raw OMML carried", ommlB64.length > 0 && Buffer.from(ommlB64, "base64").toString("utf8").startsWith("<m:oMath>"));
+
+  // nodes carrying raw OMML re-export byte-for-byte
+  const reXml = await (async () => {
+    const zip = await JSZip.loadAsync(await (await exportDocxBytes({ type: "doc", content: [
+      { type: "paragraph", content: [{ type: "inlineMath", attrs: { latex: "\\frac{a+b}{c-d}≈π^2", omml: ommlB64 } }] },
+      { type: "blockMath", attrs: { latex: "a_n", omml: b64(OPARA) } },
+    ] } as never, "re")).arrayBuffer());
+    return (await zip.file("word/document.xml")?.async("text")) ?? "";
+  })();
+  check("omml re-export: inline verbatim", reXml.includes("<m:num>") && reXml.includes("<m:t>a+b</m:t>"));
+  check("omml re-export: block verbatim", reXml.includes('<m:jc m:val="center"') && reXml.includes("<m:oMathPara"));
+}
 {
   const { Paragraph } = await import("docx");
   void Paragraph;

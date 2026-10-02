@@ -452,6 +452,9 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .ProseMirror pre code{background:transparent;padding:0;color:inherit}
 .comment-mark{background:rgba(242,120,46,.22);border-bottom:2px solid var(--k-orange);cursor:pointer}
 .comment-mark.active{background:rgba(242,120,46,.38)}
+.sdt-mark{border:1px solid #9AA5B1;border-radius:3px;padding:0 2px;background:rgba(0,0,0,.025)}
+.sdt-mark[data-sdt-kind="checkbox"]{cursor:pointer;border-color:transparent;background:transparent;padding:0}
+[data-sdt].sdt-block,p.sdt-block,h1.sdt-block,h2.sdt-block,h3.sdt-block{outline:1px dashed #C3CAD2;outline-offset:2px}
 .find-hit{background:rgba(255,213,79,.6);border-radius:2px}
 .find-hit.current{background:rgba(242,120,46,.55)}
 

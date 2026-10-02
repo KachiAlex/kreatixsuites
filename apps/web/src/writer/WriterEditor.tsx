@@ -12,7 +12,7 @@ import { KxTable, KxTableRow, KxTableHeader, KxTableCell, KxTableCommands } from
 import { KxTableHandles, getTableTool } from "./extensions/tableHandles";
 import { CodeBlockLowlight } from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
-import { Mathematics } from "@tiptap/extension-mathematics";
+import { InlineMath, BlockMath } from "@tiptap/extension-mathematics";
 import { PaginationPlus, PAGE_SIZES } from "tiptap-pagination-plus";
 import { TrackChangesExtension } from "tiptap-track-changes";
 import { CharacterCount } from "@tiptap/extensions";
@@ -33,7 +33,7 @@ import { OpenCancelledError } from "../lib/passwordPrompt";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
-import { CommentMark } from "./extensions";
+import { CommentMark, SdtMark, SdtBlock } from "./extensions";
 import { ParagraphSpacing, ListStyle } from "./extensions/spacing";
 import { KxParaFormat } from "./extensions/paraFormat";
 import { ParagraphDialog } from "./ParagraphDialog";
@@ -87,6 +87,22 @@ import { CommentsPanel } from "../components/CommentsPanel";
 import { AppIcon } from "../components/AppIcon";
 import { useToast } from "../pages/Home";
 import "katex/dist/katex.min.css";
+
+// imported Word equations keep their raw OMML (base64, attribute-safe) so
+// DOCX export can emit the original markup byte-for-byte
+const ommlAttr = {
+  omml: {
+    default: null as string | null,
+    parseHTML: (el: HTMLElement) => el.getAttribute("data-omml"),
+    renderHTML: (attrs: Record<string, unknown>) => (attrs.omml ? { "data-omml": String(attrs.omml) } : {}),
+  },
+};
+const KxInlineMath = InlineMath.extend({
+  addAttributes() { return { ...this.parent?.(), ...ommlAttr }; },
+});
+const KxBlockMath = BlockMath.extend({
+  addAttributes() { return { ...this.parent?.(), ...ommlAttr }; },
+});
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type Panel = "none" | "comments" | "versions" | "ai" | "outline" | "suggest";
@@ -248,9 +264,10 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       KxTable.configure({ resizable: true, allowTableNodeSelection: true }), KxTableRow, KxTableHeader, KxTableCell, KxTableCommands, KxTableHandles, TableFormula,
       RichImage,
       CodeBlockLowlight.configure({ lowlight: createLowlight(common) }),
-      Mathematics,
+      KxInlineMath, KxBlockMath,
       CharacterCount,
       CommentMark,
+      SdtMark, SdtBlock,
       KxStyles,
       ParagraphSpacing,
       KxParaFormat,
