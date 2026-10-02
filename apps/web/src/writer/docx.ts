@@ -518,10 +518,13 @@ function sectionProps(attrs: Record<string, unknown>): {
     left: pxToDxa(attrs.marginLeft), right: pxToDxa(attrs.marginRight),
   };
   const pnStart = typeof attrs.pnStart === "number" ? attrs.pnStart : null;
+  const pnFmt = typeof attrs.pnFmt === "string" ? PN_FMT_OOXML[attrs.pnFmt as PageSetup["pnFormat"]] : undefined;
   const page: NonNullable<ISectionPropertiesOptions["page"]> = {
     ...(w || h ? { size: { width: w ?? 12240, height: h ?? 15840 } } : {}),
     ...(Object.values(margin).some((v) => v != null) ? { margin: margin as never } : {}),
-    ...(pnStart != null ? { pageNumbers: { start: pnStart } } : {}),
+    ...(pnStart != null || pnFmt
+      ? { pageNumbers: { ...(pnStart != null ? { start: pnStart } : {}), ...(pnFmt ? { formatType: pnFmt as never } : {}) } }
+      : {}),
   };
   if (page.size || page.margin || page.pageNumbers) (properties as { page?: unknown }).page = page;
   const hf = (l: unknown, r: unknown) =>
@@ -685,7 +688,12 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
             left: pxToDxa(ps.marginLeft), right: pxToDxa(ps.marginRight),
             gutter: pxToDxa(ps.gutter ?? 0),
           },
-          ...(ps.pnStart && ps.pnStart !== 1 ? { pageNumbers: { start: ps.pnStart } } : {}),
+          ...((ps.pnStart && ps.pnStart !== 1) || (ps.pnFormat && ps.pnFormat !== "decimal")
+            ? { pageNumbers: {
+                ...(ps.pnStart && ps.pnStart !== 1 ? { start: ps.pnStart } : {}),
+                ...(ps.pnFormat && ps.pnFormat !== "decimal" ? { formatType: PN_FMT_OOXML[ps.pnFormat] as never } : {}),
+              } }
+            : {}),
         } as never,
       },
     };
@@ -757,6 +765,8 @@ interface DocxSettings {
   evenOdd?: boolean;
   /** First section's page geometry → doc-level page setup (px). */
   page?: { w: number; h: number; mt: number; mb: number; ml: number; mr: number };
+  /** First section's w:pgNumType → doc-level number format + start. */
+  pn?: { fmt?: PageSetup["pnFormat"]; start?: number };
 }
 
 interface DocxMeta {
@@ -770,6 +780,17 @@ interface DocxMeta {
   docProps: DocProps;
   settings: DocxSettings;
 }
+
+/** w:pgNumType w:fmt (OOXML) → CSS counter-style name (our PageNumberFormat). */
+const OOXML_PN_FMT: Record<string, PageSetup["pnFormat"]> = {
+  decimal: "decimal", lowerRoman: "lower-roman", upperRoman: "upper-roman",
+  lowerLetter: "lower-alpha", upperLetter: "upper-alpha",
+};
+/** CSS counter-style name → OOXML w:fmt. */
+const PN_FMT_OOXML: Record<PageSetup["pnFormat"], string> = {
+  decimal: "decimal", "lower-roman": "lowerRoman", "upper-roman": "upperRoman",
+  "lower-alpha": "lowerLetter", "upper-alpha": "upperLetter",
+};
 
 const wAttr = (tag: string, attr: string) =>
   tag.match(new RegExp(`w:${attr}="([^"]*)"`))?.[1];
@@ -926,6 +947,16 @@ function firstSectionPage(docXml: string): DocxSettings["page"] {
   return { w: w ?? 0, h: h ?? 0, mt: mt ?? 0, mb: mb ?? 0, ml: ml ?? 0, mr: mr ?? 0 };
 }
 
+/** First sectPr's w:pgNumType → doc-level page-number format/start. */
+function firstSectionPn(docXml: string): DocxSettings["pn"] {
+  const sect = docXml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/)?.[0];
+  if (!sect) return undefined;
+  const fmt = OOXML_PN_FMT[wAttr(sect.match(/<w:pgNumType\b[^>]*\/?>/)?.[0] ?? "", "fmt") ?? ""];
+  const start = sect.match(/<w:pgNumType\b[^>]*w:start="(\d+)"/)?.[1];
+  if (!fmt && !start) return undefined;
+  return { fmt, start: start ? parseInt(start) : undefined };
+}
+
 const sentinel = (text: string) =>
   `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
 
@@ -952,6 +983,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
   }
   const original = docXml;
   meta.settings.page = firstSectionPage(docXml);
+  meta.settings.pn = firstSectionPn(docXml);
 
   // w:pStyle / w:numPr / comment ranges → sentinel runs (mammoth drops the
   // original constructs; the sentinels survive as literal text we post-process).
@@ -1026,6 +1058,7 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
           cols: wv("cols", "num") ? parseInt(wv("cols", "num")!) : null,
           colGap: wv("cols", "space") ? Math.round(parseInt(wv("cols", "space")!) / 15) : null,
           pnStart: wv("pgNumType", "start") ? parseInt(wv("pgNumType", "start")!) : null,
+          pnFmt: OOXML_PN_FMT[wv("pgNumType", "fmt") ?? ""] ?? null,
           vAlign: wv("vAlign", "val") ?? null,
           headerText: await hfText(sect, "header"),
           footerText: await hfText(sect, "footer"),
@@ -1235,7 +1268,7 @@ interface SectMarkerProps {
   marginTop?: number | null; marginBottom?: number | null;
   marginLeft?: number | null; marginRight?: number | null;
   cols?: number | null; colGap?: number | null; pnStart?: number | null;
-  vAlign?: string | null;
+  pnFmt?: string | null; vAlign?: string | null;
   headerText?: string | null; footerText?: string | null;
 }
 
@@ -1262,6 +1295,7 @@ function breakMarkersToHtml(html: string): string {
       ["data-pn-start", p.pnStart],
     ];
     for (const [k, v] of pairs) if (v != null) s += ` ${k}="${v}"`;
+    if (p.pnFmt) s += ` data-pn-fmt="${esc(p.pnFmt)}"`;
     if (p.vAlign && p.vAlign !== "top") s += ` data-v-align="${esc(p.vAlign)}"`;
     if (p.headerText) s += ` data-header-left="${esc(p.headerText)}"`;
     if (p.footerText) s += ` data-footer-left="${esc(p.footerText)}"`;
@@ -1942,6 +1976,8 @@ export function applyDocxImport(editor: Editor, res: DocxImportResult): void {
       if (s.page.ml) next.marginLeft = s.page.ml;
       if (s.page.mr) next.marginRight = s.page.mr;
     }
+    if (s.pn?.fmt) next.pnFormat = s.pn.fmt;
+    if (s.pn?.start != null) next.pnStart = s.pn.start;
     applyPageSetup(editor, next);
   }
 }

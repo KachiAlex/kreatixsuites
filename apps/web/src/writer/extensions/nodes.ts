@@ -83,6 +83,9 @@ export const SectionBreak = Node.create({
       footerLeft: { default: null }, footerRight: { default: null },
       /** restart page numbering at this value in the following section */
       pnStart: { default: null },
+      /** page-number format for the following section (Word w:pgNumType w:fmt) —
+       *  CSS counter style names: decimal, lower-roman, upper-roman, lower-alpha, upper-alpha */
+      pnFmt: { default: null },
       /** vertical alignment of the following section (Word w:vAlign) */
       vAlign: { default: null },
     };
@@ -99,6 +102,7 @@ export const SectionBreak = Node.create({
         headerLeft: el.getAttribute("data-header-left"), headerRight: el.getAttribute("data-header-right"),
         footerLeft: el.getAttribute("data-footer-left"), footerRight: el.getAttribute("data-footer-right"),
         pnStart: numAttr(el, "data-pn-start"),
+        pnFmt: el.getAttribute("data-pn-fmt"),
         vAlign: el.getAttribute("data-v-align"),
       }),
     }];
@@ -114,7 +118,7 @@ export const SectionBreak = Node.create({
       marginLeft: a.marginLeft, marginRight: a.marginRight,
       headerLeft: a.headerLeft, headerRight: a.headerRight,
       footerLeft: a.footerLeft, footerRight: a.footerRight,
-      pnStart: a.pnStart, vAlign: a.vAlign,
+      pnStart: a.pnStart, pnFmt: a.pnFmt, vAlign: a.vAlign,
     })) {
       if (v != null) data[`data-${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}`] = String(v);
     }

@@ -206,6 +206,7 @@ function sectionBoundaries(view: Editor["view"]): SectionBoundary[] {
         footerLeft: el.getAttribute("data-footer-left"),
         footerRight: el.getAttribute("data-footer-right"),
         pnStart: el.getAttribute("data-pn-start"),
+        pnFmt: el.getAttribute("data-pn-fmt"),
       };
     }
     const top = el.getBoundingClientRect().top;
@@ -357,20 +358,46 @@ export const SectionGeometry = Extension.create({
 
 const SECTION_STYLE_ID = "kx-section-style";
 
-/** Page-number restarts: counter-reset on the wall that prints page P's footer. */
+const PN_FMTS = new Set<PageNumberFormat>(["decimal", "lower-roman", "upper-roman", "lower-alpha", "upper-alpha"]);
+
+/**
+ * Per-section page numbering (Word w:pgNumType semantics):
+ *  - pnStart restarts the counter — footer of page P lives in wall P
+ *    (counter-reset page-number), header of page P lives in wall P-1
+ *    (counter-reset page-number-plus, since headers are offset by one wall).
+ *  - pnFmt changes the counter style for the section's pages — footer spans
+ *    (.rm-page-number) in walls start..end, header spans (.rm-page-number-plus)
+ *    in walls start-1..end-1.
+ */
 function syncSectionResets(bounds: SectionBoundary[]) {
   let el = document.getElementById(SECTION_STYLE_ID) as HTMLStyleElement | null;
-  const rules = bounds
-    .filter((b) => typeof b.attrs.pnStart === "number" && (b.attrs.pnStart as number) >= 0)
-    .map((b) => `#pages > .rm-page-break:nth-child(${b.startPage}) { counter-reset: page-number ${(b.attrs.pnStart as number) - 1} !important; }`)
-    .join("\n");
-  if (!rules) { el?.remove(); return; }
+  const rules: string[] = [];
+  for (let i = 0; i < bounds.length; i++) {
+    const b = bounds[i];
+    const end = (bounds[i + 1]?.startPage ?? Infinity) - 1;
+    const fmt = PN_FMTS.has(b.attrs.pnFmt as PageNumberFormat) ? b.attrs.pnFmt as PageNumberFormat : null;
+    const start = typeof b.attrs.pnStart === "number" ? b.attrs.pnStart : null;
+    if (start != null && start >= 0) {
+      rules.push(`#pages > .rm-page-break:nth-child(${b.startPage}) { counter-reset: page-number ${start - 1} !important; }`);
+      if (b.startPage > 1)
+        rules.push(`#pages > .rm-page-break:nth-child(${b.startPage - 1}) { counter-reset: page-number-plus ${start - 1} !important; }`);
+    }
+    if (fmt) {
+      const hi = Number.isFinite(end) ? `:nth-child(-n+${end})` : "";
+      rules.push(`#pages > .rm-page-break:nth-child(n+${b.startPage})${hi} .rm-page-number::before { content: counter(page-number, ${fmt}) !important; }`);
+      const hEnd = Number.isFinite(end) ? `:nth-child(-n+${end - 1})` : "";
+      if (b.startPage > 1)
+        rules.push(`#pages > .rm-page-break:nth-child(n+${b.startPage - 1})${hEnd} .rm-page-number-plus::before { content: counter(page-number-plus, ${fmt}) !important; }`);
+    }
+  }
+  const css = rules.join("\n");
+  if (!css) { el?.remove(); return; }
   if (!el) {
     el = document.createElement("style");
     el.id = SECTION_STYLE_ID;
     document.head.appendChild(el);
   }
-  if (el.textContent !== rules) el.textContent = rules;
+  if (el.textContent !== css) el.textContent = css;
 }
 
 /**
@@ -514,7 +541,9 @@ export const PageSetupSync = Extension.create({
               // section breaks shift bands while forced pads settle
               const sig = pageCountOf(view) + "|" +
                 [...view.dom.querySelectorAll(".page-break.section-break")]
-                  .map((el) => Math.round(el.getBoundingClientRect().top))
+                  .map((el) => Math.round(el.getBoundingClientRect().top) + ":" +
+                    (el.getAttribute("data-pn-start") ?? "") + ":" +
+                    (el.getAttribute("data-pn-fmt") ?? ""))
                   .join(",");
               if (sig === lastSig) return;
               lastSig = sig;
@@ -543,6 +572,18 @@ export const PageSetupSync = Extension.create({
 
 /* ------------------------------------------------------------------ */
 
+/** The sectionBreak node governing the cursor's section (last break before it).
+ *  Null when the cursor is in section 1 — which uses the doc-level setup. */
+function cursorSection(editor: Editor): { pos: number; attrs: Record<string, unknown> } | null {
+  const from = editor.state.selection.from;
+  let found: { pos: number; attrs: Record<string, unknown> } | null = null;
+  editor.state.doc.forEach((node, offset) => {
+    if (offset < from && node.type.name === "sectionBreak")
+      found = { pos: offset, attrs: node.attrs };
+  });
+  return found;
+}
+
 export function PageNumbersDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
   const setup = readPageSetup(editor);
   const footerPair: HfPair = { left: setup.footerLeft, right: setup.footerRight };
@@ -559,9 +600,23 @@ export function PageNumbersDialog({ editor, onClose }: { editor: Editor; onClose
     return hasNumber(fp);
   });
   const [remove, setRemove] = useState(false);
+  // Word's per-section numbering: the break before the cursor carries the
+  // current section's pgNumType. In section 1 there is no break — doc-level.
+  const sect = cursorSection(editor);
+  const [scope, setScope] = useState<"doc" | "section">("doc");
+  const [restart, setRestart] = useState(() =>
+    typeof sect?.attrs.pnStart === "number");
+  const sectionFmt = (sect?.attrs.pnFmt as PageNumberFormat | null) ?? null;
+  const [secFormat, setSecFormat] = useState<PageNumberFormat | "inherit">(sectionFmt ?? "inherit");
+  const [secStart, setSecStart] = useState(() =>
+    typeof sect?.attrs.pnStart === "number" ? sect.attrs.pnStart as number : 1);
 
   const apply = () => {
-    const s = { ...readPageSetup(editor), pnFormat: format, pnStart: Math.max(0, startAt) };
+    const s = { ...readPageSetup(editor) };
+    if (scope === "doc") {
+      s.pnFormat = format;
+      s.pnStart = Math.max(0, startAt);
+    }
     const target: HfPair = remove ? { left: "", right: "" } : slotFor(align, numberMarkup("page-of"));
     if (position === "header") {
       s.headerLeft = target.left; s.headerRight = target.right;
@@ -578,6 +633,17 @@ export function PageNumbersDialog({ editor, onClose }: { editor: Editor; onClose
       }
     }
     applyPageSetup(editor, s);
+    if (scope === "section" && sect) {
+      // null start = "continue from previous section" (Word's default)
+      editor.chain().command(({ tr }) => {
+        tr.setNodeMarkup(sect.pos, undefined, {
+          ...sect.attrs,
+          pnFmt: secFormat === "inherit" ? null : secFormat,
+          pnStart: restart ? Math.max(0, secStart) : null,
+        });
+        return true;
+      }).run();
+    }
     onClose();
   };
 
@@ -602,7 +668,8 @@ export function PageNumbersDialog({ editor, onClose }: { editor: Editor; onClose
         </div>
         <div className="ps-row">
           <label className="ps-field"><span>Number format</span>
-            <select value={format} onChange={(e) => setFormat(e.target.value as PageNumberFormat)}>
+            <select value={format} onChange={(e) => setFormat(e.target.value as PageNumberFormat)}
+              disabled={scope === "section"}>
               <option value="decimal">1, 2, 3…</option>
               <option value="lower-roman">i, ii, iii…</option>
               <option value="upper-roman">I, II, III…</option>
@@ -612,9 +679,48 @@ export function PageNumbersDialog({ editor, onClose }: { editor: Editor; onClose
           </label>
           <label className="ps-field"><span>Start at</span>
             <input type="number" min={0} value={startAt}
+              disabled={scope === "section"}
               onChange={(e) => setStartAt(Math.max(0, parseInt(e.target.value) || 0))} />
           </label>
         </div>
+        {sect && (
+          <div className="ps-row">
+            <label className="ps-check">
+              <input type="radio" name="pn-scope" checked={scope === "doc"} onChange={() => setScope("doc")} />
+              <span>Whole document</span>
+            </label>
+            <label className="ps-check">
+              <input type="radio" name="pn-scope" checked={scope === "section"} onChange={() => setScope("section")} />
+              <span>This section</span>
+            </label>
+          </div>
+        )}
+        {scope === "section" && sect && (
+          <div className="ps-row">
+            <label className="ps-field"><span>Section format</span>
+              <select value={secFormat} onChange={(e) => setSecFormat(e.target.value as PageNumberFormat | "inherit")}>
+                <option value="inherit">Same as document</option>
+                <option value="decimal">1, 2, 3…</option>
+                <option value="lower-roman">i, ii, iii…</option>
+                <option value="upper-roman">I, II, III…</option>
+                <option value="lower-alpha">a, b, c…</option>
+                <option value="upper-alpha">A, B, C…</option>
+              </select>
+            </label>
+            <label className="ps-check">
+              <input type="radio" name="pn-restart" checked={!restart} onChange={() => setRestart(false)} />
+              <span>Continue from previous</span>
+            </label>
+            <label className="ps-check">
+              <input type="radio" name="pn-restart" checked={restart} onChange={() => setRestart(true)} />
+              <span>Start at</span>
+            </label>
+            {restart && (
+              <input type="number" min={0} value={secStart} className="ps-startnum"
+                onChange={(e) => setSecStart(Math.max(0, parseInt(e.target.value) || 0))} />
+            )}
+          </div>
+        )}
         <div className="ps-row">
           <label className="ps-check">
             <input type="checkbox" checked={showOnFirst} onChange={(e) => setShowOnFirst(e.target.checked)} />
