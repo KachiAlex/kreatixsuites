@@ -5,7 +5,7 @@ import { textOf, hasMark, isText, type Block, type Inline, type Json } from "./c
 const escRtf = (s: string) =>
   s.replace(/\\/g, "\\\\").replace(/\{/g, "\\{").replace(/\}/g, "\\}")
     .replace(/\n/g, "\\line ")
-    .replace(/[^\x00-\x7F]/g, (c) => `\\u${c.codePointAt(0)! > 0x7FFF ? (c.codePointAt(0)! - 65536) : c.codePointAt(0)}?`);
+    .replace(/[\u0080-\uFFFF]/g, (c) => `\\u${c.codePointAt(0)! > 0x7FFF ? (c.codePointAt(0)! - 65536) : c.codePointAt(0)}?`);
 
 function hexToRtf(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);

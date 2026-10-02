@@ -420,13 +420,17 @@ function Pie({ series, cx, cy, r, doughnut, dataLabels }: {
 }) {
   const vals = series[0]?.values.map((v) => Math.max(0, v)) ?? [];
   const total = vals.reduce((a, b) => a + b, 0) || 1;
-  let angle = -Math.PI / 2;
+  // prefix-sum the slice angles — pure, no accumulator mutated inside the map
+  const a1s: number[] = [];
+  {
+    let a = -Math.PI / 2;
+    for (const v of vals) { a += (v / total) * Math.PI * 2; a1s.push(a); }
+  }
   return (
     <g>
       {vals.map((v, i) => {
-        const a0 = angle;
-        const a1 = angle + (v / total) * Math.PI * 2;
-        angle = a1;
+        const a0 = i === 0 ? -Math.PI / 2 : a1s[i - 1];
+        const a1 = a1s[i];
         const large = a1 - a0 > Math.PI ? 1 : 0;
         const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
         const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);

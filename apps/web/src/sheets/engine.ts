@@ -169,7 +169,7 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
         `KXEXT("${book.replace(/"/g, '""')}","${(qs ?? ps)!.replace(/"/g, '""')}","${ref.replace(/\$/g, "")}")`,
     );
     // structured table refs (S12.1) — T[[#spec],[Col]], T[@C], T[C], T[#spec], [@C]
-    s = s.replace(/([A-Za-z_][\w.]*)\[\[([^\[\]]+)\],\[([^\]]+)\]\]/g,
+    s = s.replace(/([A-Za-z_][\w.]*)\[\[([^[\]]+)\],\[([^\]]+)\]\]/g,
       (_m, t: string, spec: string, col: string) => `KXTBLC("${t}","${spec.trim()}","${col.trim()}")`);
     s = s.replace(/([A-Za-z_][\w.]*)\[@([^\]]+)\]/g,
       (_m, t: string, col: string) => `KXTHIS("${t}","${col.trim()}")`);
@@ -202,7 +202,7 @@ export function preprocessFormula(f: string, names?: Record<string, string>): st
     // intersection operator: `A1:B2 B2:C3` → KXINT (Excel's space operator;
     // empty overlap → #NULL!)
     s = s.replace(
-      /(?<![\w$.!:'"])([\$]?[A-Za-z]{1,3}[\$]?\d+(?::[\$]?[A-Za-z]{1,3}[\$]?\d+)?)( +)([\$]?[A-Za-z]{1,3}[\$]?\d+(?::[\$]?[A-Za-z]{1,3}[\$]?\d+)?)(?![\w$:(])/g,
+      /(?<![\w$.!:'"])([$]?[A-Za-z]{1,3}[$]?\d+(?::[$]?[A-Za-z]{1,3}[$]?\d+)?)( +)([$]?[A-Za-z]{1,3}[$]?\d+(?::[$]?[A-Za-z]{1,3}[$]?\d+)?)(?![\w$:(])/g,
       (_m, a: string, _ws: string, b: string) => `KXINT("${a}","${b}")`,
     );
     return s;

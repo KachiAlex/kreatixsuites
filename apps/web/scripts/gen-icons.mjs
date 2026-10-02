@@ -1,7 +1,6 @@
 // Generates PNG brand assets from the SVG mark via @resvg/resvg-js (dev-only).
 // Usage: node scripts/gen-icons.mjs   → writes into ../public/
 import { Resvg } from "@resvg/resvg-js";
-import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +35,7 @@ const favSvg = (size, rounded = true, scale = 0.72) => {
 
 // --- favicons + touch + manifest icons ---
 const png32 = render(favSvg(64), 32, "favicon-32.png");
-const png16 = render(favSvg(64), 16, "favicon-16.png");
+render(favSvg(64), 16, "favicon-16.png");
 render(favSvg(180, false, 0.78), 180, "apple-touch-icon.png");
 render(favSvg(512, true, 0.72), 192, "icon-192.png");
 render(favSvg(512, true, 0.72), 512, "icon-512.png");

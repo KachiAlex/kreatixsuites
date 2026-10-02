@@ -88,7 +88,7 @@ export async function buildFlattenedPdf(
       const v = f.value ?? f.defaultValue;
       try {
         if (f.kind === "text") form.getTextField(f.embedded).setText(String(v ?? ""));
-        else if (f.kind === "checkbox") v ? form.getCheckBox(f.embedded).check() : form.getCheckBox(f.embedded).uncheck();
+        else if (f.kind === "checkbox") { if (v) form.getCheckBox(f.embedded).check(); else form.getCheckBox(f.embedded).uncheck(); }
         else if (f.kind === "radio" && v) form.getRadioGroup(f.group ?? f.embedded).select(f.name);
         else if ((f.kind === "dropdown" || f.kind === "list") && v) {
           const sel = String(v).split("\n")[0];

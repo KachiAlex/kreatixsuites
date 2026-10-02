@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DriveItem, FileVersion } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { fileSize, timeAgo } from "../lib/format";
@@ -13,12 +13,12 @@ export function VersionsPanel({ item, onClose, onRestore, toast }: {
   const [renaming, setRenaming] = useState<number | null>(null);
   const [label, setLabel] = useState("");
 
-  const load = () => {
+  const load = useCallback(() => {
     api.get<{ versions: FileVersion[] }>(`/api/files/${item.id}/versions`)
       .then((r) => setVersions(r.versions))
       .catch((e) => toast(e.message));
-  };
-  useEffect(load, [item.id]);
+  }, [item.id, toast]);
+  useEffect(load, [load]);
 
   const restore = async (v: FileVersion) => {
     if (!confirm(`Restore version ${v.number}? Current content is preserved as a new version.`)) return;

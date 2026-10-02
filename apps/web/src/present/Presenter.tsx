@@ -30,10 +30,11 @@ export function Presenter({ deck, theme, startIndex, presenterView, showSlides, 
   // P5.2 — rehearse: ms spent per subset-position
   const [rehearsing, setRehearsing] = useState(false);
   const timesRef = useRef<Map<number, number>>(new Map());
-  const slideEnterAt = useRef(Date.now());
+  const slideEnterAt = useRef(0);
   const slides = showSlides ? showSlides.map((i) => deck.slides[i]).filter(Boolean) : deck.slides;
   const slide = slides[idx];
   const dims = deckSize(deck);
+  const showLoop = deck.showLoop;
 
   // P3.3 — click-steps from animSteps: click triggers consume steps, with/after chain on
   const maxStep = slide ? maxAnimStep(slide.objects) : 0;
@@ -50,7 +51,7 @@ export function Presenter({ deck, theme, startIndex, presenterView, showSlides, 
           while (n < slides.length - 1 && slides[n].hidden) n++;
           if (n >= slides.length - 1 && slides[slides.length - 1]?.hidden) n = slides.length - 1;
           if (n > slides.length - 1 || (n === slides.length - 1 && i === slides.length - 1)) {
-            if (deck.showLoop) { let f = 0; while (f < slides.length - 1 && slides[f].hidden) f++; return f; }
+            if (showLoop) { let f = 0; while (f < slides.length - 1 && slides[f].hidden) f++; return f; }
           }
           return Math.min(slides.length - 1, n);
         });
@@ -63,18 +64,19 @@ export function Presenter({ deck, theme, startIndex, presenterView, showSlides, 
         return Math.max(0, n);
       });
     }
-  }, [slides, maxStep, step, deck.showLoop]);
+  }, [slides, maxStep, step, showLoop]);
 
   const jump = useCallback((i: number) => { setIdx(i); setStep(0); }, []);
 
   // P5.2 — rehearse: accumulate dwell per position; auto-advance per slide timing
   useEffect(() => {
     if (!rehearsing) return;
+    const times = timesRef.current;
     slideEnterAt.current = Date.now();
     const prev = slideEnterAt.current;
     return () => {
       const dt = Date.now() - prev;
-      timesRef.current.set(idx, (timesRef.current.get(idx) ?? 0) + dt);
+      times.set(idx, (times.get(idx) ?? 0) + dt);
     };
   }, [idx, rehearsing]);
 

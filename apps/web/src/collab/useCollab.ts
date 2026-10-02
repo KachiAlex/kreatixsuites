@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type * as Y from "yjs";
 import { useAuth } from "../lib/auth";
 import { getToken } from "../lib/api";
@@ -29,14 +29,14 @@ export class MapSync {
   constructor(
     session: CollabSession,
     name: string,
-    apply: (changed: Map<string, string | null>) => void,
+    applyRef: React.MutableRefObject<(changed: Map<string, string | null>) => void>,
   ) {
     this.map = session.ydoc.getMap<string>(name);
     this.map.observe((e, tx) => {
       if (tx.local) return;
       const changed = new Map<string, string | null>();
       e.keysChanged.forEach((k) => changed.set(k, this.map.has(k) ? this.map.get(k)! : null));
-      if (changed.size) apply(changed);
+      if (changed.size) applyRef.current(changed);
     });
   }
 
@@ -70,9 +70,8 @@ export function useMapSync(
   name: string,
   applyRef: React.MutableRefObject<(changed: Map<string, string | null>) => void>,
 ): MapSync | null {
-  const ref = useRef<{ session: CollabSession; sync: MapSync } | null>(null);
-  if (session && ref.current?.session !== session) {
-    ref.current = { session, sync: new MapSync(session, name, (c) => applyRef.current(c)) };
-  }
-  return ref.current?.sync ?? null;
+  return useMemo(
+    () => (session ? new MapSync(session, name, applyRef) : null),
+    [session, name, applyRef],
+  );
 }

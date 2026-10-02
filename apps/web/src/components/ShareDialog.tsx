@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DriveItem, FileShare, ShareLink } from "@kreatix/shared";
 import { api } from "../lib/api";
 
@@ -12,15 +12,15 @@ export function ShareDialog({ item, onClose, toast }: {
   const [linkPerm, setLinkPerm] = useState<"viewer" | "commenter" | "editor">("viewer");
   const [newLink, setNewLink] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [s, l] = await Promise.all([
       api.get<{ shares: FileShare[] }>(`/api/files/${item.id}/shares`),
       api.get<{ links: ShareLink[] }>(`/api/files/${item.id}/links`),
     ]);
     setShares(s.shares);
     setLinks(l.links);
-  };
-  useEffect(() => { load().catch(() => {}); }, [item.id]);
+  }, [item.id]);
+  useEffect(() => { load().catch(() => {}); }, [load]);
 
   const addShare = async () => {
     try {

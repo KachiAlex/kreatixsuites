@@ -454,8 +454,13 @@ export function refInRanges(ref: string, ranges: string[]): boolean {
  *  the index of a group's LAST member row; members are the contiguous rows
  *  at-or-before that index sharing its level. */
 export function outlineHidden(sheet: SheetData, axis: "row" | "col"): number[] {
-  const lv = axis === "row" ? sheet.outlineRows : sheet.outlineCols;
-  const collapsed = axis === "row" ? sheet.collapsedRows : sheet.collapsedCols;
+  return outlineHiddenFields(
+    axis === "row" ? sheet.outlineRows : sheet.outlineCols,
+    axis === "row" ? sheet.collapsedRows : sheet.collapsedCols,
+  );
+}
+
+export function outlineHiddenFields(lv: SheetData["outlineRows"], collapsed: number[] | undefined): number[] {
   if (!lv || !collapsed?.length) return [];
   const hidden = new Set<number>();
   for (const end of collapsed) {
@@ -739,16 +744,16 @@ export function translateFormula(
       }
     }
     stashed.push(out);
-    return `\x00${stashed.length - 1}\x00`;
+    return `\uE000${stashed.length - 1}\uE000`;
   });
   const shifted = tmp.replace(
-    /(?<![A-Za-z0-9_$!.\x00])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?!\d)(?!\s*\()/g,
+    /(?<![A-Za-z0-9_$!.\uE000])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?!\d)(?!\s*\()/g,
     (_m, dc: string, cl: string, dr: string, rn: string) => {
       const out = map({ col: colIndex(cl), row: Number(rn) - 1, colAbs: !!dc, rowAbs: !!dr });
       return out === null ? "#REF!" : `${dc}${colLabel(out.col)}${dr}${out.row + 1}`;
     },
   );
-  return shifted.replace(/\x00(\d+)\x00/g, (_m, i) => stashed[Number(i)]);
+  return shifted.replace(/\uE000(\d+)\uE000/g, (_m, i) => stashed[Number(i)]);
 }
 
 /** Rewrite qualified refs to `sheetName` through `map` (other sheets' formulas

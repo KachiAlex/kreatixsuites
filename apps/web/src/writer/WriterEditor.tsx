@@ -686,6 +686,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- print/insertLink are declared below this hook (TDZ) and only invoked by keydown dispatch
   }, [flushSave, canMutate, title, copyFormat, paintFormat, focusMode, readMode]);
 
   // flush on unmount / pagehide (autosave durability, KBS-SHARED-003)
@@ -843,6 +844,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   // ---- find & replace (KBS-WRITER-017) ----
   const matches = useMemo(() => {
+    void state; // invalidation dep — editor.state.doc changes under a stable `editor` identity
     if (!editor || !query) return [] as { from: number; to: number }[];
     const out: { from: number; to: number }[] = [];
     // Build the matcher: plain substring, whole-word, or wildcard (* ?)
@@ -2069,9 +2071,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           },
           {
             label: "Show markup", submenu: [
-              { label: "Insertions", checked: !hideTypes.has("ins"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("ins") ? n.delete("ins") : n.add("ins"); return n; }) },
-              { label: "Deletions", checked: !hideTypes.has("del"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("del") ? n.delete("del") : n.add("del"); return n; }) },
-              { label: "Formatting", checked: !hideTypes.has("fmt"), onClick: () => setHideTypes((s) => { const n = new Set(s); n.has("fmt") ? n.delete("fmt") : n.add("fmt"); return n; }) },
+              { label: "Insertions", checked: !hideTypes.has("ins"), onClick: () => setHideTypes((s) => { const n = new Set(s); if (n.has("ins")) n.delete("ins"); else n.add("ins"); return n; }) },
+              { label: "Deletions", checked: !hideTypes.has("del"), onClick: () => setHideTypes((s) => { const n = new Set(s); if (n.has("del")) n.delete("del"); else n.add("del"); return n; }) },
+              { label: "Formatting", checked: !hideTypes.has("fmt"), onClick: () => setHideTypes((s) => { const n = new Set(s); if (n.has("fmt")) n.delete("fmt"); else n.add("fmt"); return n; }) },
               ...(() => {
                 const authors = new Map<string, string>();
                 for (const c of getTrackedChanges(ed)) authors.set(c.authorId, c.authorName);
@@ -2080,7 +2082,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   { divider: true } as MenuItem,
                   ...[...authors].map(([id, name]) => ({
                     label: name, checked: !hideAuthors.has(id),
-                    onClick: () => setHideAuthors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }),
+                    onClick: () => setHideAuthors((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; }),
                   })),
                 ];
               })(),

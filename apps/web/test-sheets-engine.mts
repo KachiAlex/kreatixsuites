@@ -1,7 +1,7 @@
 // Sheets engine harness — cross-sheet refs, rename/structural rewrites, I/O.
 // Run: npx tsx test-sheets-engine.mts
 import { evaluateSheetIn, evaluateWorkbook, preprocessFormula, displayValue, cycleAnchors, tokenAtCaret, refsInFormula, createSheetEvaluator, explainFormula, toR1C1 } from "./src/sheets/engine";
-import { adjustForRowsCols, renameSheetRefs, shiftForFill, translateQualifiedRefs, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline, richStyleRuns, richRunsForEdit, richRunsMatch } from "./src/sheets/model";
+import { adjustForRowsCols, renameSheetRefs, shiftForFill, detectSeries, seriesValue, validateValue, validationsAt, shiftCells, outlineHidden, toggleOutline, richStyleRuns, richRunsForEdit, richRunsMatch } from "./src/sheets/model";
 import { cellLocked } from "./src/sheets/model";
 import type { Workbook, SheetData, CellData } from "./src/sheets/model";
 import { sheetToCSV, workbookToXLSXBytes, xlsxToWorkbook, pasteCells, findInWorkbook, replaceInCell, listItems, evalCond, filterValues, computeFilteredRows, cfEffects, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, sheetToPrintHTML, flashFillTemplate, goToSpecial, columnSuggestions, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs, richRunsFromHtml } from "./src/sheets/io";

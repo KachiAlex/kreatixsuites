@@ -156,7 +156,7 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
   const toggleGroup = (gid: string) => {
     setHidden((h) => {
       const cur = new Set(h[activeId] ?? []);
-      cur.has(gid) ? cur.delete(gid) : cur.add(gid);
+      if (cur.has(gid)) cur.delete(gid); else cur.add(gid);
       const next = { ...h, [activeId]: [...cur] };
       save(`kx-ribhide-${persistKey}`, JSON.stringify(next));
       return next;

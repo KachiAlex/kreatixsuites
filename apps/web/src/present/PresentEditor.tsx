@@ -798,8 +798,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
       if ((e.target as HTMLElement).isContentEditable || /input|textarea|select/i.test((e.target as HTMLElement).tagName)) return;
       if ((e.key === "Delete" || e.key === "Backspace") && canEdit && selection.size) { e.preventDefault(); delSelected(); }
       else if (e.key === "Escape") { setSelection(new Set()); setPaintArmed(false); setCropId(null); }
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") { e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") { e.preventDefault(); if (e.shiftKey) ungroupSel(); else groupSel(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && selection.size) {
         e.preventDefault();
         const objs = slide.objects.filter((o) => selection.has(o.id));
@@ -1452,7 +1452,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
             const secHead = (sec: { name: string; headId: string; idxs: number[] }) => (
               <div className="rail-sec" key={`sec-${sec.headId}`}>
                 <button className="rail-sec-caret" title="Collapse/expand"
-                  onClick={() => setCollapsedSecs((c) => { const n = new Set(c); n.has(sec.headId) ? n.delete(sec.headId) : n.add(sec.headId); return n; })}>
+                  onClick={() => setCollapsedSecs((c) => { const n = new Set(c); if (n.has(sec.headId)) n.delete(sec.headId); else n.add(sec.headId); return n; })}>
                   {collapsedSecs.has(sec.headId) ? "▸" : "▾"}
                 </button>
                 <span className="rail-sec-name" title="Double-click to rename" onDoubleClick={() => renameSection(sec.headId, sec.name)}>{sec.name}</span>
@@ -1517,7 +1517,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => { if (dragSlide.current != null) sorterMove(dragSlide.current, i); dragSlide.current = null; }}
                   onClick={(e) => {
-                    if (e.ctrlKey || e.metaKey) { const n = new Set(sorterSel); n.has(i) ? n.delete(i) : n.add(i); setSorterSel(n); }
+                    if (e.ctrlKey || e.metaKey) { const n = new Set(sorterSel); if (n.has(i)) n.delete(i); else n.add(i); setSorterSel(n); }
                     else if (e.shiftKey && sorterSel.size) { const a = Math.min(...sorterSel); const n = new Set<number>(); for (let k = Math.min(a, i); k <= Math.max(a, i); k++) n.add(k); setSorterSel(n); }
                     else { setSorterSel(new Set([i])); setSlideIdx(i); }
                   }}
@@ -1946,7 +1946,7 @@ function ShowsDialog({ deck, mutate, onPlay, onClose }: {
             {deck.slides.map((s, i) => (
               <label key={s.id} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, padding: "3px 4px", borderRadius: 5, cursor: "pointer" }}>
                 <input type="checkbox" checked={picked.has(i)}
-                  onChange={(e) => { const n = new Set(picked); e.target.checked ? n.add(i) : n.delete(i); setPicked(n); }} />
+                  onChange={(e) => { const n = new Set(picked); if (e.target.checked) n.add(i); else n.delete(i); setPicked(n); }} />
                 <span>Slide {i + 1}{s.hidden ? " (hidden)" : ""}</span>
               </label>
             ))}

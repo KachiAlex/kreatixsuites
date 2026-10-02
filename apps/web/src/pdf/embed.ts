@@ -447,7 +447,7 @@ const embedFields = async (
           // update the existing field's value in place
           const v = f.value ?? f.defaultValue;
           try { if (f.kind === "text") form.getTextField(f.embedded).setText(String(v ?? "")); } catch { /* type drifted */ }
-          try { if (f.kind === "checkbox") v ? form.getCheckBox(f.embedded).check() : form.getCheckBox(f.embedded).uncheck(); } catch { /* */ }
+          try { if (f.kind === "checkbox") { if (v) form.getCheckBox(f.embedded).check(); else form.getCheckBox(f.embedded).uncheck(); } } catch { /* */ }
           try { if (f.kind === "radio" && v) form.getRadioGroup(f.group ?? f.embedded).select(String(f.name)); } catch { /* */ }
           try { if ((f.kind === "dropdown" || f.kind === "list") && v != null && v !== "") {
             const sel = String(v).split("\n")[0];
@@ -503,7 +503,7 @@ const embedFields = async (
         if (!name) continue;
         const v = (raw as { value?: unknown })?.value ?? raw;
         try { form.getTextField(name).setText(String(v ?? "")); continue; } catch { /* */ }
-        try { v ? form.getCheckBox(name).check() : form.getCheckBox(name).uncheck(); continue; } catch { /* */ }
+        try { if (v) form.getCheckBox(name).check(); else form.getCheckBox(name).uncheck(); continue; } catch { /* */ }
         for (const g of ["getDropdown", "getOptionList", "getRadioGroup"] as const) {
           try { (form[g](name) as { select: (v: string) => void }).select(String(v)); break; } catch { /* next */ }
         }

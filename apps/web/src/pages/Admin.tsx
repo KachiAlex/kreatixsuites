@@ -7,6 +7,11 @@ import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useToast } from "./Home";
 
+// module-scope so Date.now() runs outside the component's render scope
+async function grantDays(orgId: string, days: number) {
+  const until = new Date(Date.now() + days * 86400000).toISOString();
+  await api.patch(`/api/superadmin/orgs/${orgId}/subscription`, { overrideUntil: until });
+}
 interface Member {
   id: string; email: string; displayName: string; initials: string;
   role: string; disabled: boolean; createdAt: string;
@@ -208,8 +213,7 @@ export function Admin() {
 
   const saComp = async (orgId: string, days: number) => {
     try {
-      const until = new Date(Date.now() + days * 86400000).toISOString();
-      await api.patch(`/api/superadmin/orgs/${orgId}/subscription`, { overrideUntil: until });
+      await grantDays(orgId, days);
       toast(`Granted ${days} days of access`);
       void load();
     } catch (e) {

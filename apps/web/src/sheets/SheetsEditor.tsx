@@ -46,6 +46,7 @@ const CELL_STYLES: [string, string, CellStyle][] = [
   ["accent", "Accent", { bg: "#F2782E", color: "#FFFFFF", b: true }],
 ];
 const fmtStat = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+const EMPTY_STYLE: CellStyle = {};
 
 /** S15.1 — SHA-256 hex for the workbook open-password gate. */
 async function sha256hex(s: string): Promise<string> {
@@ -296,7 +297,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   }, [session, sheet.name, anchorRef]);
   const anchorCell = sheet.cells[anchorRef];
   const anchorRes = evals.get(anchorRef);
-  const anchorStyle = anchorCell?.s ?? {};
+  // shared empty-object so the fallback doesn't break memo identities
+  const anchorStyle = anchorCell?.s ?? EMPTY_STYLE;
 
   // formula bar — controlled value; fxAnchor pins the cell being edited so a
   // blur caused by selecting another cell still commits to the right target
@@ -535,7 +537,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const bad = sheet.protected ? refs.find((r) => cellLocked(sheet, r, user)) : undefined;
     if (bad) toast(`${bad} is locked — this sheet is protected`);
     return !!bad;
-  }, [sheet, toast]);
+  }, [sheet, toast, user]);
 
   /** Structural ops (insert/delete/sort/merge/dedupe) are blocked entirely
    *  on protected sheets — they'd break allowed-range boundaries. */
@@ -586,7 +588,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const dc = Math.max(...Object.keys(cells).map((r) => parseA1(r)!.col)) - anchor.col;
     const dr = Math.max(...Object.keys(cells).map((r) => parseA1(r)!.row)) - anchor.row;
     setSelection({ c1: anchor.col, r1: anchor.row, c2: anchor.col + dc, r2: anchor.row + dr });
-  }, [mutateSheet, anyLocked, stamp]);
+  }, [mutateSheet, anyLocked, stamp, setSelection]);
 
   const pasteImage = useCallback((anchor: Ref, dataUrl: string) => {
     const ref = toA1(anchor.col, anchor.row);
@@ -1134,7 +1136,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       }
       toast(`${selection.r2 - selection.r1 + 1 - keep.length} duplicate row(s) removed`);
     });
-  }, [mutateSheet, wb, selection, structuralLocked]);
+  }, [mutateSheet, wb, selection, structuralLocked, toast]);
 
   const textToCols = useCallback((delim: string) => {
     if (anyLocked([...rangeRefs(selection)])) return;
@@ -2979,7 +2981,7 @@ function FilterMenu({ wb, sheet, col, x, y, onSet, onSort, onClose }: {
                 <input type="checkbox" checked={sel.has(v)}
                   onChange={(e) => {
                     const n = new Set(sel);
-                    e.target.checked ? n.add(v) : n.delete(v);
+                    if (e.target.checked) n.add(v); else n.delete(v);
                     setSel(n);
                   }} />
                 {v === "" ? <i>(Blanks)</i> : v}
@@ -3100,7 +3102,7 @@ function DedupeDialog({ range, onApply, onClose }: {
           {allCols.map((c) => (
             <label key={c} className="frow">
               <input type="checkbox" checked={cols.has(c)}
-                onChange={(e) => { const n = new Set(cols); e.target.checked ? n.add(c) : n.delete(c); setCols(n); }} />
+                onChange={(e) => { const n = new Set(cols); if (e.target.checked) n.add(c); else n.delete(c); setCols(n); }} />
               Column {colLabel(c)}
             </label>
           ))}
@@ -4105,7 +4107,7 @@ function SubtotalDialog({ sheet, range, onApply, onClose }: {
               {cols.map((c) => (
                 <label key={c} style={{ fontSize: 12, display: "flex", gap: 4, alignItems: "center" }}>
                   <input type="checkbox" checked={agg.has(c)}
-                    onChange={(e) => setAgg((s) => { const n = new Set(s); e.target.checked ? n.add(c) : n.delete(c); return n; })} />
+                    onChange={(e) => setAgg((s) => { const n = new Set(s); if (e.target.checked) n.add(c); else n.delete(c); return n; })} />
                   {colLabel(c)}
                 </label>
               ))}

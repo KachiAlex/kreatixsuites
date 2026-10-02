@@ -331,6 +331,7 @@ const FN_META: Record<string, FnMeta> = {
   LAMBDA: { cat: "Logical", sig: "LAMBDA(param, …, calc)", desc: "Creates a reusable custom function that can be called with friendly names.", args: ["parameter", "calculation"] },
 };
 const EXTRA_FNS = ["VLOOKUP","HLOOKUP","INDEX","MATCH","OFFSET","INDIRECT","LOOKUP","XLOOKUP","IFS","TEXTJOIN","CONCAT","DATEDIF","SEQUENCE","RANDARRAY","IFERROR","IFNA","NA"];
+const MOST_FNS = ["SUM", "AVERAGE", "IF", "VLOOKUP", "COUNT", "COUNTIF", "SUMIF", "MAX", "MIN", "TODAY"];
 
 export function FunctionWizard({ wb: _wb, initial, onInsert, onClose }: {
   wb: Workbook;
@@ -352,13 +353,12 @@ export function FunctionWizard({ wb: _wb, initial, onInsert, onClose }: {
     }
     return ["Most used", ...[...m.keys()].sort(), "All"] as const;
   }, [all]);
-  const MOST = ["SUM", "AVERAGE", "IF", "VLOOKUP", "COUNT", "COUNTIF", "SUMIF", "MAX", "MIN", "TODAY"];
   const [cat, setCat] = useState<string>("Most used");
   const [fn, setFn] = useState<string>(() => initial?.match(/^\s*([A-Za-z_][\w.]*)\s*\(/)?.[1]?.toUpperCase() ?? "SUM");
   const [q, setQ] = useState("");
   const [argVals, setArgVals] = useState<string[]>([]);
   const list = useMemo(() => {
-    let l = cat === "All" ? all : cat === "Most used" ? MOST.filter((f) => all.includes(f)) : all.filter((f) => FN_META[f]?.cat === cat);
+    let l = cat === "All" ? all : cat === "Most used" ? MOST_FNS.filter((f) => all.includes(f)) : all.filter((f) => FN_META[f]?.cat === cat);
     if (q.trim()) l = all.filter((f) => f.startsWith(q.trim().toUpperCase()));
     return l;
   }, [cat, all, q]);

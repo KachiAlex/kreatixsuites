@@ -2268,7 +2268,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
                   if (e.shiftKey && orgSel.size) {
                     const lo = Math.min(...orgSel, p), hi = Math.max(...orgSel, p);
                     for (let i = lo; i <= hi; i++) next.add(i);
-                  } else next.has(p) && orgSel.size > 1 ? next.delete(p) : next.add(p);
+                  } else if (next.has(p) && orgSel.size > 1) next.delete(p); else next.add(p);
                   setOrgSel(next);
                 }}>
                 <Thumb doc={doc} page={p} active={p === curPage} onClick={() => scrollToPage(p)} />
@@ -2889,9 +2889,12 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   const textRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<PDFPageProxy | null>(null);
+  // state copy of the loaded page — render reads this; pageRef is only for
+  // event handlers / the render effect's fetch cache
+  const [pageObj, setPageObj] = useState<PDFPageProxy | null>(null);
   const [near, setNear] = useState(false);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [preview, setPreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [preview, setPreview] = useState<{ x: number; y: number; w: number; h: number; sx?: number; sy?: number; cx?: number; cy?: number } | null>(null);
   const [penPts, setPenPts] = useState<[number, number][]>([]);
   const [plPts, setPlPts] = useState<[number, number][]>([]);   // in-progress polyline vertices (viewport px)
   const [plCur, setPlCur] = useState<[number, number] | null>(null);
@@ -2922,6 +2925,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       try {
         const page = pageRef.current ?? await doc.getPage(pageNum);
         pageRef.current = page;
+        setPageObj(page);
         const vp = page.getViewport({ scale, rotation: (page.rotate + (viewRot ?? 0)) % 360 });
         setSize({ w: vp.width, h: vp.height });
         const key = `${pageNum}:${scale}:${viewRot ?? 0}:${ocgRev ?? 0}:${showAnns ? 1 : 0}`;
@@ -2997,9 +3001,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       } catch { /* page render failed */ }
     })();
     return () => { dead = true; };
-  }, [doc, pageNum, scale, near, viewRot, ocgRev, ocgCfg, showAnns]);
+  // anns/fieldApi.fields intentionally omitted — the page canvas does not
+  // re-rasterize per annotation move; the SVG overlay updates live instead
+  }, [doc, pageNum, scale, near, viewRot, ocgRev, ocgCfg, showAnns]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const vp = () => pageRef.current?.getViewport({ scale }) ?? null;
+  const vp = () => pageObj?.getViewport({ scale }) ?? null;
   const toPdf = (cx: number, cy: number): [number, number] => {
     const v = vp(); if (!v) return [0, 0];
     const b = boxRef.current!.getBoundingClientRect();
@@ -3016,6 +3022,11 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
   };
 
   // ---------- drawing tools ----------
+  const finishPolyline = (pts: [number, number][]) => {
+    if (pts.length > 1 && vp())
+      onAdd({ type: "polyline", points: pts.map(([x, y]) => vp()!.convertToPdfPoint(x, y) as [number, number]), color: toolColor });
+    setPlPts([]); setPlCur(null);
+  };
   // Enter/Esc finish or cancel an in-progress polyline
   useEffect(() => {
     if (!plPts.length) return;
@@ -3044,12 +3055,6 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       canvas: c, viewport: vp2,
       transform: [1, 0, 0, 1, (LOUPE * dpr) / 2 - x * MAG * k, (LOUPE * dpr) / 2 - y * MAG * k],
     }).promise.finally(() => { loupeBusy.current = false; });
-  };
-
-  const finishPolyline = (pts: [number, number][]) => {
-    if (pts.length > 1 && vp())
-      onAdd({ type: "polyline", points: pts.map(([x, y]) => vp()!.convertToPdfPoint(x, y) as [number, number]), color: toolColor });
-    setPlPts([]); setPlCur(null);
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -3102,7 +3107,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     }
     dragRef.current = { kind: "draw", sx: x, sy: y, x, y };
     if (tool === "freehand") setPenPts([[x, y]]);
-    else setPreview({ x, y, w: 0, h: 0 }); // zoombox/measure preview via the same rect
+    else setPreview({ x, y, w: 0, h: 0, sx: x, sy: y, cx: x, cy: y }); // zoombox/measure preview via the same rect
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const b = boxRef.current!.getBoundingClientRect();
@@ -3117,7 +3122,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
     }
     d.x = x; d.y = y;
     if (tool === "freehand") setPenPts((p) => [...p, [x, y]]);
-    else setPreview({ x: Math.min(d.sx, x), y: Math.min(d.sy, y), w: Math.abs(x - d.sx), h: Math.abs(y - d.sy) });
+    else setPreview({ x: Math.min(d.sx, x), y: Math.min(d.sy, y), w: Math.abs(x - d.sx), h: Math.abs(y - d.sy), sx: d.sx, sy: d.sy, cx: x, cy: y });
   };
   // snapshot tool — render the dragged region at 2× and copy it as PNG
   const doSnapshot = async (r: { x: number; y: number; w: number; h: number }) => {
@@ -3448,14 +3453,13 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
               fill="none" stroke={toolColor} strokeWidth={2} strokeLinecap="round" strokeDasharray={plCur ? "0" : undefined} />
           )}
           {plPts.map(([x, y], i) => <circle key={`plv${i}`} cx={x} cy={y} r={2.4} fill={toolColor} />)}
-          {preview && tool === "measure" && dragRef.current?.kind === "draw" && (() => {
-            const d = dragRef.current;
-            const pt = Math.hypot(d.x - d.sx, d.y - d.sy) / scale;
+          {preview && tool === "measure" && preview.sx != null && (() => {
+            const pt = Math.hypot(preview.cx! - preview.sx!, preview.cy! - preview.sy!) / scale;
             return (
               <g>
-                <line x1={d.sx} y1={d.sy} x2={d.x} y2={d.y} stroke="#3578E5" strokeWidth={1.5} strokeDasharray="5 3" />
-                <circle cx={d.sx} cy={d.sy} r={3} fill="#3578E5" /><circle cx={d.x} cy={d.y} r={3} fill="#3578E5" />
-                <text x={(d.sx + d.x) / 2} y={(d.sy + d.y) / 2 - 6} textAnchor="middle" fontSize={11} fill="#3578E5"
+                <line x1={preview.sx} y1={preview.sy} x2={preview.cx} y2={preview.cy} stroke="#3578E5" strokeWidth={1.5} strokeDasharray="5 3" />
+                <circle cx={preview.sx} cy={preview.sy} r={3} fill="#3578E5" /><circle cx={preview.cx} cy={preview.cy} r={3} fill="#3578E5" />
+                <text x={(preview.sx! + preview.cx!) / 2} y={(preview.sy! + preview.cy!) / 2 - 6} textAnchor="middle" fontSize={11} fill="#3578E5"
                   style={{ paintOrder: "stroke", stroke: "#fff", strokeWidth: 3 }}>{pt.toFixed(1)} pt</text>
               </g>
             );

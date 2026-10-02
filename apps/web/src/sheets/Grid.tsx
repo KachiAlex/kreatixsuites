@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type CSSProperties } from "react";
 import type { SheetData, Range, Ref, Workbook, SheetObject, RichRun, CellStyle } from "./model";
-import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHidden, richStyleRuns, richRunsMatch, richRunsForEdit } from "./model";
+import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHiddenFields, richStyleRuns, richRunsMatch, richRunsForEdit } from "./model";
 import type { EvalResult } from "./engine";
 import { formatValue } from "./format";
 import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects, columnSuggestions } from "./io";
@@ -103,7 +103,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   // geometry — variable col widths + row heights, live resize preview,
   // hidden = 0 size (manual hidden + autofilter-hidden rows)
   const hiddenR = useMemo(() => {
-    const s = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...outlineHidden(sheet, "row")]);
+    const s = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...outlineHiddenFields(sheet.outlineRows, sheet.collapsedRows)]);
     if (paneRows) for (let r = 0; r < rows; r++) if (r < paneRows[0] || r > paneRows[1]) s.add(r);
     return s;
   }, [sheet.hiddenRows, sheet.filteredRows, sheet.outlineRows, sheet.collapsedRows, paneRows, rows]);
@@ -131,7 +131,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     }
     return { bands, totals };
   }, [sheet.tables]);
-  const hiddenC = useMemo(() => new Set([...(sheet.hiddenCols ?? []), ...outlineHidden(sheet, "col")]), [sheet.hiddenCols, sheet.outlineCols, sheet.collapsedCols]);
+  const hiddenC = useMemo(() => new Set([...(sheet.hiddenCols ?? []), ...outlineHiddenFields(sheet.outlineCols, sheet.collapsedCols)]), [sheet.hiddenCols, sheet.outlineCols, sheet.collapsedCols]);
   const colW = useCallback((c: number) =>
     resizePrev?.axis === "col" && resizePrev.i === c ? resizePrev.size
     : hiddenC.has(c) ? 0 : (sheet.colWidths?.[c] ?? COL_W), [sheet.colWidths, hiddenC, resizePrev]);
@@ -489,7 +489,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
   }, [hMenu]);
 
   const selRef = useRef(selection);
-  selRef.current = selection;
+  useEffect(() => { selRef.current = selection; }, [selection]);
 
   const frozenLeft = HEADER_W + (fz.cols ? colX[fz.cols - 1] + colW(fz.cols - 1) : 0);
   const frozenTop = HEADER_H + (fz.rows ? rowY[fz.rows - 1] + rowH(fz.rows - 1) : 0);
@@ -713,7 +713,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                       <th key={c} className={`col-h ${allSels.some((s) => c >= s.c1 && c <= s.c2) ? "sel" : ""} ${w === 0 ? "hid" : ""}`}
                         style={{ position: "sticky", top: 0, zIndex: 20, width: w, minWidth: w, padding: 0 }}
                         onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-c")) setSelection({ c1: c, r1: 0, c2: c, r2: rows - 1 }); }}
-                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "col", index: c }); }}>
+                        onContextMenu={(e) => { e.preventDefault(); if (onHeader) setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "col", index: c }); }}>
                         {w > 0 ? colLabel(c) : ""}
                         {canEdit && onGeom && w > 0 && (
                           <span className="grip-c" title="Drag to resize — double-click to autofit"
@@ -744,7 +744,7 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
                       <td className={`row-h ${allSels.some((s) => r >= s.r1 && r <= s.r2) ? "sel" : ""} ${h === 0 ? "hid" : ""}`}
                         style={{ position: "sticky", left: 0, zIndex: 15, padding: 0, ...(r < fz.rows ? { top: HEADER_H + rowY[r] } : {}) }}
                         onPointerDown={(e) => { if (!(e.target as HTMLElement).classList.contains("grip-r")) setSelection({ c1: 0, r1: r, c2: cols - 1, r2: r }); }}
-                        onContextMenu={(e) => { e.preventDefault(); onHeader && setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "row", index: r }); }}>
+                        onContextMenu={(e) => { e.preventDefault(); if (onHeader) setHMenu({ ...clampToViewport(e.clientX, e.clientY, 230, 300), axis: "row", index: r }); }}>
                         {h > 0 ? r + 1 : ""}
                         {canEdit && onGeom && h > 0 && (
                           <span className="grip-r" title="Drag to resize — double-click to reset"

@@ -791,16 +791,21 @@ export function ChartSvg({ o }: { o: SlideObject }) {
   if (c.type === "pie") {
     const vals = series[0]?.values ?? [];
     const total = vals.reduce((a, b) => a + Math.max(0, b), 0) || 1;
-    let angle = -Math.PI / 2;
+    const a1s: number[] = [];
+    {
+      let a = -Math.PI / 2;
+      for (const v of vals) { a += (Math.max(0, v) / total) * Math.PI * 2; a1s.push(a); }
+    }
     const cx = w / 2, cy = PT + ph / 2, r = Math.min(pw, ph) / 2 - 4;
     return (
       <svg width={w} height={h}>
         {c.title && <text x={w / 2} y={16} textAnchor="middle" fontSize={13} fontWeight={700} fill="#5B554F">{c.title}</text>}
         {vals.map((v, i) => {
-          const a0 = angle; angle += (Math.max(0, v) / total) * Math.PI * 2;
+          const a0 = i === 0 ? -Math.PI / 2 : a1s[i - 1];
+          const a1 = a1s[i];
           const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
-          const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
-          return <path key={i} d={`M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${angle - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`} fill={CHART_COLORS[i % CHART_COLORS.length]}><title>{labels[i]}: {v}</title></path>;
+          const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+          return <path key={i} d={`M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`} fill={CHART_COLORS[i % CHART_COLORS.length]}><title>{labels[i]}: {v}</title></path>;
         })}
         {legend}
       </svg>
