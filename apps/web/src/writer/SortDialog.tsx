@@ -10,15 +10,7 @@ const TYPES: { k: SortKey["type"]; label: string }[] = [
   { k: "date", label: "Date" },
 ];
 
-/** Word-style Sort dialog — up to 3 keys, per-column type, header toggle. */
-export function SortDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
-  const { state } = editor;
-  const { $from } = state.selection;
-  let tableNode = null as import("@tiptap/pm/model").Node | null;
-  for (let d = $from.depth; d >= 0; d--) {
-    if ($from.node(d).type.name === "table") tableNode = $from.node(d);
-  }
-  if (!tableNode) { onClose(); return null; }
+const SortBody = ({ editor, onClose, tableNode }: { editor: Editor; onClose: () => void; tableNode: import("@tiptap/pm/model").Node }) => {
   const map = TableMap.get(tableNode);
   const cols = map.width;
 
@@ -115,4 +107,15 @@ export function SortDialog({ editor, onClose }: { editor: Editor; onClose: () =>
       </div>
     </div>
   );
+};
+
+/** Word-style Sort dialog — up to 3 keys, per-column type, header toggle. */
+export function SortDialog({ editor, onClose }: { editor: Editor; onClose: () => void }) {
+  const { $from } = editor.state.selection;
+  let tableNode = null as import("@tiptap/pm/model").Node | null;
+  for (let d = $from.depth; d >= 0; d--) {
+    if ($from.node(d).type.name === "table") tableNode = $from.node(d);
+  }
+  if (!tableNode) { onClose(); return null; }
+  return <SortBody editor={editor} onClose={onClose} tableNode={tableNode} />;
 }

@@ -3709,7 +3709,8 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
     && !vals.some((v) => v.field === f) && !filters.some((x) => x.field === f) && !calcFields.some((c) => c.name === f));
   const ok = vals.length > 0 && (rows.length > 0 || cols.length > 0) && fields.length > 0 && !!parseA1(at);
 
-  const Area = ({ title, items, area }: { title: string; items: string[]; area: "rows" | "cols" | "vals" }) => (
+  // render helper (not a component) — JSX usage would remount on each render
+  const renderArea = (title: string, items: string[], area: "rows" | "cols" | "vals") => (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>{title}</div>
       <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
@@ -3784,9 +3785,9 @@ function PivotDialog({ sheet, wb, selection, onApply, onClose }: {
           </div>
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-          <Area title="Rows" items={rows} area="rows" />
-          <Area title="Columns" items={cols} area="cols" />
-          <Area title="Values" items={vals.map((v) => v.field)} area="vals" />
+          {renderArea("Rows", rows, "rows")}
+          {renderArea("Columns", cols, "cols")}
+          {renderArea("Values", vals.map((v) => v.field), "vals")}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>Filters</div>
             <div style={{ minHeight: 56, border: "1px dashed #D9D4CC", borderRadius: 6, padding: 4, display: "flex", flexDirection: "column", gap: 3 }}>
