@@ -10,6 +10,7 @@ import { checkWord, suggest, addToDict, getCustomDict, spellcheckText, docVocabu
 import { refsInRangeText, runDataTable, runSolver, type SolverConstraint } from "./whatif";
 import type { ReactNode } from "react";
 import { Modal } from "../components/Modal";
+import { sanitizeHtml } from "../lib/sanitize";
 
 const inp: CSSProperties = { width: "100%", padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, boxSizing: "border-box" };
 const sel: CSSProperties = { padding: "6px 8px", border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 12, background: "var(--surface)" };
@@ -246,7 +247,7 @@ export function RichTextDialog({ cell, onSave, onClose }: {
       </div>
       <div ref={ref} contentEditable suppressContentEditableWarning
         style={{ minHeight: 70, marginTop: 10, padding: 8, border: "1px solid var(--line,#E0DCD8)", borderRadius: 6, fontSize: 13, outline: "none", whiteSpace: "pre-wrap" }}
-        dangerouslySetInnerHTML={{ __html: html }} />
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />
       <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0 0" }}>
         Select text, then apply formatting — saves as rich runs on the cell.
       </p>

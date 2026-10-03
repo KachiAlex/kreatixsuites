@@ -23,6 +23,10 @@ export const samlEnabled = !!(ENTRY_POINT && ISSUER && CERT);
 
 function callbackUrl(req: FastifyRequest): string {
   if (process.env.KREATIX_SAML_CALLBACK) return process.env.KREATIX_SAML_CALLBACK;
+  // configured public URL beats the (client-controlled) Host header — the
+  // callback is baked into SAML requests and metadata
+  if (process.env.KREATIX_PUBLIC_URL)
+    return `${process.env.KREATIX_PUBLIC_URL.replace(/\/$/, "")}/api/auth/saml/callback`;
   return `${req.protocol}://${req.host}/api/auth/saml/callback`;
 }
 
@@ -106,7 +110,8 @@ export function samlRoutes(app: FastifyInstance) {
         `kx_sso=${token}; HttpOnly; Path=/api/auth/sso/exchange; Max-Age=60; SameSite=Lax${secure}`);
       return reply.redirect("/login?sso=1", 302);
     } catch (e) {
-      return reply.redirect(`/login?sso_error=${encodeURIComponent(String(e).slice(0, 120))}`, 302);
+      req.log.warn({ err: String(e) }, "saml callback failed");
+      return reply.redirect("/login?sso_error=saml_failed", 302);
     }
   });
 }

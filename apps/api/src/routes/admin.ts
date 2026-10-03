@@ -192,21 +192,23 @@ export function adminRoutes(app: FastifyInstance) {
     };
   });
 
-  /** Observability: process + data + request stats (org admin only). */
-  app.get("/api/admin/metrics", async () => {
-    const count = async (sql: string) => ((await one<{ n: number }>(sql)) ?? { n: 0 }).n;
+  /** Observability: process + data + request stats. Table counts are scoped
+   *  to the caller's org — platform-wide tallies belong to superadmin only. */
+  app.get("/api/admin/metrics", async (req) => {
+    const { user } = req as AuthedRequest;
+    const count = async (sql: string) => ((await one<{ n: number }>(sql, [user.orgId])) ?? { n: 0 }).n;
     return {
       uptimeSec: Math.floor((Date.now() - metrics.startedAt) / 1000),
       requests: { total: metrics.requests, errors5xx: metrics.errors, byStatus: metrics.byStatus },
       collab: { rooms: activeCollabRooms(), peers: collabPeers() },
       data: {
-        users: await count("SELECT COUNT(*) n FROM users"),
-        items: await count("SELECT COUNT(*) n FROM items"),
-        versions: await count("SELECT COUNT(*) n FROM versions"),
-        comments: await count("SELECT COUNT(*) n FROM comments"),
-        shareLinks: await count("SELECT COUNT(*) n FROM share_links"),
-        aiActions: await count("SELECT COUNT(*) n FROM ai_actions"),
-        indexRows: await count("SELECT COUNT(*) n FROM search_index"),
+        users: await count("SELECT COUNT(*) n FROM users WHERE org_id = $1"),
+        items: await count("SELECT COUNT(*) n FROM items WHERE org_id = $1"),
+        versions: await count("SELECT COUNT(*) n FROM versions v JOIN items i ON i.id = v.file_id WHERE i.org_id = $1"),
+        comments: await count("SELECT COUNT(*) n FROM comments c JOIN items i ON i.id = c.file_id WHERE i.org_id = $1"),
+        shareLinks: await count("SELECT COUNT(*) n FROM share_links s JOIN items i ON i.id = s.file_id WHERE i.org_id = $1"),
+        aiActions: await count("SELECT COUNT(*) n FROM ai_actions a JOIN items i ON i.id = a.file_id WHERE i.org_id = $1"),
+        indexRows: await count("SELECT COUNT(*) n FROM search_index s JOIN items i ON i.id = s.file_id WHERE i.org_id = $1"),
       },
       security: { encryptionAtRest: encryptionEnabled(), sso: ssoEnabled, saml: samlEnabled },
       memory: process.memoryUsage().heapUsed,

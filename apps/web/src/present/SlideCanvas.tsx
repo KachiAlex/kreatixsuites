@@ -1,6 +1,7 @@
 import { Fragment, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from "react";
 import type { Slide, SlideObject, Theme } from "./model";
 import { SLIDE_W, SLIDE_H, chartSeries, resolveConn, connBBox, hitAnchor, animSteps, animKind } from "./model";
+import { sanitizeHtml, safeUrl } from "../lib/sanitize";
 
 const GRID = 8;
 const HANDLE = 8;
@@ -50,7 +51,7 @@ export function SlideCanvas({ slide, theme, scale, interactive, selection, onSel
     if (!interactive) return;
     e.stopPropagation();
     // P1.7 — Ctrl/Cmd+click follows the object's hyperlink instead of selecting
-    if ((e.ctrlKey || e.metaKey) && o.link) { window.open(o.link, "_blank", "noopener"); return; }
+    if ((e.ctrlKey || e.metaKey) && o.link) { const u = safeUrl(o.link); if (u) window.open(u, "_blank", "noopener"); return; }
     const grp = groupOf(o);
     const ids = new Set(grp.map((g) => g.id));
     if (e.shiftKey && onSelect) {
@@ -448,7 +449,7 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
     onMouseDown, onPointerDown, onDoubleClick: onDblClick,
     // P1.7 — in non-interactive renders (presenter/thumbnails) a linked object
     // is directly clickable; editor opens via Ctrl+click in selectObj instead
-    onClick: o.link && !onPointerDown ? () => window.open(o.link, "_blank", "noopener") : undefined,
+    onClick: o.link && !onPointerDown ? () => { const u = safeUrl(o.link); if (u) window.open(u, "_blank", "noopener"); } : undefined,
   };
   void theme;
   void selected;
@@ -457,7 +458,7 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
     editingNow ? (
       <div className="s-text editing" contentEditable suppressContentEditableWarning data-oid={o.id} spellCheck
         style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
-        dangerouslySetInnerHTML={{ __html: o.html ?? "" }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml(o.html ?? "") }}
         onBlur={(e) => onTextBlur?.((e.target as HTMLElement).innerHTML)}
         onKeyDown={(e) => {
           // P1.2 — Tab/Shift+Tab inside lists = indent/outdent (execCommand
@@ -473,7 +474,7 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
     ) : (
       <div className="s-text"
         style={{ fontSize: o.fontSize ?? 20, color: o.color, textAlign: o.align, fontFamily: o.fontFamily, fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal" }}
-        dangerouslySetInnerHTML={{ __html: (o.html ?? "").replace(/\n/g, "<br/>") }} />
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml((o.html ?? "").replace(/\n/g, "<br/>")) }} />
     );
 
   let content: React.ReactNode = null;

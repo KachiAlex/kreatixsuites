@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -28,12 +29,50 @@ import { reindexAll } from "./indexer.js";
 import { sweepRetention } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
 
+/** Auth/session tokens must never land in access logs — strip the query
+ *  params that carry them (?t= media auth, ?token= collab WS auth). */
+const redactUrl = (url: string) =>
+  url.replace(/([?&])(t|token)=[^&]*/g, "$1$2=[redacted]").replace(/[?&]$/, "");
+
+/** Origins allowed to make credentialed cross-origin calls. Everything else
+ *  gets no ACAO header — browsers still send the request but can't read it. */
+function corsOrigins(): string[] {
+  const out = new Set<string>([
+    "http://localhost:5173", "http://127.0.0.1:5173", // vite dev
+    "capacitor://localhost", "http://localhost", "https://localhost", // Capacitor shells
+  ]);
+  for (const v of [process.env.KREATIX_PUBLIC_URL, process.env.KREATIX_CORS_ORIGINS]) {
+    for (const o of (v ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+      try { out.add(new URL(o).origin); } catch { /* not a URL — skip */ }
+    }
+  }
+  return [...out];
+}
+
 async function main() {
   await migrate(); // Postgres schema — idempotent, auto-creates the database
   await ensureSuperAdmin(); // seeds admin@…/env-password if configured
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, trustProxy: true });
+  if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is required in production");
+  }
+  const app = Fastify({
+    bodyLimit: 50 * 1024 * 1024, trustProxy: true,
+    logger: {
+      serializers: {
+        req(req) {
+          return { method: req.method, url: redactUrl(req.url), hostname: req.hostname, remoteAddress: req.ip };
+        },
+      },
+    },
+  });
 
-  await app.register(cors, { origin: true, credentials: true });
+  await app.register(cors, {
+    origin: (origin, cb) => cb(null, !origin || corsOrigins().includes(origin)),
+    credentials: true,
+  });
+  // Opt-in per-route limits (auth brute-force, share-link password, etc.) —
+  // registered globally but disabled unless a route sets config.rateLimit.
+  await app.register(rateLimit, { global: false });
   // br/gzip for JSON API + statics — the host nginx has no brotli module, so
   // compression lives in the app layer. SSE routes use reply.hijack() +
   // reply.raw, which bypasses compress hooks entirely.
@@ -61,6 +100,24 @@ async function main() {
   app.addHook("onResponse", (_req, reply, done) => {
     onResponseMetric(reply.statusCode);
     done();
+  });
+
+  // Baseline security headers at the app layer so they hold regardless of the
+  // fronting proxy (nginx sets the same set in deploy/ but isn't guaranteed).
+  const CSP =
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
+    "font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; " +
+    "media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; " +
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; manifest-src 'self'";
+  app.addHook("onSend", async (_req, reply) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "SAMEORIGIN");
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    reply.header("Permissions-Policy", "microphone=(self), camera=(), geolocation=()");
+    if (!reply.getHeader("content-security-policy")) {
+      reply.header("Content-Security-Policy", CSP);
+    }
   });
 
   // ---- subscription write-gate ----

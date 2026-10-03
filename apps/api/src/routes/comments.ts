@@ -54,6 +54,13 @@ export function commentRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "No comment access" });
     }
     const body = createSchema.parse(req.body);
+    if (body.parentId) {
+      const parent = await one<{ id: string }>(
+        "SELECT id FROM comments WHERE id = $1 AND file_id = $2",
+        [body.parentId, item.id],
+      );
+      if (!parent) return reply.code(400).send({ error: "bad_request", message: "Parent comment not on this file" });
+    }
     const id = randomUUID();
     await run(
       "INSERT INTO comments (id, file_id, author_id, anchor, body, parent_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",

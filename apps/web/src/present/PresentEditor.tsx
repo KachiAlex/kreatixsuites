@@ -16,7 +16,7 @@ import { openLocalFile } from "../lib/offline/openLocal";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 import type { Deck, Slide, SlideObject, Theme, TransitionType, TransitionDir } from "./model";
 import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint, masterObjects, layoutObjects, deckSize, TRANSITION_DIRS, animKind } from "./model";
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
@@ -25,6 +25,7 @@ import { exportPptx } from "./export";
 import { useIsMobile } from "../lib/mobile";
 import { exportVideo } from "./video";
 import { importPptx, importOdp } from "./import";
+import { sanitizeHtml, safeUrl } from "../lib/sanitize";
 
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 
@@ -236,7 +237,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
           const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
           d.slides[idx].objects.push({
             id: newId(), type: "text", x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h),
-            z: maxZ + 1, html: String(o.html), fontSize: o.fontSize as number | undefined,
+            z: maxZ + 1, html: sanitizeHtml(String(o.html)), fontSize: o.fontSize as number | undefined,
             color: o.color as string | undefined, align: o.align as SlideObject["align"],
           });
         } else if (o.op === "add_shape" && d.slides[idx]) {
@@ -245,7 +246,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
             id: newId(), type: "shape", shape: o.shape as SlideObject["shape"],
             x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h), z: maxZ + 1,
             fill: (o.fill as string) ?? themeOf(d).accent, stroke: (o.stroke as string) ?? "none",
-            html: o.html as string | undefined,
+            html: o.html === undefined ? undefined : sanitizeHtml(String(o.html)),
           });
         } else if (o.op === "add_table" && d.slides[idx]) {
           const maxZ = Math.max(0, ...d.slides[idx].objects.map((x) => x.z));
@@ -265,7 +266,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
           d.slides.splice(idx, 1);
         } else if (o.op === "edit_object_text" && d.slides[idx]) {
           const obj = d.slides[idx].objects[o.index as number];
-          if (obj && obj.type === "text") obj.html = String(o.html);
+          if (obj && obj.type === "text") obj.html = sanitizeHtml(String(o.html));
         } else if (o.op === "delete_object" && d.slides[idx]) {
           const i = o.index as number;
           if (i >= 0 && i < d.slides[idx].objects.length) d.slides[idx].objects.splice(i, 1);
@@ -441,7 +442,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
   const ungroupSel = () => patchSel({ groupId: undefined });
 
   const onTextCommit = (id: string, html: string) => {
-    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.html = html; });
+    const clean = sanitizeHtml(html);
+    mutateSlide((s) => { const o = s.objects.find((x) => x.id === id); if (o) o.html = clean; });
   };
 
   const onTableCommit = (id: string, rows: string[][], meta?: SlideObject["tableMeta"]) => {
@@ -1290,7 +1292,11 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
               <button className={`rb ${firstSel?.link ? "on" : ""}`} title="Object hyperlink (Ctrl+click to open, clickable in present mode)"
                 onClick={() => {
                   const u = prompt("Link URL (empty to clear):", firstSel?.link ?? "https://");
-                  if (u !== null) patchSel({ link: u || undefined });
+                  if (u !== null) {
+                    const safe = u.trim() ? safeUrl(u) : null;
+                    if (u.trim() && !safe) { toast("Only http(s) links are allowed"); return; }
+                    patchSel({ link: safe ?? undefined });
+                  }
                 }}>🔗</button>
               <button className={`rb ${paintArmed ? "on" : ""}`} title="Format painter — copy this object's formatting, then click the target"
                 onClick={copyFmt}>🖌</button>

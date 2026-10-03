@@ -52,6 +52,9 @@ const consumeState = (s: string) => {
 
 function callbackUrl(req: { headers: Record<string, unknown> }): string {
   if (process.env.KREATIX_OIDC_REDIRECT) return process.env.KREATIX_OIDC_REDIRECT;
+  // configured public URL beats the (client-controlled) Host header
+  if (process.env.KREATIX_PUBLIC_URL)
+    return `${process.env.KREATIX_PUBLIC_URL.replace(/\/$/, "")}/api/auth/sso/callback`;
   const proto = (req.headers["x-forwarded-proto"] as string) ?? "http";
   return `${proto}://${req.headers.host}/api/auth/sso/callback`;
 }
@@ -106,7 +109,13 @@ export function ssoRoutes(app: FastifyInstance) {
         audience: CLIENT_ID,
       });
       const email = String(payload.email ?? "");
-      if (!email || payload.email_verified === false) {
+      // Strict by default: an absent email_verified claim is NOT verified.
+      // IdPs that genuinely omit the claim can set
+      // KREATIX_OIDC_REQUIRE_VERIFIED_EMAIL=0 after confirming the IdP's
+      // account-security posture (an unverified claim lets anyone mint an
+      // account under someone else's address at a permissive IdP).
+      const verified = payload.email_verified === true;
+      if (!email || (process.env.KREATIX_OIDC_REQUIRE_VERIFIED_EMAIL !== "0" && !verified)) {
         return reply.redirect("/login?sso_error=no_verified_email", 302);
       }
       const name = String(payload.name ?? payload.preferred_username ?? email.split("@")[0]);
@@ -135,12 +144,15 @@ export function ssoRoutes(app: FastifyInstance) {
       );
       return reply.redirect("/login?sso=1", 302);
     } catch (e) {
-      return reply.redirect(`/login?sso_error=${encodeURIComponent(String(e).slice(0, 120))}`, 302);
+      // real error goes to the log — the URL gets a generic code (it lands in
+      // history, referrer headers, and server logs otherwise)
+      req.log.warn({ err: String(e) }, "sso callback failed");
+      return reply.redirect("/login?sso_error=sso_failed", 302);
     }
   });
 
   /** Exchange the short-lived SSO cookie for the session token, then clear it. */
-  app.post("/api/auth/sso/exchange", async (req, reply) => {
+  app.post("/api/auth/sso/exchange", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const cookie = (req.headers.cookie ?? "")
       .split(";")
       .map((c) => c.trim())

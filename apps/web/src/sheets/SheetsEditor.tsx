@@ -15,7 +15,7 @@ import { openLocalFile } from "../lib/offline/openLocal";
 import { OpenCancelledError } from "../lib/passwordPrompt";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 import { clampToViewport } from "../lib/mobile";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario, RichRun } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
@@ -4218,6 +4218,11 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
 `);
   const [out, setOut] = useState<string[] | null>(null);
   const [err, setErr] = useState("");
+  // Scripts stored in a workbook can come from other collaborators — they run
+  // with the user's full session, so stored code needs an explicit per-session
+  // trust decision before it executes.
+  const [trusted, setTrusted] = useState<Set<string>>(new Set());
+  const needsTrust = !!sel && !trusted.has(code);
   const pick = (n: string) => {
     setSel(n);
     const s = wb.scripts?.find((x) => x.name === n);
@@ -4242,6 +4247,14 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
             <textarea className="inp" value={code} onChange={(e) => setCode(e.target.value)}
               spellCheck={false}
               style={{ fontFamily: "monospace", fontSize: 12, minHeight: 200, resize: "vertical" }} />
+            {needsTrust && (
+              <div style={{ fontSize: 12, padding: "8px 10px", borderRadius: 6, background: "rgba(214,69,69,.08)", border: "1px solid rgba(214,69,69,.35)" }}>
+                ⚠ This script is stored in the workbook and may have been written by someone else.
+                Scripts run with <b>full access to your account</b> — review the code, then
+                <button className="btn-ghost btn-sm" style={{ marginLeft: 6 }}
+                  onClick={() => setTrusted(new Set(trusted).add(code))}>Trust this script</button>
+              </div>
+            )}
             {err && <div style={{ color: "#D64545", fontSize: 12 }}>{err}</div>}
             {out !== null && (
               <pre style={{ background: "var(--subtle)", padding: 8, borderRadius: 6, fontSize: 11, maxHeight: 120, overflow: "auto", margin: 0 }}>
@@ -4258,7 +4271,7 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
             <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
             <button className="btn-ghost btn-sm" disabled={!name.trim()}
               onClick={() => { onSave(name.trim(), code); setSel(name.trim()); }}>Save</button>
-            <button className="btn-primary btn-sm" onClick={() => {
+            <button className="btn-primary btn-sm" disabled={needsTrust} onClick={() => {
               setErr(""); setOut(null);
               try { onSave(name.trim(), code); setOut(onRun(code)); }
               catch (e) { setErr((e as Error).message); }

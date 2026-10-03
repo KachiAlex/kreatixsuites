@@ -230,6 +230,13 @@ export function driveRoutes(app: FastifyInstance) {
       : ext === "pdf" || buf.subarray(0, 5).equals(Buffer.from("%PDF-"))
         ? "pdf"
         : "file";
+    // uploads honor folder permissions the same as item creation
+    if (parent) {
+      const p = await getItem(parent);
+      if (!p || p.kind !== "folder" || !hasPermission(await permissionFor(user.id, p), "editor")) {
+        return reply.code(403).send({ error: "forbidden", message: "Cannot upload into this folder" });
+      }
+    }
     const id = randomUUID();
     const { key, size } = putBlob(buf);
 
@@ -264,6 +271,17 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
     const body = patchSchema.parse(req.body);
+    if (body.parentId) {
+      const parent = await getItem(body.parentId);
+      if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
+        return reply.code(403).send({ error: "forbidden", message: "Cannot move into this folder" });
+      }
+      // a folder must not be moved into itself or its own descendant —
+      // walk the ancestor chain (bounded) and reject if we meet the item
+      if (await isAncestorOf(item.id, body.parentId)) {
+        return reply.code(400).send({ error: "bad_request", message: "Cannot move a folder into its own subtree" });
+      }
+    }
     await run(
       `UPDATE items SET name = COALESCE($1, name), starred = COALESCE($2, starred),
        label = COALESCE($3, label),
@@ -304,6 +322,17 @@ export function driveRoutes(app: FastifyInstance) {
     await run("UPDATE items SET trashed = false, updated_at = $1 WHERE id = $2", [now(), item.id]);
     return { item: await toDriveItem((await getItem(item.id))!, "owner") };
   });
+}
+
+/** True when `ancestorId` appears in `itemId`'s parent chain (bounded walk). */
+async function isAncestorOf(ancestorId: string, itemId: string): Promise<boolean> {
+  let cur: string | null = itemId;
+  for (let i = 0; i < 64 && cur; i++) {
+    if (cur === ancestorId) return true;
+    const row = await getItem(cur);
+    cur = row?.parent_id ?? null;
+  }
+  return false;
 }
 
 async function buffer(req: { raw: NodeJS.ReadableStream }): Promise<Buffer> {

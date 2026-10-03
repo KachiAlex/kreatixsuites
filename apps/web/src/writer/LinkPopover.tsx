@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
+import { safeUrl } from "../lib/sanitize";
 
 /** Floating link editor — appears when the cursor/selection is inside a link. */
 export function LinkPopover({ editor }: { editor: Editor }) {
@@ -35,15 +36,16 @@ export function LinkPopover({ editor }: { editor: Editor }) {
             placeholder="https://…" aria-label="Link URL"
             onKeyDown={(e) => {
               if (e.key === "Enter") {
-                editor.chain().focus().setLink({ href: draft }).run();
+                const safe = safeUrl(draft);
+                if (safe) editor.chain().focus().setLink({ href: safe }).run();
                 setEditing(false);
               } else if (e.key === "Escape") setEditing(false);
             }} />
-          <button className="btn-primary btn-sm" onClick={() => { editor.chain().focus().setLink({ href: draft }).run(); setEditing(false); }}>Save</button>
+          <button className="btn-primary btn-sm" onClick={() => { const safe = safeUrl(draft); if (safe) editor.chain().focus().setLink({ href: safe }).run(); setEditing(false); }}>Save</button>
         </>
       ) : (
         <>
-          <a href={href} target="_blank" rel="noopener noreferrer" className="link-pop-url">{href}</a>
+          <a href={safeUrl(href) ?? "#"} target="_blank" rel="noopener noreferrer" className="link-pop-url">{href}</a>
           <button className="rb" title="Edit link" onClick={() => { setDraft(href); setEditing(true); }}>✎</button>
           <button className="rb" title="Copy link" onClick={() => void navigator.clipboard.writeText(href)}>⧉</button>
           <button className="rb" title="Remove link" onClick={() => { editor.chain().focus().unsetLink().run(); setPos(null); }}>✕</button>

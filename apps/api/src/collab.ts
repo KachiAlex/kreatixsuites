@@ -200,6 +200,7 @@ export async function collabRoutes(app: FastifyInstance) {
     void (async () => {
       try {
         const { payload } = await jwtVerify(token, secret);
+        if (payload.aud === "kreatix-mfa") throw new Error("mfa-pending token is not a session");
         const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
         const item = await one<{ id: string; owner_id: string }>(
           "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
@@ -216,7 +217,7 @@ export async function collabRoutes(app: FastifyInstance) {
         // commenters may only push updates that change comment anchors;
         // viewers are read-only (sync step1 handshake only)
         const canWrite = hasPermission(perm, "reviewer") && !subLocked;
-        const canAnchor = hasPermission(perm, "commenter");
+        const canAnchor = hasPermission(perm, "commenter") && !subLocked;
 
         const room = await getRoom(fileId);
         room.conns.set(socket, new Set());
@@ -234,7 +235,14 @@ export async function collabRoutes(app: FastifyInstance) {
           send(socket, encAw);
         }
 
+        // per-socket flood control — each commenter update costs an O(doc)
+        // shadow diff, so an uncapped stream is a CPU exhaustion vector
+        let msgWindow = Date.now();
+        let msgCount = 0;
         handler = (raw: Buffer) => {
+          const t = Date.now();
+          if (t - msgWindow > 10_000) { msgWindow = t; msgCount = 0; }
+          if (++msgCount > 240) { socket.close(4408, "rate limited"); return; }
           const data = new Uint8Array(raw);
           const dec = decoding.createDecoder(data);
           const msgType = decoding.readVarUint(dec);

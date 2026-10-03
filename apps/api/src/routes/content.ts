@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName } from "../items.js";
@@ -39,9 +41,18 @@ export function sendRawBlob(
   if (SCRIPTABLE.test(mime)) {
     reply
       .header("content-security-policy", "sandbox")
-      .header("content-disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+      .header("content-disposition", contentDisposition(filename));
   }
   return reply.send(blob);
+}
+
+/** RFC 5987 content-disposition — ASCII fallback + UTF-8 filename* for
+ *  names with non-ASCII characters, control chars stripped. */
+function contentDisposition(filename: string): string {
+  const clean = filename.replace(/[\r\n"\\]/g, "_");
+  const ascii = clean.replace(/[^\x20-\x7e]/g, "_") || "file";
+  const enc = encodeURIComponent(clean);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${enc}`;
 }
 
 export function contentRoutes(app: FastifyInstance) {
@@ -129,7 +140,9 @@ export function contentRoutes(app: FastifyInstance) {
 
   /** GET a remote page's HTML for the web→PDF import (server-side fetch avoids
    *  browser CORS; response is returned as inert text — clients must parse it
-   *  without injecting it into the DOM). */
+   *  without injecting it into the DOM). Every hop is resolved and checked
+   *  against private/reserved ranges — this endpoint must not be a proxy into
+   *  the local network. */
   app.get("/api/fetch-html", async (req, reply) => {
     let url: URL;
     try {
@@ -137,16 +150,28 @@ export function contentRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(400).send({ error: "bad_request", message: "Invalid URL" });
     }
-    if (url.protocol !== "https:" && url.protocol !== "http:")
-      return reply.code(400).send({ error: "bad_request", message: "http(s) URLs only" });
     try {
-      const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(12000) });
+      const res = await fetchPublic(url, 3);
       const ct = res.headers.get("content-type") ?? "";
       if (!ct.includes("text/html"))
         return reply.code(415).send({ error: "unsupported", message: "URL did not return HTML" });
-      const html = (await res.text()).slice(0, 2_000_000);
+      // bounded read — stop the body stream at 4MB rather than buffering all
+      const reader = res.body?.getReader();
+      if (!reader) return reply.code(502).send({ error: "fetch_failed" });
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.length;
+        if (total > 4_000_000) { void reader.cancel(); break; }
+      }
+      const html = new TextDecoder().decode(Buffer.concat(chunks.map((c) => Buffer.from(c)))).slice(0, 2_000_000);
       return { url: res.url, html };
-    } catch {
+    } catch (e) {
+      if (e instanceof PrivateAddressError)
+        return reply.code(403).send({ error: "blocked", message: "That URL is not allowed" });
       return reply.code(502).send({ error: "fetch_failed", message: "Could not fetch that URL" });
     }
   });
@@ -214,9 +239,11 @@ export function contentRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden" });
     }
     const { label } = z.object({ label: z.string().max(120).nullable() }).parse(req.body);
+    const vn = Number(n);
+    if (!Number.isInteger(vn) || vn < 1) return reply.code(400).send({ error: "bad_request" });
     const res = await run(
       "UPDATE versions SET label = $1 WHERE file_id = $2 AND number = $3",
-      [label || null, item.id, Number(n)],
+      [label || null, item.id, vn],
     );
     if (!(res as { rowCount?: number }).rowCount) return reply.code(404).send({ error: "not_found" });
     return { ok: true };
@@ -229,9 +256,11 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
+    const vn = Number(n);
+    if (!Number.isInteger(vn) || vn < 1) return reply.code(400).send({ error: "bad_request" });
     const v = await one<VersionRow>(
       "SELECT * FROM versions WHERE file_id = $1 AND number = $2",
-      [item.id, Number(n)],
+      [item.id, vn],
     );
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
@@ -251,9 +280,11 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden" });
     }
+    const vn = Number(n);
+    if (!Number.isInteger(vn) || vn < 1) return reply.code(400).send({ error: "bad_request" });
     const v = await one<VersionRow>(
       "SELECT * FROM versions WHERE file_id = $1 AND number = $2",
-      [item.id, Number(n)],
+      [item.id, vn],
     );
     if (!v) return reply.code(404).send({ error: "not_found" });
     // restored content is canonical — clear live CRDT state so it re-seeds
@@ -267,4 +298,60 @@ export function contentRoutes(app: FastifyInstance) {
     void logActivity(user.orgId, user.id, item.id, "restore-version", `v${v.number} → v${next}`);
     return { version: next };
   });
+}
+
+// ---- outbound fetch guard (SSRF) ----
+
+class PrivateAddressError extends Error {}
+
+/** Reject private/loopback/link-local/reserved destinations. */
+function isPrivateAddress(addr: string): boolean {
+  const v6 = addr.includes(":");
+  if (!v6) {
+    const p = addr.split(".").map(Number);
+    const [a, b] = p;
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127)   // CGNAT
+      || a >= 224;                            // multicast + reserved + broadcast
+  }
+  const norm = addr.toLowerCase();
+  if (norm === "::" || norm === "::1") return true;
+  const v4mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(norm);
+  if (v4mapped) return isPrivateAddress(v4mapped[1]);
+  return norm.startsWith("fc") || norm.startsWith("fd") // ULA fc00::/7
+    || norm.startsWith("fe8") || norm.startsWith("fe9") // link-local fe80::/10
+    || norm.startsWith("fea") || norm.startsWith("feb")
+    || norm.startsWith("ff");                            // multicast ff00::/8
+}
+
+async function assertPublicUrl(url: URL): Promise<void> {
+  if (url.protocol !== "https:" && url.protocol !== "http:")
+    throw new PrivateAddressError("http(s) only");
+  if (isIP(url.hostname)) {
+    if (isPrivateAddress(url.hostname)) throw new PrivateAddressError(url.hostname);
+    return;
+  }
+  const addrs = await lookup(url.hostname, { all: true }).catch(() => [] as { address: string }[]);
+  if (!addrs.length) throw new PrivateAddressError(`unresolvable host ${url.hostname}`);
+  // every resolved record must be public — one private A record is enough
+  // for the connection to land inside the network
+  for (const { address } of addrs) {
+    if (isPrivateAddress(address)) throw new PrivateAddressError(`${url.hostname} → ${address}`);
+  }
+}
+
+/** fetch() that validates every redirect hop's resolved IP — no following
+ *  redirects into private space. */
+async function fetchPublic(url: URL, maxRedirects: number): Promise<Response> {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    await assertPublicUrl(current);
+    const res = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(12000) });
+    if (![301, 302, 303, 307, 308].includes(res.status) || hop >= maxRedirects) return res;
+    const loc = res.headers.get("location");
+    if (!loc) return res;
+    try { current = new URL(loc, current); } catch { return res; }
+    void res.body?.cancel();
+  }
 }

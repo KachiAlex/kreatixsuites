@@ -201,17 +201,19 @@ export async function billingNotices(log?: { warn: (o: unknown, m: string) => vo
   return out;
 }
 
-/** Create a pending payment row for the org's next period. */
-export async function createPayment(orgId: string, method: string, reference?: string): Promise<{ id: string; amountNgn: number; seats: number }> {
+/** Create a pending payment row for the org's next `months` periods —
+ *  amount_ngn is the TOTAL for the whole term so confirmation math and
+ *  payment-provider verification stay consistent. */
+export async function createPayment(orgId: string, method: string, reference?: string, months = 1): Promise<{ id: string; amountNgn: number; seats: number; months: number }> {
   const [cfg, seats] = await Promise.all([getConfig(), seatCount(orgId)]);
-  const amount = monthlyAmount(cfg, seats);
+  const amount = monthlyAmount(cfg, seats) * months;
   const id = randomUUID();
   await run(
     `INSERT INTO payments (id, org_id, amount_ngn, seats, months, method, reference, status, created_at)
-     VALUES ($1,$2,$3,$4,1,$5,$6,'pending',$7)`,
-    [id, orgId, amount, seats, method, reference ?? null, now()],
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8)`,
+    [id, orgId, amount, seats, months, method, reference ?? null, now()],
   );
-  return { id, amountNgn: amount, seats };
+  return { id, amountNgn: amount, seats, months };
 }
 
 // ---- Paystack (enabled when KREATIX_PAYSTACK_SECRET is set) ----
@@ -255,7 +257,7 @@ export async function sweepPendingPaystack(log?: { warn: (o: unknown, m: string)
   for (const p of rows) {
     try {
       const v = await paystackVerify(p.reference!);
-      if (v.ok && v.amountNgn >= p.amount_ngn * p.months) {
+      if (v.ok && v.amountNgn >= p.amount_ngn) {
         await confirmPayment(p.id, null);
         confirmed++;
       }

@@ -15,16 +15,28 @@ const entitlementSecret = new TextEncoder().encode(
   process.env.KREATIX_ENTITLEMENT_SECRET ?? "kreatix-entitlement-dev-secret",
 );
 
+// New hashes use N=32768 (OWASP's interactive-login floor); the legacy
+// scrypt:salt:hash format verifies at the old N=16384 so existing
+// credentials keep working until they're next re-hashed.
+const SCRYPT_N = 32768;
+const scryptOpts = (n: number) => ({ N: n, r: 8, p: 1, maxmem: 128 * 1024 * 1024 });
+
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `scrypt:${salt}:${hash}`;
+  const hash = scryptSync(password, salt, 64, scryptOpts(SCRYPT_N)).toString("hex");
+  return `scrypt:${SCRYPT_N}:${salt}:${hash}`;
 }
 
 export function verifyPassword(password: string, stored: string): boolean {
-  const [, salt, hash] = stored.split(":");
-  const candidate = scryptSync(password, salt, 64);
-  return timingSafeEqual(Buffer.from(hash, "hex"), candidate);
+  const parts = stored.split(":");
+  // Non-scrypt rows (e.g. "sso:<uuid>" placeholders) → clean failure, not a throw.
+  if (parts[0] !== "scrypt" || (parts.length !== 3 && parts.length !== 4)) return false;
+  const n = parts.length === 4 ? Number(parts[1]) : 16384;
+  const [salt, hash] = parts.slice(-2);
+  if (!Number.isInteger(n) || n < 1024 || n > 1048576 || !salt || !hash) return false;
+  const candidate = scryptSync(password, salt, 64, scryptOpts(n));
+  const expected = Buffer.from(hash, "hex");
+  return expected.length === candidate.length && timingSafeEqual(expected, candidate);
 }
 
 export async function signToken(userId: string, ttl = "7d"): Promise<string> {
@@ -143,7 +155,11 @@ const PERM_RANK: Record<Permission, number> = {
 export async function permissionFor(
   userId: string,
   item: { owner_id: string; id: string; media_for?: string | null },
+  depth = 0,
 ): Promise<Permission | null> {
+  // media_for inheritance is a DAG but can be arbitrarily deep — cap the walk
+  // so a hostile upload chain can't stack-overflow the request.
+  if (depth > 8) return null;
   if (item.owner_id === userId) return "owner";
   const share = await one<{ permission: Permission }>(
     "SELECT permission FROM shares WHERE file_id = $1 AND user_id = $2",
@@ -154,7 +170,7 @@ export async function permissionFor(
     const host = await one<{ owner_id: string; id: string }>(
       "SELECT id, owner_id FROM items WHERE id = $1", [item.media_for]);
     if (host) {
-      const hostPerm = await permissionFor(userId, host);
+      const hostPerm = await permissionFor(userId, host, depth + 1);
       // media access is capped at viewer regardless of host permission
       if (hostPerm) return "viewer";
     }

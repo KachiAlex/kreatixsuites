@@ -142,14 +142,14 @@ export function sharingRoutes(app: FastifyInstance) {
   });
 
   // ---- public share-link resolution (no auth) ----
-  app.get("/api/links/:token", async (req, reply) => {
+  app.get("/api/links/:token", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
     const row = await resolveLink((req.params as { token: string }).token, req);
     if ("error" in row) return reply.code(row.error === "password" ? 401 : 404).send({ error: row.error });
     const item = (await getItem(row.link.file_id))!;
     return { item: await toDriveItem(item), permission: row.link.permission };
   });
 
-  app.get("/api/links/:token/content", async (req, reply) => {
+  app.get("/api/links/:token/content", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
     const row = await resolveLink((req.params as { token: string }).token, req);
     if ("error" in row) return reply.code(row.error === "password" ? 401 : 404).send({ error: row.error });
     const item = (await getItem(row.link.file_id))!;

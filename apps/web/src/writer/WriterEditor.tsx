@@ -58,6 +58,7 @@ import { RichImage, IMG_MULTI, WRAP_LABELS, effectiveWrap, imagePreset, type Ima
 import { ImageLayoutDialog } from "./ImageDialogs";
 import { measureBands } from "./banding";
 import { LinkPopover } from "./LinkPopover";
+import { safeUrl } from "../lib/sanitize";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup, type PageSetup } from "./PageSetup";
 import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry } from "./extensions/extras";
@@ -85,7 +86,7 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { AppIcon } from "../components/AppIcon";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 import "katex/dist/katex.min.css";
 
 // imported Word equations keep their raw OMML (base64, attribute-safe) so
@@ -254,7 +255,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         heading: { levels: [1, 2, 3, 4, 5, 6] },
         codeBlock: false,
         undoRedo: false, // Collaboration ships its own Yjs-backed history
-        link: { openOnClick: !canMutate, autolink: true, linkOnPaste: true },
+        link: { openOnClick: !canMutate, autolink: true, linkOnPaste: true, validate: (url: string) => !!safeUrl(url) },
       }),
       KxTextStyle, Color, FontFamily, FontSize, LineHeight, BackgroundColor,
       Highlight.configure({ multicolor: true }),
@@ -1220,7 +1221,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const url = await askText({ title: "Insert link", placeholder: "https://", initial: prev ?? "https://" });
     if (url === null) return;
     if (!url.trim()) editor?.chain().focus().unsetLink().run();
-    else editor?.chain().focus().setLink({ href: url.trim() }).run();
+    else {
+      const safe = safeUrl(url.trim());
+      if (!safe) { toast("Only http(s) links are allowed"); return; }
+      editor?.chain().focus().setLink({ href: safe }).run();
+    }
   };
 
   // ---- outline pane data ----
@@ -2428,7 +2433,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
               }
               const href = anchor.getAttribute("href") ?? "";
               const items: MenuItem[] = [
-                { label: "Open link", onClick: () => window.open(href, "_blank", "noopener") },
+                { label: "Open link", onClick: () => { const u = safeUrl(href); if (u) window.open(u, "_blank", "noopener"); } },
                 { label: "Copy link", onClick: () => void navigator.clipboard.writeText(href).catch(() => toast("Could not copy link")) },
               ];
               if (canMutate) items.push(
@@ -2436,7 +2441,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
                 {
                   label: "Edit link…", onClick: () => {
                     void askText({ title: "Edit link", placeholder: "https://", initial: href })
-                      .then((u) => { if (u?.trim()) editor.chain().focus().extendMarkRange("link").setLink({ href: u.trim() }).run(); });
+                      .then((u) => {
+                        const safe = u?.trim() ? safeUrl(u.trim()) : null;
+                        if (u?.trim() && !safe) { toast("Only http(s) links are allowed"); return; }
+                        if (safe) editor.chain().focus().extendMarkRange("link").setLink({ href: safe }).run();
+                      });
                   },
                 },
                 { label: "Remove link", onClick: () => editor.chain().focus().unsetLink().run() },

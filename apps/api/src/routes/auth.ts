@@ -7,6 +7,11 @@ import { sendMailSafe, tpl } from "../email.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
 
+// Brute-force ceilings — the in-memory limiter is per-IP; pair with real
+// TLS-terminating rate control at the edge for distributed attacks.
+const RL_LOGIN = { max: 10, timeWindow: "1 minute" };
+const RL_AUTH = { max: 20, timeWindow: "1 minute" };
+
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -17,7 +22,7 @@ const registerSchema = z.object({
 
 export function authRoutes(app: FastifyInstance) {
   /** Invite-link preview — name of the workspace you're joining. */
-  app.get("/api/auth/invite/:token", async (req, reply) => {
+  app.get("/api/auth/invite/:token", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const inv = await one<{ org_id: string; name: string }>(
       `SELECT i.org_id, o.name FROM org_invites i JOIN orgs o ON o.id = i.org_id
        WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
@@ -26,7 +31,7 @@ export function authRoutes(app: FastifyInstance) {
     return { orgName: inv.name };
   });
 
-  app.post("/api/auth/register", async (req, reply) => {
+  app.post("/api/auth/register", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const body = registerSchema.parse(req.body);
     const existing = await one("SELECT id FROM users WHERE email = $1", [body.email]);
     if (existing) return reply.code(409).send({ error: "conflict", message: "Email already registered" });
@@ -62,7 +67,7 @@ export function authRoutes(app: FastifyInstance) {
     return { token: await signToken(userId), user };
   });
 
-  app.post("/api/auth/login", async (req, reply) => {
+  app.post("/api/auth/login", { config: { rateLimit: RL_LOGIN } }, async (req, reply) => {
     const body = z.object({ email: z.string().email(), password: z.string(), client: z.string().optional() }).parse(req.body);
     const row = await one<UserRow>("SELECT * FROM users WHERE email = $1", [body.email]);
     if (!row || row.disabled || !verifyPassword(body.password, row.password_hash)) {
@@ -79,7 +84,7 @@ export function authRoutes(app: FastifyInstance) {
 
   /** Second step of login when the account has TOTP enabled. Accepts a
    *  6-digit authenticator code or a one-time backup code. */
-  app.post("/api/auth/mfa/login", async (req, reply) => {
+  app.post("/api/auth/mfa/login", { config: { rateLimit: RL_LOGIN } }, async (req, reply) => {
     const body = z.object({ mfaToken: z.string(), code: z.string(), client: z.string().optional() }).parse(req.body);
     const userId = await verifyMfaToken(body.mfaToken);
     if (!userId) return reply.code(401).send({ error: "unauthorized", message: "Sign-in session expired — start over" });
@@ -102,12 +107,12 @@ export function authRoutes(app: FastifyInstance) {
 
   /** Begin enrollment — the secret is returned but not stored until the
    *  user proves they can generate codes (mfa/enable). */
-  app.post("/api/auth/mfa/setup", { preHandler: requireAuth }, async (req) => {
+  app.post("/api/auth/mfa/setup", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req) => {
     const secret = genSecret();
     return { secret, uri: otpauthUri((req as AuthedRequest).user.email, secret) };
   });
 
-  app.post("/api/auth/mfa/enable", { preHandler: requireAuth }, async (req, reply) => {
+  app.post("/api/auth/mfa/enable", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const body = z.object({ secret: z.string().min(16).max(64), code: z.string() }).parse(req.body);
     if (!verifyTotp(body.secret, body.code)) {
       return reply.code(400).send({ error: "bad_code", message: "Code didn't match — check your authenticator clock and try again" });
@@ -119,7 +124,7 @@ export function authRoutes(app: FastifyInstance) {
   });
 
   /** Fresh set of backup codes — requires a live TOTP code. */
-  app.post("/api/auth/mfa/codes", { preHandler: requireAuth }, async (req, reply) => {
+  app.post("/api/auth/mfa/codes", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const body = z.object({ code: z.string() }).parse(req.body);
     const row = await one<UserRow>("SELECT * FROM users WHERE id = $1", [(req as AuthedRequest).user.id]);
     if (!row?.totp_secret) return reply.code(400).send({ error: "not_enabled", message: "Two-factor is not enabled" });
@@ -131,7 +136,7 @@ export function authRoutes(app: FastifyInstance) {
     return { backupCodes: codes };
   });
 
-  app.post("/api/auth/mfa/disable", { preHandler: requireAuth }, async (req, reply) => {
+  app.post("/api/auth/mfa/disable", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const body = z.object({ password: z.string(), code: z.string() }).parse(req.body);
     const row = await one<UserRow>("SELECT * FROM users WHERE id = $1", [(req as AuthedRequest).user.id]);
     if (!row || !verifyPassword(body.password, row.password_hash)) {

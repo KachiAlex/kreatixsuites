@@ -60,20 +60,20 @@ export function billingRoutes(app: FastifyInstance) {
   app.post("/api/billing/checkout", { preHandler: requireOrgAdmin }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { months } = z.object({ months: z.number().int().min(1).max(12).default(1) }).parse(req.body ?? {});
-    const p = await createPayment(user.orgId, process.env.KREATIX_PAYSTACK_SECRET ? "paystack" : "manual");
+    const p = await createPayment(user.orgId, process.env.KREATIX_PAYSTACK_SECRET ? "paystack" : "manual", undefined, months);
     const cfg = await getConfig();
 
     if (process.env.KREATIX_PAYSTACK_SECRET) {
       const reference = `kx-${p.id}`;
       await run("UPDATE payments SET reference = $2 WHERE id = $1", [p.id, reference]);
       const base = process.env.KREATIX_PUBLIC_URL ?? `https://${req.headers.host}`;
-      const { authorization_url } = await paystackInit(user.email, p.amountNgn * months, reference, `${base}/admin?paid=1`);
-      return { mode: "paystack", authorizationUrl: authorization_url, paymentId: p.id, amountNgn: p.amountNgn * months };
+      const { authorization_url } = await paystackInit(user.email, p.amountNgn, reference, `${base}/admin?paid=1`);
+      return { mode: "paystack", authorizationUrl: authorization_url, paymentId: p.id, amountNgn: p.amountNgn };
     }
     return {
       mode: "manual",
       paymentId: p.id,
-      amountNgn: p.amountNgn * months,
+      amountNgn: p.amountNgn,
       seats: p.seats,
       currency: cfg.currency,
       message: "Bank transfer — quote your workspace name. Payment is confirmed by the platform admin within 24h.",
@@ -84,13 +84,17 @@ export function billingRoutes(app: FastifyInstance) {
   app.post("/api/billing/paystack/verify", { preHandler: requireOrgAdmin }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { reference } = z.object({ reference: z.string().min(4).max(80) }).parse(req.body);
-    const payment = await one<{ id: string; status: string }>(
-      "SELECT id, status FROM payments WHERE reference = $1 AND org_id = $2", [reference, user.orgId]);
+    const payment = await one<{ id: string; status: string; amount_ngn: number }>(
+      "SELECT id, status, amount_ngn FROM payments WHERE reference = $1 AND org_id = $2", [reference, user.orgId]);
     if (!payment) return reply.code(404).send({ error: "not_found", message: "Unknown payment reference" });
     if (payment.status === "confirmed") return { ok: true, already: true };
 
     const v = await paystackVerify(reference);
     if (!v.ok) return reply.code(402).send({ error: "payment_failed", message: "Payment not confirmed by Paystack" });
+    // never grant a term for a charge smaller than the pending payment
+    if (v.amountNgn < payment.amount_ngn) {
+      return reply.code(402).send({ error: "amount_mismatch", message: "Verified amount is below the payment total" });
+    }
     await confirmPayment(payment.id, user.id);
     return { ok: true };
   });
