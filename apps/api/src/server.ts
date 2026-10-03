@@ -21,6 +21,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
 import { billingRoutes } from "./routes/billing.js";
+import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack } from "./billing.js";
 import { onResponseMetric } from "./metrics.js";
@@ -182,6 +183,7 @@ async function main() {
   app.register(ssoRoutes);
   app.register(samlRoutes);
   app.register(billingRoutes);
+  app.register(downloadRoutes);
   app.register(superadminRoutes);
   app.register(collabRoutes);
 

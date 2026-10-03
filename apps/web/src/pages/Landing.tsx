@@ -205,6 +205,7 @@ export function Landing() {
                 {t(l.key)}
               </a>
             ))}
+            <Link to="/download" onClick={() => setMenuOpen(false)}>{t("dl.title")}</Link>
             <Link to="/login" onClick={() => setMenuOpen(false)}>{t("lp.nav.signin")}</Link>
           </div>
           <Link to="/register" className="lp-btn lp-btn-orange lp-nav-cta">{t("lp.nav.getStarted")} <span aria-hidden="true">↗</span></Link>
@@ -459,6 +460,7 @@ export function Landing() {
               <a href="#products">{t("lp.foot.apps")}</a>
               <a href="#workflow">{t("lp.nav.why")}</a>
               <a href="#faq">{t("lp.nav.faq")}</a>
+              <Link to="/download">{t("dl.title")}</Link>
               <Link to="/login">{t("lp.nav.signin")}</Link>
               <Link to="/register">{t("lp.nav.getStarted")} <span aria-hidden="true">↗</span></Link>
             </div>

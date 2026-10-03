@@ -16,6 +16,7 @@ const Drive = lazy(() => import("./pages/Drive").then((m) => ({ default: m.Drive
 const Editor = lazy(() => import("./pages/Editor").then((m) => ({ default: m.Editor })));
 const SharedLink = lazy(() => import("./pages/SharedLink").then((m) => ({ default: m.SharedLink })));
 const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
+const Download = lazy(() => import("./pages/Download").then((m) => ({ default: m.Download })));
 const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
 
 const RouteFallback = () => (
@@ -38,6 +39,7 @@ function TitleSync() {
     const name = pathname === "/login" ? "Sign in"
       : pathname === "/register" ? "Create account"
       : pathname === "/" ? "Make room for your best work"   // landing page headline
+      : pathname === "/download" ? "Download"
       : pathname === "/home" ? "Home"
       : pathname.startsWith("/drive") ? "Drive"
       : pathname.startsWith("/admin") ? "Admin"
@@ -70,6 +72,7 @@ export default function App() {
           <Route path="/" element={<LandingOrHome />} />
           <Route path="/login" element={<Login mode="login" />} />
           <Route path="/register" element={<Login mode="register" />} />
+          <Route path="/download" element={<Download />} />
           <Route path="/shared/:token" element={<SharedLink />} />
           <Route path="/edit/:id" element={<Protected><Editor /></Protected>} />
           <Route element={<Protected><Shell /></Protected>}>
