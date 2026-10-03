@@ -14,7 +14,7 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 import { RibbonTabs } from "../components/RibbonTabs";
 import { AppIcon } from "../components/AppIcon";

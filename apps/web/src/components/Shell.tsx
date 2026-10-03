@@ -9,7 +9,7 @@ import { CommandPalette, renderSnippet } from "./CommandPalette";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { SecurityDialog } from "./SecurityDialog";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 import { AnonBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";

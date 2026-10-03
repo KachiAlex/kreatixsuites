@@ -2,23 +2,19 @@
 // locale from localStorage → navigator.language → "en". Missing keys fall
 // back to English. Add locales by creating src/i18n/<tag>.ts exporting a
 // partial map, then registering it in LOCALES below.
+// Only English ships in the entry chunk — other dictionaries load on demand.
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { en } from "../i18n/en";
-import { de } from "../i18n/de";
-import { fr } from "../i18n/fr";
-import { es } from "../i18n/es";
-import { pt } from "../i18n/pt";
-import { ar } from "../i18n/ar";
 
 export type Dict = Record<string, string>;
 
-export const LOCALES: { tag: string; label: string; dir?: "rtl"; dict: Dict }[] = [
+export const LOCALES: { tag: string; label: string; dir?: "rtl"; dict?: Dict; load?: () => Promise<Dict> }[] = [
   { tag: "en", label: "English", dict: en },
-  { tag: "de", label: "Deutsch", dict: de },
-  { tag: "es", label: "Español", dict: es },
-  { tag: "fr", label: "Français", dict: fr },
-  { tag: "pt", label: "Português", dict: pt },
-  { tag: "ar", label: "العربية", dir: "rtl", dict: ar },
+  { tag: "de", label: "Deutsch", load: () => import("../i18n/de").then((m) => m.de) },
+  { tag: "es", label: "Español", load: () => import("../i18n/es").then((m) => m.es) },
+  { tag: "fr", label: "Français", load: () => import("../i18n/fr").then((m) => m.fr) },
+  { tag: "pt", label: "Português", load: () => import("../i18n/pt").then((m) => m.pt) },
+  { tag: "ar", label: "العربية", dir: "rtl", load: () => import("../i18n/ar").then((m) => m.ar) },
 ];
 
 const STORAGE = "kx-locale";
@@ -48,16 +44,24 @@ const Ctx = createContext<I18n>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState(detect);
+  const [dicts, setDicts] = useState<Record<string, Dict>>({ en });
+  const entry = LOCALES.find((l) => l.tag === locale) ?? LOCALES[0];
   useEffect(() => {
-    const entry = LOCALES.find((l) => l.tag === locale) ?? LOCALES[0];
     document.documentElement.dir = entry.dir ?? "ltr";
     document.documentElement.lang = locale;
-  }, [locale]);
+    if (!entry.dict && entry.load && !dicts[locale]) {
+      let live = true;
+      void entry.load().then((d) => {
+        if (live) setDicts((prev) => ({ ...prev, [locale]: d }));
+      });
+      return () => { live = false; };
+    }
+  }, [locale, entry, dicts]);
   const value = useMemo<I18n>(() => {
-    const entry = LOCALES.find((l) => l.tag === locale) ?? LOCALES[0];
     const dir = entry.dir ?? "ltr";
+    const dict = entry.dict ?? dicts[locale] ?? en;
     const t = (key: string, vars?: Record<string, string | number>) => {
-      let s = entry.dict[key] ?? en[key] ?? key;
+      let s = dict[key] ?? en[key] ?? key;
       if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
       return s;
     };
@@ -69,7 +73,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         setLocaleState(tag);
       },
     };
-  }, [locale]);
+  }, [locale, dicts, entry]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

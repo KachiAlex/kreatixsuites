@@ -71,14 +71,16 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
 /** Kreatix Suites logo lockup — the official artwork (public/brand PNGs,
  *  background cut to alpha). `light` = white-wordmark variant for dark
  *  surfaces; default = ink-wordmark variant for light surfaces. */
-export function BrandLockup({ light, size = 40, style }: {
+export function BrandLockup({ light, size = 40, style, fetchPriority, decoding }: {
   light?: boolean;
   size?: number;
   style?: CSSProperties;
+  fetchPriority?: "high" | "low" | "auto";
+  decoding?: "async" | "sync" | "auto";
 }) {
   return (
     <img src={light ? "/brand/kreatix-suites-dark.png" : "/brand/kreatix-suites-light.png"}
-      alt="Kreatix Suites" draggable={false}
+      alt="Kreatix Suites" draggable={false} fetchPriority={fetchPriority} decoding={decoding}
       style={{ height: size, width: "auto", display: "block", ...style }} />
   );
 }

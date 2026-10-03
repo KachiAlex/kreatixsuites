@@ -1,52 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
+import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
 import { AppIcon } from "../components/AppIcon";
 import { openLocalFile } from "../lib/offline/openLocal";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { TemplatesDialog } from "../components/TemplatesDialog";
-
-export function useFiles(view: string, parent?: string) {
-  const [items, setItems] = useState<DriveItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const qs = parent !== undefined ? `parent=${parent}` : `view=${view}`;
-      const r = await api.get<{ items: DriveItem[] }>(`/api/drive?${qs}`);
-      setItems(r.items);
-    } finally {
-      setLoading(false);
-    }
-  }, [view, parent]);
-  useEffect(() => {
-    refresh();
-    const h = () => refresh();
-    window.addEventListener("kreatix:refresh", h);
-    return () => window.removeEventListener("kreatix:refresh", h);
-  }, [refresh]);
-  return { items, loading, refresh };
-}
-
-export function useToast() {
-  const [msg, setMsg] = useState<string | null>(null);
-  const toast = useCallback((m: string) => {
-    setMsg(m);
-    setTimeout(() => setMsg(null), 2600);
-  }, []);
-  return { msg, toast };
-}
-
-export function useItemActions(refresh: () => void) {
-  const [sharing, setSharing] = useState<DriveItem | null>(null);
-  const [versions, setVersions] = useState<DriveItem | null>(null);
-  const { msg, toast } = useToast();
-  return { sharing, setSharing, versions, setVersions, msg, toast, refresh };
-}
 
 export function Home() {
   const navigate = useNavigate();
@@ -61,6 +24,8 @@ export function Home() {
 
   const open = (it: DriveItem) =>
     navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`);
+
+  const attachable = useMemo(() => items.filter((i) => i.kind !== "folder"), [items]);
 
   const createDoc = async () => {
     const r = await api.post<{ item: DriveItem }>("/api/drive", { name: t("home.untitledDoc"), kind: "writer" });
@@ -170,10 +135,10 @@ export function Home() {
                   onClick={() => void askAi(prompt)}>↗</button>
                 {pickFiles && (
                   <div className="file-menu" style={{ position: "absolute", bottom: 34, left: 0, right: 0, top: "auto" }}>
-                    {items.filter((i) => i.kind !== "folder").length === 0 && (
+                    {attachable.length === 0 && (
                       <button disabled>{t("home.aiNoFiles")}</button>
                     )}
-                    {items.filter((i) => i.kind !== "folder").slice(0, 8).map((i) => (
+                    {attachable.slice(0, 8).map((i) => (
                       <button key={i.id} onClick={() => { setAttached(i); setPickFiles(false); }}>
                         <b>{i.name}</b> <small style={{ color: "var(--muted)" }}> · {i.kind}</small>
                       </button>

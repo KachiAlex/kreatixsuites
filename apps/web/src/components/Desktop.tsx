@@ -7,7 +7,7 @@ import { startSyncLoop } from "../lib/offline/sync";
 import { canEditOffline, entitlement, refreshEntitlement } from "../lib/offline/license";
 import { anonDaysLeft, isAnonymous } from "../lib/offline/trial";
 import { importLocalPath, kindForPath } from "../lib/offline/openLocal";
-import { useToast } from "../pages/Home";
+import { useToast } from "../lib/hooks";
 
 export function DesktopBootstrap() {
   const navigate = useNavigate();

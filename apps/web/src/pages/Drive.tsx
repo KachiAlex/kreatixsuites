@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
-import { useFiles, useItemActions } from "./Home";
+import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";

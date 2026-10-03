@@ -1,18 +1,26 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { I18nProvider, useT } from "./lib/i18n";
-import { Shell } from "./components/Shell";
 import { Login } from "./pages/Login";
-import { Home } from "./pages/Home";
 import { Landing } from "./pages/Landing";
-import { Drive } from "./pages/Drive";
-import { Editor } from "./pages/Editor";
-import { SharedLink } from "./pages/SharedLink";
-import { Admin } from "./pages/Admin";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
 import { useGlobalModalA11y } from "./lib/a11y";
 import type { ReactNode } from "react";
+
+// App-shell routes are split out of the entry chunk — the public landing and
+// login pages hydrate fast; the workspace loads on first navigation after
+// auth (warmed by the prefetch in Login).
+const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
+const Drive = lazy(() => import("./pages/Drive").then((m) => ({ default: m.Drive })));
+const Editor = lazy(() => import("./pages/Editor").then((m) => ({ default: m.Editor })));
+const SharedLink = lazy(() => import("./pages/SharedLink").then((m) => ({ default: m.SharedLink })));
+const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
+const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
+
+const RouteFallback = () => (
+  <div className="auth-wrap"><div className="empty">Loading…</div></div>
+);
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -29,7 +37,7 @@ function TitleSync() {
   useEffect(() => {
     const name = pathname === "/login" ? "Sign in"
       : pathname === "/register" ? "Create account"
-      : pathname === "/" ? "Office suite"   // landing page: "Office suite · Kreatix Suites"
+      : pathname === "/" ? "Make room for your best work"   // landing page headline
       : pathname === "/home" ? "Home"
       : pathname.startsWith("/drive") ? "Drive"
       : pathname.startsWith("/admin") ? "Admin"
@@ -57,6 +65,7 @@ export default function App() {
       <BrowserRouter>
         <TitleSync />
         <DesktopBootstrap />
+        <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<LandingOrHome />} />
           <Route path="/login" element={<Login mode="login" />} />
@@ -72,6 +81,7 @@ export default function App() {
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
     </I18nProvider>

@@ -23,6 +23,13 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [mfaCode, setMfaCode] = useState("");
   const invite = params.get("invite") ?? undefined;
 
+  // warm the app-shell chunks while auth state settles — the /home
+  // navigation then renders instantly instead of hitting a lazy boundary
+  const prefetchAppShell = () => {
+    void import("./Home");
+    void import("../components/Shell");
+  };
+
   // SSO callback lands here: ?sso=1 (token in HttpOnly cookie) or ?sso_error=<msg>
   useEffect(() => {
     const ssoDone = params.get("sso");
@@ -31,7 +38,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       setParams({}, { replace: true });
       api.post<{ token: string }>("/api/auth/sso/exchange", {})
         .then((r) => loginWithToken(r.token))
-        .then(() => navigate("/", { replace: true }))
+        .then(() => { prefetchAppShell(); navigate("/", { replace: true }); })
         .catch(() => setError(t("auth.ssoExchangeFailed")));
     } else if (ssoError) {
       setError(t("auth.ssoFailed", { msg: ssoError }));
@@ -64,6 +71,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       } else {
         await register(email, password, name, org || undefined, invite);
       }
+      prefetchAppShell();
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.genericError"));
@@ -120,7 +128,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
           <a className="btn-secondary sso-btn" href="/api/auth/saml">{t("auth.samlContinue")}</a>
         )}
         <button type="button" className="btn-ghost anon-btn"
-          onClick={() => { void enterAnonymous().then(() => navigate("/home")); }}>
+          onClick={() => { void enterAnonymous().then(() => { prefetchAppShell(); navigate("/home"); }); }}>
           {t("auth.anon")}
         </button>
         <div className="auth-switch">

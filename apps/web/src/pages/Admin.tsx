@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
-import { useToast } from "./Home";
+import { useToast } from "../lib/hooks";
 
 // module-scope so Date.now() runs outside the component's render scope
 async function grantDays(orgId: string, days: number) {
