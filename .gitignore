@@ -18,3 +18,8 @@ apps/desktop/release/
 
 # mobile audit artifacts
 apps/web/mobile-audit/
+
+# Android signing — never commit keystores or credentials
+*.keystore
+*.jks
+keystore.properties
