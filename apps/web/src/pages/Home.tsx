@@ -221,10 +221,6 @@ export function Home() {
         ))}
       </section>
 
-      <div className="brand-strip">
-        <div className="mini-logo"><AppIcon kind="suites" /></div>
-        <div><strong>Kreatix Suites</strong><br /><span>{t("home.brandSub")}</span></div>
-      </div>
       <footer>{t("home.footer")}</footer>
 
       {sharing && <ShareDialog item={sharing} onClose={() => setSharing(null)} toast={toast} />}
