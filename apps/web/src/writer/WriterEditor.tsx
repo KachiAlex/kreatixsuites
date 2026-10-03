@@ -1131,10 +1131,12 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   // Native-binary item opened from Drive/desktop — run the import once so a
   // double-clicked .docx opens as a real document, not a blank page.
-  const autoImported = useRef(false);
+  // Keyed to the editor instance: StrictMode's dev double-mount replaces the
+  // editor — a boolean flag would skip re-importing into the live one.
+  const autoImported = useRef<Editor | null>(null);
   useEffect(() => {
-    if (!editor || !sourceFile || autoImported.current) return;
-    autoImported.current = true;
+    if (!editor || !sourceFile || autoImported.current === editor) return;
+    autoImported.current = editor;
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
     void (["txt", "md", "html", "htm"].includes(ext) ? onTextImport(sourceFile) : onImport(sourceFile));
     // eslint-disable-next-line react-hooks/exhaustive-deps

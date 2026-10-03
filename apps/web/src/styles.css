@@ -330,7 +330,11 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .rm-with-pagination table{display:table!important;width:var(--twidth,100%)!important}
 .rm-with-pagination table>tr{display:table-row!important}
 .rm-with-pagination table tbody{display:table-row-group!important;max-height:none!important;overflow:visible!important}
-.ProseMirror .tableWrapper{overflow-x:auto;max-width:100%}
+/* width:100% — the wrapper is a BFC (overflow-x:auto); inside the paginator's
+   float-band layout an auto-width BFC gets squeezed to ~0 beside a wall float
+   instead of pushed to the next band (collapsing the table to min-content).
+   A fixed width can't shrink, so it clears the wall and lands on the next band. */
+.ProseMirror .tableWrapper{overflow-x:auto;max-width:100%;width:100%}
 .ProseMirror table{border-collapse:collapse;width:var(--twidth,100%);margin:12px 0;margin-left:var(--tindent,0)}
 .ProseMirror table[data-align="center"]{margin-inline:auto}
 .ProseMirror table[data-align="right"]{margin-left:auto;margin-right:0}
