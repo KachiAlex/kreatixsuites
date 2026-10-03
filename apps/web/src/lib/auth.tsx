@@ -109,6 +109,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setToken(null);
     setUser(null);
+    // clear the anonymous-tier flag too — otherwise the next load resurrects
+    // the local pseudo-user and the user appears signed in again
+    if (isAnonymous()) endAnonymousSession();
     if (isDesktop) void clearEntitlement();
   };
 

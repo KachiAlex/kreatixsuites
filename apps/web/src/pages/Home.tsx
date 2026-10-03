@@ -160,15 +160,62 @@ export function Home() {
       <div className="section-head"><h2>{t("home.templates")}</h2><a onClick={() => setTplOpen(true)} style={{ cursor: "pointer" }}>{t("home.browseTemplates")}</a></div>
       <section className="templates">
         {[
-          { titleKey: "home.tplProposal", subKey: "home.tplWriterSub", body: <div className="paper"><div className="line orange-line short" /><div className="line" /><div className="line mid" /><div className="line" /></div> },
-          { titleKey: "home.tplModel", subKey: "home.tplSheetsSub", body: <div className="paper"><div className="line short" /><div className="grid">{Array.from({ length: 12 }).map((_, i) => <span key={i} />)}</div></div> },
-          { titleKey: "home.tplDeck", subKey: "home.tplPresentSub", body: <div className="paper" style={{ background: "#202020" }}><div className="line orange-line short" /><div className="line" style={{ background: "#555" }} /><div style={{ width: 42, height: 42, borderRadius: "50%", background: "var(--k-orange)", marginTop: 10 }} /></div> },
-          { titleKey: "home.tplContract", subKey: "home.tplPdfSub", body: <div className="paper"><div className="line orange-line short" /><div className="line" /><div className="line" /><div className="line mid" /></div> },
+          { titleKey: "home.tplProposal", subKey: "home.tplWriterSub", kind: "writer" as const, body: (
+            <div className="tp-doc">
+              <div className="tp-doc-band" />
+              <div className="tp-doc-body">
+                <div className="tp-doc-head"><span className="tp-logo" /><i className="tp-t" style={{ width: "34%" }} /></div>
+                <i className="tp-t tp-t-hd" style={{ width: "72%" }} />
+                <i className="tp-t" style={{ width: "94%" }} /><i className="tp-t" style={{ width: "88%" }} />
+                <div className="tp-doc-foot">
+                  <svg viewBox="0 0 44 10" className="tp-squig" aria-hidden="true"><path d="M2 7 Q8 1 14 6 T26 5 T42 6" fill="none" stroke="#8A8078" strokeWidth="1.3" /></svg>
+                  <i className="tp-t" style={{ width: "26%" }} />
+                </div>
+              </div>
+            </div>
+          ) },
+          { titleKey: "home.tplModel", subKey: "home.tplSheetsSub", kind: "sheets" as const, body: (
+            <div className="tp-sheet">
+              <div className="tp-sheet-row tp-sheet-head"><i /><i /><i /><i /><i /></div>
+              <div className="tp-sheet-row"><i className="lbl" /><i /><i className="up" /><i /><i className="up" /></div>
+              <div className="tp-sheet-row"><i className="lbl" /><i /><i /><i className="dn" /><i /></div>
+              <div className="tp-sheet-row"><i className="lbl" /><i className="up" /><i /><i /><i /></div>
+              <div className="tp-sheet-row tp-sheet-total"><i /><i /><i /><i /><i /></div>
+            </div>
+          ) },
+          { titleKey: "home.tplDeck", subKey: "home.tplPresentSub", kind: "present" as const, body: (
+            <div className="tp-slide">
+              <div className="tp-slide-txt">
+                <i className="tp-t tp-title" style={{ width: "78%" }} />
+                <i className="tp-t" style={{ width: "52%" }} />
+                <i className="tp-t" style={{ width: "64%" }} />
+                <i className="tp-t" style={{ width: "40%" }} />
+              </div>
+              <div className="tp-slide-bars"><span style={{ height: "42%" }} /><span style={{ height: "70%" }} /><span style={{ height: "92%" }} /></div>
+            </div>
+          ) },
+          { titleKey: "home.tplContract", subKey: "home.tplPdfSub", kind: "pdf" as const, body: (
+            <div className="tp-doc">
+              <div className="tp-doc-body">
+                <i className="tp-t tp-t-hd" style={{ width: "48%" }} />
+                <i className="tp-t" style={{ width: "92%" }} />
+                <div className="tp-hl"><i className="tp-t" style={{ width: "84%" }} /></div>
+                <i className="tp-t" style={{ width: "70%" }} />
+                <div className="tp-doc-foot">
+                  <svg viewBox="0 0 44 10" className="tp-squig" aria-hidden="true"><path d="M2 6 Q10 0 16 6 T30 4 T42 7" fill="none" stroke="#8A8078" strokeWidth="1.3" /></svg>
+                  <span className="tp-stamp" />
+                </div>
+              </div>
+            </div>
+          ) },
         ].map((tpl) => (
           <div className="template" key={tpl.titleKey} role="button" tabIndex={0} style={{ cursor: "pointer" }}
             onClick={() => setTplOpen(true)}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTplOpen(true); } }}>
-            <div className="preview">{tpl.body}</div>
+            <div className="preview">
+              {tpl.body}
+              <span className="tp-badge"><AppIcon kind={tpl.kind} size={15} /></span>
+            </div>
             <div className="template-info"><h4>{t(tpl.titleKey)}</h4><p>{t(tpl.subKey)}</p></div>
           </div>
         ))}

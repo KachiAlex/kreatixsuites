@@ -385,6 +385,7 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
   const boxRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -395,10 +396,11 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setUserMenu(false);
-      }
+      const el = e.target as Node;
+      if (boxRef.current && !boxRef.current.contains(el)) setOpen(false);
+      // the user menu sits outside .search — a mousedown on it must not
+      // unmount the menu before its onClick handlers run
+      if (userMenuRef.current && !userMenuRef.current.contains(el)) setUserMenu(false);
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
@@ -444,7 +446,7 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
         title={theme === "dark" ? t("shell.toLight") : t("shell.toDark")}
         aria-label={t("shell.toggleThemeAria")}>{theme === "dark" ? "☾" : "☼"}</button>
       <MentionsBell />
-      <div style={{ position: "relative" }}>
+      <div ref={userMenuRef} style={{ position: "relative" }}>
         <button className="user" aria-label={t("shell.accountMenu")} aria-haspopup="menu" aria-expanded={userMenu}
           onClick={() => setUserMenu((v) => !v)}>{user?.initials ?? "…"}</button>
         {userMenu && (
