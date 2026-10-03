@@ -34,7 +34,7 @@ export function Download() {
     document.title = `${t("dl.title")} · Kreatix Suites`;
     api.get<Manifest>("/api/downloads")
       .then(setManifest)
-      .catch(() => setManifest({ desktop: null, android: null }));
+      .catch(() => {}); // keep null → buttons still render without size info
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
