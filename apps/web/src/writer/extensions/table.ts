@@ -305,8 +305,9 @@ export const KxTableRow = BaseTableRow.extend({
       },
       heightMode: {
         default: null,
-        parseHTML: () => null,
-        renderHTML: () => ({}),
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-height-mode"),
+        renderHTML: (a: Record<string, unknown>) =>
+          a.heightMode ? { "data-height-mode": a.heightMode as string } : {},
       },
       cantSplit: {
         default: false,

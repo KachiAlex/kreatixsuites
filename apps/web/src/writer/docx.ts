@@ -12,7 +12,7 @@ import {
 } from "docx";
 import mammoth from "mammoth";
 import type { Editor } from "@tiptap/core";
-import { DEFAULT_STYLES, loadStyleDefs, styleDefsOf, type StyleDef } from "./extensions/styles";
+import { DEFAULT_STYLES, cssFor, loadStyleDefs, styleDefsOf, type StyleDef } from "./extensions/styles";
 import type { DocProps } from "./DocProps";
 import { applyPageSetup, readPageSetup, type PageSetup } from "./PageSetup";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
@@ -1071,11 +1071,15 @@ interface DocxSettings {
   page?: { w: number; h: number; mt: number; mb: number; ml: number; mr: number };
   /** First section's w:pgNumType → doc-level number format + start. */
   pn?: { fmt?: PageSetup["pnFormat"]; start?: number };
+  /** First section's header/footer text → doc-level header/footer strings. */
+  hf?: { headerLeft?: string; footerLeft?: string };
 }
 
 interface DocxMeta {
   /** OOXML styleId → parsed paragraph style. */
   styles: Map<string, ImportedStyle>;
+  /** w:docDefaults — baseline paragraph/run props every block inherits. */
+  docDefaults: StyleDef;
   /** OOXML character styleId → direct-format props (w:rStyle → run payload). */
   charStyles: Map<string, { props: Record<string, unknown>; basedOn?: string }>;
   /** "numId:ilvl" → number format + start. */
@@ -1103,6 +1107,30 @@ const tagText = (xml: string, tag: string) => {
   const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
   return m ? xmlUnescape(m[1]).trim() : undefined;
 };
+
+/** w:docDefaults → the baseline every paragraph inherits (spacing, font). */
+function parseDocDefaults(xml: string): StyleDef {
+  const dd = xml.match(/<w:docDefaults>[\s\S]*?<\/w:docDefaults>/)?.[0] ?? "";
+  const rpr = dd.match(/<w:rPrDefault>[\s\S]*?<w:rPr>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "";
+  const ppr = dd.match(/<w:pPrDefault>[\s\S]*?<w:pPr>([\s\S]*?)<\/w:pPr>/)?.[1] ?? "";
+  const def: StyleDef = { key: "normal", label: "Normal", node: "paragraph" };
+  const font = wAttr(rpr.match(/<w:rFonts\b[^>]*>/)?.[0] ?? "", "ascii")
+    ?? wAttr(rpr.match(/<w:rFonts\b[^>]*>/)?.[0] ?? "", "hAnsi");
+  if (font) def.fontFamily = `'${font}', serif`;
+  const sz = rpr.match(/<w:sz\b[^>]*w:val="(\d+)"/)?.[1];
+  if (sz) def.fontSize = `${Math.round(parseInt(sz) * 2 / 3)}px`;
+  const spacing = ppr.match(/<w:spacing\b[^>]*>/)?.[0] ?? "";
+  const sb = spacing.match(/w:before="(\d+)"/)?.[1];
+  const sa = spacing.match(/w:after="(\d+)"/)?.[1];
+  if (sb) def.spaceBefore = Math.round(parseInt(sb) / 15);
+  if (sa) def.spaceAfter = Math.round(parseInt(sa) / 15);
+  const line = spacing.match(/w:line="(\d+)"/)?.[1];
+  if (line) {
+    const rule = wAttr(spacing, "lineRule") ?? "auto";
+    def.lineHeight = rule === "auto" ? String(+(parseInt(line) / 240).toFixed(2)) : `${Math.round(parseInt(line) / 15)}px`;
+  }
+  return def;
+}
 
 /** Parse word/styles.xml paragraph styles into KxStyle-shaped defs. */
 function parseStylesXml(xml: string): Map<string, ImportedStyle> {
@@ -1269,9 +1297,11 @@ const sentinel = (text: string) =>
 async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string; meta: DocxMeta }> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(arrayBuffer);
+  const stylesXml = await zip.file("word/styles.xml")?.async("text") ?? "";
   const meta: DocxMeta = {
-    styles: parseStylesXml(await zip.file("word/styles.xml")?.async("text") ?? ""),
-    charStyles: parseCharStylesXml(await zip.file("word/styles.xml")?.async("text") ?? ""),
+    styles: parseStylesXml(stylesXml),
+    docDefaults: parseDocDefaults(stylesXml),
+    charStyles: parseCharStylesXml(stylesXml),
     numFmt: parseNumberingXml(await zip.file("word/numbering.xml")?.async("text") ?? ""),
     comments: parseCommentsXml(await zip.file("word/comments.xml")?.async("text") ?? ""),
     docProps: parseCoreXml(await zip.file("docProps/core.xml")?.async("text") ?? ""),
@@ -1344,18 +1374,21 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     const pPrSects = sects.filter((s) => s.pPr);
     const bodySect = sects.find((s) => !s.pPr);
 
-    if (pPrSects.length) {
+    if (sects.length) {
       const relsXml = await zip.file("word/_rels/document.xml.rels")?.async("text") ?? "";
       const relMap: Record<string, string> = {};
       for (const r of relsXml.matchAll(/Id="([^"]+)"[^>]*Target="([^"]+)"/g)) relMap[r[1]] = r[2];
       const hfText = async (sect: string, kind: "header" | "footer") => {
-        const rid = sect.match(new RegExp(`<w:${kind}Reference\\b[^>]*r:id="([^"]+)"`))?.[1];
+        const refs = [...sect.matchAll(new RegExp(`<w:${kind}Reference\\b[^>]*>`, "g"))].map((r) => r[0]);
+        const def = refs.find((r) => /w:type="default"/.test(r)) ?? refs[0];
+        const rid = def?.match(/r:id="([^"]+)"/)?.[1];
         const part = rid && relMap[rid]
           ? await zip.file(`word/${relMap[rid]}`)?.async("text") : undefined;
         if (!part) return null;
         const text = [...part.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((m) => xmlUnescape(m[1])).join("");
         return text.trim() || null;
       };
+      if (pPrSects.length) {
       const sectProps = async (sect: string) => {
         const wv = (tag: string, name: string) =>
           sect.match(new RegExp(`<w:${tag}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
@@ -1386,6 +1419,14 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
         /<w:sectPr\b[\s\S]*?<\/w:sectPr>(\s*<\/w:pPr>)/g,
         (_, tail) => `${tail}<w:r><w:t xml:space="preserve">⟦KXSB:${payloads[mi++] ?? ""}⟧</w:t></w:r>`,
       );
+      }
+      // Section 1's own header/footer text never reaches a marker — carry it
+      // into doc-level setup (later sections get theirs via KXSB payloads).
+      const fs = pPrSects[0]?.xml ?? bodySect?.xml;
+      if (fs) {
+        const hl = await hfText(fs, "header"), fl = await hfText(fs, "footer");
+        if (hl || fl) meta.settings.hf = { headerLeft: hl ?? undefined, footerLeft: fl ?? undefined };
+      }
     }
     // Section 1's own vAlign (title-page centering) never reaches a marker —
     // carry it into the document's first block instead.
@@ -1619,6 +1660,17 @@ function breakMarkersToHtml(html: string): string {
     KXPB: `<div data-type="page-break" class="page-break"></div>`,
     KXCB: `<div data-type="column-break" class="page-break column-break"></div>`,
   };
+  // A page-break run in the same paragraph as a section break is redundant —
+  // the boundary already breaks the page, and keeping both makes a blank page.
+  html = html.replace(/⟦KXSB:([A-Za-z0-9+/=]*)⟧⟦KXPB⟧|⟦KXPB⟧⟦KXSB:([A-Za-z0-9+/=]*)⟧/g,
+    (m, a?: string, b?: string) => {
+      const b64 = a ?? b ?? "";
+      try {
+        const p = JSON.parse(b64dec(b64)) as SectMarkerProps;
+        if (p.type !== "continuous") return `⟦KXSB:${b64}⟧`;
+      } catch { /* keep both */ }
+      return m;
+    });
   html = html
     .replace(/<p>⟦(KXPB|KXCB)⟧<\/p>/g, (_, t) => DIV[t])
     .replace(/⟦(KXPB|KXCB)⟧/g, (_, t) => `</p>${DIV[t]}<p>`);
@@ -1819,7 +1871,9 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
       const row = top.tbl?.rows[top.r];
       top.headerRow = !!row?.header;
       if (!row) return tok;
-      return inject(tok, row.cantSplit ? ` data-cant-split="true"` : "",
+      return inject(tok,
+        (row.cantSplit ? ` data-cant-split="true"` : "") +
+        (row.exact ? ` data-height-mode="exact"` : ""),
         row.height ? `height:${row.height}px` : "");
     }
     if (name === "tr") return tok;
@@ -1837,7 +1891,7 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
       cell.dir ? `writing-mode:${cell.dir}` : "",
       ...(cell.borders ?? []).map((b) => `border-${b.side}:${b.w}px ${b.style} ${b.color}`),
     ].filter(Boolean).join("; ");
-    const attrs = cell.colw ? ` data-colwidth="${cell.colw}"` : "";
+    const attrs = cell.colw ? ` colwidth="${cell.colw}"` : "";
     return inject(open, attrs, style);
   });
 }
@@ -1862,6 +1916,12 @@ function styleKeyFor(meta: DocxMeta, id: string): string | null {
 function buildStyleMaps(meta: DocxMeta): { idToKey: Map<string, string>; styles: Record<string, StyleDef> } {
   const idToKey = new Map<string, string>();
   const styles: Record<string, StyleDef> = {};
+  // docDefaults + the document's default (Normal) style → the "normal" def,
+  // which targets paragraphs carrying no data-style (see selectorFor).
+  const normalStyle = [...meta.styles.values()].find((s) =>
+    s.name.toLowerCase().replace(/[^a-z0-9]/g, "") === "normal");
+  const normalDef: StyleDef = { ...meta.docDefaults, ...(normalStyle?.def ?? {}), key: "normal", label: "Normal", node: "paragraph" };
+  if (cssFor(normalDef)) styles.normal = normalDef;
   for (const [id, s] of meta.styles) {
     const key = styleKeyFor(meta, id);
     if (!key) continue;
@@ -1916,6 +1976,34 @@ function numMarkersToHtml(html: string, meta: DocxMeta): string {
     },
   );
   return html.replace(/⟦KXN:\d+:\d+⟧/g, "");
+}
+
+/** mammoth renders w:footnoteReference/endnoteReference as
+ *  <sup><a href="#footnote-N">[n]</a></sup> plus a trailing <ol> of
+ *  <li id="footnote-N"> bodies. Fold them into real footnote nodes so the
+ *  paginator places them at page bottoms and re-export keeps them notes. */
+function footnoteMarkersToHtml(html: string): string {
+  const notes = new Map<string, { kind: string; text: string }>();
+  html = html.replace(
+    /<li id="(foot|end)note-(\d+)">([\s\S]*?)<\/li>/g,
+    (_m, kind: string, id: string, body: string) => {
+      const text = body
+        .replace(/<a href="#(?:foot|end)note-ref-\d+"[^>]*>[\s\S]*?<\/a>/g, "")
+        .replace(/<[^>]+>/g, "");
+      notes.set(`${kind}-${id}`, {
+        kind: kind === "foot" ? "footnote" : "endnote",
+        text: xmlUnescape(text).replace(/\s+/g, " ").trim(),
+      });
+      return "";
+    });
+  if (!notes.size) return html;
+  return html
+    .replace(/<ol>\s*<\/ol>/g, "")
+    .replace(/<sup><a href="#(foot|end)note-(\d+)"[^>]*>[\s\S]*?<\/a><\/sup>/g,
+      (_m, kind: string, id: string) => {
+        const n = notes.get(`${kind}-${id}`);
+        return `<sup data-type="footnote" data-kind="${n?.kind ?? "footnote"}" data-note="${attrEsc(n?.text ?? "")}"></sup>`;
+      });
 }
 
 /** ⟦KXCS:id⟧…⟦KXCE:id⟧ → <span data-comment-id> marks. */
@@ -2322,7 +2410,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
   // mammoth's Node build accepts {buffer}; its browser build accepts {arrayBuffer}
   const result = await mammoth.convertToHtml({ arrayBuffer: buffer }).catch(() =>
     mammoth.convertToHtml({ buffer: Buffer.from(buffer) } as never));
-  let html = breakMarkersToHtml(mathMarkersToHtml(result.value));
+  let html = footnoteMarkersToHtml(breakMarkersToHtml(mathMarkersToHtml(result.value)));
   html = runFmtMarkersToHtml(html);
   html = paraFmtMarkersToHtml(html);
   const { idToKey, styles } = buildStyleMaps(meta);
@@ -2378,6 +2466,8 @@ export function applyDocxImport(editor: Editor, res: DocxImportResult): void {
     }
     if (s.pn?.fmt) next.pnFormat = s.pn.fmt;
     if (s.pn?.start != null) next.pnStart = s.pn.start;
+    if (s.hf?.headerLeft) next.headerLeft = s.hf.headerLeft;
+    if (s.hf?.footerLeft) next.footerLeft = s.hf.footerLeft;
     applyPageSetup(editor, next);
   }
 }

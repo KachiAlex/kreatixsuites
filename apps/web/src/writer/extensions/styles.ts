@@ -81,6 +81,8 @@ export function styleDefOf(editor: Editor, key: string): StyleDef | undefined {
 export function selectorFor(def: StyleDef): string {
   if (def.node === "heading") return `.ProseMirror h${def.level ?? 1}`;
   if (def.node === "blockquote") return ".ProseMirror blockquote";
+  // "normal" is Word's default style — unstyled paragraphs carry no attr.
+  if (def.key === "normal") return '.ProseMirror p:not([data-style]), .ProseMirror p[data-style="normal"]';
   return `.ProseMirror [data-style="${def.key}"]`;
 }
 
