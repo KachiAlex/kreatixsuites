@@ -100,6 +100,52 @@ export const ForcedBreaks = Extension.create({
             // forced N×W synchronous reflows on every keystroke
             const bands = measureBands(root);
 
+            // table split-mode: a display:contents chain puts each <tr> in the
+            // root flow, so wall floats push rows individually (Word splits a
+            // table at row boundaries instead of moving it whole). Grid needs
+            // the column template up front — colgroup min-widths when cells
+            // carry colwidth, otherwise the first row's measured cell widths.
+            // rowspan can't be expressed by independent grid rows → atomic.
+            for (const w of root.querySelectorAll<HTMLElement>(".tableWrapper")) {
+              const cols = [...w.querySelectorAll<HTMLElement>(":scope > table > colgroup > col")];
+              const firstRow = w.querySelector<HTMLElement>(":scope > table > tbody > tr");
+              const cells = firstRow ? [...firstRow.querySelectorAll<HTMLElement>(":scope > td, :scope > th")] : [];
+              const hasSpan = [...w.querySelectorAll<HTMLElement>("[rowspan]")]
+                  .some((c) => parseInt(c.getAttribute("rowspan") ?? "1") > 1)
+                // colspan 2–8 map to grid spans in CSS; beyond that stay atomic
+                || [...w.querySelectorAll<HTMLElement>("[colspan]")]
+                  .some((c) => parseInt(c.getAttribute("colspan") ?? "1") > 8)
+                || w.querySelector(":scope > table[data-wrap]") != null;
+              const anyColw = cells.some((c) => c.hasAttribute("colwidth"))
+                || w.querySelector("td[colwidth],th[colwidth]") != null;
+              const sig = hasSpan ? "span"
+                : cols.map((c) => c.getAttribute("style") ?? "").join("|") +
+                  "|" + (anyColw ? "w" : cells.map((c) => Math.round(c.getBoundingClientRect().width)).join(","));
+              if (w.dataset.kxSig !== sig) {
+                w.dataset.kxSig = sig;
+                if (hasSpan) {
+                  w.removeAttribute("data-kx-split");
+                } else {
+                  let widths: number[] = [];
+                  if (cols.length && anyColw) {
+                    widths = cols.map((c) =>
+                      parseFloat(c.style.minWidth || c.style.width || "") || 0);
+                  } else if (cells.length) {
+                    widths = cells.map((c) => c.getBoundingClientRect().width);
+                  }
+                  // proportional fr so columns squeeze to row width the same
+                  // way table-layout:fixed would — px values would overflow
+                  const tpl = widths.length
+                    ? widths.map((v) => `minmax(0,${Math.max(v / 100, 0.01)}fr)`).join(" ")
+                    : "";
+                  if (tpl) {
+                    w.style.setProperty("--kx-cols", tpl);
+                    w.setAttribute("data-kx-split", "");
+                  }
+                }
+              }
+            }
+
             for (const el of root.querySelectorAll<HTMLElement>("[data-pb-before]")) {
               add(el, bandPadTop(el, root, bands), null);
             }

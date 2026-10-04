@@ -376,6 +376,55 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .ProseMirror.kx-tool-erase,.ProseMirror.kx-tool-erase *{cursor:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><g transform='rotate(-45 8 8)'><rect x='3' y='4' width='10' height='7' rx='1' fill='%23F2782E'/><rect x='3' y='9' width='10' height='4' rx='1' fill='%23555'/></g></svg>") 4 12, cell!important}
 .kx-draw-guide{position:fixed;border:1.5px dashed var(--k-orange);background:rgba(242,120,46,.06);pointer-events:none;z-index:90}
 
+/* Row-level table splitting: the display:contents chain puts each <tr> in the
+   root flow, so the paginator's wall floats push rows individually — Word's
+   row-boundary splits instead of moving the whole table to the next page.
+   Only tables the forced-breaks pass marked splittable (no rowspan, not
+   text-wrapped). Each tr is a grid BFC — atomic, like a Word row. */
+.rm-with-pagination .tableWrapper[data-kx-split],
+.rm-with-pagination .tableWrapper[data-kx-split] > table,
+.rm-with-pagination .tableWrapper[data-kx-split] > table > tbody{display:contents!important}
+.rm-with-pagination .tableWrapper[data-kx-split] > table > colgroup{display:none!important}
+.rm-with-pagination .tableWrapper[data-kx-split] > table > tbody > tr{
+  display:grid!important;grid-template-columns:var(--kx-cols,1fr);
+  width:var(--twidth,100%);max-width:100%;box-sizing:border-box;
+  margin-left:var(--tindent,0);
+  max-height:var(--rm-max-content-child-height,none);overflow:hidden;
+  break-inside:avoid;
+}
+.rm-with-pagination .tableWrapper[data-kx-split] > table[data-width-mode="auto"] > tbody > tr{width:auto;min-width:0}
+.rm-with-pagination .tableWrapper[data-kx-split] > table[data-align="center"] > tbody > tr{margin-left:auto;margin-right:auto}
+.rm-with-pagination .tableWrapper[data-kx-split] > table[data-align="right"] > tbody > tr{margin-left:auto;margin-right:0}
+/* the table box is gone, so its vertical margins move to the outer rows */
+.rm-with-pagination .tableWrapper[data-kx-split] > table > tbody > tr:first-child{margin-top:12px}
+.rm-with-pagination .tableWrapper[data-kx-split] > table > tbody > tr:last-child{margin-bottom:12px}
+/* border-collapse is gone too — overlap adjacent borders by a hair */
+.rm-with-pagination .tableWrapper[data-kx-split] > table > tbody > tr + tr{margin-top:-1px}
+.rm-with-pagination .tableWrapper[data-kx-split] td,.rm-with-pagination .tableWrapper[data-kx-split] th{min-width:0}
+.rm-with-pagination .tableWrapper[data-kx-split] td + td,.rm-with-pagination .tableWrapper[data-kx-split] th + th{margin-left:-1px}
+/* HTML colspan has no effect on grid items — map the common spans explicitly.
+   (Sync keeps tables with colspan>8 atomic; see forcedBreaks hasSpan.) */
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="2"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="2"]{grid-column:span 2}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="3"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="3"]{grid-column:span 3}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="4"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="4"]{grid-column:span 4}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="5"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="5"]{grid-column:span 5}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="6"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="6"]{grid-column:span 6}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="7"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="7"]{grid-column:span 7}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="8"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="8"]{grid-column:span 8}
+/* colspan still works via grid-column (rowspan tables never get marked) */
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="2"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="2"]{grid-column:span 2}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="3"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="3"]{grid-column:span 3}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="4"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="4"]{grid-column:span 4}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="5"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="5"]{grid-column:span 5}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="6"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="6"]{grid-column:span 6}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="7"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="7"]{grid-column:span 7}
+.rm-with-pagination .tableWrapper[data-kx-split] td[colspan="8"],.rm-with-pagination .tableWrapper[data-kx-split] th[colspan="8"]{grid-column:span 8}
+/* vertical-align has no grid equivalent — approximate with flex centering */
+.rm-with-pagination .tableWrapper[data-kx-split] td[style*="vertical-align:middle"],
+.rm-with-pagination .tableWrapper[data-kx-split] th[style*="vertical-align:middle"]{display:flex;flex-direction:column;justify-content:center}
+.rm-with-pagination .tableWrapper[data-kx-split] td[style*="vertical-align:bottom"],
+.rm-with-pagination .tableWrapper[data-kx-split] th[style*="vertical-align:bottom"]{display:flex;flex-direction:column;justify-content:flex-end}
+
 /* Word "Text wrapping: Around" — the paginator's wall floats occupy the whole
    document float space (they're the page-band spacers), so real floats can't
    coexist. Instead the plugin abs-positions the tableWrapper at its anchor

@@ -70,6 +70,21 @@ const cellCtx = (view: EditorView, ev: MouseEvent, rect: DOMRect): TableCtx | nu
   return { tablePos, rowIdx, rowPos: targetRowPos, colIdx: rc.left, cellStart, map };
 };
 
+/** tbody has no box when its table is in row-split mode (display:contents).
+ *  Fall back to the union of row boxes — the table's real on-screen extent. */
+const tbodyRect = (tbody: HTMLElement): DOMRect => {
+  const r = tbody.getBoundingClientRect();
+  if (r.width > 0 || r.height > 0) return r;
+  let l = Infinity, t = Infinity, rr = -Infinity, b = -Infinity;
+  for (const tr of tbody.querySelectorAll("tr")) {
+    const x = tr.getBoundingClientRect();
+    if (!x.width && !x.height) continue;
+    l = Math.min(l, x.left); t = Math.min(t, x.top);
+    rr = Math.max(rr, x.right); b = Math.max(b, x.bottom);
+  }
+  return l === Infinity ? r : new DOMRect(l, t, rr - l, b - t);
+};
+
 /** Table element + doc pos under the pointer, if any (for the grip/corner).
  *  PaginationPlus unboxes <table> (display:contents; the box lives on tbody),
  *  so callers should measure `tbody` for the real rect. */
@@ -221,7 +236,7 @@ const selZoneHit = (view: EditorView, ev: MouseEvent): SelZone | null => {
   }
   // strips outside cells: scan the editor's tbodies (cheap — tables are few)
   for (const tbody of view.dom.querySelectorAll("tbody")) {
-    const tr = tbody.getBoundingClientRect();
+    const tr = tbodyRect(tbody as HTMLElement);
     if (tr.width === 0) continue;
     // left of the table edge → row select strip
     if (ev.clientX < tr.left && ev.clientX > tr.left - 22 && ev.clientY >= tr.top && ev.clientY <= tr.bottom) {
@@ -703,7 +718,7 @@ export const KxTableHandles = Extension.create({
             gripTbl = null;
           };
           const place = (tbl: HTMLElement, pos: number) => {
-            const r = tbl.getBoundingClientRect();
+            const r = tbodyRect(tbl);
             grip.style.display = "flex";
             grip.style.left = `${r.left - 18}px`;
             grip.style.top = `${r.top - 8}px`;
@@ -740,7 +755,7 @@ export const KxTableHandles = Extension.create({
               let best: { pos: number; el: HTMLElement } | null = null;
               let bestD = 15;
               for (const tb of view.dom.querySelectorAll("tbody")) {
-                const r = tb.getBoundingClientRect();
+                const r = tbodyRect(tb as HTMLElement);
                 if (!r.width) continue;
                 const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
                 const dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom);
@@ -750,7 +765,7 @@ export const KxTableHandles = Extension.create({
               t = best;
             }
             if (!t) return hideIns();
-            const rect = t.el.getBoundingClientRect();
+            const rect = tbodyRect(t.el);
             const table = view.state.doc.nodeAt(t.pos);
             if (!table) return hideIns();
             const map = TableMap.get(table);
@@ -934,7 +949,7 @@ export const KxTableHandles = Extension.create({
             const tablePos = gripPos;
             const tbody = gripTbl;
             const zoom = zoomOf(view);
-            const r0 = tbody.getBoundingClientRect();
+            const r0 = tbodyRect(tbody);
             const { state } = view;
             const table = state.doc.nodeAt(tablePos);
             if (table?.type.name !== "table") return;
@@ -1056,7 +1071,7 @@ export const KxTableHandles = Extension.create({
             const { ctx, tbody, span, side } = hit;
             const gridCol = side === "left" ? 0 : ctx.colIdx + span - 1;
             const cols0 = measureColumns(tbody, ctx.map, table0).map((w) => w / zoom);
-            const tRect = tbody.getBoundingClientRect();
+            const tRect = tbodyRect(tbody);
             const w0 = tRect.width / zoom;
             // content-left for indentPx math
             const cs = getComputedStyle(view.dom);
