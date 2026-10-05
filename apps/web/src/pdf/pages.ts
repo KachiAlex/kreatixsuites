@@ -95,16 +95,36 @@ export async function splitPdf(bytes: ArrayBuffer, at: number, total: number): P
   return [a, b];
 }
 
+/** pdf-lib only embeds PNG/JPEG — rasterize other formats (webp/gif/bmp/svg)
+ *  through a canvas so they still become pages instead of being skipped. */
+async function toPngBytes(dataUrl: string): Promise<string | null> {
+  if (typeof Image === "undefined" || typeof document === "undefined") return null;
+  try {
+    const img = new Image();
+    await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error("undecodable image")); img.src = dataUrl; });
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext("2d")?.drawImage(img, 0, 0);
+    const m = /^data:image\/png;base64,(.+)$/.exec(c.toDataURL("image/png"));
+    return m?.[1] ?? null;
+  } catch { return null; }
+}
+
 /**
  * PDF-13.3 — append image files as new pages (one image per page, sized to the
- * image at 72dpi). Returns new pdf bytes.
+ * image at 72dpi). Returns new pdf bytes. Throws if any image can't be
+ * converted — a silent skip would report success while adding no page.
  */
 export async function appendImagePages(bytes: ArrayBuffer, images: { dataUrl: string; w: number; h: number }[]): Promise<Uint8Array> {
   const { PDFDocument } = await import("pdf-lib");
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
   for (const im of images) {
-    const m = /^data:image\/(png|jpe?g);base64,(.+)$/.exec(im.dataUrl);
-    if (!m) continue;
+    let m = /^data:image\/(png|jpe?g);base64,(.+)$/.exec(im.dataUrl);
+    if (!m) {
+      const png = await toPngBytes(im.dataUrl);
+      if (png) m = ["", "png", png] as unknown as RegExpExecArray;
+    }
+    if (!m) throw new Error(`Unsupported image format: ${im.dataUrl.slice(5, 30)}`);
     const img = m[1] === "png" ? await doc.embedPng(m[2]) : await doc.embedJpg(m[2]);
     const w = Math.min(im.w, 1440), h = im.h * (w / im.w);
     const page = doc.addPage([w, h]);

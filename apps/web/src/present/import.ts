@@ -9,6 +9,9 @@ const pt = (v: string | null | undefined) => (v == null ? undefined : Math.round
 
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", bmp: "image/bmp", webp: "image/webp" };
 
+/** raw EMU geometry pulled from a layout/master placeholder */
+interface PhGeom { x: number; y: number; cx: number; cy: number; rot?: number }
+
 interface Ctx {
   zip: import("jszip");
   rels: Map<string, string>; // rId -> target path (resolved)
@@ -16,6 +19,27 @@ interface Ctx {
   scheme: Record<string, string>; // schemeClr name -> resolved hex
   spids?: Map<string, SlideObject>; // P6.2 — cNvPr @id → created object (for p:timing)
   skipPh?: boolean; // P6.2 — skip placeholder shapes (layout/master parse)
+  /** layout + master placeholder geometry — slide placeholders that omit
+   *  a:xfrm inherit position/size from here (ECMA-376 §19.3.1.36) */
+  phGeom?: Map<string, PhGeom>;
+  phGeomMaster?: Map<string, PhGeom>;
+}
+
+const phEl = (sp: Element) =>
+  first(children(children(sp, "p:nvSpPr")[0] ?? null, "p:nvPr")[0] ?? null, "p:ph")
+  ?? first(children(children(sp, "p:nvCxnSpPr")[0] ?? null, "p:nvPr")[0] ?? null, "p:ph");
+
+/** placeholder lookup: exact type:idx → first of type → obj at same idx → master */
+function phLookup(ph: Element | null | undefined, ctx: Ctx): PhGeom | undefined {
+  if (!ph) return undefined;
+  const t = attr(ph, "type") ?? "obj";
+  const idx = attr(ph, "idx");
+  const search = (m?: Map<string, PhGeom>) => m && (
+    m.get(`${t}:${idx ?? "0"}`)
+    ?? (idx == null ? [...m.entries()].find(([k]) => k.startsWith(`${t}:`))?.[1] : undefined)
+    ?? (t !== "body" ? m.get(`body:${idx ?? "0"}`) : undefined)
+    ?? m.get(`obj:${idx ?? "0"}`));
+  return search(ctx.phGeom) ?? search(ctx.phGeomMaster);
 }
 
 const q = (el: Element | null, sel: string) => el?.getElementsByTagName(sel) ?? [];
@@ -106,19 +130,28 @@ function shapeKind(prst: string | null | undefined): SlideObject["shape"] {
 
 async function parseSp(sp: Element, ctx: Ctx, ink: string, scheme: Record<string, string>, transform: { ox: number; oy: number; sx: number; sy: number }): Promise<SlideObject | null> {
   // P6.2 — placeholder shapes are proto-objects owned by the layout; skip there
-  if (ctx.skipPh) {
-    const ph = first(children(children(sp, "p:nvSpPr")[0] ?? null, "p:nvPr")[0] ?? null, "p:ph");
-    if (ph) return null;
-  }
+  const ph = phEl(sp);
+  if (ctx.skipPh && ph) return null;
   const spPr = children(sp, "p:spPr")[0];
   const xfrm = children(spPr ?? null, "a:xfrm")[0];
   const off = children(xfrm ?? null, "a:off")[0];
   const ext = children(xfrm ?? null, "a:ext")[0];
-  const x = emu(attr(off, "x")) * transform.sx + transform.ox;
-  const y = emu(attr(off, "y")) * transform.sy + transform.oy;
-  const w = Math.max(16, emu(attr(ext, "cx")) * transform.sx);
-  const h = Math.max(16, emu(attr(ext, "cy")) * transform.sy);
-  const rot = attr(xfrm ?? null, "rot");
+  // placeholder inheritance — a slide <p:sp> with p:ph and no a:xfrm takes
+  // its geometry from the matching layout (then master) placeholder
+  let ox = attr(off, "x"), oy = attr(off, "y"), cx = attr(ext, "cx"), cy = attr(ext, "cy");
+  let rotS = attr(xfrm ?? null, "rot");
+  if ((ox == null || oy == null || cx == null || cy == null) && ph) {
+    const g = phLookup(ph, ctx);
+    if (g) {
+      ox ??= String(g.x); oy ??= String(g.y); cx ??= String(g.cx); cy ??= String(g.cy);
+      rotS ??= g.rot != null ? String(g.rot) : null;
+    }
+  }
+  const x = emu(ox) * transform.sx + transform.ox;
+  const y = emu(oy) * transform.sy + transform.oy;
+  const w = Math.max(16, emu(cx) * transform.sx);
+  const h = Math.max(16, emu(cy) * transform.sy);
+  const rot = rotS;
   const prst = attr(children(spPr ?? null, "a:prstGeom")[0] ?? null, "prst");
   const tx = children(sp, "p:txBody")[0];
   const { html, fontSize, color, bold, italic, align } = textBodyToHtml(tx ?? null, ink, scheme);
@@ -157,9 +190,12 @@ async function parsePic(pic: Element, ctx: Ctx): Promise<SlideObject | null> {
   const ext = children(xfrm ?? null, "a:ext")[0];
   const nvPr = children(children(pic, "p:nvPicPr")[0] ?? null, "p:nvPr")[0];
   const name = attr(children(children(pic, "p:nvPicPr")[0] ?? null, "p:cNvPr")[0] ?? null, "name") ?? "image";
+  const rot = attr(xfrm ?? null, "rot");
+  const rotate = rot ? Math.round(Number(rot) / 60000) : undefined;
   const pos = {
     x: emu(attr(off, "x")), y: emu(attr(off, "y")),
     w: Math.max(16, emu(attr(ext, "cx"), 100)), h: Math.max(16, emu(attr(ext, "cy"), 100)),
+    rotate,
   };
 
   // P6.4 — video/audio files ride in as <a:videoFile>/<a:audioFile> rels on a p:pic
@@ -236,6 +272,48 @@ async function parseChart(gf: Element, ctx: Ctx): Promise<SlideObject | null> {
   };
 }
 
+/** p:cxnSp — connector lines; stCxn/endCxn reference target shapes by cNvPr
+ *  @id and a connection-site index (0=top, 1=right, 2=bottom, 3=left cw). */
+function parseCxnSp(el: Element, ctx: Ctx, ink: string, t: { ox: number; oy: number; sx: number; sy: number }): SlideObject | null {
+  const spPr = children(el, "p:spPr")[0];
+  const xfrm = children(spPr ?? null, "a:xfrm")[0];
+  const off = children(xfrm ?? null, "a:off")[0];
+  const ext = children(xfrm ?? null, "a:ext")[0];
+  const x = emu(attr(off, "x")) * t.sx + t.ox;
+  const y = emu(attr(off, "y")) * t.sy + t.oy;
+  const w = emu(attr(ext, "cx")) * t.sx;
+  const h = emu(attr(ext, "cy")) * t.sy;
+  const flipH = attr(xfrm ?? null, "flipH") === "1";
+  const flipV = attr(xfrm ?? null, "flipV") === "1";
+  const rot = attr(xfrm ?? null, "rot");
+  const prst = attr(children(spPr ?? null, "a:prstGeom")[0] ?? null, "prst") ?? "";
+  const kind = /curvedConnector/.test(prst) ? "curve" as const : /bentConnector/.test(prst) ? "elbow" as const : "straight" as const;
+  const ln = children(spPr ?? null, "a:ln")[0];
+  const stroke = fillColor(ln, ink, ctx.scheme) ?? ink;
+  const strokeW = attr(ln ?? null, "w") ? Math.max(1, Math.round(Number(attr(ln, "w")) / 12700)) : 2;
+  // connection sites on a rect-ish shape run clockwise from the top
+  const SITE: Record<number, "t" | "r" | "b" | "l"> = { 0: "t", 1: "r", 2: "b", 3: "l" };
+  const cxn = (tag: string) => {
+    const c = first(children(el, "p:nvCxnSpPr")[0] ?? null, tag);
+    const id = attr(c ?? null, "id"), idx = attr(c ?? null, "idx");
+    const obj = id ? ctx.spids?.get(id) : undefined;
+    return obj ? { id: obj.id, side: SITE[Number(idx) % 4] ?? "t" } : undefined;
+  };
+  const x1 = x + (flipH ? w : 0), y1 = y + (flipV ? h : 0);
+  const x2 = x + (flipH ? 0 : w), y2 = y + (flipV ? 0 : h);
+  return {
+    id: newId(), type: "connector",
+    conn: { kind, x1: Math.round(x1), y1: Math.round(y1), x2: Math.round(x2), y2: Math.round(y2), from: cxn("a:stCxn"), to: cxn("a:endCxn") },
+    ...connBox(x1, y1, x2, y2), z: 0, stroke, strokeW,
+    rotate: rot ? Math.round(Number(rot) / 60000) : undefined,
+  };
+}
+
+const connBox = (x1: number, y1: number, x2: number, y2: number) => ({
+  x: Math.round(Math.min(x1, x2)), y: Math.round(Math.min(y1, y2)),
+  w: Math.max(1, Math.round(Math.abs(x2 - x1))), h: Math.max(1, Math.round(Math.abs(y2 - y1))),
+});
+
 async function parseGraphicFrame(gf: Element, ctx: Ctx, ink: string): Promise<SlideObject | null> {
   const uri = attr(first(gf, "a:graphicData") ?? null, "uri") ?? "";
   if (uri.includes("chart")) return parseChart(gf, ctx);
@@ -257,7 +335,9 @@ async function parseGraphicFrame(gf: Element, ctx: Ctx, ink: string): Promise<Sl
 }
 
 async function parseChildren(parent: Element | null, ctx: Ctx, ink: string, t: { ox: number; oy: number; sx: number; sy: number }, out: SlideObject[]) {
+  const deferred: { el: Element; t: typeof t }[] = [];
   for (const el of [...(parent?.children ?? [])]) {
+    if (el.tagName === "p:cxnSp") { deferred.push({ el, t }); continue; } // after shapes so stCxn/endCxn resolve
     if (el.tagName === "p:sp") {
       const o = await parseSp(el, ctx, ink, ctx.scheme, t);
       if (o) out.push(o);
@@ -282,6 +362,10 @@ async function parseChildren(parent: Element | null, ctx: Ctx, ink: string, t: {
         sx: t.sx * sx, sy: t.sy * sy,
       }, out);
     }
+  }
+  for (const d of deferred) {
+    const o = parseCxnSp(d.el, ctx, ink, d.t);
+    if (o) out.push(o);
   }
 }
 
@@ -413,6 +497,31 @@ async function parsePartObjects(zip: import("jszip"), parser: DOMParser, path: s
   return objects;
 }
 
+/** layout/master part → placeholder geometry map ("type:idx" → EMU xfrm).
+ *  Slide placeholders that omit their own a:xfrm inherit from this. */
+async function parsePhGeom(zip: import("jszip"), parser: DOMParser, path: string): Promise<Map<string, PhGeom>> {
+  const map = new Map<string, PhGeom>();
+  const file = zip.file(path);
+  if (!file) return map;
+  const doc = parser.parseFromString(await file.async("text"), "text/xml");
+  for (const sp of [...doc.getElementsByTagName("p:sp"), ...doc.getElementsByTagName("p:pic")]) {
+    const ph = phEl(sp);
+    if (!ph) continue;
+    const xfrm = children(children(sp, "p:spPr")[0] ?? null, "a:xfrm")[0];
+    const off = children(xfrm ?? null, "a:off")[0];
+    const ext = children(xfrm ?? null, "a:ext")[0];
+    if (!off || !ext) continue;
+    const key = `${attr(ph, "type") ?? "obj"}:${attr(ph, "idx") ?? "0"}`;
+    if (!map.has(key))
+      map.set(key, {
+        x: Number(attr(off, "x") ?? 0), y: Number(attr(off, "y") ?? 0),
+        cx: Number(attr(ext, "cx") ?? 0), cy: Number(attr(ext, "cy") ?? 0),
+        rot: attr(xfrm ?? null, "rot") != null ? Number(attr(xfrm, "rot")) : undefined,
+      });
+  }
+  return map;
+}
+
 /** Import a .pptx/.potx file into a Deck (best-effort OOXML mapping) */
 export async function importPptx(file: File): Promise<Deck> {
   const JSZip = (await import("jszip")).default;
@@ -440,13 +549,20 @@ export async function importPptx(file: File): Promise<Deck> {
   // P6.2 — first slide master → deck.master (non-placeholder objects)
   const masterPaths = zip.file(/ppt\/slideMasters\/slideMaster\d+\.xml$/).map((f) => f.name).sort();
   const master = masterPaths.length ? await parsePartObjects(zip, parser, masterPaths[0], scheme, ink) : undefined;
+  // placeholder geometry from master — layouts that omit a ph xfrm fall back here
+  const masterPhGeom = masterPaths.length ? await parsePhGeom(zip, parser, masterPaths[0]) : new Map<string, PhGeom>();
 
   // P6.2 — layouts → deck.layouts, keyed by basename; slides link via their layout rel
   const layoutCache = new Map<string, SlideObject[]>();
+  const layoutPhGeom = new Map<string, Map<string, PhGeom>>();
   const layoutKey = (path: string) => `ly_${path.slice(path.lastIndexOf("/") + 1).replace(/\D/g, "") || "x"}`;
   const getLayout = async (path: string) => {
     if (!layoutCache.has(path)) layoutCache.set(path, await parsePartObjects(zip, parser, path, scheme, ink));
     return layoutCache.get(path)!;
+  };
+  const getLayoutPhGeom = async (path: string) => {
+    if (!layoutPhGeom.has(path)) layoutPhGeom.set(path, await parsePhGeom(zip, parser, path));
+    return layoutPhGeom.get(path)!;
   };
 
   const slides: Slide[] = [];
@@ -457,7 +573,11 @@ export async function importPptx(file: File): Promise<Deck> {
     const name = path.slice(path.lastIndexOf("/") + 1);
     const rels = await parseRels(zip, `${dir}/_rels/${name}.rels`, dir);
     const spids = new Map<string, SlideObject>();
-    const ctx: Ctx = { zip, rels, base: dir, scheme, spids };
+    // resolve layout first — its placeholder geometry fills slide shapes
+    // that omit their own a:xfrm
+    const layoutTarget = [...rels.entries()].find(([, t]) => t.includes("slideLayouts"))?.[1];
+    const phGeom = layoutTarget ? await getLayoutPhGeom(layoutTarget) : undefined;
+    const ctx: Ctx = { zip, rels, base: dir, scheme, spids, phGeom, phGeomMaster: masterPhGeom };
     const doc = parser.parseFromString(await file.async("text"), "text/xml");
     const tree = doc.getElementsByTagName("p:spTree")[0];
     const objects: SlideObject[] = [];
@@ -465,7 +585,6 @@ export async function importPptx(file: File): Promise<Deck> {
     objects.forEach((o, i) => { o.z = i; });
 
     // P6.2 — slide layout link + animation timing + transition
-    const layoutTarget = [...rels.entries()].find(([, t]) => t.includes("slideLayouts"))?.[1];
     const layout = layoutTarget ? layoutKey(layoutTarget) : undefined;
     if (layoutTarget) void getLayout(layoutTarget);
     parseTiming(doc, spids);

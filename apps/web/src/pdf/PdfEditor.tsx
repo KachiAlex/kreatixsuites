@@ -695,8 +695,11 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
         const dataUrl = await new Promise<string>((res, rej) => {
           const fr = new FileReader(); fr.onload = () => res(String(fr.result)); fr.onerror = rej; fr.readAsDataURL(f);
         });
-        const dims = await new Promise<{ w: number; h: number }>((res) => {
-          const im = new Image(); im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight }); im.src = dataUrl;
+        const dims = await new Promise<{ w: number; h: number }>((res, rej) => {
+          const im = new Image();
+          im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight });
+          im.onerror = () => rej(new Error(`undecodable image: ${f.name}`));
+          im.src = dataUrl;
         });
         return { dataUrl, ...dims };
       }));

@@ -365,10 +365,12 @@ ${OPARA}
       }, merges: [{ c1: 0, r1: 5, c2: 2, r2: 5 }] as never,
         colWidths: { 1: 160 }, hiddenCols: [2],
         filter: { range: "A1:B4", cols: {} },
+        freeze: { rows: 1, cols: 0 }, tabColor: "#4472C4",
       },
-      { name: "Notes", cells: { A1: { v: "second sheet" } } },
+      { name: "Notes", cells: { A1: { v: "second sheet" } }, hidden: true },
     ],
     props: { title: "P&L Book", author: "Kreatix" },
+    names: { TaxRate: "'P&L'!$B$2" },
   };
   const bytes = await workbookToXLSXBytes(wb as never);
   const back = await xlsxToWorkbook(fileOf(bytes, "book.xlsx"));
@@ -383,6 +385,24 @@ ${OPARA}
   check("xlsx: col width", back.sheets[0].colWidths?.[1] === 160);
   check("xlsx: hidden col", back.sheets[0].hiddenCols?.includes(2));
   check("xlsx: autofilter", back.sheets[0].filter?.range === "A1:B4");
+  // deep styles via styles.xml side-channel + freeze + names + hidden
+  check("xlsx: bold font", back.sheets[0].cells.A1?.s?.b === true);
+  check("xlsx: freeze pane", back.sheets[0].freeze?.rows === 1);
+  check("xlsx: defined name", back.names?.TaxRate === "'P&L'!$B$2");
+  check("xlsx: hidden sheet", back.sheets[1].hidden === true);
+}
+
+// ---------- XFDF ----------
+{
+  const { parseFdf } = await import("./src/pdf/fdf");
+  const xfdf = `<?xml version="1.0" encoding="UTF-8"?><xfdf xmlns="http://ns.adobe.com/xfdf/" xml:space="preserve">
+<annots><highlight page="0" rect="100,700,200,720" color="#FF0000" title="Ann" contents="mark this" coords="100,720,200,720,100,700,200,700"/>
+<line page="1" start="10,20" end="110,20" head="OpenArrow" color="#00FF00"/>
+<text page="2" rect="50,50,60,60" title="Bob" contents="note here"/></annots></xfdf>`;
+  const anns = parseFdf(xfdf);
+  check("xfdf: highlight parsed", anns.some((a) => a.type === "highlight" && a.page === 1 && a.author === "Ann"));
+  check("xfdf: line arrow", anns.some((a) => a.type === "arrow" && a.page === 2));
+  check("xfdf: note", anns.some((a) => a.type === "note" && a.page === 3));
 }
 
 // ---------- CSV ----------
