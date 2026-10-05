@@ -48,7 +48,7 @@ import { Field } from "./extensions/field";
 import { Bookmark } from "./extensions/bookmark";
 import { Tof } from "./extensions/tof";
 import { CaptionDialog, BookmarkDialog, CrossRefDialog } from "./ReferenceDialogs";
-import { docVocabulary, suggest, synonyms } from "./proofing";
+import { docVocabulary, suggest, synonyms, PROOF_LANGS, proofingLanguage, setProofingLanguage } from "./proofing";
 import { ReadabilityDialog, AccessibilityDialog } from "./ToolDialogs";
 import { Spellcheck, SPELL_KEY } from "./extensions/spellcheck";
 import { diffDocs, docText } from "./diff";
@@ -61,7 +61,7 @@ import { LinkPopover } from "./LinkPopover";
 import { safeUrl } from "../lib/sanitize";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup, type PageSetup } from "./PageSetup";
-import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry } from "./extensions/extras";
+import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry, Redact, scrubRedactions } from "./extensions/extras";
 import { GoToDialog, FontDialog, TocOptionsDialog, NoteOptionsDialog, RestrictDialog, UnprotectDialog, EquationPalette, ChartDialog, ShapeDialog, WordArtDialog, MergeDialog, CitationDialog, HeaderFooterDialog, insertIndexAt } from "./MoreDialogs";
 import { ModeSwitcher, SuggestionsBadge, SuggestionsPanel } from "./SuggestBar";
 import { MiniPrompt, type MiniPromptSpec } from "./MiniPrompt";
@@ -126,6 +126,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const forcedMode = permission === "reviewer" ? "suggest" : undefined;
   const { msg, toast } = useToast();
   const [title, setTitle] = useState(item.name);
+  const [, setProofTick] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [panel, setPanel] = useState<Panel>(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
@@ -273,7 +274,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       ParagraphSpacing,
       KxParaFormat,
       ListStyle,
-      DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry,
+      DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry, Redact,
       PageBreak, SectionBreak, ColumnBreak, Columns, ClearBreak, SignatureLine,
       ForcedBreaks,
       Footnote,
@@ -1146,7 +1147,10 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   const download = async (fmt: string) => {
     if (!editor) return;
+    // redact marks burn to block chars on every export path — the document
+    // keeps the text, but no exported artifact may contain it
     const json = editor.getJSON() as never;
+    scrubRedactions(json as { content?: unknown[] });
     const name = title;
     try {
       if (fmt === "docx") {
@@ -1161,8 +1165,20 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       }
       const mod = await import("./export/index");
       if (fmt === "md") return mod.downloadMd(json, name);
-      if (fmt === "html") return mod.downloadHtml(name, editor.getHTML(), readPageSetup(editor));
-      if (fmt === "txt") return mod.downloadTxt(editor, name);
+      if (fmt === "html") {
+        const d = new DOMParser().parseFromString(editor.getHTML(), "text/html");
+        d.querySelectorAll("[data-redact]").forEach((el) => {
+          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+        });
+        return mod.downloadHtml(name, `<body>${d.body.innerHTML}</body>`, readPageSetup(editor));
+      }
+      if (fmt === "txt") {
+        const doc = new DOMParser().parseFromString(editor.getHTML(), "text/html");
+        doc.querySelectorAll("[data-redact]").forEach((el) => {
+          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+        });
+        return mod.downloadTxtRaw(doc.body.innerText, name);
+      }
       if (fmt === "rtf") return mod.downloadRtf(json, name);
       if (fmt === "odt") return mod.downloadOdt(json, name);
       if (fmt === "pdf") {
@@ -1171,6 +1187,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         const clone = editor.view.dom.cloneNode(true) as HTMLElement;
         clone.removeAttribute("contenteditable");
         clone.removeAttribute("spellcheck");
+        clone.querySelectorAll("[data-redact]").forEach((el) => {
+          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+        });
         clone.querySelectorAll(".img-resize-handle").forEach((el) => el.remove());
         clone.querySelectorAll("[contenteditable],[data-drag-handle]")
           .forEach((el) => { el.removeAttribute("contenteditable"); el.removeAttribute("data-drag-handle"); });
@@ -1764,7 +1783,22 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       { label: "Readability statistics", onClick: () => setReadDlg(true) },
       { label: "Check accessibility", onClick: () => setA11yDlg(true) },
       { label: "Spellcheck squiggles", checked: state?.spellOn, onClick: () => ed.chain().focus().toggleSpellcheck().run() },
+      { label: `Proofing language: ${PROOF_LANGS.find((l) => l.tag === proofingLanguage())?.label ?? "English (US)"}`,
+        submenu: PROOF_LANGS.map((l) => ({
+          label: l.label,
+          checked: proofingLanguage() === l.tag,
+          onClick: () => {
+            if (proofingLanguage() === l.tag) return;
+            void setProofingLanguage(l.tag).then(() => {
+              ed.view.dispatch(ed.state.tr.setMeta("kxSpellForce", true));
+              setProofTick((x) => x + 1);
+            });
+          },
+        })) },
       { label: "AutoCorrect as you type", checked: state?.typoOn, onClick: () => ed.chain().toggleTypography().run() },
+      ...(canMutate ? [
+        { label: "Redact selection", onClick: () => ed.chain().focus().toggleRedact().run() } as MenuItem,
+      ] : []),
       { divider: true },
       ...(canMutate ? [
         { label: dictating ? "Stop dictation 🎤" : "Dictate (speech to text) 🎤", checked: dictating, onClick: toggleDictation } as MenuItem,

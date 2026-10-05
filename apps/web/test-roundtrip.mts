@@ -166,6 +166,21 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("track: del keeps author", /<del\b[^>]*data-author-name="Bob"/.test(html));
 }
 
+// ---------- DOCX: redact mark scrubs exported text ----------
+{
+  const JSZip = (await import("jszip")).default;
+  const { scrubRedactions } = await import("./src/writer/extensions/extras");
+  const doc = { type: "doc", content: [{ type: "paragraph", content: [
+    { type: "text", text: "public " },
+    { type: "text", text: "SECRET12", marks: [{ type: "redact" }] },
+  ] }] };
+  scrubRedactions(doc as never);
+  const blob = await exportDocxBytes(doc as never, "redacted");
+  const xml = await (await JSZip.loadAsync(await blob.arrayBuffer())).file("word/document.xml")!.async("text");
+  check("redact: blocks in docx", xml.includes("████████") && !xml.includes("SECRET12"));
+  check("redact: scrub preserves neighbors", xml.includes("public"));
+}
+
 // ---------- DOCX: w:sdt content controls round-trip ----------
 {
   const JSZip = (await import("jszip")).default;

@@ -1829,6 +1829,8 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .kx-textbox{margin:8px 0}
 .kx-cite{color:var(--k-orange-dark);background:var(--k-orange-soft);border-radius:4px;padding:0 3px;cursor:default;font-size:.94em}
 .kx-ie{border-bottom:1px dotted #8B837D}
+.kx-redact{background:#171614;color:#171614;user-select:text}
+.kx-redact::selection{background:#171614;color:#171614}
 
 /* ===== landing page (per Animated Homepage concept) ===== */
 .lp{--l-orange:#f57928;--l-ink:#191917;--l-muted:#73736d;--l-line:#e7e6df;--l-cream:#f6f5ef;

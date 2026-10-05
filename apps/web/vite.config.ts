@@ -18,11 +18,17 @@ export default defineConfig({
         // offline editing (pdf.worker ~1.3MB is the largest chunk)
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         // OCR runtime (~7MB) fetches lazily on first use and caches in IDB —
-        // no point precaching it into the SW
-        globIgnores: ["tesseract/**"],
+        // no point precaching it into the SW. Spellcheck dictionaries are the
+        // same story — ~8MB of hunspell data, only one language ever loads.
+        globIgnores: ["tesseract/**", "assets/dict-*.js"],
         cleanupOutdatedCaches: true,
-        // never cache API or realtime endpoints at runtime
-        runtimeCaching: [],
+        // never cache API or realtime endpoints at runtime; dict chunks the SW
+        // skipped get a CacheFirst route so a language survives offline after
+        // its first fetch
+        runtimeCaching: [{
+          urlPattern: /\/assets\/dict-[a-z]+-[A-Za-z0-9_-]+\.js$/,
+          handler: "CacheFirst",
+        }],
       },
     }),
   ],

@@ -37,7 +37,7 @@ function computeMisses(doc: PMNode, ignored: Set<string>): Miss[] {
 
 function scanNode(node: PMNode, pos: number, ignored: Set<string>, out: Miss[]) {
   if (!node.isText || !node.text) return;
-  for (const m of node.text.matchAll(/[A-Za-z][A-Za-z'’-]*/g)) {
+  for (const m of node.text.matchAll(/[\p{L}\p{M}][\p{L}\p{M}'’-]*/gu)) {
     const w = m[0];
     if (ignored.has(w.toLowerCase())) continue;
     if (!checkWord(w)) out.push({ word: w, from: pos + (m.index ?? 0), to: pos + (m.index ?? 0) + w.length });

@@ -35,6 +35,8 @@ declare module "@tiptap/core" {
     indexEntry: {
       markIndexEntry: (entry: string, sub?: string) => ReturnType;
       unmarkIndexEntry: () => ReturnType;
+      /** Toggle the redaction mark on the selection. */
+      toggleRedact: () => ReturnType;
     };
   }
 }
@@ -628,6 +630,36 @@ export const IndexEntry = Mark.create({
     };
   },
 });
+
+/* ----------------------------------------------------------------- redact */
+
+/** Redaction mark — marked text renders as a black bar and is burned to
+ *  block characters on every export path (docx/pdf/html/md/rtf/odt/txt), so
+ *  the underlying text never leaves the app in exported output. The document
+ *  itself keeps the text (it's still editable) — exports are the boundary. */
+export const Redact = Mark.create({
+  name: "redact",
+  parseHTML() { return [{ tag: "span[data-redact]" }]; },
+  renderHTML() {
+    return ["span", { "data-redact": "1", class: "kx-redact" }, 0];
+  },
+  addCommands() {
+    return {
+      toggleRedact:
+        () =>
+        ({ commands }) =>
+          commands.toggleMark(this.name),
+    };
+  },
+});
+
+/** TipTap JSON deep-walk — replace text nodes carrying the redact mark with
+ *  solid block glyphs (length preserved). Applied to a clone before export. */
+export function scrubRedactions(node: { text?: string; marks?: { type: string }[]; content?: unknown[] }): void {
+  if (node.text && (node.marks ?? []).some((m) => m.type === "redact"))
+    node.text = "█".repeat(Math.max(1, node.text.length));
+  for (const c of node.content ?? []) scrubRedactions(c as typeof node);
+}
 
 /** Format a footnote/endnote ordinal (decimal/alpha/roman). */
 export function fmtN(n: number, fmt: string): string {

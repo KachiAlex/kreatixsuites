@@ -33,13 +33,62 @@ export function addToDict(word: string) {
 }
 
 // ---- spellcheck dictionary ----
-// A real hunspell dictionary (~50k stems + affix rules, vendored in dict-en/)
-// is lazily loaded so the writer chunk doesn't carry it. Until it resolves the
-// CORE_WORDS + morphology rules below act as the fallback; test harnesses can
-// inject the dictionary directly via loadDictionary().
+// Real hunspell dictionaries (vendored under dict-*/) are lazily loaded so the
+// writer chunk doesn't carry them. Until one resolves the CORE_WORDS +
+// morphology rules act as the fallback; test harnesses can inject the
+// dictionary directly via loadDictionary().
 let spell: Spell | null = null;
 let dictState: "idle" | "loading" | "ready" | "failed" = "idle";
 let dictPromise: Promise<void> | null = null;
+
+export const PROOF_LANGS = [
+  { tag: "en-US", label: "English (US)" },
+  { tag: "de-DE", label: "Deutsch" },
+  { tag: "es-ES", label: "Español" },
+  { tag: "fr-FR", label: "Français" },
+  { tag: "pt-PT", label: "Português" },
+] as const;
+export type ProofLang = (typeof PROOF_LANGS)[number]["tag"];
+
+const DICT_LOADERS: Record<ProofLang, () => Promise<[string, string]>> = {
+  "en-US": async () => [
+    (await import("./dict-en/en_US.aff?raw")).default,
+    (await import("./dict-en/en_US.dic?raw")).default,
+  ],
+  "de-DE": async () => [
+    (await import("./dict-de/index.aff?raw")).default,
+    (await import("./dict-de/index.dic?raw")).default,
+  ],
+  "es-ES": async () => [
+    (await import("./dict-es/index.aff?raw")).default,
+    (await import("./dict-es/index.dic?raw")).default,
+  ],
+  "fr-FR": async () => [
+    (await import("./dict-fr/index.aff?raw")).default,
+    (await import("./dict-fr/index.dic?raw")).default,
+  ],
+  "pt-PT": async () => [
+    (await import("./dict-pt/index.aff?raw")).default,
+    (await import("./dict-pt/index.dic?raw")).default,
+  ],
+};
+
+const LANG_KEY = "kreatix.proofLang";
+let dictLang: ProofLang | null = null;
+
+/** Active proofing language: persisted choice → navigator.language → en-US. */
+export function proofingLanguage(): ProofLang {
+  if (!dictLang) {
+    const saved = localStorage.getItem(LANG_KEY) as ProofLang | null;
+    if (saved && saved in DICT_LOADERS) dictLang = saved;
+    else {
+      const nav = (typeof navigator !== "undefined" ? navigator.language : "") || "";
+      dictLang = (Object.keys(DICT_LOADERS) as ProofLang[])
+        .find((t) => nav.toLowerCase().startsWith(t.slice(0, 2))) ?? "en-US";
+    }
+  }
+  return dictLang;
+}
 
 /** True while the hunspell dictionary is still being fetched/parsed —
  *  callers can suppress decorations rather than flash false squiggles. */
@@ -52,20 +101,31 @@ export async function loadDictionary(aff: string | Uint8Array, dic: string | Uin
   dictState = "ready";
 }
 
+/** Switch proofing language — persists the choice and (re)loads the dict. */
+export async function setProofingLanguage(tag: ProofLang): Promise<void> {
+  dictLang = tag;
+  localStorage.setItem(LANG_KEY, tag);
+  dictState = "loading";
+  dictPromise = null;
+  dictPromise = loadDictionaryFor(tag).catch(() => { dictState = "failed"; });
+  await dictPromise;
+}
+
+function loadDictionaryFor(tag: ProofLang): Promise<void> {
+  return DICT_LOADERS[tag]().then(([a, d]) => loadDictionary(a, d));
+}
+
 export function ensureDictionary(): Promise<void> {
   if (dictState === "idle") {
     dictState = "loading";
-    dictPromise = Promise.all([
-      import("./dict-en/en_US.aff?raw"),
-      import("./dict-en/en_US.dic?raw"),
-    ]).then(([a, d]) => loadDictionary(a.default, d.default))
+    dictPromise = loadDictionaryFor(proofingLanguage())
       .catch(() => { dictState = "failed"; });
   }
   return dictPromise ?? Promise.resolve();
 }
 
 const VOWELISH = /[aeiou]/;
-const isWord = (w: string) => /^[a-zA-Z][a-zA-Z'’-]*$/.test(w);
+const isWord = (w: string) => /^[\p{L}\p{M}][\p{L}\p{M}'’-]*$/u.test(w);
 
 /** Is this word acceptable? Checks the core vocabulary, morphology-derived
  *  forms, and the user's custom dictionary. Capitalized words pass (proper
@@ -108,7 +168,7 @@ export function docVocabulary(text: string): Set<string> {
   const s = new Set<string>();
   // only words that pass the spellcheck may feed suggestions — anything else
   // would produce "corrections" the checker immediately re-flags
-  for (const m of text.matchAll(/[A-Za-z][A-Za-z'’-]+/g)) if (checkWord(m[0])) s.add(m[0].toLowerCase());
+  for (const m of text.matchAll(/[\p{L}\p{M}][\p{L}\p{M}'’-]+/gu)) if (checkWord(m[0])) s.add(m[0].toLowerCase());
   for (const w of CORE_WORDS) s.add(w);
   for (const w of getCustomDict()) s.add(w);
   return s;
@@ -161,7 +221,7 @@ export function suggest(word: string, vocab: Set<string>, max = 6): string[] {
 export interface Miss { word: string; from: number; to: number }
 export function spellcheckText(text: string, basePos: number): Miss[] {
   const out: Miss[] = [];
-  for (const m of text.matchAll(/[A-Za-z][A-Za-z'’-]*/g)) {
+  for (const m of text.matchAll(/[\p{L}\p{M}][\p{L}\p{M}'’-]*/gu)) {
     const w = m[0];
     if (!checkWord(w)) out.push({ word: w, from: basePos + (m.index ?? 0), to: basePos + (m.index ?? 0) + w.length });
   }
@@ -182,7 +242,7 @@ function syllables(word: string): number {
   return Math.max(1, groups?.length ?? 1);
 }
 export function readability(text: string): Readability {
-  const words = (text.match(/[A-Za-z'’-]+/g) ?? []).filter((w) => /[a-zA-Z]/.test(w));
+  const words = (text.match(/[\p{L}\p{M}'’-]+/gu) ?? []).filter((w) => /[\p{L}]/u.test(w));
   const sentences = Math.max(1, (text.match(/[.!?]+(\s|$)/g) ?? []).length || 1);
   let syl = 0, long = 0;
   for (const w of words) { const s = syllables(w); syl += s; if (s >= 3) long++; }

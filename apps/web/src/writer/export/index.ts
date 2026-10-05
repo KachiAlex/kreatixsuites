@@ -82,6 +82,11 @@ export function downloadTxt(editor: Editor, name: string) {
   downloadBlob(new Blob([editor.getText({ blockSeparator: "\n\n" })], { type: "text/plain" }), `${baseName(name)}.txt`);
 }
 
+/** txt export from pre-scrubbed text (redaction blocks baked in). */
+export function downloadTxtRaw(text: string, name: string) {
+  downloadBlob(new Blob([text], { type: "text/plain" }), `${baseName(name)}.txt`);
+}
+
 export function downloadRtf(doc: Json, name: string) {
   downloadBlob(rtfBlob(doc, name), `${baseName(name)}.rtf`);
 }
