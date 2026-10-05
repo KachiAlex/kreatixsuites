@@ -1,8 +1,10 @@
-import { API_BASE, isDesktop } from "./platform";
+import { API_BASE, isDesktop, isNativeMobile } from "./platform";
 import { isAnonymous } from "./offline/trial";
 
-/** The offline mirror is active for the desktop shell and anonymous sessions. */
-const offlineActive = () => isDesktop || isAnonymous();
+/** The offline mirror is active for the bundled shells (desktop, Android/iOS
+ *  WebView) and anonymous sessions — anywhere the app runs from local assets
+ *  while the API may be unreachable. */
+const offlineActive = () => isDesktop || isNativeMobile || isAnonymous();
 
 const TOKEN_KEY = "kreatix.token";
 

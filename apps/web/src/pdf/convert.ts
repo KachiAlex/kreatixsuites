@@ -17,10 +17,7 @@ async function pageLines(page: PDFPageProxy): Promise<{ x: number; s: string; h:
 }
 
 const download = (blob: Blob, name: string) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void import("../lib/saveFile").then((m) => m.saveFile(blob, name));
 };
 
 /** PDF-13.2 — each page becomes a worksheet; items land in columns by x-bucket. */

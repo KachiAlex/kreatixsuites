@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { SAML } from "@node-saml/node-saml";
 import { one, run, now } from "../db.js";
 import { initials, signToken, type UserRow } from "../auth.js";
+import { issueMobileCode, mobileAuthRedirect } from "../mobileAuth.js";
 
 const ENTRY_POINT = process.env.KREATIX_SAML_ENTRY_POINT;
 const ISSUER = process.env.KREATIX_SAML_ISSUER;
@@ -60,11 +61,14 @@ export function samlRoutes(app: FastifyInstance) {
     return reply.type("application/samlmetadata+xml").send(xml);
   });
 
-  /** SP-initiated login → redirect to IdP. */
+  /** SP-initiated login → redirect to IdP. ?client=mobile marks RelayState so
+   *  the ACS POST returns a kx:// deep link (the response rides the system
+   *  browser; a cookie wouldn't make it back into the app). */
   app.get("/api/auth/saml", async (req, reply) => {
     if (!samlEnabled) return reply.code(404).send({ error: "saml_disabled" });
     try {
-      const url = await samlFor(req).getAuthorizeUrlAsync("", req.headers.host ?? "", {});
+      const mobile = (req.query as { client?: string }).client === "mobile";
+      const url = await samlFor(req).getAuthorizeUrlAsync(mobile ? "kx-mobile" : "", req.headers.host ?? "", {});
       return reply.redirect(url, 302);
     } catch (e) {
       return reply.code(502).send({ error: "saml_error", message: String(e) });
@@ -76,6 +80,9 @@ export function samlRoutes(app: FastifyInstance) {
     if (!samlEnabled) return reply.code(404).send({ error: "saml_disabled" });
     const body = (req.body ?? {}) as Record<string, string>;
     if (!body.SAMLResponse) return reply.code(400).send({ error: "missing SAMLResponse" });
+    const mobile = body.RelayState === "kx-mobile";
+    const fail = (msg: string) => reply.redirect(
+      mobile ? mobileAuthRedirect({ sso_error: msg }) : `/login?sso_error=${msg}`, 302);
     try {
       const { profile } = await samlFor(req).validatePostResponseAsync(body);
       if (!profile) throw new Error("no profile in SAML response");
@@ -84,7 +91,7 @@ export function samlRoutes(app: FastifyInstance) {
         ?? profile["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"]
         ?? profile.nameID ?? "",
       );
-      if (!email || !email.includes("@")) return reply.redirect("/login?sso_error=saml_no_email", 302);
+      if (!email || !email.includes("@")) return fail("saml_no_email");
       const name = String(
         profile.displayName ?? profile["http://schemas.microsoft.com/identity/claims/displayname"]
         ?? ([profile.givenName ?? profile["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"],
@@ -103,15 +110,16 @@ export function samlRoutes(app: FastifyInstance) {
         );
         row = (await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!;
       }
-      if (row.disabled) return reply.redirect("/login?sso_error=account_disabled", 302);
+      if (row.disabled) return fail("account_disabled");
       const token = await signToken(row.id);
+      if (mobile) return reply.redirect(mobileAuthRedirect({ code: issueMobileCode(token) }), 302);
       const secure = callbackUrl(req).startsWith("https:") ? "; Secure" : "";
       reply.header("set-cookie",
         `kx_sso=${token}; HttpOnly; Path=/api/auth/sso/exchange; Max-Age=60; SameSite=Lax${secure}`);
       return reply.redirect("/login?sso=1", 302);
     } catch (e) {
       req.log.warn({ err: String(e) }, "saml callback failed");
-      return reply.redirect("/login?sso_error=saml_failed", 302);
+      return fail("saml_failed");
     }
   });
 }

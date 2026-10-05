@@ -1,4 +1,5 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { saveFile } from "../lib/saveFile";
 
 /**
  * PDF-13.1 — extract the document's text and write it out as a .docx.
@@ -32,10 +33,5 @@ export async function exportPdfToDocx(doc: PDFDocumentProxy, fileName: string): 
   }
 
   const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName.replace(/\.pdf$/i, "") + ".docx";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(blob, fileName.replace(/\.pdf$/i, "") + ".docx");
 }

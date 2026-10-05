@@ -17,6 +17,7 @@ import { DEFAULT_STYLES, cssFor, loadStyleDefs, styleDefsOf, type StyleDef } fro
 import type { DocProps } from "./DocProps";
 import { applyPageSetup, readPageSetup, type PageSetup } from "./PageSetup";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
+import { saveFile } from "../lib/saveFile";
 
 type Json = Record<string, unknown>;
 
@@ -807,12 +808,7 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
 /** TipTap JSON → .docx download (KBS-WRITER-001) */
 export async function exportDocx(doc: Block, name: string, opts: DocxExportOpts = {}) {
   const blob = await exportDocxBytes(doc, name, opts);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name.replace(/\.[^.]+$/, "") + ".docx";
-  a.click();
-  URL.revokeObjectURL(url);
+  void saveFile(blob, name.replace(/\.[^.]+$/, "") + ".docx");
 }
 
 // ---- DOCX math re-import ---------------------------------------------------

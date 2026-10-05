@@ -9,6 +9,7 @@ import { PresenceBar } from "../collab/PresenceBar";
 import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { writeKx, readKx } from "../lib/clipboard";
 import { OpenCancelledError } from "../lib/passwordPrompt";
+import { isNativeMobile } from "../lib/platform";
 import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
 import { createDoc } from "../lib/create";
@@ -961,7 +962,11 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
               { divider: true },
               { label: "Import PPTX / ODP…", onClick: () => pptxRef.current?.click() },
               { divider: true },
-              { label: "Export PDF", submenu: [
+              // WebView has no window.print — mobile exports a real PDF file
+              { label: "Export PDF", submenu: isNativeMobile ? [
+                { label: "All slides — PDF file", onClick: () => void import("./pdf")
+                    .then((m) => m.exportDeckPdf(deck, title, toast)).catch(() => toast("PDF export failed")) },
+              ] : [
                 { label: "Full-page slides", onClick: () => { setPrintLayout("slides"); setPrinting(true); } },
                 { label: "Handouts · 2/page", onClick: () => { setPrintLayout("handout2"); setPrinting(true); } },
                 { label: "Handouts · 4/page", onClick: () => { setPrintLayout("handout4"); setPrinting(true); } },

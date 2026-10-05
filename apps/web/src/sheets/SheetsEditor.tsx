@@ -16,6 +16,7 @@ import { OpenCancelledError } from "../lib/passwordPrompt";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../lib/hooks";
+import { saveFile } from "../lib/saveFile";
 import { clampToViewport } from "../lib/mobile";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario, RichRun } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
@@ -1030,9 +1031,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
         toast("Copied range as picture");
       } else throw new Error("no-clipboard");
     } catch {
-      const a = document.createElement("a");
-      a.href = cv.toDataURL("image/png");
-      a.download = "range.png"; a.click();
+      const png = await new Promise<Blob | null>((res) => cv.toBlob(res, "image/png"));
+      if (png) void saveFile(png, "range.png");
       toast("Downloaded range.png (clipboard images not permitted)");
     }
   }, [selection, sheet, evals, toast, wb.locale]);
@@ -1317,10 +1317,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   // ---- import/export ----
   const exportCSV = () => {
     const blob = new Blob([sheetToCSV(sheet, wb)], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${title}-${sheet.name}.csv`;
-    a.click();
+    void saveFile(blob, `${title}-${sheet.name}.csv`);
   };
   const onCsvImport = async (f: File) => {
     const imported = csvToSheet(f.name.replace(/\.[^.]+$/, ""), await f.text());

@@ -1,5 +1,6 @@
 import type { Deck, Slide, SlideObject } from "./model";
 import { chartSeries, deckSize, resolveConn } from "./model";
+import { saveFile } from "../lib/saveFile";
 
 // slide px → inches at 96dpi
 const IN = 1 / 96;
@@ -42,12 +43,7 @@ export async function exportPptx(deck: Deck, title: string) {
   const blob = new Blob([buf], {
     type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${title.replace(/\.[^.]+$/, "")}.pptx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  void saveFile(blob, `${title.replace(/\.[^.]+$/, "")}.pptx`);
 }
 
 function addObj(pptx: InstanceType<typeof import("pptxgenjs").default>, slide: { addText: Function; addShape: Function; addImage: Function; addTable: Function; addChart: Function; addMedia?: Function }, o: SlideObject, s?: Slide) {

@@ -10,6 +10,7 @@ import { createElement } from "react";
 import type { Deck, Slide } from "./model";
 import { deckSize, themeOf, masterObjects, layoutObjects } from "./model";
 import { SlideCanvas } from "./SlideCanvas";
+import { saveFile } from "../lib/saveFile";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,15 +43,15 @@ async function settleImages(host: HTMLElement) {
     i.complete ? Promise.resolve() : new Promise((r) => { i.onload = i.onerror = r; })));
 }
 
-/** Export the deck's visible slides as a timed .webm video (default 3s/slide + 400ms fade). */
-export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+/** Rasterize slides offscreen — one image per visible slide at deck size.
+ *  Shared by the video exporter and the PDF exporter (the mobile print path). */
+export async function rasterizeSlides(deck: Deck, onProgress?: (msg: string) => void): Promise<{ dims: { w: number; h: number }; frames: HTMLImageElement[] }> {
   const dims = deckSize(deck);
   const theme = themeOf(deck);
   const slides = deck.slides.filter((s) => !s.hidden);
   if (!slides.length) throw new Error("No visible slides to export");
   onProgress?.("Rendering slides…");
 
-  // 1. rasterize each slide
   const host = document.createElement("div");
   host.style.cssText = `position:fixed;left:-40000px;top:0;width:${dims.w}px;height:${dims.h}px;pointer-events:none`;
   document.body.appendChild(host);
@@ -73,6 +74,13 @@ export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: 
     root.unmount();
     host.remove();
   }
+  return { dims, frames };
+}
+
+/** Export the deck's visible slides as a timed .webm video (default 3s/slide + 400ms fade). */
+export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+  const { dims, frames } = await rasterizeSlides(deck, onProgress);
+  const slides = deck.slides.filter((s) => !s.hidden);
 
   // 2. record timed frames
   onProgress?.("Recording video…");
@@ -115,10 +123,5 @@ export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: 
   await done;
 
   const blob = new Blob(chunks, { type: "video/webm" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${title.replace(/\.[^.]+$/, "")}.webm`;
-  a.click();
-  URL.revokeObjectURL(url);
+  void saveFile(blob, `${title.replace(/\.[^.]+$/, "")}.webm`);
 }

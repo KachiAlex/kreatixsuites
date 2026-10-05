@@ -5,6 +5,7 @@ import { SHAPES, type ShapeKind, type ChartAttrs, parseChartAttrs, chartSvg, sha
 import { collectTargets, pageOfPos } from "./extensions/field";
 import type { PageSetup } from "./PageSetup";
 import { parseCsv } from "../sheets/io";
+import { saveFile } from "../lib/saveFile";
 
 const Overlay = ({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) => (
   <div className="modal-overlay" onClick={onClose}>
@@ -646,11 +647,7 @@ export function MergeDialog({ editor, initialCsv, onSaveCsv, onClose }:
       const { readPageSetup } = await import("./PageSetup");
       const blob = await exportDocxBytes({ type: "doc", content: mergedContent() }, "merged",
         { pageSetup: readPageSetup(editor) });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "merged.docx";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      void saveFile(blob, "merged.docx");
       onSaveCsv(csv);
     } finally { setExporting(false); }
   };

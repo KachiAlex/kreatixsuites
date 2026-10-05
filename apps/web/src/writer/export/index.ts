@@ -1,6 +1,8 @@
 import type { Editor } from "@tiptap/react";
 import katexCssUrl from "katex/dist/katex.min.css?url";
 import { downloadBlob, baseName, type Json } from "./common";
+import { saveFile } from "../../lib/saveFile";
+import { isNativeMobile, PUBLIC_ORIGIN } from "../../lib/platform";
 import { jsonToMarkdown } from "./markdown";
 import { rtfBlob } from "./rtf";
 import { odtBlob } from "./odt";
@@ -10,7 +12,7 @@ export { mdToHtml } from "./markdown";
 
 // KaTeX ships as a hashed asset — reference it by URL (not inline) so the
 // relative font paths inside it still resolve.
-const katexHref = new URL(katexCssUrl, location.origin).href;
+const katexHref = new URL(katexCssUrl, PUBLIC_ORIGIN).href;
 
 const PRINT_CSS = `
 body{font-family:'Inter',Georgia,serif;font-size:11pt;line-height:1.6;color:#1a1a1a;max-width:700px;margin:40px auto;padding:0 20px}
@@ -60,7 +62,7 @@ function pageRule(setup: PageSetup | undefined, rendered: boolean): string {
 /** Same-origin media (Drive raw URLs) must be absolutized for about:blank and
  *  standalone-file contexts. */
 function absolutize(html: string): string {
-  return html.replace(/(src|href)="(\/[^"]*)"/g, `$1="${location.origin}$2"`);
+  return html.replace(/(src|href)="(\/[^"]*)"/g, `$1="${PUBLIC_ORIGIN}$2"`);
 }
 
 function pageShell(name: string, html: string, setup?: PageSetup, rendered = false): string {
@@ -96,12 +98,19 @@ export async function downloadOdt(doc: Json, name: string) {
 }
 
 /** PDF export via a print-ready window — uses the paginated editor DOM so
- *  rendered pages map 1:1 onto sheets with headers/footers/page numbers. */
+ *  rendered pages map 1:1 onto sheets with headers/footers/page numbers.
+ *  Native WebView can't open print windows — save the print-ready HTML
+ *  (auto-prints when opened) as a file instead. */
 export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
+  const html = pageShell(name, absolutize(pagedHtml), setup, true)
+    .replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`);
+  if (isNativeMobile) {
+    void saveFile(new Blob([html], { type: "text/html" }), `${baseName(name)}.html`);
+    return;
+  }
   const win = window.open("", "_blank", "width=900,height=1200");
   if (!win) return;
-  win.document.write(pageShell(name, absolutize(pagedHtml), setup, true)
-    .replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`));
+  win.document.write(html);
   win.document.close();
 }
 

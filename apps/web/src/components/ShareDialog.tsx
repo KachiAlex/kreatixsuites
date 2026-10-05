@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DriveItem, FileShare, ShareLink } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { PUBLIC_ORIGIN } from "../lib/platform";
 import { Modal } from "./Modal";
 
 export function ShareDialog({ item, onClose, toast }: {
@@ -36,7 +37,7 @@ export function ShareDialog({ item, onClose, toast }: {
 
   const createLink = async () => {
     const r = await api.post<{ link: ShareLink; url: string }>(`/api/files/${item.id}/links`, { permission: linkPerm });
-    setNewLink(`${location.origin}${r.url}`);
+    setNewLink(`${PUBLIC_ORIGIN}${r.url}`);
     load();
   };
 
@@ -94,9 +95,9 @@ export function ShareDialog({ item, onClose, toast }: {
         )}
         {links.map((l) => (
           <div className="link-box" key={l.id} style={{ marginTop: 6 }}>
-            <code>{location.origin}/shared/{l.token}</code>
+            <code>{PUBLIC_ORIGIN}/shared/{l.token}</code>
             <span className="perm-badge">{l.permission}</span>
-            <button className="btn-ghost btn-sm" onClick={() => copy(`${location.origin}/shared/${l.token}`)}>Copy</button>
+            <button className="btn-ghost btn-sm" onClick={() => copy(`${PUBLIC_ORIGIN}/shared/${l.token}`)}>Copy</button>
             <button className="x" onClick={async () => { await api.del(`/api/files/${item.id}/links/${l.id}`); load(); }}>✕</button>
           </div>
         ))}

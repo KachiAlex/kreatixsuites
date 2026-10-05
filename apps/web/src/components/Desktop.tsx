@@ -1,18 +1,38 @@
-// Desktop-only wiring: file-open events from Windows (argv / second instance)
-// → import to Drive → open in the editor; sync loop; subscription entitlement.
+// Bundled-shell wiring: desktop file-open events (argv / second instance /
+// "Open with") → import to Drive → open in the editor; offline sync loop;
+// subscription entitlement. On the native mobile shell this also owns the
+// kx:// deep-link handler (SSO callback) and the shared toast bus
+// (kreatix:toast — file saves in the WebView can't use <a download>).
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { desktop, isDesktop } from "../lib/platform";
+import { desktop, isDesktop, isNativeMobile } from "../lib/platform";
+import { api } from "../lib/api";
 import { startSyncLoop } from "../lib/offline/sync";
 import { canEditOffline, entitlement, refreshEntitlement } from "../lib/offline/license";
 import { anonDaysLeft, isAnonymous } from "../lib/offline/trial";
 import { importLocalPath, kindForPath } from "../lib/offline/openLocal";
 import { useToast } from "../lib/hooks";
+import { useAuth } from "../lib/auth";
 
 export function DesktopBootstrap() {
   const navigate = useNavigate();
+  const { loginWithToken } = useAuth();
   const { msg, toast } = useToast();
 
+  // toast bus — saveFile() and friends broadcast here
+  useEffect(() => {
+    const h = (e: Event) => toast((e as CustomEvent<string>).detail);
+    window.addEventListener("kreatix:toast", h);
+    return () => window.removeEventListener("kreatix:toast", h);
+  }, [toast]);
+
+  // offline mirror sync — both bundled shells
+  useEffect(() => {
+    if (!isDesktop && !isNativeMobile) return;
+    return startSyncLoop();
+  }, []);
+
+  // desktop: OS file-open events → Drive import
   useEffect(() => {
     if (!isDesktop) return;
     const openPath = async (p: string) => {
@@ -29,10 +49,31 @@ export function DesktopBootstrap() {
       }
     };
     void desktop!.pendingFiles().then((ps) => ps.forEach((p) => void openPath(p)));
-    const off = desktop!.onOpenFile((p) => void openPath(p));
-    const stopSync = startSyncLoop();
-    return () => { off(); stopSync(); };
+    return desktop!.onOpenFile((p) => void openPath(p));
   }, [navigate, toast]);
+
+  // mobile: kx://auth?code=… deep links returning from the SSO/SAML browser
+  // flow — swap the one-time code for the session token
+  useEffect(() => {
+    if (!isNativeMobile) return;
+    let sub: { remove: () => void } | null = null;
+    void import("@capacitor/app").then(({ App }) => {
+      void App.addListener("appUrlOpen", ({ url }) => {
+        let u: URL;
+        try { u = new URL(url); } catch { return; }
+        if (u.protocol !== "kx:") return;
+        const code = u.searchParams.get("code");
+        const err = u.searchParams.get("sso_error") ?? u.searchParams.get("error");
+        if (err) { toast(`Sign-in failed — ${err.replaceAll("_", " ")}`); return; }
+        if (!code) return;
+        api.post<{ token: string }>("/api/auth/sso/mobile-exchange", { code })
+          .then((r) => loginWithToken(r.token))
+          .then(() => navigate("/home", { replace: true }))
+          .catch(() => toast("Sign-in link expired — try again"));
+      }).then((s) => { sub = s; });
+    });
+    return () => { void sub?.remove(); };
+  }, [navigate, toast, loginWithToken]);
 
   return msg ? <div className="toast" role="status" aria-live="polite">{msg}</div> : null;
 }

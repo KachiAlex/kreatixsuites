@@ -1,4 +1,5 @@
 import type { PdfAnn } from "./model";
+import { saveFile } from "../lib/saveFile";
 
 type P4 = [number, number, number, number];
 
@@ -52,12 +53,7 @@ export function exportFdf(anns: PdfAnn[], fileName: string): void {
     objs.push(`<< ${parts.join(" ")} >>`);
   }
   const fdf = `%FDF-1.2\n1 0 obj\n<< /FDF << /Annots [\n${objs.join("\n")}\n] >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n`;
-  const url = URL.createObjectURL(new Blob([fdf], { type: "application/vnd.fdf" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName.replace(/\.pdf$/i, "") + ".fdf";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(new Blob([fdf], { type: "application/vnd.fdf" }), fileName.replace(/\.pdf$/i, "") + ".fdf");
 }
 
 const grab = (src: string, re: RegExp) => re.exec(src)?.[1];
@@ -243,10 +239,5 @@ export function exportFormFdf(
       return `<< /T (${esc(f.name)}) /V ${v} >>`;
     });
   const fdf = `%FDF-1.2\n1 0 obj\n<< /FDF << /Fields [\n${rows.join("\n")}\n] >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n`;
-  const url = URL.createObjectURL(new Blob([fdf], { type: "application/vnd.fdf" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName.replace(/\.pdf$/i, "") + "-formdata.fdf";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(new Blob([fdf], { type: "application/vnd.fdf" }), fileName.replace(/\.pdf$/i, "") + "-formdata.fdf");
 }

@@ -19,19 +19,27 @@ export interface KxDesktop {
 }
 
 export const desktop: KxDesktop | undefined =
-  (window as unknown as { kxDesktop?: KxDesktop }).kxDesktop;
+  typeof window !== "undefined" ? (window as unknown as { kxDesktop?: KxDesktop }).kxDesktop : undefined;
 
 export const isDesktop = !!desktop?.isDesktop;
 
 /** Capacitor WebView (Android/iOS shells) — no kxDesktop bridge, but the app is
  *  still served from a local origin so API traffic needs the absolute host. */
-const capacitor = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+const capacitor = typeof window !== "undefined"
+  ? (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
+  : undefined;
 export const isNativeMobile = !!capacitor?.isNativePlatform?.();
 
 /** Origin for API/WS traffic. The desktop bundle runs on the kx:// scheme and
  *  the Android shell on https://localhost, so both must call the production
  *  origin explicitly; the browser app is same-origin. */
 export const API_BASE = (isDesktop || isNativeMobile) ? "https://suites.kreatixtech.com" : "";
+
+/** Public-facing origin for links shared OUT of the app (share links, invites,
+ *  media inside exported files). location.origin on web; the API origin on
+ *  bundled shells where the local origin (kx://, https://localhost) is
+ *  unreachable by anyone else. */
+export const PUBLIC_ORIGIN = API_BASE || (typeof location !== "undefined" ? location.origin : "");
 
 /**
  * Desktop/mobile only: rewrite <img src="/api/…"> (relative media URLs stored inside

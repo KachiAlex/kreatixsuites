@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { PdfAnn } from "./model";
+import { saveFile } from "../lib/saveFile";
 
 const PW = 612, PH = 792, M = 54;
 const INK = rgb(0.15, 0.13, 0.12);
@@ -56,10 +57,5 @@ export async function summarizeComments(anns: PdfAnn[], title: string): Promise<
   if (!anns.length) line("No comments or annotations in this document.", { muted: true });
 
   const bytes = await doc.save();
-  const url = URL.createObjectURL(new Blob([bytes.buffer.slice(0) as ArrayBuffer], { type: "application/pdf" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${title.replace(/\.pdf$/i, "")}-comments.pdf`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(new Blob([bytes.buffer.slice(0) as ArrayBuffer], { type: "application/pdf" }), `${title.replace(/\.pdf$/i, "")}-comments.pdf`);
 }

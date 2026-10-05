@@ -13,6 +13,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { one, run, now } from "../db.js";
 import { initials, signToken, type UserRow } from "../auth.js";
+import { consumeMobileCode, issueMobileCode, mobileAuthRedirect } from "../mobileAuth.js";
 
 const ISSUER = process.env.KREATIX_OIDC_ISSUER?.replace(/\/$/, "");
 const CLIENT_ID = process.env.KREATIX_OIDC_CLIENT_ID;
@@ -36,18 +37,19 @@ function discover(): Promise<Discovery> {
   return discoveryPromise;
 }
 
-// single-use state nonces, 10-minute TTL
-const states = new Map<string, number>();
-const newState = () => {
+// single-use state nonces, 10-minute TTL; value flags a mobile client
+// (?client=mobile → callback returns a kx:// deep link instead of /login)
+const states = new Map<string, { exp: number; mobile: boolean }>();
+const newState = (mobile = false) => {
   const s = randomBytes(16).toString("hex");
-  states.set(s, Date.now() + 600_000);
-  for (const [k, exp] of states) if (exp < Date.now()) states.delete(k);
+  states.set(s, { exp: Date.now() + 600_000, mobile });
+  for (const [k, v] of states) if (v.exp < Date.now()) states.delete(k);
   return s;
 };
 const consumeState = (s: string) => {
-  const exp = states.get(s);
+  const e = states.get(s);
   states.delete(s);
-  return exp !== undefined && exp > Date.now();
+  return e && e.exp > Date.now() ? { ok: true as const, mobile: e.mobile } : { ok: false as const, mobile: false };
 };
 
 function callbackUrl(req: { headers: Record<string, unknown> }): string {
@@ -64,6 +66,7 @@ export function ssoRoutes(app: FastifyInstance) {
 
   app.get("/api/auth/sso", async (req, reply) => {
     if (!ssoEnabled) return reply.code(404).send({ error: "sso_disabled" });
+    const mobile = (req.query as { client?: string }).client === "mobile";
     try {
       const disco = await discover();
       const url = new URL(disco.authorization_endpoint);
@@ -72,7 +75,7 @@ export function ssoRoutes(app: FastifyInstance) {
         redirect_uri: callbackUrl(req),
         response_type: "code",
         scope: SCOPE,
-        state: newState(),
+        state: newState(mobile),
       }).toString();
       return reply.redirect(url.toString(), 302);
     } catch (e) {
@@ -83,10 +86,12 @@ export function ssoRoutes(app: FastifyInstance) {
   app.get("/api/auth/sso/callback", async (req, reply) => {
     if (!ssoEnabled) return reply.code(404).send({ error: "sso_disabled" });
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
-    if (error) return reply.redirect(`/login?sso_error=${encodeURIComponent(error)}`, 302);
-    if (!code || !state || !consumeState(state)) {
-      return reply.redirect("/login?sso_error=invalid_state", 302);
-    }
+    const st = state ? consumeState(state) : { ok: false as const, mobile: false };
+    // mobile clients return into the app via a kx:// deep link
+    const fail = (msg: string) => reply.redirect(
+      st.mobile ? mobileAuthRedirect({ sso_error: msg }) : `/login?sso_error=${encodeURIComponent(msg)}`, 302);
+    if (error) return fail(error);
+    if (!code || !st.ok) return fail("invalid_state");
     try {
       const disco = await discover();
       const tokenRes = await fetch(disco.token_endpoint, {
@@ -116,7 +121,7 @@ export function ssoRoutes(app: FastifyInstance) {
       // account under someone else's address at a permissive IdP).
       const verified = payload.email_verified === true;
       if (!email || (process.env.KREATIX_OIDC_REQUIRE_VERIFIED_EMAIL !== "0" && !verified)) {
-        return reply.redirect("/login?sso_error=no_verified_email", 302);
+        return fail("no_verified_email");
       }
       const name = String(payload.name ?? payload.preferred_username ?? email.split("@")[0]);
 
@@ -134,7 +139,12 @@ export function ssoRoutes(app: FastifyInstance) {
         );
         row = (await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!;
       }
+      if (row.disabled) return fail("account_disabled");
       const token = await signToken(row.id);
+      // Mobile shells can't carry the kx_sso cookie back through the system
+      // browser — the deep link returns a one-time code exchanged for the
+      // token by the app itself.
+      if (st.mobile) return reply.redirect(mobileAuthRedirect({ code: issueMobileCode(token) }), 302);
       // Hand the token to the SPA via a short-lived, single-purpose HttpOnly
       // cookie instead of a URL param — keeps it out of history/referrer logs.
       const secure = callbackUrl(req).startsWith("https:") ? "; Secure" : "";
@@ -147,8 +157,16 @@ export function ssoRoutes(app: FastifyInstance) {
       // real error goes to the log — the URL gets a generic code (it lands in
       // history, referrer headers, and server logs otherwise)
       req.log.warn({ err: String(e) }, "sso callback failed");
-      return reply.redirect("/login?sso_error=sso_failed", 302);
+      return fail("sso_failed");
     }
+  });
+
+  /** Mobile SSO/SAML return — swap the deep-link one-time code for the JWT. */
+  app.post("/api/auth/sso/mobile-exchange", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const code = (req.body as { code?: string } | undefined)?.code;
+    const token = code ? consumeMobileCode(code) : null;
+    if (!token) return reply.code(401).send({ error: "bad_code" });
+    return { token };
   });
 
   /** Exchange the short-lived SSO cookie for the session token, then clear it. */

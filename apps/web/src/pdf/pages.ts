@@ -3,6 +3,7 @@
 // version; we push the result as a new raw-PDF version via PUT /pdf-bytes).
 // Annotation page remapping lives here too so ops stay atomic.
 import type { PdfAnn } from "./model";
+import { saveFile } from "../lib/saveFile";
 
 type Rect4 = [number, number, number, number];
 
@@ -226,8 +227,5 @@ export async function webTextToPdf(title: string, url: string, text: string): Pr
 }
 
 export function downloadPdf(bytes: Uint8Array, name: string) {
-  const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" }));
-  const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" }), name);
 }

@@ -22,6 +22,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- kx://auth?code=… — SSO/SAML return from the system browser;
+                 Capacitor surfaces it as an appUrlOpen event -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kx" />
+            </intent-filter>
+
         </activity>
 
         <provider

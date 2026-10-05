@@ -3,6 +3,7 @@
 import { useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../lib/api";
+import { saveFile } from "../lib/saveFile";
 import { useAuth } from "../lib/auth";
 import { Modal } from "./Modal";
 
@@ -62,11 +63,7 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
     setBusy(true); setError("");
     try {
       const blob = await api.get<Blob>("/api/me/export");
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `kreatix-export-${new Date().toISOString().slice(0, 10)}.zip`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      void saveFile(blob, `kreatix-export-${new Date().toISOString().slice(0, 10)}.zip`);
       toast("Data export downloaded");
     } catch { setError("Export failed"); } finally { setBusy(false); }
   };
@@ -87,11 +84,7 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
   const downloadCodes = () => {
     const blob = new Blob([`Kreatix Suites backup codes for ${user?.email}\nKeep these somewhere safe — each works once.\n\n${codes.join("\n")}\n`],
       { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "kreatix-backup-codes.txt";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    void saveFile(blob, "kreatix-backup-codes.txt");
   };
 
   return (

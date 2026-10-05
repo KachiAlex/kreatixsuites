@@ -15,6 +15,8 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../lib/hooks";
+import { saveFile } from "../lib/saveFile";
+import { isNativeMobile } from "../lib/platform";
 import { useAuth } from "../lib/auth";
 import { RibbonTabs } from "../components/RibbonTabs";
 import { AppIcon } from "../components/AppIcon";
@@ -1364,7 +1366,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
       }
       else if ((e.ctrlKey || e.metaKey) && e.key === "o") { e.preventDefault(); openFileRef.current?.click(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setPanel("search"); }
-      else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setPrinting(true); }
+      else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); if (isNativeMobile) void downloadCurrent(); else setPrinting(true); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "d") { e.preventDefault(); void openDocProps(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === "h") { e.preventDefault(); setReadMode((v) => !v); }
     };
@@ -1643,7 +1645,9 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
             { label: "HTML (.html)", onClick: () => void import("./convert").then(({ exportPdfToText }) => doc && exportPdfToText(doc, title, true)).catch(() => toast("HTML export failed")) },
             { label: "Plain text (.txt)", onClick: () => void import("./convert").then(({ exportPdfToText }) => doc && exportPdfToText(doc, title, false)).catch(() => toast("TXT export failed")) },
           ]},
-          { label: "Print…", icon: "🖨", shortcut: "Ctrl+P", onClick: () => setPrinting(true) },
+          // no window.print in the WebView — mobile "prints" to a saved PDF
+          { label: isNativeMobile ? "Save as PDF…" : "Print…", icon: "🖨", shortcut: isNativeMobile ? undefined : "Ctrl+P",
+            onClick: () => isNativeMobile ? void downloadCurrent() : setPrinting(true) },
           { divider: true },
           { label: "Version history", icon: "🕘", onClick: () => setPanel("versions") },
           { label: "Comments", icon: "💬", onClick: () => setPanel("comments") },
@@ -2127,9 +2131,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
                       <div style={{ flex: 1, minWidth: 0 }}><div className="pdf-annrow-label">{a.name}</div>
                         <div className="pdf-annrow-meta">{(a.content.length / 1024).toFixed(1)} KB</div></div>
                       <button className="btn-ghost btn-sm" title="Download" onClick={() => {
-                        const url = URL.createObjectURL(new Blob([a.content.buffer as ArrayBuffer]));
-                        const el = document.createElement("a"); el.href = url; el.download = a.name; el.click();
-                        setTimeout(() => URL.revokeObjectURL(url), 4000);
+                        void saveFile(new Blob([a.content.buffer as ArrayBuffer]), a.name);
                       }}>⤓</button>
                     </div>
                   </div>
@@ -3146,10 +3148,7 @@ function PdfPage({ doc, pageNum, scale, anns, selAnn, setSelAnn, tool, toolColor
       onSnapshot?.(true);
     } catch {
       // clipboard blocked — fall back to a PNG download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `snapshot-p${pageNum}.png`; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      void saveFile(blob, `snapshot-p${pageNum}.png`);
       onSnapshot?.(false);
     }
   };

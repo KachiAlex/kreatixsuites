@@ -9,6 +9,8 @@ import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, Con
 import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
+import { saveFile } from "../lib/saveFile";
+import { isNativeMobile } from "../lib/platform";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -82,11 +84,7 @@ export async function workbookToXLSXBytes(wb: Workbook): Promise<Uint8Array> {
 export async function workbookToXLSX(wb: Workbook, filename: string) {
   const bytes = await workbookToXLSXBytes(wb);
   const blob = new Blob([bytes as unknown as ArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename.replace(/\.[^.]+$/, "") + ".xlsx";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  void saveFile(blob, filename.replace(/\.[^.]+$/, "") + ".xlsx");
 }
 
 /** ODS export (S8.4) — same workbook build, ods bookType. */
@@ -1611,11 +1609,18 @@ ${scaleCss}
 </body></html>`;
 }
 
-/** Open the sheet in a print window → user picks printer or Save-as-PDF. */
+/** Open the sheet in a print window → user picks printer or Save-as-PDF.
+ *  Native WebView has neither — the print-ready HTML (auto-print on open)
+ *  is saved as a file instead. */
 export function printSheet(sheet: SheetData, wb: Workbook | undefined, opts: PrintOpts = {}) {
+  const html = sheetToPrintHTML(sheet, wb, opts);
+  if (isNativeMobile) {
+    void saveFile(new Blob([html], { type: "text/html" }), `${opts.title ?? sheet.name}.html`);
+    return;
+  }
   const w = window.open("", "_blank", "width=900,height=700");
   if (!w) return;
-  w.document.write(sheetToPrintHTML(sheet, wb, opts));
+  w.document.write(html);
   w.document.close();
 }
 

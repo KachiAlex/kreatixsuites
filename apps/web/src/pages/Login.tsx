@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { API_BASE, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
 
@@ -121,11 +122,13 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         </button>
           </>
         )}
+        {/* native shell: absolute API URL + client=mobile → IdP dance runs in
+            the system browser and the callback returns via a kx:// deep link */}
         {sso && mode === "login" && (
-          <a className="btn-secondary sso-btn" href="/api/auth/sso">{t("auth.ssoContinue")}</a>
+          <a className="btn-secondary sso-btn" href={`${API_BASE}/api/auth/sso${isNativeMobile ? "?client=mobile" : ""}`}>{t("auth.ssoContinue")}</a>
         )}
         {saml && mode === "login" && (
-          <a className="btn-secondary sso-btn" href="/api/auth/saml">{t("auth.samlContinue")}</a>
+          <a className="btn-secondary sso-btn" href={`${API_BASE}/api/auth/saml${isNativeMobile ? "?client=mobile" : ""}`}>{t("auth.samlContinue")}</a>
         )}
         <button type="button" className="btn-ghost anon-btn"
           onClick={() => { void enterAnonymous().then(() => { prefetchAppShell(); navigate("/home"); }); }}>

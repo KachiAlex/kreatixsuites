@@ -1,6 +1,7 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PdfAnn, PdfField, OcrWord } from "./model";
 import { loadPdfForEdit } from "./pages";
+import { saveFile } from "../lib/saveFile";
 
 type RGB = { r: number; g: number; b: number };
 const hexToRgb = (hex?: string): RGB => {
@@ -417,10 +418,5 @@ export async function exportFlattenedPdf(
   ocr?: Record<string, OcrWord[]>,
 ): Promise<void> {
   const out = await buildFlattenedPdf(bytes, anns, formValues, pdfDoc, opts, fields, rasters, ocr);
-  const url = URL.createObjectURL(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName.replace(/\.pdf$/i, "") + ".pdf";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  void saveFile(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }), fileName.replace(/\.pdf$/i, "") + ".pdf");
 }

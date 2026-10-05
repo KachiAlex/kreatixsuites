@@ -3,6 +3,7 @@
 // Server enforces owner/admin role; this UI is gated the same way.
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { PUBLIC_ORIGIN } from "../lib/platform";
 import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/hooks";
@@ -165,7 +166,7 @@ export function Admin() {
       if (r.emailed) {
         toast(`Invite emailed to ${email}`);
       } else {
-        const url = `${location.origin}/register?invite=${r.token}`;
+        const url = `${PUBLIC_ORIGIN}/register?invite=${r.token}`;
         try { await navigator.clipboard.writeText(url); } catch { /* clipboard blocked */ }
         toast("Invite link created — copied to clipboard");
       }
@@ -420,7 +421,7 @@ export function Admin() {
             onClick={() => void createInvite(inviteEmail.trim())}>Email invite</button>
           {invites.map((i) => (
             <span key={i.id} className="role-badge" title={`${i.uses}/${i.max_uses} uses`}>
-              {location.origin}/register?invite={i.token.slice(0, 8)}…
+              {PUBLIC_ORIGIN}/register?invite={i.token.slice(0, 8)}…
               <button style={{ marginLeft: 6, border: 0, background: "none", cursor: "pointer" }}
                 onClick={() => void revokeInvite(i.id)}>✕</button>
             </span>
@@ -464,7 +465,7 @@ export function Admin() {
         <h2>SCIM provisioning</h2>
         <div className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
           <span>
-            <b>Endpoint</b> <code>{location.origin}/scim/v2</code>
+            <b>Endpoint</b> <code>{PUBLIC_ORIGIN}/scim/v2</code>
             <em style={{ display: "block" }}>Point your identity provider (Okta, Entra ID, OneLogin) at this URL with a bearer token below. Supports Users create/update/deactivate/delete.</em>
           </span>
         </div>

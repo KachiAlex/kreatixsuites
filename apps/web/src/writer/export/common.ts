@@ -19,12 +19,8 @@ export function textOf(node: Block | Inline): string {
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+  // saveFile routes around the anchor-download no-op in native WebViews
+  void import("../../lib/saveFile").then((m) => m.saveFile(blob, filename));
 }
 
 export function baseName(name: string): string {

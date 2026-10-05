@@ -9,6 +9,9 @@ const config: CapacitorConfig = {
   // src/lib/platform.ts — isNativeMobile sets API_BASE).
   android: {
     allowMixedContent: false,
+    // Android 15 forces edge-to-edge — inset the WebView below the status/
+    // gesture bars so top toolbars and the bottom rail stay reachable
+    adjustMarginsForEdgeToEdge: "auto",
   },
 };
 

@@ -2,7 +2,7 @@
 // drain the outbox FIFO when connectivity returns. Conflicts: server wins,
 // the local copy is preserved as "name (conflict copy)".
 import { api, getToken } from "../api";
-import { API_BASE, isDesktop } from "../platform";
+import { API_BASE, isDesktop, isNativeMobile } from "../platform";
 import { isAnonymous } from "./trial";
 import { refreshEntitlement } from "./license";
 import { b64, store, type CachedFile, type OutboxOp } from "./store";
@@ -120,10 +120,11 @@ export async function cacheBlob(fileId: string, data: string, binary: boolean, m
 }
 
 /** Background loop — sync on reconnect, window focus, and every 60s.
- *  Runs for the desktop shell and anonymous sessions; signed-in browser
- *  users call syncNow() once after login to replay any anonymous work. */
+ *  Runs for the bundled shells (desktop/Android/iOS) and anonymous sessions;
+ *  signed-in browser users call syncNow() once after login to replay any
+ *  anonymous work. */
 export function startSyncLoop(): () => void {
-  if (!isDesktop && !isAnonymous()) return () => {};
+  if (!isDesktop && !isNativeMobile && !isAnonymous()) return () => {};
   const tick = () => { if (navigator.onLine) void syncNow().catch(() => {}); };
   const onOnline = () => tick();
   window.addEventListener("online", onOnline);
