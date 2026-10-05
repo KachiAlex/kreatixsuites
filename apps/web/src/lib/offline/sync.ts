@@ -87,10 +87,17 @@ export async function syncNow(): Promise<void> {
       }
     }
     // ---- pull ----
-    const { items } = await api.get<{ items: CachedFile[] }>("/api/drive?view=recent");
+    const { items } = await api.get<{ items: CachedFile[] }>("/api/drive?view=mirror");
     const localOnly = (await store.files.all()).filter((f) => f.id.startsWith("local:") || f.id.startsWith("conflict:"));
     const map = await idMap();
     const serverIds = new Set(items.map((i) => i.id));
+    // purge mirrored items deleted elsewhere (trashed/purged on another
+    // device) — upsert alone leaves them visible forever
+    for (const f of await store.files.all()) {
+      if (serverIds.has(f.id) || f.id.startsWith("local:") || f.id.startsWith("conflict:")) continue;
+      await store.files.del(f.id);
+      await store.blobs.del(f.id);
+    }
     await store.files.bulk([
       ...items.map((i) => ({ ...i, synced: true })),
       ...localOnly.filter((f) => !map[f.id] || !serverIds.has(map[f.id])),

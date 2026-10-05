@@ -124,6 +124,14 @@ export function driveRoutes(app: FastifyInstance) {
         "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC",
         [user.id],
       );
+    } else if (q.view === "mirror") {
+      // offline-shell sync: complete non-trashed set (folders included, no
+      // cap) so the local mirror can purge items deleted on other devices
+      rows = await dbq<ItemRow>(
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+         ORDER BY i.updated_at DESC`,
+        [user.id],
+      );
     } else {
       // home + recent: items I own or that are shared with me
       const limit = q.view === "home" ? 8 : 50;
