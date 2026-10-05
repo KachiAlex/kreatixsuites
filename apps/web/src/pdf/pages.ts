@@ -6,6 +6,17 @@ import type { PdfAnn } from "./model";
 
 type Rect4 = [number, number, number, number];
 
+/** Load a PDF for editing — rejects encrypted sources. ignoreEncryption reads
+ *  the structure fine, but page content streams stay encrypted, so copying or
+ *  re-saving would emit garbage. Fail loudly instead of corrupting output. */
+export async function loadPdfForEdit(bytes: ArrayBuffer | Uint8Array) {
+  const { PDFDocument } = await import("pdf-lib");
+  const doc = await PDFDocument.load(bytes as ArrayBuffer, { ignoreEncryption: true });
+  if (doc.isEncrypted)
+    throw new Error("This PDF is password-protected. Save a copy without the password and try again.");
+  return doc;
+}
+
 /** rotate an [x,y,w,h] rect + points by deg ∈ {90,180,270} within page W×H */
 function rotRect([x, y, w, h]: Rect4, deg: number, W: number, H: number): Rect4 {
   if (deg === 90) return [H - y - h, x, h, w];
@@ -50,7 +61,7 @@ export async function reorganizePdf(
   rots: Map<number, number> = new Map(),
 ): Promise<Uint8Array> {
   const { PDFDocument, degrees } = await import("pdf-lib");
-  const srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const srcDoc = await loadPdfForEdit(bytes);
   const out = await PDFDocument.create();
   const srcIdx = order.filter((e): e is { src: number } => "src" in e).map((e) => e.src);
   const copied = await out.copyPages(srcDoc, srcIdx);
@@ -70,9 +81,8 @@ export async function reorganizePdf(
 
 /** Append another PDF's pages to this one (merge). Returns new bytes + ann order (identity + none for appended). */
 export async function mergePdf(bytes: ArrayBuffer, other: ArrayBuffer): Promise<{ bytes: Uint8Array; count: number }> {
-  const { PDFDocument } = await import("pdf-lib");
-  const dst = await PDFDocument.load(bytes, { ignoreEncryption: true });
-  const src = await PDFDocument.load(other, { ignoreEncryption: true });
+  const dst = await loadPdfForEdit(bytes);
+  const src = await loadPdfForEdit(other);
   const pages = await dst.copyPages(src, src.getPageIndices());
   for (const p of pages) dst.addPage(p);
   return { bytes: await dst.save(), count: pages.length };
@@ -81,7 +91,7 @@ export async function mergePdf(bytes: ArrayBuffer, other: ArrayBuffer): Promise<
 /** Pull selected pages into a standalone PDF (download). */
 export async function extractPages(bytes: ArrayBuffer, pages: number[]): Promise<Uint8Array> {
   const { PDFDocument } = await import("pdf-lib");
-  const srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const srcDoc = await loadPdfForEdit(bytes);
   const out = await PDFDocument.create();
   const copied = await out.copyPages(srcDoc, pages.map((p) => p - 1));
   for (const p of copied) out.addPage(p);
@@ -116,8 +126,7 @@ async function toPngBytes(dataUrl: string): Promise<string | null> {
  * converted — a silent skip would report success while adding no page.
  */
 export async function appendImagePages(bytes: ArrayBuffer, images: { dataUrl: string; w: number; h: number }[]): Promise<Uint8Array> {
-  const { PDFDocument } = await import("pdf-lib");
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const doc = await loadPdfForEdit(bytes);
   for (const im of images) {
     let m = /^data:image\/(png|jpe?g);base64,(.+)$/.exec(im.dataUrl);
     if (!m) {
@@ -138,8 +147,7 @@ export async function attachFilesToPdf(
   bytes: ArrayBuffer,
   files: { name: string; data: Uint8Array; mime?: string }[],
 ): Promise<Uint8Array> {
-  const { PDFDocument } = await import("pdf-lib");
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const doc = await loadPdfForEdit(bytes);
   for (const f of files)
     await doc.attach(f.data, f.name, {
       mimeType: f.mime || "application/octet-stream",
@@ -156,8 +164,8 @@ export async function makePortfolio(
   files: { name: string; data: Uint8Array; mime?: string }[],
   title = "PDF Portfolio",
 ): Promise<Uint8Array> {
-  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const { StandardFonts, rgb } = await import("pdf-lib");
+  const doc = await loadPdfForEdit(bytes);
   const font = await doc.embedFont(StandardFonts.HelveticaBold);
   const body = await doc.embedFont(StandardFonts.Helvetica);
   for (const f of files)

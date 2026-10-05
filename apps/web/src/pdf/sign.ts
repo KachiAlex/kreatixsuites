@@ -9,8 +9,9 @@
  * Cert source: an imported .p12/.pfx (password-protected) or a generated
  * self-signed RSA-2048 ID.
  */
-import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray, PDFDict, StandardFonts } from "pdf-lib";
+import { PDFName, PDFString, PDFHexString, PDFArray, PDFDict, StandardFonts } from "pdf-lib";
 import type * as forge from "node-forge";
+import { loadPdfForEdit } from "./pages";
 
 export type CertSource =
   | { kind: "p12"; data: Uint8Array; password: string }
@@ -38,7 +39,7 @@ const apText = (s: string) => s.replace(/[^\x20-\x7e]/g, "?").replace(/[\\()]/g,
 export async function signPdf(input: ArrayBuffer, o: SignOpts): Promise<Uint8Array> {
   const forgeMod = await import("node-forge");
   const forge = (forgeMod as unknown as { default?: typeof forgeMod }).default ?? forgeMod;
-  const pdfDoc = await PDFDocument.load(input, { ignoreEncryption: true });
+  const pdfDoc = await loadPdfForEdit(input);
   const ctx = pdfDoc.context;
   const now = new Date();
 

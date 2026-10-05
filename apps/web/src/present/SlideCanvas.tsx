@@ -533,7 +533,13 @@ export function ObjView({ o, theme, selected, editing, hidden, fx, connPts, onMo
       const isHead = (i: number) => i === 0 && meta.headerRow !== false;
       style.overflow = editing ? "auto" : "hidden";
       const tbl = (
-        <table className={`s-table ${editing ? "editing" : ""}`}>
+        <table className={`s-table ${editing ? "editing" : ""}`}
+          style={meta.colWidths?.length ? { tableLayout: "fixed" } : undefined}>
+          {meta.colWidths?.length ? (
+            <colgroup>
+              {meta.colWidths.map((w, i) => <col key={i} style={{ width: `${(w / meta.colWidths!.reduce((a, b) => a + b, 0)) * 100}%` }} />)}
+            </colgroup>
+          ) : null}
           <tbody>
             {rows.map((r, i) => (
               <tr key={i}>

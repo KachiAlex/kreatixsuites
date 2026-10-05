@@ -43,6 +43,7 @@ export interface SlideObject {
   tableMeta?: {
     merges?: { r: number; c: number; rs: number; cs: number }[];
     cellStyle?: Record<string, { bg?: string; align?: "left" | "center" | "right" }>;
+    colWidths?: number[]; // px weights — rendered as proportional columns
     headerRow?: boolean;
     banded?: boolean;
   };

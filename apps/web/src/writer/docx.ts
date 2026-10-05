@@ -6,7 +6,8 @@ import {
   MathSubScript, MathSubSuperScript, MathSuperScript, type MathComponent,
   Packer, PageBreak as DocxPageBreak, PageOrientation, Paragraph, SectionType,
   Table, TableCell, TableRow,
-  TextDirection, TextRun, VerticalAlignSection, VerticalAlignTable, WidthType,
+  TextDirection, TextRun, DeletedTextRun, InsertedTextRun,
+  VerticalAlignSection, VerticalAlignTable, WidthType,
   type File as DocxFile, type IParagraphStyleOptions, type ISectionOptions,
   type ISectionPropertiesOptions, type ParagraphChild, type SectionVerticalAlign,
 } from "docx";
@@ -132,7 +133,7 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
   const has = (t: string) => marks.some((m) => m.type === t);
   const st = textStyle(n, []);
   const link = marks.find((m) => m.type === "link");
-  return [new TextRun({
+  const opts = {
     text: n.text,
     bold: has("bold") || undefined,
     italics: has("italic") || undefined,
@@ -143,7 +144,21 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
     size: st.size,
     superScript: has("superscript") || undefined,
     subScript: has("subscript") || undefined,
-  })];
+  };
+  // tracked-change marks → real w:ins / w:del revisions (they'd otherwise
+  // export as plain text — silent "accept all")
+  const del = marks.find((m) => m.type === "deletion");
+  const ins = marks.find((m) => m.type === "insertion");
+  if (del || ins) {
+    const m = (del ?? ins)!;
+    const changed = {
+      id: Number(String(m.attrs?.changeId ?? "").replace(/\D+/g, "")) || 1,
+      author: (m.attrs?.authorName as string) || "Kreatix",
+      date: (m.attrs?.timestamp as string) || new Date().toISOString(),
+    };
+    return [del ? new DeletedTextRun({ ...opts, ...changed }) : new InsertedTextRun({ ...opts, ...changed })];
+  }
+  return [new TextRun(opts)];
 }
 
 /** sdt mark → <w:sdt> component wrapping a live sdtContent the caller pushes
@@ -1361,6 +1376,24 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     (_, t) => `<w:r><w:t xml:space="preserve">⟦${t === "page" ? "KXPB" : "KXCB"}⟧</w:t></w:r>`,
   );
 
+  // Tracked changes — mammoth drops w:del outright and flattens w:ins. Unwrap
+  // both into sentinel pairs; the HTML pass turns them into real ins/del
+  // marks so changes remain reviewable (accept/reject) after import.
+  docXml = docXml
+    .replace(/<w:delInstrText\b[\s\S]*?<\/w:delInstrText>/g, "")
+    .replace(/<w:delText\b([^>]*)>/g, "<w:t$1>")
+    .replace(/<\/w:delText>/g, "</w:t>");
+  const trackAttrs = (attrs: string) => b64enc(JSON.stringify({
+    id: attrs.match(/w:id="([^"]*)"/)?.[1] ?? "",
+    author: attrs.match(/w:author="([^"]*)"/)?.[1] ?? "",
+    date: attrs.match(/w:date="([^"]*)"/)?.[1] ?? "",
+  }));
+  docXml = docXml
+    // self-closing <w:del/> (deleted paragraph mark in rPr) excluded via [^/]
+    .replace(/<w:(ins|del|moveFrom|moveTo)\b((?:[^>]*[^/])?)>/g, (_m, tag: string, attrs: string) =>
+      sentinel(`KXT${tag === "ins" || tag === "moveTo" ? "I" : "D"}:${trackAttrs(attrs)}`))
+    .replace(/<\/w:(ins|del|moveFrom|moveTo)>/g, sentinel("KXTE"));
+
   // OOXML sectPr describes the section it CLOSES; our sectionBreak node
   // describes the section it INTRODUCES. So the marker at the end of
   // section i (i-th pPr-level sectPr) carries props of sectPr i+1 (or the
@@ -2018,6 +2051,27 @@ function commentMarkersToHtml(html: string): string {
   return html.replace(/⟦KX[CS][SE]:\d+⟧/g, "");
 }
 
+/** ⟦KXTI:b64⟧…⟦KXTE⟧ → <ins>, ⟦KXTD:b64⟧…⟦KXTE⟧ → <del> — the schema's
+ *  track-change marks parse ins/del[data-change-id] so imported revisions
+ *  stay reviewable. Stray markers (block-level w:ins mammoth skipped) are
+ *  stripped so they never leak as literal text. */
+function trackMarkersToHtml(html: string): string {
+  html = html.replace(
+    /⟦KXT([ID]):([A-Za-z0-9+/=]*)⟧([\s\S]*?)⟦KXTE⟧/g,
+    (_m, kind: string, b64: string, body: string) => {
+      const meta = JSON.parse(b64dec(b64) || "{}") as
+        { id?: string; author?: string; date?: string };
+      const tag = kind === "I" ? "ins" : "del";
+      const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      const attrs = ` data-change-id="imp-${esc(meta.id || `${Math.random().toString(36).slice(2)}`)}"`
+        + (meta.author ? ` data-author-name="${esc(meta.author)}"` : "")
+        + (meta.date ? ` data-timestamp="${esc(meta.date)}"` : "");
+      return `<${tag}${attrs}>${body}</${tag}>`;
+    },
+  );
+  return html.replace(/⟦KXT[ID]:[A-Za-z0-9+/=]*⟧|⟦KXTE⟧/g, "");
+}
+
 // ---- content controls (w:sdt) -----------------------------------------------
 
 const SDT_KINDS = [
@@ -2420,6 +2474,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
     html = styleMarkersToHtml(html, idToKey);
     html = numMarkersToHtml(html, meta);
     html = commentMarkersToHtml(html);
+    html = trackMarkersToHtml(html);
     html = sdtMarkersToHtml(html);
     html = floatMarkersToHtml(html);
     html = firstSectionMarkerToHtml(html);

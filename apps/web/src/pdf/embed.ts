@@ -8,6 +8,7 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PDFDict as LibDict, PDFRef as LibRef } from "pdf-lib";
 import type { PdfAnn, PdfDoc, PdfField } from "./model";
+import { loadPdfForEdit } from "./pages";
 
 type Lib = typeof import("pdf-lib");
 type LibDoc = Awaited<ReturnType<Lib["PDFDocument"]["load"]>>;
@@ -534,8 +535,8 @@ export async function embedIntoPdf(
   rasters?: Record<number, string>,
 ): Promise<EmbedResult> {
   const L = await import("pdf-lib");
-  const { PDFDocument, PDFName } = L;
-  const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const { PDFName } = L;
+  const src = await loadPdfForEdit(bytes);
 
   // ---- redact: rasterize the page, drop the marks (true removal, same as export) ----
   const rasterized = new Set<number>();

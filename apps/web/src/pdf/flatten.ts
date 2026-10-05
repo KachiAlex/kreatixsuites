@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PdfAnn, PdfField, OcrWord } from "./model";
+import { loadPdfForEdit } from "./pages";
 
 type RGB = { r: number; g: number; b: number };
 const hexToRgb = (hex?: string): RGB => {
@@ -39,8 +40,8 @@ export async function buildFlattenedPdf(
   /** PDF-8.3 — OCR word boxes baked as invisible text → searchable output */
   ocr?: Record<string, OcrWord[]>,
 ): Promise<Uint8Array> {
-  const { PDFDocument, StandardFonts, rgb, degrees } = await import("pdf-lib");
-  const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const { StandardFonts, rgb, degrees } = await import("pdf-lib");
+  const src = await loadPdfForEdit(bytes);
   const helv = await src.embedFont(StandardFonts.Helvetica);
   const helvB = await src.embedFont(StandardFonts.HelveticaBold);
   // PDF-8.4 — textbox font selection

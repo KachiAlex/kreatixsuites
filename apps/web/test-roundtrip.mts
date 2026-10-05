@@ -142,6 +142,30 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   check("docx: valid zip", (await blob.arrayBuffer()).byteLength > 500);
 }
 
+// ---------- DOCX: tracked changes (insertion/deletion marks) round-trip ----------
+{
+  const JSZip = (await import("jszip")).default;
+  const doc = {
+    type: "doc",
+    content: [{ type: "paragraph", content: [
+      { type: "text", text: "keep " },
+      { type: "text", text: "added", marks: [{ type: "insertion", attrs: { changeId: "7", authorName: "Ada" } }] },
+      { type: "text", text: " mid " },
+      { type: "text", text: "gone", marks: [{ type: "deletion", attrs: { changeId: "8", authorName: "Bob" } }] },
+    ] }],
+  };
+  const blob = await exportDocxBytes(doc as never, "tracked");
+  const ab = await blob.arrayBuffer();
+  const zip = await JSZip.loadAsync(ab);
+  const xml = await zip.file("word/document.xml")!.async("text");
+  check("track: w:ins emitted", /<w:ins\b[^>]*w:author="Ada"/.test(xml));
+  check("track: w:del emitted", /<w:del\b[^>]*w:author="Bob"/.test(xml) && /<w:delText[^>]*>gone<\/w:delText>/.test(xml));
+  const html = (await importDocx(fileOf(ab, "tracked.docx"))).html;
+  check("track: ins mark reimport", /<ins\b[^>]*data-change-id="[^"]*"[^>]*>added<\/ins>/.test(html));
+  check("track: del mark reimport", /<del\b[^>]*data-change-id="[^"]*"[^>]*>gone<\/del>/.test(html));
+  check("track: del keeps author", /<del\b[^>]*data-author-name="Bob"/.test(html));
+}
+
 // ---------- DOCX: w:sdt content controls round-trip ----------
 {
   const JSZip = (await import("jszip")).default;
@@ -366,11 +390,16 @@ ${OPARA}
         colWidths: { 1: 160 }, hiddenCols: [2],
         filter: { range: "A1:B4", cols: {} },
         freeze: { rows: 1, cols: 0 }, tabColor: "#4472C4",
+        validations: [{ range: "A2:A10", type: "list", list: "Yes,No" }] as never,
+        cf: [{ range: "B2:B4", type: "value", op: ">", value: 500, bg: "#FF0000" }] as never,
+        tables: [{ name: "Sales", range: "A1:B4", style: "banded" }] as never,
       },
       { name: "Notes", cells: { A1: { v: "second sheet" } }, hidden: true },
     ],
     props: { title: "P&L Book", author: "Kreatix" },
     names: { TaxRate: "'P&L'!$B$2" },
+    print: { orientation: "landscape", gridlines: true, header: "Confidential" },
+    calc: { mode: "manual" },
   };
   const bytes = await workbookToXLSXBytes(wb as never);
   const back = await xlsxToWorkbook(fileOf(bytes, "book.xlsx"));
@@ -390,6 +419,16 @@ ${OPARA}
   check("xlsx: freeze pane", back.sheets[0].freeze?.rows === 1);
   check("xlsx: defined name", back.names?.TaxRate === "'P&L'!$B$2");
   check("xlsx: hidden sheet", back.sheets[1].hidden === true);
+  // export-side parity: validations, conditional formatting (+dxf), tables, print, calc
+  check("xlsx: validation rt", back.sheets[0].validations?.[0]?.type === "list"
+    && back.sheets[0].validations?.[0]?.list === "Yes,No");
+  check("xlsx: cf rt", back.sheets[0].cf?.[0]?.type === "value"
+    && back.sheets[0].cf?.[0]?.op === ">" && back.sheets[0].cf?.[0]?.value === 500);
+  check("xlsx: cf dxf bg", !!back.sheets[0].cf?.[0]?.bg);
+  check("xlsx: table rt", back.sheets[0].tables?.[0]?.name === "Sales"
+    && back.sheets[0].tables?.[0]?.style === "banded");
+  check("xlsx: print rt", back.print?.orientation === "landscape" && back.print?.gridlines === true);
+  check("xlsx: calc rt", back.calc?.mode === "manual");
 }
 
 // ---------- XFDF ----------

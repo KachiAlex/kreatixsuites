@@ -123,7 +123,16 @@ function textBodyToHtml(tx: Element | null, ink: string, scheme: Record<string, 
     // block wrapper per para keeps text-align + line breaks uniform
     out.push(`<div${al !== "left" ? ` style="text-align:${al}"` : ""}>${inner || "<br/>"}</div>`);
   }
-  return { html: out.join(""), fontSize, color, bold, italic, align };
+  // a:bodyPr/a:normAutofit — the autofit shrink the renderer applied. Honor
+  // fontScale (per-mille %, e.g. 65000 = 65%) so text doesn't re-overflow.
+  const bodyPr = children(tx, "a:bodyPr")[0];
+  const scale = Number(attr(first(bodyPr ?? null, "a:normAutofit"), "fontScale") ?? 100000) / 100000;
+  let html = out.join("");
+  if (scale && Math.abs(scale - 1) > 0.001) {
+    html = html.replace(/font-size:\s*([\d.]+)px/g, (_m, n) => `font-size:${Math.round(Number(n) * scale * 10) / 10}px`);
+    if (fontSize) fontSize = Math.round(fontSize * scale * 10) / 10;
+  }
+  return { html, fontSize, color, bold, italic, align };
 }
 
 function shapeKind(prst: string | null | undefined): SlideObject["shape"] {
@@ -413,13 +422,28 @@ async function parseGraphicFrame(gf: Element, ctx: Ctx, ink: string): Promise<Sl
     return { id: newId(), type: "shape", shape: "rect", ...frame, z: 0, fill: "#F0F0F0", stroke: "#999999", html: `<i>📎 ${prog.replace(/</g, "&lt;")}</i>`, fontSize: 14, color: ink, align: "center" };
   }
   if (!tbl) return null;
-  const rows: string[][] = children(tbl, "a:tr").map((tr) =>
-    children(tr, "a:tc").map((tc) => {
+  // a:tblGrid/a:gridCol widths (EMU) → proportional column widths for render
+  const colWidths = children(children(tbl, "a:tblGrid")[0] ?? null, "a:gridCol")
+    .map((gc) => Math.max(1, emu(attr(gc, "w"), 1)));
+  const cellStyle: NonNullable<SlideObject["tableMeta"]>["cellStyle"] = {};
+  const merges: NonNullable<NonNullable<SlideObject["tableMeta"]>["merges"]> = [];
+  const rows: string[][] = children(tbl, "a:tr").map((tr, r) =>
+    children(tr, "a:tc").map((tc, c) => {
       const { html } = textBodyToHtml(children(tc, "a:txBody")[0] ?? null, ink, ctx.scheme, ctx.rels);
+      const rs = Math.max(1, Number(attr(tc, "rowSpan") ?? 1));
+      const cs = Math.max(1, Number(attr(tc, "gridSpan") ?? 1));
+      if (rs > 1 || cs > 1) merges.push({ r, c, rs, cs });
+      const fill = fillColor(children(tc, "a:tcPr")[0] ?? null, ink, ctx.scheme);
+      if (fill) cellStyle[`${r},${c}`] = { bg: fill };
       return html.replace(/<\/div>/g, " ").replace(/<br\/>/g, " ").replace(/<[^>]+>/g, "").trim();
     }));
+  const tableMeta: SlideObject["tableMeta"] = {};
+  if (colWidths.length) tableMeta.colWidths = colWidths;
+  if (Object.keys(cellStyle).length) tableMeta.cellStyle = cellStyle;
+  if (merges.length) tableMeta.merges = merges;
   return {
     id: newId(), type: "table", table: rows.length ? rows : [["", ""]],
+    ...(Object.keys(tableMeta).length ? { tableMeta } : {}),
     ...frame,
     z: 0, fontSize: 14, color: ink,
   };
@@ -447,11 +471,33 @@ async function parseChildren(parent: Element | null, ctx: Ctx, ink: string, t: {
       const cext = children(gx ?? null, "a:chExt")[0];
       const sx = cext ? emu(attr(gext, "cx"), 1) / Math.max(1, emu(attr(cext, "cx"), 1)) : 1;
       const sy = cext ? emu(attr(gext, "cy"), 1) / Math.max(1, emu(attr(cext, "cy"), 1)) : 1;
+      const added = out.length;
       await parseChildren(el, ctx, ink, {
         ox: t.ox + emu(attr(goff, "x")) * t.sx - (coff ? emu(attr(coff, "x")) * sx * t.sx : 0),
         oy: t.oy + emu(attr(goff, "y")) * t.sy - (coff ? emu(attr(coff, "y")) * sy * t.sy : 0),
         sx: t.sx * sx, sy: t.sy * sy,
       }, out);
+      // group rot (1/60000°) — children were flattened into slide coords, so
+      // rotate each added object about the group's bounding-rect center
+      const grot = Number(attr(gx, "rot") ?? 0) / 60000;
+      if (grot && out.length > added) {
+        const rad = grot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+        const gcx = t.ox + (emu(attr(goff, "x")) + emu(attr(gext, "cx")) / 2) * t.sx;
+        const gcy = t.oy + (emu(attr(goff, "y")) + emu(attr(gext, "cy")) / 2) * t.sy;
+        const rotPt = (x: number, y: number) => {
+          const dx = x - gcx, dy = y - gcy;
+          return { x: gcx + dx * cos - dy * sin, y: gcy + dx * sin + dy * cos };
+        };
+        for (const o of out.slice(added)) {
+          if (o.conn) {
+            const p1 = rotPt(o.conn.x1, o.conn.y1), p2 = rotPt(o.conn.x2, o.conn.y2);
+            o.conn.x1 = p1.x; o.conn.y1 = p1.y; o.conn.x2 = p2.x; o.conn.y2 = p2.y;
+          }
+          const c = rotPt(o.x + o.w / 2, o.y + o.h / 2);
+          o.x = c.x - o.w / 2; o.y = c.y - o.h / 2;
+          o.rotate = ((o.rotate ?? 0) + grot + 360) % 360;
+        }
+      }
     }
   }
   for (const d of deferred) {
