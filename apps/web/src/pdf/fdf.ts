@@ -112,13 +112,42 @@ const toAnn = (r: AnnRec): PdfAnn | null => {
 
 const nums = (s: string | undefined | null) => (s ?? "").trim().split(/[\s,]+/).filter(Boolean).map(Number);
 
+/** Collect every `<<…>>` dict body with proper nesting + literal-string
+ *  tracking — `<<(.*?)>>` truncates at the first nested `>>` (/Border, /AP).
+ *  A dict counts as an annotation only when /Subtype appears in its own
+ *  level (nested dict bodies blanked for the test). */
+function pdfDicts(src: string): string[] {
+  const spans: { s: number; e: number }[] = []; // s at <<, e at >>
+  const stack: number[] = [];
+  for (let i = 0; i < src.length - 1; i++) {
+    if (src[i] === "(") { // literal string — skip to matching ) honoring \\ escapes
+      let pd = 1;
+      while (++i < src.length && pd > 0) {
+        if (src[i] === "\\") i++;
+        else if (src[i] === "(") pd++;
+        else if (src[i] === ")") pd--;
+      }
+      continue;
+    }
+    if (src[i] === "<" && src[i + 1] === "<") { stack.push(i); i++; continue; }
+    if (src[i] === ">" && src[i + 1] === ">" && stack.length) { spans.push({ s: stack.pop()!, e: i }); i++; }
+  }
+  const out: string[] = [];
+  for (const { s, e } of spans) {
+    let own = src.slice(s + 2, e);
+    // blank nested dict bodies — their /Subtype must not make this dict an annot
+    for (const n of spans.filter((sp) => sp.s > s && sp.e < e).sort((a, b) => b.s - a.s))
+      own = own.slice(0, n.s - (s + 2)) + own.slice(n.e + 2 - (s + 2));
+    if (/\/Subtype\s*\/\w+/.test(own)) out.push(src.slice(s + 2, e));
+  }
+  return out;
+}
+
 /** Parse an FDF or XFDF file back into Kreatix annotations (standard markups). */
 export function parseFdf(text: string): PdfAnn[] {
   if (/<\s*xfdf[\s>]/i.test(text)) return parseXfdf(text);
   const out: PdfAnn[] = [];
-  for (const m of text.matchAll(/<<(.*?)>>/gs)) {
-    const o = m[1];
-    if (!/\/Subtype\s*\/\w+/.test(o)) continue;
+  for (const o of pdfDicts(text)) {
     const ann = toAnn({
       sub: grab(o, /\/Subtype\s*\/(\w+)/) ?? "",
       page: Number(grab(o, /\/Page\s+(\d+)/) ?? "0") + 1,

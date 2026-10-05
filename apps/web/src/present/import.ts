@@ -70,35 +70,60 @@ function fillColor(el: Element | null | undefined, ink: string, scheme: Record<s
   return srgb(el) ?? schemeColor(el, ink, scheme);
 }
 
-function textBodyToHtml(tx: Element | null, ink: string, scheme: Record<string, string>): { html: string; fontSize?: number; color?: string; bold?: boolean; italic?: boolean; align?: "left" | "center" | "right" } {
+function textBodyToHtml(tx: Element | null, ink: string, scheme: Record<string, string>, rels?: Map<string, string>): { html: string; fontSize?: number; color?: string; bold?: boolean; italic?: boolean; align?: "left" | "center" | "right" } {
   const paras = children(tx, "a:p");
   const out: string[] = [];
   let fontSize: number | undefined, color: string | undefined, bold = false, italic = false, align: "left" | "center" | "right" | undefined;
   for (const p of paras) {
     const pPr = children(p, "a:pPr")[0];
     const algn = attr(pPr ?? null, "algn");
-    if (!align && algn) align = algn === "ctr" ? "center" : algn === "r" ? "right" : "left";
-    if (children(pPr ?? null, "a:buChar").length || children(pPr ?? null, "a:buAutoNum").length) out.push("• ");
+    const al = algn === "ctr" ? "center" : algn === "r" ? "right" : algn === "just" ? "justify" : "left";
+    if (!align && algn) align = al === "justify" ? "left" : al;
+    const line: string[] = [];
+    if (children(pPr ?? null, "a:buChar").length || children(pPr ?? null, "a:buAutoNum").length) line.push("• ");
     for (const node of [...p.childNodes]) {
       const el = node as Element;
-      if (el.tagName === "a:br") { out.push("<br/>"); continue; }
+      if (el.tagName === "a:br") { line.push("<br/>"); continue; }
       if (el.tagName !== "a:r" && el.tagName !== "a:fld") continue;
       const t = first(el, "a:t");
-      const text = t?.textContent ?? "";
+      const text = (t?.textContent ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      if (!text) continue;
       const rPr = children(el, "a:rPr")[0];
+      let run = text;
       if (rPr) {
         const sz = pt(attr(rPr, "sz"));
         if (sz && !fontSize) fontSize = sz;
         const col = fillColor(rPr, ink, scheme);
         if (col && !color) color = col;
-        if (attr(rPr, "b") === "1") bold = true;
-        if (attr(rPr, "i") === "1") italic = true;
+        const b = attr(rPr, "b") === "1", i = attr(rPr, "i") === "1";
+        const u = !!attr(rPr, "u") && attr(rPr, "u") !== "none";
+        const k = attr(rPr, "strike") === "sngStrike" || attr(rPr, "strike") === "dblStrike";
+        if (b) bold = true;
+        if (i) italic = true;
+        if (b) run = `<b>${run}</b>`;
+        if (i) run = `<i>${run}</i>`;
+        if (u) run = `<u>${run}</u>`;
+        if (k) run = `<s>${run}</s>`;
+        const bl = Number(attr(rPr, "baseline") ?? 0);
+        if (bl > 0) run = `<sup>${run}</sup>`; else if (bl < 0) run = `<sub>${run}</sub>`;
+        const latin = attr(children(rPr, "a:latin")[0] ?? null, "typeface");
+        const sty: string[] = [];
+        if (col) sty.push(`color:${col}`);
+        if (sz) sty.push(`font-size:${sz}px`);
+        if (latin) sty.push(`font-family:${latin}`);
+        if (sty.length) run = `<span style="${sty.join(";")}">${run}</span>`;
+        // run-level hyperlink — r:id resolves through the part's rels
+        const rid = attr(children(rPr, "a:hlinkClick")[0] ?? null, "r:id");
+        const href = rid ? rels?.get(rid) : undefined;
+        if (href && /^[a-z][a-z0-9+.-]*:/i.test(href)) run = `<a href="${href.replace(/"/g, "&quot;")}" rel="noopener noreferrer">${run}</a>`;
       }
-      out.push(text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+      line.push(run);
     }
-    out.push("<br/>");
+    const inner = line.join("");
+    // block wrapper per para keeps text-align + line breaks uniform
+    out.push(`<div${al !== "left" ? ` style="text-align:${al}"` : ""}>${inner || "<br/>"}</div>`);
   }
-  return { html: out.join("").replace(/(<br\/>)+$/, ""), fontSize, color, bold, italic, align };
+  return { html: out.join(""), fontSize, color, bold, italic, align };
 }
 
 function shapeKind(prst: string | null | undefined): SlideObject["shape"] {
@@ -154,7 +179,7 @@ async function parseSp(sp: Element, ctx: Ctx, ink: string, scheme: Record<string
   const rot = rotS;
   const prst = attr(children(spPr ?? null, "a:prstGeom")[0] ?? null, "prst");
   const tx = children(sp, "p:txBody")[0];
-  const { html, fontSize, color, bold, italic, align } = textBodyToHtml(tx ?? null, ink, scheme);
+  const { html, fontSize, color, bold, italic, align } = textBodyToHtml(tx ?? null, ink, scheme, ctx.rels);
   const fill = fillColor(spPr, ink, scheme);
   const ln = children(spPr ?? null, "a:ln")[0];
   const stroke = fillColor(ln, ink, scheme);
@@ -177,8 +202,13 @@ async function parseSp(sp: Element, ctx: Ctx, ink: string, scheme: Record<string
     obj = { ...base, type: "text", html, fontSize: fontSize ?? 20, color: color ?? ink, bold, italic, align };
   }
   if (obj) {
-    const sid = attr(children(children(sp, "p:nvSpPr")[0] ?? null, "p:cNvPr")[0] ?? null, "id");
+    const cNvPr = children(children(sp, "p:nvSpPr")[0] ?? null, "p:cNvPr")[0] ?? null;
+    const sid = attr(cNvPr, "id");
     if (sid) ctx.spids?.set(sid, obj);
+    // object-level hyperlink: cNvPr/a:hlinkClick r:id → rels
+    const rid = attr(children(cNvPr, "a:hlinkClick")[0] ?? null, "r:id");
+    const href = rid ? ctx.rels.get(rid) : undefined;
+    if (href && /^[a-z][a-z0-9+.-]*:/i.test(href)) obj.link = href;
   }
   return obj;
 }
@@ -196,6 +226,8 @@ async function parsePic(pic: Element, ctx: Ctx): Promise<SlideObject | null> {
     x: emu(attr(off, "x")), y: emu(attr(off, "y")),
     w: Math.max(16, emu(attr(ext, "cx"), 100)), h: Math.max(16, emu(attr(ext, "cy"), 100)),
     rotate,
+    imgFlipH: attr(xfrm ?? null, "flipH") === "1" || undefined,
+    imgFlipV: attr(xfrm ?? null, "flipV") === "1" || undefined,
   };
 
   // P6.4 — video/audio files ride in as <a:videoFile>/<a:audioFile> rels on a p:pic
@@ -213,7 +245,8 @@ async function parsePic(pic: Element, ctx: Ctx): Promise<SlideObject | null> {
     }
   }
 
-  const blip = children(children(pic, "p:blipFill")[0] ?? null, "a:blip")[0];
+  const blipFill = children(pic, "p:blipFill")[0];
+  const blip = children(blipFill ?? null, "a:blip")[0];
   const rId = attr(blip ?? null, "r:embed");
   const target = rId ? ctx.rels.get(rId) : undefined;
   if (!target) return null;
@@ -221,8 +254,16 @@ async function parsePic(pic: Element, ctx: Ctx): Promise<SlideObject | null> {
   if (!file) return null;
   const ext2 = target.split(".").pop()?.toLowerCase() ?? "png";
   const b64 = await file.async("base64");
+  // a:srcRect l/t/r/b are 1/1000 of a percent of the source image
+  const sr = children(blipFill ?? null, "a:srcRect")[0];
+  const pct = (n: string) => Math.max(0, Math.min(1, Number(attr(sr, n) ?? 0) / 100000));
+  const imgCrop = sr ? { l: pct("l"), t: pct("t"), r: pct("r"), b: pct("b") } : undefined;
+  // alphaModFix amt → opacity (1/1000 percent)
+  const amt = attr(first(blip ?? null, "a:alphaModFix") ?? null, "amt");
+  const imgOpacity = amt != null ? Math.max(0, Math.min(1, Number(amt) / 100000)) : undefined;
   return {
     id: newId(), type: "image", ...pos,
+    imgCrop, imgOpacity,
     z: 0, src: `data:${MIME[ext2] ?? "image/png"};base64,${b64}`, alt: name,
   };
 }
@@ -243,9 +284,11 @@ async function parseChart(gf: Element, ctx: Ctx): Promise<SlideObject | null> {
   const file = target ? ctx.zip.file(target) : null;
   if (!file) return null;
   const doc = new DOMParser().parseFromString(await file.async("text"), "text/xml");
-  const type = first(doc.documentElement, "c:barChart") ? "bar"
-    : first(doc.documentElement, "c:pieChart") ? "pie"
-    : (first(doc.documentElement, "c:lineChart") ?? first(doc.documentElement, "c:areaChart")) ? "line"
+  const de = doc.documentElement;
+  const type = (first(de, "c:barChart") ?? first(de, "c:bar3DChart")) ? "bar"
+    : (first(de, "c:pieChart") ?? first(de, "c:pie3DChart") ?? first(de, "c:doughnutChart") ?? first(de, "c:ofPieChart")) ? "pie"
+    : (first(de, "c:lineChart") ?? first(de, "c:line3DChart") ?? first(de, "c:areaChart") ?? first(de, "c:area3DChart")
+      ?? first(de, "c:scatterChart") ?? first(de, "c:radarChart") ?? first(de, "c:bubbleChart") ?? first(de, "c:stockChart")) ? "line"
     : null;
   if (!type) return null;
 
@@ -314,22 +357,70 @@ const connBox = (x1: number, y1: number, x2: number, y2: number) => ({
   w: Math.max(1, Math.round(Math.abs(x2 - x1))), h: Math.max(1, Math.round(Math.abs(y2 - y1))),
 });
 
-async function parseGraphicFrame(gf: Element, ctx: Ctx, ink: string): Promise<SlideObject | null> {
+/** SmartArt — generators ship a pre-rendered copy of the diagram as
+ *  ppt/diagrams/drawingN.xml (dsp: namespace mirrors p:). Import that shape
+ *  tree and fit it into the frame's rect. */
+async function parseDiagram(gf: Element, ctx: Ctx, ink: string): Promise<SlideObject[]> {
+  const relIds = first(gf, "dgm:relIds") ?? first(first(gf, "a:graphicData") ?? null, "dgm:relIds");
+  const rid = attr(relIds ?? null, "r:dm") ?? attr(relIds ?? null, "r:id");
+  const target = rid ? ctx.rels.get(rid) : undefined;
+  const file = target ? ctx.zip.file(target) : null;
+  if (!file) return [];
+  const dir = target!.slice(0, target!.lastIndexOf("/"));
+  const nm = target!.slice(target!.lastIndexOf("/") + 1);
+  const rels = await parseRels(ctx.zip, `${dir}/_rels/${nm}.rels`, dir);
+  // dsp: → p: so the shape-tree parser applies unchanged
+  const xml = (await file.async("text")).replace(/\bdsp:/g, "p:");
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  const tree = doc.getElementsByTagName("p:spTree")[0];
+  const ctx2: Ctx = { ...ctx, rels, base: dir, phGeom: undefined, phGeomMaster: undefined };
+  const objects: SlideObject[] = [];
+  await parseChildren(tree ?? doc.documentElement, ctx2, ink, { ox: 0, oy: 0, sx: 1, sy: 1 }, objects);
+  if (!objects.length) return [];
+  // normalize the drawing's bbox onto the graphicFrame rect
+  const xfrm = children(gf, "p:xfrm")[0];
+  const fx = emu(attr(children(xfrm ?? null, "a:off")[0], "x")), fy = emu(attr(children(xfrm ?? null, "a:off")[0], "y"));
+  const fw = emu(attr(children(xfrm ?? null, "a:ext")[0], "cx"), 400), fh = emu(attr(children(xfrm ?? null, "a:ext")[0], "cy"), 300);
+  const box = (o: SlideObject) => o.type === "connector" && o.conn
+    ? { x: Math.min(o.conn.x1, o.conn.x2), y: Math.min(o.conn.y1, o.conn.y2), w: Math.abs(o.conn.x2 - o.conn.x1), h: Math.abs(o.conn.y2 - o.conn.y1) }
+    : o;
+  const x0 = Math.min(...objects.map((o) => box(o).x)), y0 = Math.min(...objects.map((o) => box(o).y));
+  const bw = Math.max(1, Math.max(...objects.map((o) => box(o).x + box(o).w)) - x0);
+  const bh = Math.max(1, Math.max(...objects.map((o) => box(o).y + box(o).h)) - y0);
+  const sx = fw / bw, sy = fh / bh;
+  for (const o of objects) {
+    o.x = fx + (o.x - x0) * sx; o.y = fy + (o.y - y0) * sy;
+    o.w *= sx; o.h *= sy;
+    if (o.conn) { o.conn.x1 = fx + (o.conn.x1 - x0) * sx; o.conn.x2 = fx + (o.conn.x2 - x0) * sx; o.conn.y1 = fy + (o.conn.y1 - y0) * sy; o.conn.y2 = fy + (o.conn.y2 - y0) * sy; }
+  }
+  objects.forEach((o, i) => { o.z = i; });
+  return objects;
+}
+
+async function parseGraphicFrame(gf: Element, ctx: Ctx, ink: string): Promise<SlideObject | SlideObject[] | null> {
   const uri = attr(first(gf, "a:graphicData") ?? null, "uri") ?? "";
   if (uri.includes("chart")) return parseChart(gf, ctx);
+  if (uri.includes("diagram")) return parseDiagram(gf, ctx, ink);
   const tbl = first(gf, "a:tbl");
   const xfrm = children(gf, "p:xfrm")[0];
   const off = children(xfrm ?? null, "a:off")[0];
   const ext = children(xfrm ?? null, "a:ext")[0];
+  const frame = { x: emu(attr(off, "x")), y: emu(attr(off, "y")), w: Math.max(80, emu(attr(ext, "cx"), 400)), h: Math.max(40, emu(attr(ext, "cy"), 120)) };
+  if (uri.includes("oleObject")) {
+    // no renderable payload in a graphicFrame — keep a labeled placeholder
+    // so the object's footprint isn't silently lost
+    const prog = attr(first(gf, "p:oleObj") ?? null, "progId") ?? "Embedded object";
+    return { id: newId(), type: "shape", shape: "rect", ...frame, z: 0, fill: "#F0F0F0", stroke: "#999999", html: `<i>📎 ${prog.replace(/</g, "&lt;")}</i>`, fontSize: 14, color: ink, align: "center" };
+  }
   if (!tbl) return null;
   const rows: string[][] = children(tbl, "a:tr").map((tr) =>
     children(tr, "a:tc").map((tc) => {
-      const { html } = textBodyToHtml(children(tc, "a:txBody")[0] ?? null, ink, ctx.scheme);
-      return html.replace(/<br\/>/g, " ").replace(/<[^>]+>/g, "").trim();
+      const { html } = textBodyToHtml(children(tc, "a:txBody")[0] ?? null, ink, ctx.scheme, ctx.rels);
+      return html.replace(/<\/div>/g, " ").replace(/<br\/>/g, " ").replace(/<[^>]+>/g, "").trim();
     }));
   return {
     id: newId(), type: "table", table: rows.length ? rows : [["", ""]],
-    x: emu(attr(off, "x")), y: emu(attr(off, "y")), w: Math.max(80, emu(attr(ext, "cx"), 400)), h: Math.max(40, emu(attr(ext, "cy"), 120)),
+    ...frame,
     z: 0, fontSize: 14, color: ink,
   };
 }
@@ -346,7 +437,7 @@ async function parseChildren(parent: Element | null, ctx: Ctx, ink: string, t: {
       if (o) out.push(o);
     } else if (el.tagName === "p:graphicFrame") {
       const o = await parseGraphicFrame(el, ctx, ink);
-      if (o) out.push(o);
+      if (o) out.push(...(Array.isArray(o) ? o : [o]));
     } else if (el.tagName === "p:grpSp") {
       const gspPr = children(el, "p:grpSpPr")[0];
       const gx = children(gspPr ?? null, "a:xfrm")[0];
@@ -670,9 +761,30 @@ function odpStyles(doc: Document): Map<string, OdpStyle> {
     const pp = st.getElementsByTagName("style:paragraph-properties")[0];
     const ta = pp?.getAttribute("fo:text-align");
     if (ta === "center" || ta === "right") out.align = ta;
+    const parent = st.getAttribute("style:parent-style-name");
+    if (parent) (out as OdpStyle & { __p?: string }).__p = parent;
     map.set(name, out);
   }
   return map;
+}
+
+/** resolve ODP style parent chains (common styles → parent-style-name) */
+function odpResolve(map: Map<string, OdpStyle>): Map<string, OdpStyle> {
+  const done = new Map<string, OdpStyle>();
+  const get = (name: string, seen = new Set<string>()): OdpStyle => {
+    if (done.has(name)) return done.get(name)!;
+    if (seen.has(name)) return {};
+    const s = map.get(name);
+    if (!s) return {};
+    seen.add(name);
+    const parent = (s as OdpStyle & { __p?: string }).__p;
+    const merged: OdpStyle = { ...(parent ? get(parent, seen) : {}), ...s };
+    delete (merged as OdpStyle & { __p?: string }).__p;
+    done.set(name, merged);
+    return merged;
+  };
+  map.forEach((_, k) => get(k));
+  return done;
 }
 
 /** text:p / text:list content → html string */
@@ -693,6 +805,23 @@ function odpTextHtml(el: Element | null): string {
   return lines.join("<br/>");
 }
 
+/** ODF chart object → series from the chart's embedded local-table */
+async function odpChart(zip: import("jszip"), href: string): Promise<SlideObject["chart"] | undefined> {
+  const base = href.replace(/^\.\//, "").replace(/\/$/, "");
+  const file = zip.file(`${base}/content.xml`);
+  if (!file) return undefined;
+  const doc = new DOMParser().parseFromString(await file.async("text"), "text/xml");
+  const tbl = doc.getElementsByTagName("table:table")[0];
+  if (!tbl) return undefined;
+  const rows = [...tbl.getElementsByTagName("table:table-row")].map((tr) =>
+    [...tr.getElementsByTagName("table:table-cell")].map((tc) =>
+      tc.getAttribute("office:value") ?? tc.textContent ?? ""));
+  if (rows.length < 2) return undefined;
+  const labels = rows[0].slice(1);
+  const series = rows.slice(1).map((r) => ({ name: r[0] || "Series", values: r.slice(1).map((v) => Number(v) || 0) }));
+  return { type: "bar", labels, series };
+}
+
 /** Import an .odp file into a Deck (best-effort ODF mapping) */
 export async function importOdp(file: File): Promise<Deck> {
   const JSZip = (await import("jszip")).default;
@@ -702,7 +831,14 @@ export async function importOdp(file: File): Promise<Deck> {
   if (!contentFile) throw new Error("Not an ODP file (missing content.xml)");
   const doc = parser.parseFromString(await contentFile.async("text"), "text/xml");
   const styles = odpStyles(doc);
-  const stOf = (el: Element): OdpStyle => styles.get(el.getAttribute("draw:style-name") ?? el.getAttribute("text:style-name") ?? "") ?? {};
+  // common named styles live in styles.xml — content.xml only carries automatic styles
+  const stylesFile = zip.file("styles.xml");
+  if (stylesFile) {
+    const sdoc = parser.parseFromString(await stylesFile.async("text"), "text/xml");
+    for (const [k, v] of odpStyles(sdoc)) if (!styles.has(k)) styles.set(k, v);
+  }
+  const resolved = odpResolve(styles);
+  const stOf = (el: Element): OdpStyle => resolved.get(el.getAttribute("draw:style-name") ?? el.getAttribute("text:style-name") ?? "") ?? {};
 
   // page size from a page-layout-properties (first wins)
   let slideW = 960, slideH = 540;
@@ -729,6 +865,26 @@ export async function importOdp(file: File): Promise<Deck> {
       const st = stOf(el);
       if (tag === "draw:frame") {
         const img = el.getElementsByTagName("draw:image")[0];
+        const oTbl = el.getElementsByTagName("table:table")[0];
+        const oObj = el.getElementsByTagName("draw:object")[0];
+        if (oTbl) {
+          // ODF table in a frame — rows × cells (repeated cells expand)
+          const rows = [...oTbl.getElementsByTagName("table:table-row")].map((tr) => {
+            const row: string[] = [];
+            for (const tc of [...tr.getElementsByTagName("table:table-cell")]) {
+              const rep = Math.min(64, Number(tc.getAttribute("table:number-columns-repeated") ?? 1));
+              const txt = (tc.textContent ?? "").trim();
+              for (let k = 0; k < rep; k++) row.push(txt);
+            }
+            return row;
+          });
+          objects.push({ id: newId(), type: "table", table: rows.length ? rows : [["", ""]], ...geom(el), z: objects.length, fontSize: 14, color: st.color ?? "var(--ink)" });
+          continue;
+        }
+        if (oObj) {
+          const chart = await odpChart(zip, oObj.getAttribute("xlink:href") ?? "");
+          if (chart) { objects.push({ id: newId(), type: "chart", ...geom(el), z: objects.length, chart }); continue; }
+        }
         if (img) {
           const href = img.getAttribute("xlink:href") ?? "";
           const target = href.replace(/^\.\//, "");

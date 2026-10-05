@@ -5,7 +5,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, Range, Ref } from "./model";
+import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
@@ -303,7 +303,20 @@ function parseStylesXml(xml: string, theme: string[]) {
         } : undefined,
       };
     });
-  return { numFmts, fonts, fills, borders, xfs };
+  // differential formats — conditional-format rules reference dxfs by index
+  const dxfsBlock = /<dxfs\b[^>]*>([\s\S]*?)<\/dxfs>/.exec(xml)?.[1] ?? "";
+  const dxfs = [...dxfsBlock.matchAll(/<dxf\b[^>]*>[\s\S]*?<\/dxf>|<dxf\b[^>]*\/>/g)]
+    .map((m) => {
+      const pf = /<fill>[\s\S]*?<patternFill\b[\s\S]*?(<\/patternFill>|\/>)/.exec(m[0])?.[0] ?? "";
+      const font = /<font>[\s\S]*?<\/font>/.exec(m[0])?.[0] ?? "";
+      return {
+        bg: xlsxColor(/<bgColor\b[^>]*\/?>/.exec(pf)?.[0] ?? "", theme)
+          ?? xlsxColor(/<fgColor\b[^>]*\/?>/.exec(pf)?.[0] ?? "", theme),
+        color: xlsxColor(font, theme),
+        b: /<b\/>|<b>/.test(font) || undefined,
+      };
+    });
+  return { numFmts, fonts, fills, borders, xfs, dxfs };
 }
 
 /** xf index → Kreatix CellStyle (the full style the reader can't give us). */
@@ -352,8 +365,13 @@ async function sheetPartMap(zip: ZipLike): Promise<Map<string, string>> {
   return map;
 }
 
+const XOP: Record<string, Validation["op"]> = {
+  between: "between", notBetween: "notbetween", equal: "=", notEqual: "!=",
+  greaterThan: ">", lessThan: "<", greaterThanOrEqual: ">=", lessThanOrEqual: "<=",
+};
+
 /** Per-sheet extras from the raw sheet XML the reader can't surface. */
-function sheetXmlExtras(xml: string, theme: string[]) {
+function sheetXmlExtras(xml: string, theme: string[], st?: ReturnType<typeof parseStylesXml>) {
   // cell ref → style xf index
   const xfByRef = new Map<string, number>();
   for (const m of xml.matchAll(/<c\b[^>]*?>/g)) {
@@ -366,11 +384,130 @@ function sheetXmlExtras(xml: string, theme: string[]) {
     cols: Number(xAttr(frozen, "xSplit") ?? 0), rows: Number(xAttr(frozen, "ySplit") ?? 0),
   } : undefined;
   const tabColor = /<sheetPr[\s\S]*?<tabColor\b[^>]*\/?>/.exec(xml)?.[0];
+
+  // data validations
+  const validations: Validation[] = [];
+  for (const m of xml.matchAll(/<dataValidation\b[^>]*(?:\/>|>[\s\S]*?<\/dataValidation>)/g)) {
+    const sqref = (xAttr(m[0], "sqref") ?? "").split(/\s+/)[0];
+    if (!sqref) continue;
+    const t = xAttr(m[0], "type") ?? "any";
+    const f1 = /<formula1>([\s\S]*?)<\/formula1>/.exec(m[0])?.[1]?.replace(/&quot;/g, '"') ?? "";
+    const f2 = /<formula2>([\s\S]*?)<\/formula2>/.exec(m[0])?.[1]?.replace(/&quot;/g, '"') ?? "";
+    const v: Validation = {
+      range: sqref,
+      type: t === "list" ? "list" : t === "whole" || t === "decimal" ? "number" : t === "date" || t === "time" ? "date" : t === "textLength" ? "text_len" : "any",
+      op: XOP[xAttr(m[0], "operator") ?? ""],
+      inputMsg: [xAttr(m[0], "promptTitle"), xAttr(m[0], "prompt")].filter(Boolean).join(": ") || undefined,
+      errorMsg: [xAttr(m[0], "errorTitle"), xAttr(m[0], "error")].filter(Boolean).join(": ") || undefined,
+      errorStyle: (xAttr(m[0], "errorStyle") === "warning" || xAttr(m[0], "errorStyle") === "information") ? "warn" : "stop",
+      showInvalid: xAttr(m[0], "showErrorMessage") === "0" || undefined,
+    };
+    if (v.type === "list") v.list = f1.replace(/^"|"$/g, "");
+    else { if (f1) v.min = f1; if (f2) v.max = f2; }
+    validations.push(v);
+  }
+
+  // conditional formatting — dxfId resolves through styles.xml <dxfs>
+  const cf: CondFormat[] = [];
+  for (const block of xml.matchAll(/<conditionalFormatting\b[^>]*>([\s\S]*?)<\/conditionalFormatting>/g)) {
+    const sqref = xAttr(block[0].slice(0, 120), "sqref") ?? "";
+    for (const m of block[1].matchAll(/<cfRule\b[^>]*(?:\/>|>[\s\S]*?<\/cfRule>)/g)) {
+      const type = xAttr(m[0], "type") ?? "", dxfId = xAttr(m[0], "dxfId");
+      const dxf = dxfId !== undefined ? st?.dxfs[Number(dxfId)] : undefined;
+      const formulas = [...m[0].matchAll(/<formula[^>]*>([\s\S]*?)<\/formula>/g)].map((f) => f[1]);
+      const base: CondFormat = { range: sqref, bg: dxf?.bg };
+      if (type === "cellIs") {
+        cf.push({ ...base, type: "value", op: XOP[xAttr(m[0], "operator") ?? ""] as CondFormat["op"], value: Number(formulas[0]) });
+      } else if (/^(containsText|notContainsText|beginsWith|endsWith)$/.test(type)) {
+        cf.push({ ...base, type: "text",
+          textOp: type === "containsText" ? "contains" : type === "notContainsText" ? "notcontains" : type === "beginsWith" ? "starts" : "ends",
+          text: xAttr(m[0], "text") });
+      } else if (type === "top10") {
+        cf.push({ ...base, type: "topn", n: Number(xAttr(m[0], "rank") ?? 10), bottom: xAttr(m[0], "bottom") === "1" });
+      } else if (type === "expression") {
+        cf.push({ ...base, type: "formula", f: formulas[0]?.replace(/^=/, "") });
+      } else if (type === "dataBar") {
+        cf.push({ ...base, type: "databar", bar: xlsxColor(/<color\b[^>]*\/?>/.exec(m[0])?.[0] ?? "", theme) });
+      } else if (type === "colorScale") {
+        const colors = [...m[0].matchAll(/<color\b[^>]*\/?>/g)].map((c) => xlsxColor(c[0], theme));
+        cf.push({ ...base, type: "colorscale", minColor: colors[0], midColor: colors[2] ? colors[1] : undefined, maxColor: colors[colors.length - 1] });
+      } else if (type === "iconSet") {
+        const iset = xAttr(/<iconSet\b[^>]*\/?>/.exec(m[0])?.[0] ?? "", "iconSet") ?? "";
+        cf.push({ ...base, type: "iconset",
+          icons: /Arrow/.test(iset) ? "arrows" : /Traffic|Flag|Sign|Symbols3?$/.test(iset) ? "traffic" : /Stars|Ratings|Quarters|Boxes/.test(iset) ? "stars" : undefined });
+      } else if (type === "duplicateValues" || type === "uniqueValues") {
+        const topLeft = sqref.split(":")[0];
+        cf.push({ ...base, type: "formula", f: `COUNTIF(${sqref},${topLeft})${type === "duplicateValues" ? ">1" : "=1"}` });
+      }
+    }
+  }
+
+  // print setup → workbook-level print prefs (first sheet wins)
+  const ps = /<pageSetup\b[^>]*\/?>/.exec(xml)?.[0];
+  const po = /<printOptions\b[^>]*\/?>/.exec(xml)?.[0];
+  const hf = /<headerFooter\b[^>]*>/.exec(xml)?.[0];
+  const print = (ps || po || hf) ? {
+    orientation: xAttr(ps ?? "", "orientation") === "landscape" ? "landscape" as const : undefined,
+    scale: Number(xAttr(ps ?? "", "scale") ?? 0) || undefined,
+    fitWidth: xAttr(ps ?? "", "fitToWidth") === "1" || /<pageSetUpPr\b[^>]*fitToPage="(1|true)"/.test(xml) || undefined,
+    gridlines: xAttr(po ?? "", "gridLines") === "1" || undefined,
+    header: /<oddHeader>([^<]*)<\/oddHeader>/.exec(xml)?.[1],
+    footer: /<oddFooter>([^<]*)<\/oddFooter>/.exec(xml)?.[1],
+  } : undefined;
+
   return {
     xfByRef,
     freeze: freeze && (freeze.cols || freeze.rows) ? freeze : undefined,
     tabColor: tabColor ? xlsxColor(tabColor, theme) : undefined,
+    validations: validations.length ? validations : undefined,
+    cf: cf.length ? cf : undefined,
+    print,
+    tablePartRids: [...xml.matchAll(/<tablePart\b[^>]*\/?>/g)].map((m) => xAttr(m[0], "r:id")).filter(Boolean) as string[],
   };
+}
+
+/** worksheet tableParts → xl/tables/tableN.xml → TableSpec[] */
+async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Promise<TableSpec[]> {
+  if (!rids.length) return [];
+  const dir = sheetPart.slice(0, sheetPart.lastIndexOf("/"));
+  const nm = sheetPart.slice(sheetPart.lastIndexOf("/") + 1);
+  const relsXml = await zip.file(`${dir}/_rels/${nm}.rels`)?.async("string");
+  if (!relsXml) return [];
+  const rels = new Map<string, string>();
+  for (const m of relsXml.matchAll(/<Relationship\b[^>]*\/?>/g)) {
+    const id = xAttr(m[0], "Id"), tgt = xAttr(m[0], "Target");
+    if (id && tgt) {
+      const abs = tgt.startsWith("/") ? tgt.slice(1) : `xl/worksheets/${tgt}`.replace(/worksheets\/\.\.\//, "");
+      if (/tables\//.test(abs)) rels.set(id, abs);
+    }
+  }
+  const out: TableSpec[] = [];
+  const FN: Record<string, "sum" | "avg" | "count" | "min" | "max" | "none"> =
+    { sum: "sum", average: "avg", count: "count", min: "min", max: "max", none: "none" };
+  for (const rid of rids) {
+    const path = rels.get(rid);
+    const tXml = path ? await zip.file(path)?.async("string") : undefined;
+    const tTag = tXml ? /<table\b[^>]*>/.exec(tXml)?.[0] : undefined;
+    if (!tXml || !tTag) continue;
+    const spec: TableSpec = {
+      name: xAttr(tTag, "displayName") ?? xAttr(tTag, "name") ?? "Table",
+      range: xAttr(tTag, "ref") ?? "",
+    };
+    const si = /<tableStyleInfo\b[^>]*\/?>/.exec(tXml)?.[0] ?? "";
+    const sName = xAttr(si, "name") ?? "";
+    spec.style = xAttr(si, "showRowStripes") === "1" ? "banded"
+      : /Light|None/.test(sName) ? "plain" : /Dark/.test(sName) ? "dark" : "accent";
+    if (xAttr(tTag, "totalsRowShown") === "1") {
+      spec.totals = {};
+      [...tXml.matchAll(/<tableColumn\b[^>]*(?:\/>|>[\s\S]*?<\/tableColumn>)/g)]
+        .forEach((m, i) => {
+          const fn = FN[xAttr(m[0], "totalsRowFunction") ?? ""] ?? "sum";
+          spec.totals![i] = fn;
+        });
+    }
+    if (spec.range) out.push(spec);
+  }
+  return out;
 }
 
 function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
@@ -582,10 +719,11 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const stXml = parsed ? parseStylesXml(parsed, theme) : undefined;
   const partMap = zip ? await sheetPartMap(zip) : new Map<string, string>();
   const wbk = (wb as { Workbook?: { Sheets?: { Hidden?: number }[]; Names?: { Name: string; Ref: string; Sheet?: number }[] } }).Workbook;
+  let sheetXmlPrintFound = false, pendingPrint: Workbook["print"];
   const sheets: SheetData[] = await Promise.all(wb.SheetNames.map(async (name, idx) => {
     const ws = wb.Sheets[name];
     const sheetXml = zip && partMap.get(name) ? await zip.file(partMap.get(name)!)?.async("string") : undefined;
-    const extras = sheetXml ? sheetXmlExtras(sheetXml, theme) : undefined;
+    const extras = sheetXml ? sheetXmlExtras(sheetXml, theme, stXml) : undefined;
     const cells: Record<string, CellData> = {};
     const notes: Record<string, string> = {};
     for (const ref of Object.keys(ws)) {
@@ -599,7 +737,7 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       const xl = (x as { l?: { Target?: string } }).l?.Target;
       if (xl) cell.link = /^[a-z][a-z0-9+.-]*:/i.test(xl) ? xl : `#${xl}`;
       // cell style: full styles.xml xf is authoritative; reader's bg/fmt fill gaps
-      const xfIdx = extras?.xfByRef.get(ref);
+      const xfIdx = stXml ? extras?.xfByRef.get(ref) : undefined;
       const xfStyle = stXml && xfIdx !== undefined
         ? xfToStyle(stXml.xfs[xfIdx] ?? { fontId: 0, fillId: 0, borderId: 0, numFmtId: 0 }, stXml)
         : undefined;
@@ -620,6 +758,13 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     if (wbk?.Sheets?.[idx]?.Hidden) sheet.hidden = true;
     if (extras?.freeze) sheet.freeze = extras.freeze;
     if (extras?.tabColor) sheet.tabColor = extras.tabColor;
+    if (extras?.validations) sheet.validations = extras.validations;
+    if (extras?.cf) sheet.cf = extras.cf;
+    if (extras?.tablePartRids.length && zip && partMap.get(name)) {
+      const tables = await sheetTables(zip, partMap.get(name)!, extras.tablePartRids);
+      if (tables.length) sheet.tables = tables;
+    }
+    if (extras?.print && !sheetXmlPrintFound) { sheetXmlPrintFound = true; pendingPrint = extras.print; }
     if (Object.keys(notes).length) sheet.notes = notes;
     if (ws["!merges"]?.length)
       sheet.merges = ws["!merges"].map((m) => ({ c1: m.s.c, r1: m.s.r, c2: m.e.c, r2: m.e.r }));
@@ -649,6 +794,20 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     return sheet;
   }));
   const out: Workbook = { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
+  if (pendingPrint) out.print = pendingPrint;
+  // workbook.xml calcPr — manual/iterative calc options
+  const wbXmlText = zip ? await zip.file("xl/workbook.xml")?.async("string") : undefined;
+  const calcPr = wbXmlText ? /<calcPr\b[^>]*\/?>/.exec(wbXmlText)?.[0] : undefined;
+  if (calcPr) {
+    const mode = xAttr(calcPr, "calcMode");
+    out.calc = {
+      mode: mode === "manual" ? "manual" : mode === "autoNoTable" ? "autoNoTables" : undefined,
+      iterative: xAttr(calcPr, "iterate") === "1" || undefined,
+      maxIterations: Number(xAttr(calcPr, "iterateCount") ?? 0) || undefined,
+      maxChange: Number(xAttr(calcPr, "iterateDelta") ?? 0) || undefined,
+    };
+    if (!out.calc.mode && !out.calc.iterative) delete out.calc;
+  }
   // defined names (S8.5) — Name → Ref like "Sheet1!$B$2"
   if (wbk?.Names?.length) {
     out.names = {};

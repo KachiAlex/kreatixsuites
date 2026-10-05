@@ -403,6 +403,11 @@ ${OPARA}
   check("xfdf: highlight parsed", anns.some((a) => a.type === "highlight" && a.page === 1 && a.author === "Ann"));
   check("xfdf: line arrow", anns.some((a) => a.type === "arrow" && a.page === 2));
   check("xfdf: note", anns.some((a) => a.type === "note" && a.page === 3));
+  // nested-dict FDF — the annot dict contains /Border <<>>; a lazy regex
+  // would truncate at the inner >> and drop /Rect entirely
+  const fdf = `%FDF-1.2\n1 0 obj\n<< /FDF << /Annots [\n<< /Type /Annot /Subtype /Square /Page 0 /C [1 0 0] /Rect [10 20 110 120] /Border << /W 2 /S /S >> >>\n] >> >>\nendobj\n%%EOF\n`;
+  const a2 = parseFdf(fdf);
+  check("fdf: nested-dict annot", a2.length === 1 && a2[0].type === "rect" && a2[0].rects?.[0]?.[2] === 100);
 }
 
 // ---------- CSV ----------
