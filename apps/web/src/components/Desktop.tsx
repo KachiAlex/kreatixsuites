@@ -10,7 +10,7 @@ import { api } from "../lib/api";
 import { startSyncLoop } from "../lib/offline/sync";
 import { canEditOffline, entitlement, refreshEntitlement } from "../lib/offline/license";
 import { anonDaysLeft, isAnonymous } from "../lib/offline/trial";
-import { importLocalPath, kindForPath } from "../lib/offline/openLocal";
+import { importLocalFile, importLocalPath, kindForPath } from "../lib/offline/openLocal";
 import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 
@@ -74,6 +74,41 @@ export function DesktopBootstrap() {
     });
     return () => { void sub?.remove(); };
   }, [navigate, toast, loginWithToken]);
+
+  // mobile: "Open with Kreatix" / "Share to" — KxDocOpen plugin hands us a
+  // content:// URI; receive() copies it into app storage so fetch() can read
+  // it, then it goes through the same Drive import as the desktop flow
+  useEffect(() => {
+    if (!isNativeMobile) return;
+    let sub: { remove: () => void } | null = null;
+    type KxDoc = {
+      receive(o: { uri: string }): Promise<{ path: string; name: string; mime?: string }>;
+      addListener(ev: "docOpen", cb: (e: { uri: string }) => void): Promise<{ remove(): void }>;
+      getPending(): Promise<{ uris?: string[] }>;
+    };
+    const openUri = async (Kx: KxDoc, uri: string) => {
+      try {
+        const { Capacitor } = await import("@capacitor/core");
+        const f = await Kx.receive({ uri });
+        if (!kindForPath(f.name)) {
+          toast(`Can't open "${f.name}" — unsupported file type`);
+          return;
+        }
+        const blob = await fetch(Capacitor.convertFileSrc(f.path)).then((r) => r.blob());
+        const id = await importLocalFile(new File([blob], f.name, { type: f.mime || blob.type }));
+        toast("Imported to Drive");
+        navigate(`/edit/${id}`);
+      } catch (err) {
+        toast(`Couldn't open file — ${(err as Error).message}`);
+      }
+    };
+    void import("@capacitor/core").then(({ registerPlugin }) => {
+      const Kx = registerPlugin<KxDoc>("KxDocOpen");
+      void Kx.addListener("docOpen", ({ uri }) => void openUri(Kx, uri)).then((s) => { sub = s; });
+      void Kx.getPending().then((r) => (r.uris ?? []).forEach((u) => void openUri(Kx, u)));
+    });
+    return () => { void sub?.remove(); };
+  }, [navigate, toast]);
 
   return msg ? <div className="toast" role="status" aria-live="polite">{msg}</div> : null;
 }
