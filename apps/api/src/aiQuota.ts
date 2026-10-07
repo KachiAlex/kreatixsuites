@@ -7,7 +7,9 @@ import { ensureSubscription, effectiveState, seatCount, type Subscription, type 
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
 
 const envInt = (k: string, dflt: number) => {
-  const v = Number(process.env[k]);
+  const raw = process.env[k]?.trim();
+  if (!raw) return dflt; // empty env (e.g. forwarded blank) = use default
+  const v = Number(raw);
   return Number.isFinite(v) && v >= 0 ? v : dflt;
 };
 
@@ -170,8 +172,8 @@ export function modelFor(mode: string): string {
 
 /** Microdollar cost for a request on a given model. Prices = USD per 1M tokens. */
 export function costMicros(promptTokens: number, completionTokens: number): number {
-  const pin = Number(process.env.KREATIX_AI_PRICE_IN_PER_MTOK ?? 0.15);
-  const pout = Number(process.env.KREATIX_AI_PRICE_OUT_PER_MTOK ?? 0.60);
+  const pin = envInt("KREATIX_AI_PRICE_IN_PER_MTOK", 0.15);
+  const pout = envInt("KREATIX_AI_PRICE_OUT_PER_MTOK", 0.60);
   return Math.round(promptTokens * pin + completionTokens * pout);
 }
 
