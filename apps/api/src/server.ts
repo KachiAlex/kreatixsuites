@@ -108,9 +108,9 @@ async function main() {
   // Baseline security headers at the app layer so they hold regardless of the
   // fronting proxy (nginx sets the same set in deploy/ but isn't guaranteed).
   const CSP =
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; " +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
-    "font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; " +
+    "font-src 'self' data:; connect-src 'self' wss: ws: https://cloudflareinsights.com; worker-src 'self' blob:; " +
     "media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; " +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; manifest-src 'self'";
   app.addHook("onSend", async (_req, reply) => {
