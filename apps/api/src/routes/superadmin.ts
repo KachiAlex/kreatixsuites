@@ -46,11 +46,11 @@ export function superadminRoutes(app: FastifyInstance) {
     const rows = await q<{
       id: string; name: string; created_at: string; seats: number;
       status: string | null; trial_ends_at: string | null; period_end: string | null;
-      amount_ngn: number | null; override_until: string | null; ai_token_budget: number | null;
+      amount_ngn: number | null; override_until: string | null; ai_token_budget: number | null; plan: string | null;
     }>(
       `SELECT o.id, o.name, o.created_at,
               (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND NOT u.disabled) AS seats,
-              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until, s.ai_token_budget
+              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until, s.ai_token_budget, s.plan
        FROM orgs o LEFT JOIN subscriptions s ON s.org_id = o.id
        ORDER BY o.created_at DESC LIMIT 500`);
     const cfg = await getConfig();
@@ -120,6 +120,7 @@ export function superadminRoutes(app: FastifyInstance) {
       extendTrialDays: z.number().int().min(1).max(730).optional(),
       status: z.enum(["canceled"]).optional(),
       aiTokenBudget: z.number().int().min(0).nullable().optional(), // AI quota override (null = computed)
+      plan: z.enum(["standard", "business"]).optional(),            // AI budget tier
     }).parse(req.body);
     await ensureSubscription(orgId);
     if (body.extendTrialDays) {
@@ -138,6 +139,10 @@ export function superadminRoutes(app: FastifyInstance) {
     if (body.aiTokenBudget !== undefined) {
       await run("UPDATE subscriptions SET ai_token_budget = $2, updated_at = $3 WHERE org_id = $1",
         [orgId, body.aiTokenBudget, now()]);
+    }
+    if (body.plan !== undefined) {
+      await run("UPDATE subscriptions SET plan = $2, updated_at = $3 WHERE org_id = $1",
+        [orgId, body.plan, now()]);
     }
     return { subscription: await ensureSubscription(orgId) };
   });

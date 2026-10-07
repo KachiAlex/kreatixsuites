@@ -20,6 +20,7 @@ export interface AiQuota {
   orgTokensUsed: number; orgTokensLimit: number;
   userTodayUsed: number; userTodayLimit: number;
   trialRequestsUsed?: number; trialRequestsLimit?: number;
+  byok?: boolean;
   resetsAt: string;
 }
 interface AiDenied { kind: "upgrade" | "cooldown"; message: string; retryAfterSec?: number }
@@ -202,10 +203,17 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
       </div>
 
       {quota && (
-        <div className="ai-quota" title={quota.plan === "trial"
-          ? "Trial workspaces include a free taste of Kreatix AI"
-          : "Workspace monthly AI credit budget"}>
-          {quota.plan === "trial" ? (
+        <div className="ai-quota" title={quota.byok
+          ? "This workspace uses its own AI key — usage bills to your provider"
+          : quota.plan === "trial"
+            ? "Trial workspaces include a free taste of Kreatix AI"
+            : "Workspace monthly AI credit budget"}>
+          {quota.byok ? (
+            <div className="ai-quota-row">
+              <span>Own API key</span>
+              <span>{fmtTok(quota.orgTokensUsed)} tok used</span>
+            </div>
+          ) : quota.plan === "trial" ? (
             <>
               <div className="ai-quota-row">
                 <span>{quota.trialRequestsUsed ?? 0}/{quota.trialRequestsLimit ?? 0} trial requests</span>

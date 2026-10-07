@@ -5,6 +5,7 @@
 import { one, q, run } from "./db.js";
 import { ensureSubscription, effectiveState, seatCount, type Subscription } from "./billing.js";
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
+import { decryptField } from "./crypto.js";
 
 const envInt = (k: string, dflt: number) => {
   const v = Number(process.env[k]);
@@ -15,13 +16,28 @@ export const limits = {
   trialRequests: () => envInt("KREATIX_AI_TRIAL_REQUESTS", 50),
   orgTokensBase: () => envInt("KREATIX_AI_ORG_TOKENS_BASE", 3_000_000),
   orgTokensPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_PER_SEAT", 1_000_000),
+  businessBase: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_BASE", 12_000_000),
+  businessPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_PER_SEAT", 4_000_000),
   userDaily: () => envInt("KREATIX_AI_USER_DAILY", 300),
   userPerMin: () => envInt("KREATIX_AI_USER_PER_MIN", 20),
   platformBudgetUsd: () => envInt("KREATIX_AI_MONTHLY_BUDGET_USD", 200),
 };
 
+/** Workspace AI provider config — set when the org supplies its own
+ *  OpenAI-compatible key (BYOK). Usage is still metered, but it costs the
+ *  platform nothing so token budgets don't apply. */
+export interface OrgAiProvider { key: string; baseUrl: string; model: string | null }
+
+export async function orgAiProvider(orgId: string): Promise<OrgAiProvider | null> {
+  const r = await one<{ ai_key: string | null; ai_base_url: string | null; ai_model: string | null }>(
+    "SELECT ai_key, ai_base_url, ai_model FROM subscriptions WHERE org_id = $1", [orgId]);
+  const key = r?.ai_key ? decryptField(r.ai_key) : null;
+  return key ? { key, baseUrl: r!.ai_base_url || "https://api.openai.com/v1", model: r!.ai_model } : null;
+}
+
 export interface AiQuota {
   plan: "trial" | "paid";
+  byok?: boolean;
   orgTokensUsed: number;
   orgTokensLimit: number;
   userTodayUsed: number;
@@ -50,9 +66,12 @@ const nextMonth = () => {
 };
 const nextDay = () => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) + "T00:00:00.000Z";
 
-/** Monthly token budget for a paid org — seat-scaled, override wins. */
+/** Monthly token budget for a paid org — seat-scaled by plan tier,
+ *  explicit override wins over everything. */
 export function orgTokenLimit(sub: Subscription, seats: number): number {
   if (sub.ai_token_budget != null) return sub.ai_token_budget;
+  if (sub.plan === "business")
+    return limits.businessBase() + limits.businessPerSeat() * Math.max(0, seats - 1);
   return limits.orgTokensBase() + limits.orgTokensPerSeat() * Math.max(0, seats - 1);
 }
 
@@ -77,6 +96,7 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
   const seats = await seatCount(orgId);
   const { state } = effectiveState(sub);
   const isTrial = state === "trialing";
+  const byok = !!(await orgAiProvider(orgId));
 
   const [orgTokens, userToday, trialReqs] = await Promise.all([
     isTrial ? Promise.resolve({ n: "0" }) : one<{ n: string }>(
@@ -93,6 +113,7 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
 
   return {
     plan: isTrial ? "trial" : "paid",
+    byok,
     orgTokensUsed: Number(orgTokens?.n ?? 0),
     orgTokensLimit: orgTokenLimit(sub, seats),
     userTodayUsed: Number(userToday?.n ?? 0),
@@ -119,11 +140,15 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "AI is a paid-plan feature — the workspace subscription has expired" };
   }
-  if (state === "trialing" && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
+  const byok = quota.byok ?? false;
+
+  if (state === "trialing" && !byok && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "Trial AI quota used up — subscribe to keep using Kreatix AI" };
   }
-  if (!quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
+  // BYOK orgs carry their own provider bill — token & platform budgets don't
+  // apply; burst/daily caps stay (they protect our infra, not our wallet)
+  if (!byok && !quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
     return { allowed: false, http: 429, error: "quota_exceeded", quota,
       message: "Workspace monthly AI budget reached — resets on the 1st", retryAfterSec: secUntil(quota.resetsAt) };
   }
@@ -140,7 +165,7 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
   }
   w.push(nowTs); burst.set(userId, w);
 
-  if (await platformSpendUsd() >= limits.platformBudgetUsd()) {
+  if (!byok && await platformSpendUsd() >= limits.platformBudgetUsd()) {
     return { allowed: false, http: 503, error: "platform_budget", quota,
       message: "AI is temporarily unavailable — platform budget reached" };
   }

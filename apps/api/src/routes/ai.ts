@@ -10,7 +10,7 @@ import { getItem, logActivity } from "../items.js";
 import { indexBody } from "../indexer.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { encryptField, decryptField } from "../crypto.js";
-import { checkAiQuota, aiQuotaFor, modelFor, costMicros, noteAiSpend } from "../aiQuota.js";
+import { checkAiQuota, aiQuotaFor, modelFor, costMicros, noteAiSpend, orgAiProvider, type OrgAiProvider } from "../aiQuota.js";
 
 const AI_BASE = process.env.KREATIX_AI_BASE_URL || "https://api.openai.com/v1";
 const AI_KEY = process.env.KREATIX_AI_KEY ?? "";
@@ -144,7 +144,9 @@ export function aiRoutes(app: FastifyInstance) {
 
   app.get("/api/ai/status", async (req) => {
     const { user } = req as AuthedRequest;
-    return { enabled: !!AI_KEY, model: AI_KEY ? modelFor("ask") : null, quota: await aiQuotaFor(user.orgId, user.id) };
+    const prov = await orgAiProvider(user.orgId);
+    const enabled = !!AI_KEY || !!prov;
+    return { enabled, byok: !!prov, model: enabled ? (prov?.model ?? modelFor("ask")) : null, quota: await aiQuotaFor(user.orgId, user.id) };
   });
 
   interface Prepared {
@@ -154,13 +156,15 @@ export function aiRoutes(app: FastifyInstance) {
     lastUser: { role: "user" | "assistant"; content: string };
     messages: { role: string; content: string }[];
     model: string;
+    prov: OrgAiProvider | null; // BYOK org credentials (their key → their bill)
     promptChars: number; // for token estimation when the provider omits usage
   }
 
   /** Shared auth/quota/permission/prompt assembly for both chat endpoints. */
   async function prepare(req: FastifyRequest, reply: FastifyReply): Promise<Prepared | null> {
     const { user } = req as AuthedRequest;
-    if (!AI_KEY) { reply.code(503).send({ error: "ai_disabled", message: "AI is not configured on this server" }); return null; }
+    const prov = await orgAiProvider(user.orgId);
+    if (!AI_KEY && !prov) { reply.code(503).send({ error: "ai_disabled", message: "AI is not configured on this server" }); return null; }
     const gate = await checkAiQuota(user.orgId, user.id);
     if (!gate.allowed) {
       reply.code(gate.http ?? 429).send({ error: gate.error, message: gate.message, retryAfterSec: gate.retryAfterSec, quota: gate.quota });
@@ -185,7 +189,7 @@ export function aiRoutes(app: FastifyInstance) {
       { role: "user", content: `${lastUser.content}\n\n<document>\n${packed}\n</document>` },
     ];
     const promptChars = messages.reduce((n, m) => n + m.content.length, 0);
-    return { user, body, item, lastUser, messages, model: modelFor(body.mode), promptChars };
+    return { user, body, item, lastUser, messages, model: prov?.model ?? modelFor(body.mode), prov, promptChars };
   }
 
   /** Parse + validate model output, meter tokens/cost, record provenance. */
@@ -211,21 +215,22 @@ export function aiRoutes(app: FastifyInstance) {
     );
     void logActivity(p.user.orgId, p.user.id, p.item.id, "ai-chat", `${p.body.mode}: ${p.lastUser.content.slice(0, 80)}`);
 
-    await recordUsage(p.user, p.item.id, p.body.mode, p.model, p.promptChars, raw, usage);
+    await recordUsage(p.user, p.item.id, p.body.mode, p.model, p.promptChars, raw, usage, !!p.prov);
     return { actionId, reply: replyText, plan, ops };
   }
 
   /** One ai_usage row per completed request — real usage when the provider
    *  reports it, ~4 chars/token estimate otherwise (keeps budgets
-   *  conservative, never under-counts). */
-  async function recordUsage(user: { id: string; orgId: string }, fileId: string | null, mode: string, model: string, promptChars: number, raw: string, usage?: Usage) {
+   *  conservative, never under-counts). BYOK orgs still get metered but the
+   *  platform cost is 0 — it's their key, their bill. */
+  async function recordUsage(user: { id: string; orgId: string }, fileId: string | null, mode: string, model: string, promptChars: number, raw: string, usage?: Usage, byok = false) {
     const pt = usage?.prompt_tokens ?? Math.ceil(promptChars / 4);
     const ct = usage?.completion_tokens ?? Math.ceil(raw.length / 4);
     await run(
       "INSERT INTO ai_usage (id, org_id, user_id, file_id, mode, model, prompt_tokens, completion_tokens, cost_micros, estimated, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-      [randomUUID(), user.orgId, user.id, fileId, mode, model, pt, ct, costMicros(pt, ct), !usage, new Date().toISOString()],
+      [randomUUID(), user.orgId, user.id, fileId, mode, model, pt, ct, byok ? 0 : costMicros(pt, ct), !usage, new Date().toISOString()],
     );
-    noteAiSpend();
+    if (!byok) noteAiSpend();
   }
 
   const providerBody = (p: Prepared, stream: boolean) =>
@@ -236,9 +241,9 @@ export function aiRoutes(app: FastifyInstance) {
 
   type Usage = { prompt_tokens?: number; completion_tokens?: number };
   const callProvider = (p: Prepared, stream: boolean, signal: AbortSignal) =>
-    fetch(`${AI_BASE}/chat/completions`, {
+    fetch(`${p.prov?.baseUrl ?? AI_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${p.prov?.key ?? AI_KEY}` },
       body: providerBody(p, stream),
       signal,
     });
@@ -400,7 +405,8 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
    */
   app.post("/api/ai/ask", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!AI_KEY) return reply.code(503).send({ error: "ai_disabled", message: "AI provider is not configured" });
+    const prov = await orgAiProvider(user.orgId);
+    if (!AI_KEY && !prov) return reply.code(503).send({ error: "ai_disabled", message: "AI provider is not configured" });
     const gate = await checkAiQuota(user.orgId, user.id);
     if (!gate.allowed) {
       return reply.code(gate.http ?? 429).send({ error: gate.error, message: gate.message, retryAfterSec: gate.retryAfterSec, quota: gate.quota });
@@ -418,13 +424,13 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
     const convo = (messages ?? []).map((m) => ({ role: m.role, content: m.content }));
     const msgs = [{ role: "system", content: sys }, ...convo, { role: "user", content: question }];
     const promptChars = msgs.reduce((n, m) => n + m.content.length, 0);
-    const model = modelFor("ask");
+    const model = prov?.model ?? modelFor("ask");
 
     const upstream = new AbortController();
     req.raw.on("close", () => upstream.abort());
-    const call = (streamBody: boolean) => fetch(`${AI_BASE}/chat/completions`, {
+    const call = (streamBody: boolean) => fetch(`${prov?.baseUrl ?? AI_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${prov?.key ?? AI_KEY}` },
       body: JSON.stringify({
         model, messages: msgs, temperature: 0.2, max_tokens: 2000, stream: streamBody,
         ...(streamBody ? { stream_options: { include_usage: true } } : {}),
@@ -463,7 +469,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
           }
         }
         const final = raw.slice(0, 6000);
-        await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage);
+        await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage, !!prov);
         void logActivity(user.orgId, user.id, null, "ai-ask", question.slice(0, 80));
         send({ done: true, reply: final, sources: citedSources(final, top, names) });
       } catch (e) {
@@ -485,7 +491,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
     }
 
     const replyText = raw.slice(0, 6000) || "(no reply)";
-    await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage);
+    await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage, !!prov);
     void logActivity(user.orgId, user.id, null, "ai-ask", question.slice(0, 80));
     return { reply: replyText, sources: citedSources(replyText, top, names) };
   });
@@ -497,7 +503,8 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
    */
   app.post("/api/ai/complete", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!AI_KEY) return reply.code(503).send({ error: "ai_disabled" });
+    const prov = await orgAiProvider(user.orgId);
+    if (!AI_KEY && !prov) return reply.code(503).send({ error: "ai_disabled" });
     const gate = await checkAiQuota(user.orgId, user.id);
     if (!gate.allowed) {
       return reply.code(gate.http ?? 429).send({ error: gate.error, message: gate.message, retryAfterSec: gate.retryAfterSec, quota: gate.quota });
@@ -517,13 +524,13 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       { role: "system", content: sys },
       { role: "user", content: `<before>\n${prefix}\n</before>${suffix ? `\n<after>\n${suffix}\n</after>` : ""}` },
     ];
-    const model = modelFor("complete");
+    const model = prov?.model ?? modelFor("complete");
     const upstream = new AbortController();
     req.raw.on("close", () => upstream.abort());
     try {
-      const res = await fetch(`${AI_BASE}/chat/completions`, {
+      const res = await fetch(`${prov?.baseUrl ?? AI_BASE}/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
+        headers: { "content-type": "application/json", authorization: `Bearer ${prov?.key ?? AI_KEY}` },
         body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 80 }),
         signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(20000)]),
       });
@@ -531,7 +538,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       const data = await res.json() as { choices?: { message?: { content?: string } }[]; usage?: Usage };
       const raw = data.choices?.[0]?.message?.content ?? "";
       const text = raw.replace(/^["'`\s]+|["'`\s]+$/g, "").split("\n\n")[0].slice(0, 600);
-      await recordUsage(user, item.id, "complete", model, msgs[0].content.length + msgs[1].content.length, raw, data.usage);
+      await recordUsage(user, item.id, "complete", model, msgs[0].content.length + msgs[1].content.length, raw, data.usage, !!prov);
       return { text };
     } catch (e) {
       return reply.code(502).send({ error: "ai_error", message: (e as Error).message.slice(0, 120) });

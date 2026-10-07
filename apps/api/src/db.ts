@@ -315,6 +315,11 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);
   // superadmin-set AI token budget override — null = computed (base + per-seat)
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_token_budget BIGINT`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'standard'`);
+  // BYOK — workspace's own OpenAI-compatible credentials (key encrypted at rest)
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_key TEXT`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_base_url TEXT`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_model TEXT`);
   // 80%-of-AI-budget notice bookkeeping for the daily sweep
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_budget_warned_at TIMESTAMPTZ`);
   // seed the default billing config row (idempotent)

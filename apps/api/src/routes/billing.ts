@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, signEntitlement, type AuthedRequest } from "../auth.js";
-import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig } from "../billing.js";
+import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig, ensureSubscription } from "../billing.js";
 import { aiQuotaFor } from "../aiQuota.js";
+import { encryptField } from "../crypto.js";
 
 async function requireOrgAdmin(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
@@ -83,6 +84,37 @@ export function billingRoutes(app: FastifyInstance) {
       byDay: byDay.map((r) => ({ day: r.day, requests: Number(r.requests), tokens: Number(r.tokens) })),
       byMode: byMode.map((r) => ({ mode: r.mode, requests: Number(r.requests), tokens: Number(r.tokens) })),
     };
+  });
+
+  /**
+   * BYOK — workspace supplies its own OpenAI-compatible credentials.
+   * Usage is still rate-limited (infra fairness) and metered, but skips the
+   * platform token budget since the org pays its own provider bill.
+   * Key is encrypted at rest and never returned after saving.
+   */
+  app.post("/api/billing/ai-key", { preHandler: requireOrgAdmin }, async (req) => {
+    const { user } = req as AuthedRequest;
+    const { key, baseUrl, model } = z.object({
+      key: z.string().min(8).max(500),
+      baseUrl: z.string().url().max(200).optional(),
+      model: z.string().max(120).optional(),
+    }).parse(req.body ?? {});
+    await ensureSubscription(user.orgId);
+    await run(
+      "UPDATE subscriptions SET ai_key = $2, ai_base_url = $3, ai_model = $4, updated_at = $5 WHERE org_id = $1",
+      [user.orgId, encryptField(key), baseUrl ?? "https://api.openai.com/v1", model ?? null, now()],
+    );
+    return { ok: true };
+  });
+
+  /** Remove the workspace's own AI key — falls back to platform credentials. */
+  app.delete("/api/billing/ai-key", { preHandler: requireOrgAdmin }, async (req) => {
+    const { user } = req as AuthedRequest;
+    await run(
+      "UPDATE subscriptions SET ai_key = NULL, ai_base_url = NULL, ai_model = NULL, updated_at = $2 WHERE org_id = $1",
+      [user.orgId, now()],
+    );
+    return { ok: true };
   });
 
   /** Full billing view (status, seats, price, payment history) — owner/admin. */

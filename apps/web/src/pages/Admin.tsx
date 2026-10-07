@@ -41,6 +41,7 @@ interface SaOrg {
   state: string; monthlyAmountNgn: number; status: string | null;
   trial_ends_at: string | null; period_end: string | null; override_until: string | null;
   ai_token_budget?: number | null;
+  plan?: string | null;
 }
 interface SaOverview {
   orgs: number; users: number; activeSubs: number; trialing: number;
@@ -48,7 +49,7 @@ interface SaOverview {
 }
 interface AiUsage {
   month: string; requests: number; tokens: number; costUsd: number;
-  quota: { plan: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
+  quota: { plan: string; byok?: boolean; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
   byUser: { userId: string; name: string; requests: number; tokens: number }[];
   byDay: { day: string; requests: number; tokens: number }[];
   byMode: { mode: string; requests: number; tokens: number }[];
@@ -93,6 +94,10 @@ export function Admin() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [billing, setBilling] = useState<{ subscription: BillingSub; payments: Payment[] } | null>(null);
   const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
+  const [byokKey, setByokKey] = useState("");
+  const [byokBase, setByokBase] = useState("");
+  const [byokModel, setByokModel] = useState("");
+  const [byokBusy, setByokBusy] = useState(false);
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -450,7 +455,54 @@ export function Admin() {
               </span>
             </div>
             <div className="flag on"><b>Requests</b><span>{aiUsage.requests.toLocaleString()} this month</span></div>
+            {aiUsage.quota.byok && (
+              <div className="flag on"><b>Own API key</b><span>AI usage bills to your provider — token budget doesn't apply</span></div>
+            )}
           </div>
+          {isOwnerOrAdmin && (
+            <div style={{ marginTop: 12, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 10 }}>
+              <b style={{ fontSize: 12 }}>Use your own AI key (BYOK)</b>
+              <p style={{ margin: "4px 0 8px", fontSize: 11.5, color: "var(--muted)" }}>
+                Plug in your workspace's OpenAI-compatible API key — unlimited AI on your own provider bill.
+                Stored encrypted, never shown again.
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input type="password" style={{ flex: 2, minWidth: 180 }} placeholder="API key (sk-…)"
+                  value={byokKey} onChange={(e) => setByokKey(e.target.value)} autoComplete="off" />
+                <input style={{ flex: 2, minWidth: 180 }} placeholder="Base URL (default: api.openai.com)"
+                  value={byokBase} onChange={(e) => setByokBase(e.target.value)} />
+                <input style={{ flex: 1, minWidth: 120 }} placeholder="Model (optional)"
+                  value={byokModel} onChange={(e) => setByokModel(e.target.value)} />
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button className="btn-secondary btn-sm" disabled={byokBusy || byokKey.trim().length < 8}
+                  onClick={async () => {
+                    setByokBusy(true);
+                    try {
+                      await api.post("/api/billing/ai-key", {
+                        key: byokKey.trim(),
+                        baseUrl: byokBase.trim() || undefined,
+                        model: byokModel.trim() || undefined,
+                      });
+                      setByokKey(""); setByokBase(""); setByokModel("");
+                      toast("AI key saved — this workspace's usage now bills to your provider");
+                      api.get<AiUsage>("/api/billing/ai-usage").then(setAiUsage).catch(() => {});
+                    } catch (e) { toast((e as Error).message); } finally { setByokBusy(false); }
+                  }}>Save key</button>
+                {aiUsage.quota.byok && (
+                  <button className="btn-secondary btn-sm" disabled={byokBusy}
+                    onClick={async () => {
+                      setByokBusy(true);
+                      try {
+                        await api.del("/api/billing/ai-key");
+                        toast("AI key removed — back to the platform quota");
+                        api.get<AiUsage>("/api/billing/ai-usage").then(setAiUsage).catch(() => {});
+                      } catch (e) { toast((e as Error).message); } finally { setByokBusy(false); }
+                    }}>Remove key</button>
+                )}
+              </div>
+            </div>
+          )}
           {(aiUsage.byDay?.length ?? 0) > 0 && (() => {
             const days = aiUsage.byDay;
             const peak = Math.max(1, ...days.map((d) => d.tokens));
@@ -720,6 +772,17 @@ export function Admin() {
                     <td>
                       <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
                         onClick={() => void saComp(o.id, 30)}>+30d comp</button>
+                      <select style={{ marginLeft: 6, padding: "2px 6px", fontSize: 12 }}
+                        title="AI budget tier — business gets a much larger monthly token budget"
+                        value={o.plan ?? "standard"}
+                        onChange={(e) => {
+                          void api.patch(`/api/superadmin/orgs/${o.id}/subscription`, { plan: e.target.value })
+                            .then(() => toast(`${o.name} → ${e.target.value} AI tier`))
+                            .catch((err) => toast((err as Error).message));
+                        }}>
+                        <option value="standard">standard</option>
+                        <option value="business">business</option>
+                      </select>
                       <input type="number" min={0} placeholder="AI tokens/mo" title="Monthly AI token budget override — blank = plan default"
                         style={{ width: 110, marginLeft: 6, padding: "2px 8px", fontSize: 12 }}
                         defaultValue={o.ai_token_budget ?? ""}
