@@ -1,7 +1,7 @@
 // Kreatix AI — cross-suite assistant panel: Ask / Explain / Edit / Plan modes,
 // tool-constrained ops with plan + diff preview before apply, provenance log.
 // Streams replies over SSE; optional auto-apply (still undoable via Ctrl+Z).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../lib/api";
 import { timeAgo } from "../lib/format";
@@ -80,7 +80,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   useEffect(() => {
     if (enabled === true && initialPrompt?.trim() && !sentInitial.current) {
       sentInitial.current = true;
-      void send(initialPrompt.trim());
+      void send(initialPrompt.trim(), true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
@@ -105,7 +105,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   /** POST to the SSE endpoint and read the event stream manually
    *  (EventSource can't POST). Emits raw token deltas, then the
    *  server-validated final payload. */
-  const send = async (override?: string) => {
+  const send = async (override?: string, applyOnce = false) => {
     const text = (override ?? input).trim();
     if (!text || busy) return;
     setInput(""); setBusy(true); setPending(null); setStreaming("");
@@ -163,7 +163,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
         setMsgs([...next, { role: "assistant", content: final.reply }]);
         if (final.ops.length || final.plan?.length) {
           const p = { actionId: final.actionId, plan: final.plan, ops: final.ops };
-          if (autoApply && canEdit && final.ops.length) await apply(p);
+          if ((autoApply || applyOnce) && canEdit && final.ops.length) await apply(p);
           else setPending(p);
         }
       } else {
@@ -325,6 +325,28 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
               }}>Translate…</button>
             </div>
           )}
+          {!busy && (() => {
+            const sel = selection();
+            const chip = (label: string, run: () => void) =>
+              <button key={label} className="ai-chip" onClick={run}>{label}</button>;
+            let chips: (ReactNode | null)[] = [];
+            if (kind === "sheets" && canEdit) chips = [
+              chip("Suggest a formula…", () => { setMode("edit"); setInput("Write a formula for: "); }),
+              chip("Summarize this sheet", () => { setMode("ask"); void send("Summarize the data in this spreadsheet — what does it contain, key totals, anything notable?"); }),
+              sel ? chip("Explain this selection", () => { setMode("explain"); void send("Explain the selected cells/formulas"); }) : null,
+            ];
+            else if (kind === "present" && canEdit) chips = [
+              chip("Generate a deck…", () => { setMode("edit"); setInput("Create a 6-slide presentation about "); }),
+              chip("Summarize this deck", () => { setMode("ask"); void send("Summarize this presentation slide by slide"); }),
+              chip("Suggest speaker notes", () => { setMode("edit"); void send("Write concise speaker notes for each slide using update_slide ops"); }),
+            ];
+            else if (kind === "pdf") chips = [
+              chip("Summarize this PDF", () => { setMode("ask"); void send("Summarize this PDF — purpose, key points, action items"); }),
+              chip("List form fields", () => { setMode("ask"); void send("List the fillable form fields in this PDF"); }),
+            ];
+            chips = chips.filter(Boolean);
+            return chips.length ? <div className="ai-quick" role="toolbar" aria-label="Quick actions">{chips}</div> : null;
+          })()}
           <div className="ai-input">
             <input value={input} disabled={busy || enabled === false || denied !== null}
               placeholder={mode === "ask" ? "Ask about this document…" : mode === "explain" ? "What should I explain?" : "Describe the change…"}

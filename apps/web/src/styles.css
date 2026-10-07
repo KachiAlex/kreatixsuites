@@ -1550,6 +1550,12 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ai-chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 11px;font-size:11px;cursor:pointer;color:var(--ink)}
 .ai-chip:hover{background:var(--k-orange-soft);border-color:var(--k-orange);color:var(--k-orange-dark)}
 .ai-chip:disabled{opacity:.5}
+.chip.on{box-shadow:inset 0 0 0 1px var(--k-orange-dark)}
+.ai-answer{margin-top:10px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);font-size:12.5px}
+.ai-answer-q{font-weight:700;color:var(--ink);margin-bottom:6px}
+.ai-answer-r{line-height:1.55;white-space:pre-wrap;color:var(--ink)}
+.ai-answer-src{margin-top:8px;font-size:11px;color:var(--muted)}
+.ai-answer-src a{color:var(--k-orange-dark);cursor:pointer;margin-inline-start:8px;font-weight:600;text-decoration:underline}
 
 /* ---- mini prompt (window.prompt replacement) ---- */
 .mini-prompt{min-width:340px}

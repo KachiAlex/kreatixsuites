@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import type { AiQuota } from "../ai/AiPanel";
 import { useT } from "../lib/i18n";
 import { useFiles, useItemActions } from "../lib/hooks";
@@ -22,6 +22,9 @@ export function Home() {
   const [pickFiles, setPickFiles] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const [askWs, setAskWs] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState<{ q: string; reply: string; sources: { fileId: string; name: string }[] } | null>(null);
 
   // AI quota — blocks doc-creation when the workspace is out of credits so
   // no orphan doc gets created for a prompt that will immediately 402
@@ -73,6 +76,28 @@ export function Home() {
     } catch {
       toast(t("shell.aiOpenFailed"));
     }
+  };
+
+  /** Workspace Q&A — retrieval over the search index, answered inline with
+   *  source citations. Doesn't create a document. */
+  const askWorkspace = async (text: string) => {
+    setAsking(true); setAnswer(null);
+    try {
+      const r = await api.post<{ reply: string; sources: { fileId: string; name: string }[] }>(
+        "/api/ai/ask", { question: text });
+      setAnswer({ q: text, reply: r.reply, sources: r.sources });
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.code === "ai_not_in_plan") { toast(t("home.aiQuotaDone")); navigate("/admin"); }
+      else toast(err.message ?? t("shell.aiOpenFailed"));
+    } finally { setAsking(false); }
+  };
+
+  const sendPrompt = () => {
+    const text = prompt.trim();
+    if (!text && !attached) return;
+    if (askWs && !attached) void askWorkspace(text);
+    else void askAi(text);
   };
 
   const chip = (text: string, attach = false) => {
@@ -134,14 +159,20 @@ export function Home() {
             </div>
             <div className="prompt">
               <textarea ref={promptRef} value={prompt}
-                placeholder={t("home.aiPlaceholder")}
+                placeholder={askWs ? t("home.aiAskPlaceholder") : t("home.aiPlaceholder")}
                 onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void askAi(prompt); } }} />
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPrompt(); } }} />
               <div className="prompt-footer" style={{ position: "relative" }}>
                 <span className="add" role="button" tabIndex={0} style={{ cursor: "pointer" }}
                   onClick={() => setPickFiles((v) => !v)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPickFiles((v) => !v); } }}>
                   {t("home.aiAddFiles")}
+                </span>
+                <span className={`chip${askWs ? " on" : ""}`} role="button" tabIndex={0} title={t("home.aiAskHint")}
+                  style={{ cursor: "pointer", opacity: askWs ? 1 : 0.7 }}
+                  onClick={() => { setAskWs((v) => !v); setAttached(null); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAskWs((v) => !v); setAttached(null); } }}>
+                  {t("home.aiAskToggle")}
                 </span>
                 {attached && (
                   <span className="chip" style={{ cursor: "default" }}>
@@ -150,8 +181,8 @@ export function Home() {
                       onClick={() => setAttached(null)}>✕</button>
                   </span>
                 )}
-                <button className="send" title={t("home.aiSend")} disabled={!prompt.trim() && !attached}
-                  onClick={() => void askAi(prompt)}>↗</button>
+                <button className="send" title={t("home.aiSend")} disabled={(!prompt.trim() && !attached) || asking}
+                  onClick={sendPrompt}>{asking ? "…" : "↗"}</button>
                 {pickFiles && (
                   <div className="file-menu" style={{ position: "absolute", bottom: 34, left: 0, right: 0, top: "auto" }}>
                     {attachable.length === 0 && (
@@ -166,11 +197,27 @@ export function Home() {
                 )}
               </div>
             </div>
+            {asking && <div className="ai-answer"><em>{t("home.aiThinking")}</em></div>}
+            {answer && (
+              <div className="ai-answer">
+                <div className="ai-answer-q">{answer.q}</div>
+                <div className="ai-answer-r">{answer.reply}</div>
+                {answer.sources.length > 0 && (
+                  <div className="ai-answer-src">
+                    {t("home.aiSources")}
+                    {answer.sources.map((s) => (
+                      <a key={s.fileId} onClick={() => navigate(`/edit/${s.fileId}`)}>{s.name}</a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="chips">
-              <span className="chip" role="button" tabIndex={0} onClick={() => chip(t("home.chipTextDraft"))}>{t("home.chipDraft")}</span>
-              <span className="chip" role="button" tabIndex={0} onClick={() => chip(t("home.chipTextAnalyze"), true)}>{t("home.chipAnalyze")}</span>
-              <span className="chip" role="button" tabIndex={0} onClick={() => chip(t("home.chipTextSlides"))}>{t("home.chipSlides")}</span>
-              <span className="chip" role="button" tabIndex={0} onClick={() => chip(t("home.chipTextSummarize"), true)}>{t("home.chipSummarize")}</span>
+              <span className="chip" role="button" tabIndex={0} onClick={() => { setAskWs(false); chip(t("home.chipTextDraft")); }}>{t("home.chipDraft")}</span>
+              <span className="chip" role="button" tabIndex={0} onClick={() => { setAskWs(false); chip(t("home.chipTextAnalyze"), true); }}>{t("home.chipAnalyze")}</span>
+              <span className="chip" role="button" tabIndex={0} onClick={() => { setAskWs(false); chip(t("home.chipTextSlides")); }}>{t("home.chipSlides")}</span>
+              <span className="chip" role="button" tabIndex={0} onClick={() => { setAskWs(false); chip(t("home.chipTextSummarize"), true); }}>{t("home.chipSummarize")}</span>
+              <span className="chip" role="button" tabIndex={0} onClick={() => { setAskWs(true); chip(t("home.chipTextAskWs")); }}>{t("home.chipAskWs")}</span>
             </div>
           </div>
         </section>
