@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
-import { api, ApiError } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import type { AiQuota } from "../ai/AiPanel";
 import { useT } from "../lib/i18n";
 import { useFiles, useItemActions } from "../lib/hooks";
@@ -78,18 +78,44 @@ export function Home() {
     }
   };
 
-  /** Workspace Q&A — retrieval over the search index, answered inline with
-   *  source citations. Doesn't create a document. */
+  /** Workspace Q&A — SSE-streamed retrieval answer, permission-trimmed over
+   *  the search index. Doesn't create a document. */
   const askWorkspace = async (text: string) => {
-    setAsking(true); setAnswer(null);
+    setAsking(true); setAnswer({ q: text, reply: "", sources: [] });
     try {
-      const r = await api.post<{ reply: string; sources: { fileId: string; name: string }[] }>(
-        "/api/ai/ask", { question: text });
-      setAnswer({ q: text, reply: r.reply, sources: r.sources });
+      const res = await fetch("/api/ai/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({ question: text, stream: true }),
+      });
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => null) as { error?: string; message?: string } | null;
+        if (err?.error === "ai_not_in_plan") { toast(t("home.aiQuotaDone")); navigate("/admin"); setAnswer(null); return; }
+        throw new Error(err?.message ?? `Request failed (${res.status})`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "", raw = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf("\n\n")) >= 0) {
+          const evt = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          const line = evt.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let j: { t?: string; done?: boolean; error?: string; reply?: string; sources?: { fileId: string; name: string }[] };
+          try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (j.error) throw new Error(String(j.error));
+          if (j.t) { raw += j.t; setAnswer({ q: text, reply: raw, sources: [] }); }
+          if (j.done) setAnswer({ q: text, reply: j.reply ?? raw, sources: j.sources ?? [] });
+        }
+      }
     } catch (e) {
-      const err = e as ApiError;
-      if (err.code === "ai_not_in_plan") { toast(t("home.aiQuotaDone")); navigate("/admin"); }
-      else toast(err.message ?? t("shell.aiOpenFailed"));
+      toast((e as Error).message || t("shell.aiOpenFailed"));
+      setAnswer(null);
     } finally { setAsking(false); }
   };
 
@@ -197,8 +223,8 @@ export function Home() {
                 )}
               </div>
             </div>
-            {asking && <div className="ai-answer"><em>{t("home.aiThinking")}</em></div>}
-            {answer && (
+            {asking && !answer?.reply && <div className="ai-answer"><em>{t("home.aiThinking")}</em></div>}
+            {answer?.reply && (
               <div className="ai-answer">
                 <div className="ai-answer-q">{answer.q}</div>
                 <div className="ai-answer-r">{answer.reply}</div>

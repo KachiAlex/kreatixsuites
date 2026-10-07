@@ -461,6 +461,16 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
           }
         } else if (o.op === "add_sheet" && !w.sheets.some((x) => x.name === o.name)) {
           w.sheets.push({ name: String(o.name), cells: {} });
+        } else if (o.op === "add_chart") {
+          const s = w.sheets.find((x) => x.name === o.sheet);
+          if (!s) continue;
+          s.charts = [...(s.charts ?? []), {
+            id: crypto.randomUUID(),
+            type: o.type as ChartSpec["type"],
+            range: String(o.range),
+            title: String(o.title ?? o.range),
+            x: 200, y: 80,
+          }];
         }
       }
     });

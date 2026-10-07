@@ -1551,6 +1551,8 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ai-chip:hover{background:var(--k-orange-soft);border-color:var(--k-orange);color:var(--k-orange-dark)}
 .ai-chip:disabled{opacity:.5}
 .chip.on{box-shadow:inset 0 0 0 1px var(--k-orange-dark)}
+.kx-ghost{color:var(--muted);opacity:.55;font-style:italic;pointer-events:none;user-select:none}
+.kx-ghost::after{content:"⇥";font-size:.72em;opacity:.7;margin-inline-start:4px}
 .ai-answer{margin-top:10px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);font-size:12.5px}
 .ai-answer-q{font-weight:700;color:var(--ink);margin-bottom:6px}
 .ai-answer-r{line-height:1.55;white-space:pre-wrap;color:var(--ink)}

@@ -23,7 +23,7 @@ import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
 import { prosemirrorJSONToYDoc } from "y-prosemirror";
 import type { Comment, DriveItem } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import { saveContent } from "../lib/drafts";
 import { useAuth } from "../lib/auth";
 import { isCoarse } from "../lib/mobile";
@@ -51,6 +51,7 @@ import { CaptionDialog, BookmarkDialog, CrossRefDialog } from "./ReferenceDialog
 import { docVocabulary, suggest, synonyms, PROOF_LANGS, proofingLanguage, setProofingLanguage } from "./proofing";
 import { ReadabilityDialog, AccessibilityDialog } from "./ToolDialogs";
 import { Spellcheck, SPELL_KEY } from "./extensions/spellcheck";
+import { GhostComplete, setGhost } from "./extensions/ghostComplete";
 import { diffDocs, docText } from "./diff";
 import { getTrackedChanges } from "tiptap-track-changes";
 import { Embed } from "./extensions/embed";
@@ -218,6 +219,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const textImportRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const ghostTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const ghostAbort = useRef<AbortController | null>(null);
+  const ghostOff = useRef(false);      // disabled for the session on 402/429/503
+  const ghostKey0 = useRef("");        // last requested pos+tail — dedupe
+  const ghostLastAt = useRef(0);       // min gap between requests
   // staged save payload — a thunk so per-keystroke updates don't pay the
   // full getJSON() serialization before the debounce window even elapses
   const pendingJson = useRef<unknown | (() => unknown)>(null);
@@ -283,6 +289,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       Bookmark,
       Tof,
       Spellcheck,
+      GhostComplete,
       Embed,
       Typography,
       LineNumbers,
@@ -322,6 +329,8 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       setSaveState("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(flushSave, 1200);
+      if (ghostTimer.current) clearTimeout(ghostTimer.current);
+      ghostTimer.current = setTimeout(() => void requestCompletion(), 1400);
     },
     editorProps: {
       // native browser spellcheck stays off — the kx-spell decoration layer is
@@ -343,6 +352,45 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     },
   });
   editorRef.current = editor;
+
+  /** Ghost completion — fires ~1.4s after typing pauses, only when the caret
+   *  sits at the end of a non-trivial paragraph. Aggressively bounded: one
+   *  in-flight request, 4s minimum gap, deduped by position+tail, silently
+   *  off for the session once the server says 402/429/503. */
+  const requestCompletion = useCallback(async () => {
+    const ed = editorRef.current;
+    if (!ed || !canMutate || ghostOff.current || !ed.isFocused) return;
+    const { state } = ed;
+    const { $from, empty } = state.selection;
+    if (!empty || $from.parent.type.name !== "paragraph" || $from.parentOffset !== $from.parent.content.size) return;
+    if ($from.parent.textContent.trim().length < 12) return;
+    const pos = $from.pos;
+    const prefix = state.doc.textBetween(Math.max(1, pos - 1500), pos, "\n", " ").slice(-1500);
+    const key = `${pos}:${prefix.slice(-80)}`;
+    if (key === ghostKey0.current || Date.now() - ghostLastAt.current < 4000) return;
+    ghostKey0.current = key;
+    ghostLastAt.current = Date.now();
+
+    ghostAbort.current?.abort();
+    const ctrl = new AbortController();
+    ghostAbort.current = ctrl;
+    try {
+      const res = await fetch("/api/ai/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({ fileId: item.id, prefix }),
+        signal: ctrl.signal,
+      });
+      if (res.status === 402 || res.status === 429 || res.status === 503) { ghostOff.current = true; return; }
+      if (!res.ok) return;
+      const { text } = await res.json() as { text?: string };
+      // caret may have moved while the request was in flight — land it where
+      // the user is now only if they're still on a collapsed selection
+      if (text?.trim() && ed.isFocused && ed.state.selection.empty && !ctrl.signal.aborted)
+        setGhost(ed, ed.state.selection.from, text.trim());
+    } catch { /* aborted/offline — ghost stays silent */ }
+  }, [canMutate, item.id]);
+
   useEffect(() => {
     // dev-only debug hook for headless harnesses
     if (import.meta.env.DEV) (window as any).__editor = editor ?? undefined;
