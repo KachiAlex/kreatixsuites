@@ -37,7 +37,7 @@ interface SaOrg {
   id: string; name: string; created_at: string; seats: number;
   state: string; monthlyAmountNgn: number; status: string | null;
   trial_ends_at: string | null; period_end: string | null; override_until: string | null;
-  ai_token_budget?: number | null; plan?: string | null;
+  ai_token_budget?: number | null; plan?: string | null; has_super?: boolean;
 }
 interface SaOverview {
   orgs: number; users: number; activeSubs: number; trialing: number;
@@ -133,6 +133,7 @@ export function SuperPortal() {
   const [sortDir, setSortDir] = useState<"asc" | "desc" | null>(null);
   const [aiExpanded, setAiExpanded] = useState(false);
   const [selOrgId, setSelOrgId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [review, setReview] = useState<Review | null>(null);
   const [acting, setActing] = useState(false);
   const [cfgSaved, setCfgSaved] = useState<"ok" | "err">("ok");
@@ -336,6 +337,40 @@ export function SuperPortal() {
       toast(e instanceof Error ? e.message : "Save failed — value restored");
     }
   };
+
+  const deleteOrgs = (targets: SaOrg[]) => ask({
+    title: targets.length === 1 ? `Delete ${targets[0].name}?` : `Delete ${targets.length} workspaces?`,
+    label: targets.length === 1 ? "Delete workspace" : `Delete ${targets.length} workspaces`,
+    danger: true,
+    body: (<>
+      <p>This permanently removes {targets.length === 1 ? "this workspace" : "these workspaces"} — every member
+        account, file, version, share link, payment and AI record. <strong>This cannot be undone.</strong></p>
+      <ReviewBox rows={targets.slice(0, 6).map((o) => [o.name, `${o.seats} seat${o.seats === 1 ? "" : "s"}`])} />
+      {targets.length > 6 && <p className="sap-dim">…and {targets.length - 6} more.</p>}
+    </>),
+    run: async () => {
+      if (targets.length === 1) {
+        await api.del(`/api/superadmin/orgs/${targets[0].id}`);
+        toast(`Deleted ${targets[0].name}`);
+      } else {
+        const r = await api.post<{ deleted: number }>(
+          "/api/superadmin/orgs/delete", { ids: targets.map((o) => o.id) });
+        const skipped = targets.length - r.deleted;
+        toast(`Deleted ${r.deleted} workspace${r.deleted === 1 ? "" : "s"}${skipped ? ` — ${skipped} skipped` : ""}`);
+      }
+      setSelected(new Set());
+      setSelOrgId(null);
+      await load();
+    },
+  });
+
+  const toggleOrg = (id: string, on: boolean) =>
+    setSelected((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n; });
+  const toggleAllVisible = () => {
+    const ids = visibleOrgs.filter((o) => !o.has_super).map((o) => o.id);
+    setSelected((s) => ids.every((id) => s.has(id)) ? new Set() : new Set([...s, ...ids]));
+  };
+  const selectedOrgs = orgs.filter((o) => selected.has(o.id));
 
   const testEmail = () => {
     const to = emailTo.trim();
@@ -609,8 +644,22 @@ export function SuperPortal() {
           </select>
           <span className="sap-hint">Select a workspace to manage access</span>
         </div>
+        {selected.size > 0 && (
+          <div className="sap-selbar" role="status">
+            <b>{selected.size}</b> workspace{selected.size === 1 ? "" : "s"} selected
+            <button className="sap-danger sap-btn sm" disabled={acting}
+              onClick={() => deleteOrgs(selectedOrgs)}>
+              Delete {selected.size > 1 ? `${selected.size} workspaces` : "workspace"}
+            </button>
+            <button className="sap-link" onClick={() => setSelected(new Set())}>Clear</button>
+          </div>
+        )}
         <div className="sap-tablewrap"><table className="sap-table">
           <thead><tr>
+            <th className="sap-checkcol"><input type="checkbox" aria-label="Select all visible workspaces"
+              checked={visibleOrgs.length > 0 && visibleOrgs.every((o) => o.has_super || selected.has(o.id))}
+              ref={(el) => { if (el) el.indeterminate = selected.size > 0 && !visibleOrgs.every((o) => o.has_super || selected.has(o.id)); }}
+              onChange={toggleAllVisible} /></th>
             <th>Workspace <button className="sap-sort" aria-label="Toggle workspace name sort"
               onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}>
               {sortDir === "asc" ? "↑" : sortDir === "desc" ? "↓" : "↕"}</button></th>
@@ -619,10 +668,14 @@ export function SuperPortal() {
           </tr></thead>
           <tbody>
             {visibleOrgs.length === 0 && (
-              <tr><td colSpan={7}><div className="sap-empty"><I n="search" s={18} /><strong>No workspaces match</strong>Clear the search or change the filters.</div></td></tr>
+              <tr><td colSpan={8}><div className="sap-empty"><I n="search" s={18} /><strong>No workspaces match</strong>Clear the search or change the filters.</div></td></tr>
             )}
             {visibleOrgs.map((o) => (
               <tr key={o.id}>
+                <td className="sap-checkcol"><input type="checkbox" aria-label={`Select ${o.name}`}
+                  checked={selected.has(o.id)} disabled={!!o.has_super}
+                  title={o.has_super ? "Hosts a platform superadmin — cannot be deleted" : undefined}
+                  onChange={(e) => toggleOrg(o.id, e.target.checked)} /></td>
                 <td>
                   <button className="sap-orglink" onClick={() => setSelOrgId(o.id)} aria-label={`Manage ${o.name}`}>
                     <OrgIcon name={o.name} />
@@ -806,7 +859,8 @@ export function SuperPortal() {
               onSave={(plan, budget) => saveOrgSettings(selOrg, plan, budget)}
               onComp={() => compOrg(selOrg)}
               onExtend={(d) => extendTrial(selOrg, d)}
-              onCancel={() => cancelSub(selOrg)} />
+              onCancel={() => cancelSub(selOrg)}
+              onDelete={() => deleteOrgs([selOrg])} />
           </div>
         </div>
       )}
@@ -848,12 +902,13 @@ function CfgField({ label, hint, unit, unitAfter, full, children }: {
 }
 
 /** Workspace management drawer — plan tier, AI budget override, trial extension, cancel. */
-function OrgDrawer({ org, onSave, onComp, onExtend, onCancel }: {
+function OrgDrawer({ org, onSave, onComp, onExtend, onCancel, onDelete }: {
   org: SaOrg;
   onSave: (plan: string, budget: number | null) => void;
   onComp: () => void;
   onExtend: (days: number) => void;
   onCancel: () => void;
+  onDelete: () => void;
 }) {
   const [plan, setPlan] = useState(org.plan ?? "standard");
   const [tokens, setTokens] = useState(org.ai_token_budget == null ? "" : String(org.ai_token_budget));
@@ -932,6 +987,12 @@ function OrgDrawer({ org, onSave, onComp, onExtend, onCancel }: {
         <button className="sap-danger sap-btn" disabled={org.state === "canceled"} onClick={onCancel}>
           Cancel subscription
         </button>
+        {org.has_super ? (
+          <p className="sap-dim"><I n="shield" s={12} /> This workspace hosts a platform superadmin
+            account and cannot be deleted.</p>
+        ) : (
+          <button className="sap-danger sap-btn" onClick={onDelete}>Delete workspace permanently</button>
+        )}
       </div>
     </div>
   );

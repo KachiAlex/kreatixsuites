@@ -1,8 +1,10 @@
 // Platform superadmin — pricing config, all workspaces, payment confirmation.
 // Every route requires auth + users.is_super (seeded from env, not per-org).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
-import { q, one, run, now } from "../db.js";
+import { q, one, run, now, tx, DATA_DIR } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getConfig, setConfig, ensureSubscription, confirmPayment, seatCount,
@@ -50,7 +52,8 @@ export function superadminRoutes(app: FastifyInstance) {
     }>(
       `SELECT o.id, o.name, o.created_at,
               (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND NOT u.disabled) AS seats,
-              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until, s.ai_token_budget, s.plan
+              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until, s.ai_token_budget, s.plan,
+              EXISTS(SELECT 1 FROM users su WHERE su.org_id = o.id AND su.is_super) AS has_super
        FROM orgs o LEFT JOIN subscriptions s ON s.org_id = o.id
        ORDER BY o.created_at DESC LIMIT 500`);
     const cfg = await getConfig();
@@ -212,6 +215,92 @@ export function superadminRoutes(app: FastifyInstance) {
       topOrgs: topOrgs.map((r) => ({ orgId: r.org_id, name: r.name, requests: Number(r.requests), tokens: Number(r.tokens), costUsd: Number(r.cost_usd) })),
     };
   });
+
+  /** Hard-delete one workspace — full tenant purge (DB rows + orphan blobs). */
+  app.delete("/api/superadmin/orgs/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const r = await deleteOrg(id);
+    if (!r.ok) {
+      return reply.code(r.error === "not_found" ? 404 : 409).send({
+        error: r.error,
+        message: r.error === "super_org"
+          ? "This workspace hosts a platform superadmin account and cannot be deleted"
+          : "Workspace not found",
+      });
+    }
+    return r;
+  });
+
+  /** Bulk hard-delete — each workspace purged in its own transaction. */
+  app.post("/api/superadmin/orgs/delete", async (req, reply) => {
+    const parsed = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "bad_request", message: "Expected { ids: string[] }" });
+    const results = [];
+    for (const id of parsed.data.ids) results.push({ id, ...(await deleteOrg(id)) });
+    return { results, deleted: results.filter((r) => r.ok).length };
+  });
+}
+
+interface OrgDeleteResult {
+  ok: boolean; error?: "not_found" | "super_org";
+  name?: string; users?: number; files?: number; blobs?: number;
+}
+
+/** Ordered tenant purge. Several tables lack ON DELETE CASCADE, so children go
+ *  first: rows keyed by this org's files, then rows keyed by its users, then
+ *  org-scoped rows, then the org itself — all in one transaction. Blob files
+ *  are content-addressed (deduped), so only orphans get unlinked afterwards. */
+async function deleteOrg(orgId: string): Promise<OrgDeleteResult> {
+  const org = await one<{ id: string; name: string }>("SELECT id, name FROM orgs WHERE id = $1", [orgId]);
+  if (!org) return { ok: false, error: "not_found" };
+  // never delete an org that hosts a superadmin — that would brick the portal account
+  if (await one("SELECT 1 AS x FROM users WHERE org_id = $1 AND is_super", [orgId])) {
+    return { ok: false, error: "super_org" };
+  }
+
+  let stats = { users: 0, files: 0 };
+  const blobKeys = await tx(async (c) => {
+    const del = async (sql: string, params: unknown[]) => (await c.query(sql, params)).rowCount ?? 0;
+    const fileIds = (await c.query<{ id: string }>("SELECT id FROM items WHERE org_id = $1", [orgId])).rows.map((r) => r.id);
+    const userIds = (await c.query<{ id: string }>("SELECT id FROM users WHERE org_id = $1", [orgId])).rows.map((r) => r.id);
+    const keys = fileIds.length
+      ? (await c.query<{ blob_key: string }>("SELECT DISTINCT blob_key FROM versions WHERE file_id = ANY($1)", [fileIds])).rows.map((r) => r.blob_key)
+      : [];
+    if (fileIds.length) {
+      for (const t of ["search_index", "mentions", "ai_actions", "comments", "share_links", "shares", "collab_states", "versions"]) {
+        await del(`DELETE FROM ${t} WHERE file_id = ANY($1)`, [fileIds]);
+      }
+      await del("DELETE FROM items WHERE org_id = $1", [orgId]);
+    }
+    if (userIds.length) {
+      // belt & braces — rows in other orgs that reference these users
+      await del("DELETE FROM mentions WHERE from_user_id = ANY($1) OR to_user_id = ANY($1)", [userIds]);
+      await del("DELETE FROM comments WHERE author_id = ANY($1)", [userIds]);
+      await del("DELETE FROM activity WHERE actor_id = ANY($1)", [userIds]);
+      await del("DELETE FROM ai_usage WHERE user_id = ANY($1)", [userIds]);
+      await del("DELETE FROM ai_actions WHERE user_id = ANY($1)", [userIds]);
+      await del("DELETE FROM feedback WHERE user_id = ANY($1)", [userIds]);
+      await del("DELETE FROM org_invites WHERE created_by = ANY($1)", [userIds]);
+      stats.users = await del("DELETE FROM users WHERE org_id = $1", [orgId]);
+    }
+    for (const t of ["activity", "org_policies", "scim_tokens", "org_invites", "payments", "subscriptions", "feedback", "ai_usage"]) {
+      await del(`DELETE FROM ${t} WHERE org_id = $1`, [orgId]);
+    }
+    stats.files = fileIds.length;
+    await del("DELETE FROM orgs WHERE id = $1", [orgId]);
+    return keys;
+  });
+
+  // blobs are content-addressed — only unlink keys no remaining version needs
+  let blobs = 0;
+  for (const key of blobKeys) {
+    if (await one("SELECT 1 AS x FROM versions WHERE blob_key = $1 LIMIT 1", [key])) continue;
+    try {
+      unlinkSync(join(DATA_DIR, "blobs", key.slice(0, 2), key));
+      blobs++;
+    } catch { /* already gone — non-fatal */ }
+  }
+  return { ok: true, name: org.name, users: stats.users, files: stats.files, blobs };
 }
 
 function pickSub(r: { status: string | null; trial_ends_at: string | null; period_end: string | null; override_until: string | null; amount_ngn: number | null }) {

@@ -2702,6 +2702,13 @@ html[data-theme="dark"]{
 .sap-trialext input{width:90px}
 .sap-dangerzone{border-top-color:var(--sap-red)}
 
+/* selection bar + checkboxes */
+.sap-selbar{display:flex;align-items:center;gap:12px;background:var(--sap-amber-bg);border:1px solid var(--sap-amber);color:var(--sap-amber);border-radius:11px;padding:9px 14px;font-size:12px;margin-bottom:10px}
+.sap-selbar b{font-size:14px}
+.sap-checkcol{width:32px}
+.sap-checkcol input{accent-color:var(--k-orange);width:15px;height:15px;cursor:pointer}
+.sap-checkcol input:disabled{cursor:not-allowed;opacity:.4}
+
 /* responsive */
 @media (max-width:960px){.sap-split{grid-template-columns:1fr}}
 @media (max-width:640px){
