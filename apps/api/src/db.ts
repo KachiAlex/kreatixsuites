@@ -310,6 +310,9 @@ CREATE TABLE IF NOT EXISTS feedback (
   sentiment TEXT NOT NULL DEFAULT 'ok',   -- good | ok | bad
   message TEXT NOT NULL,
   page TEXT,                              -- app route the user was on
+  reply TEXT,                             -- superadmin response shown back in the widget
+  replied_at TIMESTAMPTZ,
+  replied_by TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
@@ -338,6 +341,10 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
   await pool.query(`ALTER TABLE subscriptions DROP COLUMN IF EXISTS ai_model`);
   // 80%-of-AI-budget notice bookkeeping for the daily sweep
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_budget_warned_at TIMESTAMPTZ`);
+  // superadmin replies to in-app feedback
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reply TEXT`);
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS replied_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS replied_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
   // pgvector — semantic retrieval for workspace Q&A (no-op on non-pgvector images)
   try {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);

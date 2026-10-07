@@ -5,7 +5,11 @@ import { useAuth } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
 
 type Sentiment = "good" | "ok" | "bad";
-interface FbMsg { role: "user" | "system"; sentiment?: Sentiment; text: string }
+interface FbMsg { role: "user" | "system"; sentiment?: Sentiment; text: string; team?: boolean }
+interface FbRow {
+  id: string; sentiment: Sentiment; message: string;
+  reply: string | null; created_at: string; replied_at: string | null;
+}
 
 const ICONS: Record<Sentiment, string> = { good: "🙂", ok: "😐", bad: "☹️" };
 
@@ -23,6 +27,21 @@ export function FeedbackWidget() {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bodyRef.current?.scrollTo(0, bodyRef.current.scrollHeight); }, [msgs, open]);
+
+  // reload the full thread on each open so superadmin replies appear
+  useEffect(() => {
+    if (!open || !user || user.id === "local") return;
+    api.get<{ feedback: FbRow[] }>("/api/feedback")
+      .then((r) => {
+        const hist: FbMsg[] = [];
+        for (const f of r.feedback) {
+          hist.push({ role: "user", sentiment: f.sentiment, text: f.message });
+          if (f.reply) hist.push({ role: "system", team: true, text: f.reply });
+        }
+        setMsgs(hist);
+      })
+      .catch(() => { /* history is best-effort — the input still works */ });
+  }, [open, user]);
 
   // feedback needs a server account — anonymous/local-mode users have no workspace to attribute it to
   if (!user || user.id === "local") return null;
@@ -64,6 +83,7 @@ export function FeedbackWidget() {
             <div className="fb-msg system">{t("fb.intro")}</div>
             {msgs.map((m, i) => (
               <div key={i} className={`fb-msg ${m.role}`}>
+                {m.team && <span className="fb-team">{t("fb.team")}</span>}
                 {m.sentiment && <span className="fb-emoji">{ICONS[m.sentiment]}</span>}
                 {m.text}
               </div>

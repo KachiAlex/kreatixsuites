@@ -3,7 +3,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { one, run, now } from "../db.js";
+import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 
 export function feedbackRoutes(app: FastifyInstance) {
@@ -30,5 +30,14 @@ export function feedbackRoutes(app: FastifyInstance) {
       [randomUUID(), user.orgId, user.id, sentiment, message.trim(), page ?? null, now()],
     );
     return { ok: true };
+  });
+
+  /** The user's own thread — the widget renders history + admin replies on open. */
+  app.get("/api/feedback", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await q(
+      `SELECT id, sentiment, message, reply, page, created_at, replied_at
+       FROM feedback WHERE user_id = $1 ORDER BY created_at ASC LIMIT 200`, [user.id]);
+    return { feedback: rows };
   });
 }

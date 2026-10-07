@@ -292,5 +292,6 @@ export const fr: Record<string, string> = {
   "fb.bad": "Mal",
   "fb.placeholder": "Écrivez votre avis…",
   "fb.send": "Envoyer",
+  "fb.team": "Équipe Kreatix",
   "fb.thanks": "Merci ! Votre avis a été envoyé à l'équipe Kreatix. 💛",
 };

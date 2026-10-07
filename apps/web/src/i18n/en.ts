@@ -297,5 +297,6 @@ export const en: Record<string, string> = {
   "fb.bad": "Bad",
   "fb.placeholder": "Type your feedback…",
   "fb.send": "Send",
+  "fb.team": "Kreatix team",
   "fb.thanks": "Thanks! Your feedback was sent to the Kreatix team. 💛",
 };

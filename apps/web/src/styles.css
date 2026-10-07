@@ -2424,3 +2424,4 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 }
 .fb-admin-row{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);align-items:flex-start}
 .fb-admin-row:last-child{border-bottom:none}
+.fb-team{display:block;font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--k-orange);margin-bottom:2px}

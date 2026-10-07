@@ -150,6 +150,19 @@ ${btn(`${publicUrl()}/admin`, "View usage")}`),
     };
   },
 
+  feedbackReply(name: string, message: string, reply: string): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: "Re: your feedback — Kreatix Suites",
+      html: shell("We replied to your feedback", `
+<p>Hi ${esc(name)},</p>
+<p>Thanks for telling us:</p>
+<blockquote style="border-left:3px solid #F2782E;margin:10px 0;padding:6px 14px;color:#555;background:#fafafa">${esc(message)}</blockquote>
+<p>${esc(reply)}</p>
+${btn(publicUrl(), "Open Kreatix Suites")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Reply anytime from the feedback bubble in the app — this thread stays open.</p>`),
+    };
+  },
+
   workspaceLocked(workspace: string, amountNgn: number): Pick<Mail, "subject" | "html"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {

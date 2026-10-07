@@ -62,6 +62,7 @@ interface SaAiUsage {
 interface SaPayment extends Payment { org_id: string; org_name: string }
 interface SaFeedback {
   id: string; sentiment: "good" | "ok" | "bad"; message: string; page: string | null;
+  reply: string | null; replied_at: string | null;
   created_at: string; org_name: string; display_name: string; email: string;
 }
 interface Policies {
@@ -115,6 +116,8 @@ export function Admin() {
   const [saAi, setSaAi] = useState<SaAiUsage | null>(null);
   const [saFeedback, setSaFeedback] = useState<SaFeedback[]>([]);
   const [fbStats, setFbStats] = useState<Record<string, number>>({});
+  const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
+  const [fbBusy, setFbBusy] = useState<Record<string, boolean>>({});
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -269,6 +272,23 @@ export function Admin() {
       void load();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed");
+    }
+  };
+
+  const saReply = async (id: string) => {
+    const message = (fbDrafts[id] ?? "").trim();
+    if (!message || fbBusy[id]) return;
+    setFbBusy((b) => ({ ...b, [id]: true }));
+    try {
+      await api.post(`/api/superadmin/feedback/${id}/reply`, { message });
+      setSaFeedback((rows) => rows.map((f) =>
+        f.id === id ? { ...f, reply: message, replied_at: new Date().toISOString() } : f));
+      setFbDrafts((d) => ({ ...d, [id]: "" }));
+      toast("Reply sent — shown in the user's widget and emailed");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Reply failed");
+    } finally {
+      setFbBusy((b) => ({ ...b, [id]: false }));
     }
   };
 
@@ -720,7 +740,28 @@ export function Admin() {
                       <td>{f.display_name}<br /><span className="sub">{f.email}</span></td>
                       <td>{f.org_name}</td>
                       <td className="sub">{f.page ?? "—"}</td>
-                      <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minWidth: 220 }}>{f.message}</td>
+                      <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minWidth: 220 }}>
+                        {f.message}
+                        {f.reply ? (
+                          <div className="sub" style={{ marginTop: 6, borderLeft: "2px solid var(--k-orange)", paddingLeft: 8 }}>
+                            ↳ {f.reply}
+                            {f.replied_at && <em> · {timeAgo(f.replied_at)}</em>}
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                            <input
+                              placeholder="Reply to this user…"
+                              style={{ flex: 1, padding: "3px 8px", fontSize: 12 }}
+                              value={fbDrafts[f.id] ?? ""}
+                              onChange={(e) => setFbDrafts((d) => ({ ...d, [f.id]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === "Enter") void saReply(f.id); }}
+                            />
+                            <button className="btn-primary" style={{ padding: "2px 10px", fontSize: 12 }}
+                              disabled={fbBusy[f.id] || !(fbDrafts[f.id] ?? "").trim()}
+                              onClick={() => void saReply(f.id)}>Reply</button>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

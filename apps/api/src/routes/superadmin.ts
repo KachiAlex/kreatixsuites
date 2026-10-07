@@ -153,7 +153,7 @@ export function superadminRoutes(app: FastifyInstance) {
     const sentiment = (req.query as { sentiment?: string }).sentiment || null;
     const [rows, stats] = await Promise.all([
       q(
-        `SELECT f.id, f.sentiment, f.message, f.page, f.created_at,
+        `SELECT f.id, f.sentiment, f.message, f.reply, f.replied_at, f.page, f.created_at,
                 o.name AS org_name, u.display_name, u.email
          FROM feedback f
          JOIN orgs o ON o.id = f.org_id
@@ -165,6 +165,25 @@ export function superadminRoutes(app: FastifyInstance) {
          WHERE created_at >= CURRENT_DATE - INTERVAL '29 days' GROUP BY sentiment`, []),
     ]);
     return { feedback: rows, stats: Object.fromEntries(stats.map((s) => [s.sentiment, Number(s.n)])) };
+  });
+
+  /** Reply to a feedback item — lands in the user's widget thread + their inbox. */
+  app.post("/api/superadmin/feedback/:id/reply", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const { message } = z.object({ message: z.string().min(1).max(2000) }).parse(req.body ?? {});
+    const fb = await one<{ user_id: string; message: string }>(
+      "SELECT user_id, message FROM feedback WHERE id = $1", [id]);
+    if (!fb) return reply.code(404).send({ error: "not_found", message: "Feedback not found" });
+    await run("UPDATE feedback SET reply = $2, replied_at = $3, replied_by = $4 WHERE id = $1",
+      [id, message.trim(), now(), user.id]);
+    const target = await one<{ email: string; display_name: string; disabled: boolean }>(
+      "SELECT email, display_name, disabled FROM users WHERE id = $1", [fb.user_id]);
+    if (target && !target.disabled && mailEnabled()) {
+      sendMail({ to: target.email, ...tpl.feedbackReply(target.display_name, fb.message, message.trim()) })
+        .catch((e) => req.log.warn({ err: String(e), to: target.email }, "feedback reply email failed"));
+    }
+    return { ok: true };
   });
 
   /** Platform AI spend this month + heaviest workspaces (cost control). */
