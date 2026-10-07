@@ -313,7 +313,7 @@ export function Admin() {
     : audit;
 
   return (
-    <div className="admin-page">
+    <div className={`admin-page${isSuper ? " sa-wide" : ""}`}>
       {!isSuper && (
       <>
       <h1>Administration</h1>
@@ -685,69 +685,96 @@ export function Admin() {
 
       {isSuper && (
         <>
-          <h1>Platform (superadmin)</h1>
+          <header className="sa-head">
+            <div>
+              <h1>Platform</h1>
+              <div className="sub">Workspaces, billing, AI spend and user feedback — across every tenant.</div>
+            </div>
+            <button className="btn-secondary" onClick={() => void load()}>Refresh</button>
+          </header>
 
           {saOverview && (
-            <section className="admin-card">
-              <h2>Overview</h2>
-              <div className="admin-flags">
-                <div className="flag on"><b>Workspaces</b><span>{saOverview.orgs} total · {saOverview.users} users</span></div>
-                <div className="flag on"><b>Subscriptions</b><span>{saOverview.trialing} trialing · {saOverview.activeSubs} active · {saOverview.locked} locked</span></div>
-                <div className="flag on"><b>MRR</b><span>{fmtNgn(saOverview.mrrNgn, "₦")}/mo</span></div>
-                <div className={`flag ${saOverview.pendingPayments ? "off" : "on"}`}>
-                  <b>Pending payments</b><span>{saOverview.pendingPayments}</span>
-                </div>
+            <div className="sa-kpis">
+              <div className="sa-kpi">
+                <span className="k-label">Workspaces</span>
+                <span className="k-value">{saOverview.orgs}</span>
+                <span className="k-sub">{saOverview.users} users</span>
               </div>
-            </section>
+              <div className="sa-kpi">
+                <span className="k-label">MRR</span>
+                <span className="k-value">{fmtNgn(saOverview.mrrNgn, "₦")}</span>
+                <span className="k-sub">{saOverview.activeSubs} active · {saOverview.trialing} trialing · {saOverview.locked} locked</span>
+              </div>
+              <div className={`sa-kpi${saOverview.pendingPayments ? " warn" : ""}`}>
+                <span className="k-label">Pending payments</span>
+                <span className="k-value">{saOverview.pendingPayments}</span>
+                <span className="k-sub">{saOverview.pendingPayments ? "awaiting confirmation" : "all clear"}</span>
+              </div>
+              {saAi && (
+                <div className={`sa-kpi${saAi.costUsd >= saAi.budgetUsd * 0.8 ? " warn" : ""}`}>
+                  <span className="k-label">AI spend · this month</span>
+                  <span className="k-value">${saAi.costUsd.toFixed(2)}</span>
+                  <span className="k-bar">
+                    <i style={{ width: `${Math.min(100, (saAi.costUsd / Math.max(1, saAi.budgetUsd)) * 100)}%` }} />
+                  </span>
+                  <span className="k-sub">of ${saAi.budgetUsd} · {saAi.requests.toLocaleString()} req · {(saAi.tokens / 1e6).toFixed(2)}M tok</span>
+                </div>
+              )}
+              <div className="sa-kpi">
+                <span className="k-label">Feedback · 30d</span>
+                <span className="k-value">{(fbStats.good ?? 0) + (fbStats.ok ?? 0) + (fbStats.bad ?? 0)}</span>
+                <span className="k-sub">😊 {fbStats.good ?? 0} · 🙂 {fbStats.ok ?? 0} · 😞 {fbStats.bad ?? 0}</span>
+              </div>
+            </div>
           )}
 
-          {saAi && (
+          {saPayments.length > 0 && (
             <section className="admin-card">
-              <h2>Platform AI spend</h2>
-              <div className="admin-flags">
-                <div className={`flag ${saAi.costUsd >= saAi.budgetUsd * 0.8 ? "off" : "on"}`}>
-                  <b>This month</b>
-                  <span>~${saAi.costUsd.toFixed(2)} of ${saAi.budgetUsd} budget · {saAi.requests.toLocaleString()} requests · {(saAi.tokens / 1e6).toFixed(2)}M tokens</span>
-                </div>
-              </div>
-              {saAi.topOrgs.length > 0 && (
-                <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
-                  <thead><tr><th>Workspace</th><th>Requests</th><th>Tokens</th><th>Est. cost</th></tr></thead>
-                  <tbody>
-                    {saAi.topOrgs.map((o) => (
-                      <tr key={o.orgId}>
-                        <td>{o.name}</td>
-                        <td>{o.requests}</td>
-                        <td>{o.tokens.toLocaleString()}</td>
-                        <td>${o.costUsd.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table></div>
-              )}
+              <h2>Pending payments</h2>
+              <div className="tbl-scroll"><table className="admin-table">
+                <thead><tr><th>When</th><th>Workspace</th><th>Amount</th><th>Method</th><th></th></tr></thead>
+                <tbody>
+                  {saPayments.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ whiteSpace: "nowrap" }}>{timeAgo(p.created_at)}</td>
+                      <td>{p.org_name}</td>
+                      <td>{fmtNgn(p.amount_ngn, "₦")}</td>
+                      <td>{p.method}{p.reference ? ` · ${p.reference.slice(0, 18)}` : ""}</td>
+                      <td>
+                        <button className="btn-primary" style={{ padding: "2px 10px", fontSize: 12, marginRight: 6 }}
+                          onClick={() => void saConfirm(p.id, true)}>Confirm</button>
+                        <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                          onClick={() => void saConfirm(p.id, false)}>Reject</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
             </section>
           )}
 
           <section className="admin-card">
-            <h2>User feedback</h2>
-            <div className="admin-flags">
-              <div className="flag on"><b>😊 Good</b><span>{fbStats.good ?? 0} · last 30 days</span></div>
-              <div className="flag on"><b>🙂 Okay</b><span>{fbStats.ok ?? 0} · last 30 days</span></div>
-              <div className={`flag ${(fbStats.bad ?? 0) > 0 ? "off" : "on"}`}><b>😞 Bad</b><span>{fbStats.bad ?? 0} · last 30 days</span></div>
+            <div className="sa-card-head">
+              <h2>User feedback</h2>
+              <div className="sa-pills">
+                <span className="fb-pill good">😊 {fbStats.good ?? 0}</span>
+                <span className="fb-pill ok">🙂 {fbStats.ok ?? 0}</span>
+                <span className="fb-pill bad">😞 {fbStats.bad ?? 0}</span>
+                <span className="sub">last 30 days</span>
+              </div>
             </div>
             {saFeedback.length === 0 ? (
-              <div className="sub" style={{ marginTop: 12 }}>No feedback yet — it will appear here as users submit it from the in-app widget.</div>
+              <div className="sa-empty">No feedback yet — submissions from the in-app widget land here.</div>
             ) : (
-              <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
-                <thead><tr><th>When</th><th></th><th>From</th><th>Workspace</th><th>Where</th><th>Message</th></tr></thead>
+              <div className="tbl-scroll"><table className="admin-table">
+                <thead><tr><th>When</th><th>Mood</th><th>From</th><th>Workspace</th><th>Message</th></tr></thead>
                 <tbody>
                   {saFeedback.map((f) => (
                     <tr key={f.id}>
-                      <td title={f.created_at}>{timeAgo(f.created_at)}</td>
-                      <td>{f.sentiment === "good" ? "😊" : f.sentiment === "bad" ? "😞" : "🙂"}</td>
+                      <td title={f.created_at} style={{ whiteSpace: "nowrap" }}>{timeAgo(f.created_at)}</td>
+                      <td><span className={`fb-pill ${f.sentiment}`}>{f.sentiment === "good" ? "😊" : f.sentiment === "bad" ? "😞" : "🙂"}</span></td>
                       <td>{f.display_name}<br /><span className="sub">{f.email}</span></td>
-                      <td>{f.org_name}</td>
-                      <td className="sub">{f.page ?? "—"}</td>
+                      <td>{f.org_name}{f.page ? <><br /><span className="sub">{f.page}</span></> : null}</td>
                       <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minWidth: 220 }}>
                         {f.message}
                         {f.reply ? (
@@ -777,76 +804,19 @@ export function Admin() {
             )}
           </section>
 
-          {billingCfg && (
-            <section className="admin-card">
-              <h2>Plan &amp; pricing</h2>
-              <div className="admin-policies">
-                <label className="pol-row">
-                  <input type="number" min={0} style={{ width: 100 }} defaultValue={billingCfg.base_price_ngn}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.base_price_ngn) void saveBillingCfg({ base_price_ngn: v }); }} />
-                  <span><b>Admin seat (₦/mo)</b><em>The workspace owner's seat.</em></span>
-                </label>
-                <label className="pol-row">
-                  <input type="number" min={0} style={{ width: 100 }} defaultValue={billingCfg.member_price_ngn}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.member_price_ngn) void saveBillingCfg({ member_price_ngn: v }); }} />
-                  <span><b>Per member (₦/mo)</b><em>Each additional enabled member.</em></span>
-                </label>
-                <label className="pol-row">
-                  <input type="number" min={1} max={10} style={{ width: 72 }} defaultValue={billingCfg.business_multiplier}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.business_multiplier) void saveBillingCfg({ business_multiplier: v }); }} />
-                  <span><b>Business plan multiplier</b><em>Business = ×N the standard price — includes the larger AI allowance.</em></span>
-                </label>
-                <label className="pol-row">
-                  <input type="number" min={0} max={24} style={{ width: 72 }} defaultValue={billingCfg.trial_months}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.trial_months) void saveBillingCfg({ trial_months: v }); }} />
-                  <span><b>Free trial (months)</b><em>Applies to workspaces created after the change.</em></span>
-                </label>
-                <label className="pol-row">
-                  <input style={{ width: 72 }} defaultValue={billingCfg.currency}
-                    onBlur={(e) => { if (e.target.value !== billingCfg.currency) void saveBillingCfg({ currency: e.target.value }); }} />
-                  <span><b>Currency</b><em>ISO code shown on invoices.</em></span>
-                </label>
-              </div>
-            </section>
-          )}
-
-          {saPayments.length > 0 && (
-            <section className="admin-card">
-              <h2>Pending payments</h2>
-              <div className="tbl-scroll"><table className="admin-table">
-                <thead><tr><th>When</th><th>Workspace</th><th>Amount</th><th>Method</th><th></th></tr></thead>
-                <tbody>
-                  {saPayments.map((p) => (
-                    <tr key={p.id}>
-                      <td>{timeAgo(p.created_at)}</td>
-                      <td>{p.org_name}</td>
-                      <td>{fmtNgn(p.amount_ngn, "₦")}</td>
-                      <td>{p.method}{p.reference ? ` · ${p.reference.slice(0, 18)}` : ""}</td>
-                      <td>
-                        <button className="btn-primary" style={{ padding: "2px 10px", fontSize: 12, marginRight: 6 }}
-                          onClick={() => void saConfirm(p.id, true)}>Confirm</button>
-                        <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
-                          onClick={() => void saConfirm(p.id, false)}>Reject</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            </section>
-          )}
-
           <section className="admin-card">
             <h2>Workspaces</h2>
             <div className="tbl-scroll"><table className="admin-table">
-              <thead><tr><th>Workspace</th><th>Seats</th><th>State</th><th>Monthly</th><th>Created</th><th></th></tr></thead>
+              <thead><tr><th>Workspace</th><th>Seats</th><th>State</th><th>Plan</th><th>Monthly</th><th>Created</th><th></th></tr></thead>
               <tbody>
                 {saOrgs.map((o) => (
                   <tr key={o.id}>
                     <td>{o.name}</td>
                     <td>{o.seats}</td>
-                    <td><span className={`role-badge ${o.state === "active" || o.state === "granted" ? "owner" : ""}`}>{o.state}</span></td>
+                    <td><span className={`sa-state ${o.state}`}>{o.state}</span></td>
+                    <td><span className={`sa-plan ${o.plan === "business" ? "biz" : ""}`}>{o.plan ?? "standard"}</span></td>
                     <td>{fmtNgn(o.monthlyAmountNgn, "₦")}</td>
-                    <td>{timeAgo(o.created_at)}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{timeAgo(o.created_at)}</td>
                     <td>
                       <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
                         onClick={() => void saComp(o.id, 30)}>+30d comp</button>
@@ -877,6 +847,58 @@ export function Admin() {
               </tbody>
             </table></div>
           </section>
+
+          {saAi && saAi.topOrgs.length > 0 && (
+            <section className="admin-card">
+              <h2>AI usage by workspace</h2>
+              <div className="tbl-scroll"><table className="admin-table">
+                <thead><tr><th>Workspace</th><th>Requests</th><th>Tokens</th><th>Est. cost</th></tr></thead>
+                <tbody>
+                  {saAi.topOrgs.map((o) => (
+                    <tr key={o.orgId}>
+                      <td>{o.name}</td>
+                      <td>{o.requests}</td>
+                      <td>{o.tokens.toLocaleString()}</td>
+                      <td>${o.costUsd.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            </section>
+          )}
+
+          {billingCfg && (
+            <section className="admin-card">
+              <h2>Plan &amp; pricing</h2>
+              <div className="sa-cfg">
+                <label className="sa-field">
+                  <span><b>Admin seat (₦/mo)</b><em>The workspace owner's seat.</em></span>
+                  <input type="number" min={0} defaultValue={billingCfg.base_price_ngn}
+                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.base_price_ngn) void saveBillingCfg({ base_price_ngn: v }); }} />
+                </label>
+                <label className="sa-field">
+                  <span><b>Per member (₦/mo)</b><em>Each additional enabled member.</em></span>
+                  <input type="number" min={0} defaultValue={billingCfg.member_price_ngn}
+                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.member_price_ngn) void saveBillingCfg({ member_price_ngn: v }); }} />
+                </label>
+                <label className="sa-field">
+                  <span><b>Business plan multiplier</b><em>Business = ×N the standard price — includes the larger AI allowance.</em></span>
+                  <input type="number" min={1} max={10} defaultValue={billingCfg.business_multiplier}
+                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.business_multiplier) void saveBillingCfg({ business_multiplier: v }); }} />
+                </label>
+                <label className="sa-field">
+                  <span><b>Free trial (months)</b><em>Applies to workspaces created after the change.</em></span>
+                  <input type="number" min={0} max={24} defaultValue={billingCfg.trial_months}
+                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.trial_months) void saveBillingCfg({ trial_months: v }); }} />
+                </label>
+                <label className="sa-field">
+                  <span><b>Currency</b><em>ISO code shown on invoices.</em></span>
+                  <input defaultValue={billingCfg.currency}
+                    onBlur={(e) => { if (e.target.value !== billingCfg.currency) void saveBillingCfg({ currency: e.target.value }); }} />
+                </label>
+              </div>
+            </section>
+          )}
         </>
       )}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
