@@ -152,6 +152,36 @@ async function main() {
     } catch { /* invalid token → requireAuth 401s downstream */ }
   });
 
+  // ---- superadmin confinement ----
+  // is_super accounts are platform operators, not workspace users: whatever
+  // their org role says, they may only reach /api/superadmin/* plus auth and
+  // session endpoints (login session, logout, MFA). Same self-verify pattern
+  // as the write-gate — route-level requireAuth hasn't run yet at this point.
+  const SUPER_ALLOW = /^\/api\/(superadmin|auth|health)\b/;
+  app.addHook("preHandler", async (req, reply) => {
+    if (!req.url.startsWith("/api/") || SUPER_ALLOW.test(req.url)) return;
+    const header = req.headers.authorization;
+    const cookieToken = (req.headers.cookie ?? "")
+      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
+    const queryToken = (req.query as Record<string, string | undefined>)?.token;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : (cookieToken ?? queryToken);
+    if (!token) return; // no credentials — requireAuth decides downstream
+    try {
+      const { jwtVerify } = await import("jose");
+      const { payload } = await jwtVerify(token, new TextEncoder().encode(
+        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
+      if (payload.aud === "kreatix-mfa") return;
+      const u = await one<{ is_super: boolean }>(
+        "SELECT is_super FROM users WHERE id = $1", [payload.sub as string]);
+      if (u?.is_super) {
+        return reply.code(403).send({
+          error: "superadmin_only",
+          message: "This account is restricted to the platform portal.",
+        });
+      }
+    } catch { /* invalid token → requireAuth 401s downstream */ }
+  });
+
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
 
   /**

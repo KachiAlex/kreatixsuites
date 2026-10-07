@@ -25,9 +25,13 @@ const RouteFallback = () => (
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
+  const { pathname } = useLocation();
   const t = useT();
   if (loading) return <div className="auth-wrap"><div className="empty">{t("app.loading")}</div></div>;
   if (!user) return <Navigate to="/login" replace />;
+  // superadmin is a platform operator, not a workspace user — confine the
+  // session to the portal; the API enforces the same boundary with 403s.
+  if (user.isSuper && pathname !== "/admin") return <Navigate to="/admin" replace />;
   return <EntitlementGate>{children}</EntitlementGate>;
 }
 

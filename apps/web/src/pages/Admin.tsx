@@ -123,35 +123,39 @@ export function Admin() {
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
 
   const load = useCallback(async () => {
-    const reqs: Promise<unknown>[] = [
-      api.get<{ members: Member[] }>("/api/admin/members"),
-      api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
-      api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
-      api.get<Metrics>("/api/admin/metrics"),
-      api.get<{ invites: Invite[] }>("/api/admin/invites"),
-      api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
-      api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
-      api.get<AiUsage>("/api/billing/ai-usage"),
-    ];
-    const [m, p, a, mx, inv, bill, scim, ai] = await Promise.all(reqs) as [
-      { members: Member[] },
-      { policies: Policies; encryptionAtRest: boolean },
-      { entries: AuditEntry[] },
-      Metrics,
-      { invites: Invite[] },
-      { subscription: BillingSub; payments: Payment[] },
-      { tokens: { id: string; label: string | null; created_at: string }[] },
-      AiUsage,
-    ];
-    setMembers(m.members);
-    setPolicies(p.policies);
-    setEncryption(p.encryptionAtRest);
-    setAudit(a.entries);
-    setMetrics(mx);
-    setInvites(inv.invites);
-    setBilling(bill);
-    setScimTokens(scim.tokens);
-    setAiUsage(ai);
+    // superadmin sessions are confined to the platform portal — the
+    // workspace-admin endpoints 403 for them, so don't even ask.
+    if (!isSuper) {
+      const reqs: Promise<unknown>[] = [
+        api.get<{ members: Member[] }>("/api/admin/members"),
+        api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
+        api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
+        api.get<Metrics>("/api/admin/metrics"),
+        api.get<{ invites: Invite[] }>("/api/admin/invites"),
+        api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
+        api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
+        api.get<AiUsage>("/api/billing/ai-usage"),
+      ];
+      const [m, p, a, mx, inv, bill, scim, ai] = await Promise.all(reqs) as [
+        { members: Member[] },
+        { policies: Policies; encryptionAtRest: boolean },
+        { entries: AuditEntry[] },
+        Metrics,
+        { invites: Invite[] },
+        { subscription: BillingSub; payments: Payment[] },
+        { tokens: { id: string; label: string | null; created_at: string }[] },
+        AiUsage,
+      ];
+      setMembers(m.members);
+      setPolicies(p.policies);
+      setEncryption(p.encryptionAtRest);
+      setAudit(a.entries);
+      setMetrics(mx);
+      setInvites(inv.invites);
+      setBilling(bill);
+      setScimTokens(scim.tokens);
+      setAiUsage(ai);
+    }
     if (isSuper) {
       const [ov, og, pay, cfg, sai, fb] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
@@ -310,6 +314,8 @@ export function Admin() {
 
   return (
     <div className="admin-page">
+      {!isSuper && (
+      <>
       <h1>Administration</h1>
 
       <section className="admin-card">
@@ -674,10 +680,12 @@ export function Admin() {
           </tbody>
         </table></div>
       </section>
+      </>
+      )}
 
       {isSuper && (
         <>
-          <h1 style={{ marginTop: 32 }}>Platform (superadmin)</h1>
+          <h1>Platform (superadmin)</h1>
 
           {saOverview && (
             <section className="admin-card">

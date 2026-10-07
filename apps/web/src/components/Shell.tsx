@@ -25,6 +25,7 @@ export function Shell() {
   const isMobile = useIsMobile();
   const { msg, toast } = useToast();
   const t = useI18n().t;
+  const { user } = useAuth();
 
   // close the nav drawer on navigation + lock body scroll while it's open
   useEffect(() => { setNavOpen(false); }, [pathname]);
@@ -58,6 +59,10 @@ export function Shell() {
     } catch { toast(t("shell.uploadFailed")); }
   };
 
+  // platform operators get a minimal chrome — no workspace nav, search,
+  // upload, mentions or feedback; just brand, settings and the portal.
+  if (user?.isSuper) return <SuperShell />;
+
   return (
     <div className="shell">
       <Rail toast={toast} />
@@ -77,6 +82,65 @@ export function Shell() {
       <FeedbackWidget />
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
+      {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
+    </div>
+  );
+}
+
+/** Platform-operator chrome for is_super sessions — brand rail with
+ *  settings/security/sign-out only, and a bare topbar over the portal. */
+function SuperShell() {
+  const { user, logout } = useAuth();
+  const { t, locale, setLocale } = useI18n();
+  const navigate = useNavigate();
+  const { msg, toast } = useToast();
+  const [menu, setMenu] = useState(false);
+  const [security, setSecurity] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menu]);
+  const toggleTheme = () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
+  };
+  return (
+    <div className="shell">
+      <aside className="rail">
+        <div className="brand-mark"><AppIcon kind="suites" /></div>
+        <div className="spacer" />
+        <div ref={ref} style={{ position: "relative" }}>
+          <button className="rail-btn" title={t("shell.settings")} aria-haspopup="menu" aria-expanded={menu}
+            onClick={() => setMenu((v) => !v)}>⚙</button>
+          {menu && (
+            <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
+              <button onClick={() => { setMenu(false); toggleTheme(); }}>{t("shell.toggleTheme")}</button>
+              <button onClick={() => { setMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
+              <div className="um-lang">
+                <label>{t("shell.language")}</label>
+                <select value={locale} onChange={(e) => setLocale(e.target.value)}>
+                  {LOCALES.map((l) => <option key={l.tag} value={l.tag}>{l.label}</option>)}
+                </select>
+              </div>
+              <button onClick={() => { setMenu(false); logout(); navigate("/login"); }}>{t("shell.signOut")}</button>
+            </div>
+          )}
+        </div>
+        {security && <SecurityDialog onClose={() => setSecurity(false)} toast={toast} />}
+      </aside>
+      <main>
+        <div className="topbar" style={{ justifyContent: "space-between" }}>
+          <b>Platform</b>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{user?.email}</span>
+        </div>
+        <Outlet />
+      </main>
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );
