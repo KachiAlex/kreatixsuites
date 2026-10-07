@@ -1141,6 +1141,9 @@ textarea.inp{padding:8px 10px;height:auto}
 .ai-pending{border:1px solid #EBD3C0;border-radius:12px;padding:10px 12px;background:#FFFBF8}
 .ai-plan{margin:0 0 8px;padding-left:18px;font-size:11px;color:var(--ink);line-height:1.6}
 .ai-op{font-size:11px;font-family:ui-monospace,monospace;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:5px 8px;margin-bottom:4px;color:var(--ink)}
+.ai-op-diff{margin-top:4px;border-top:1px dashed var(--line);padding-top:4px;line-height:1.5}
+.ai-op-del{color:#B3261E;text-decoration:line-through;white-space:pre-wrap;word-break:break-word}
+.ai-op-ins{color:#1E7E34;white-space:pre-wrap;word-break:break-word}
 .ai-pending .btn-primary{margin-top:6px}
 .ai-input{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
 .ai-input input{flex:1;height:36px;border:1px solid var(--line);border-radius:10px;padding:0 11px;font-size:12px;outline:none}

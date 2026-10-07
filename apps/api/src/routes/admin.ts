@@ -14,6 +14,7 @@ import { samlEnabled } from "./saml.js";
 import { sendMailSafe, tpl } from "../email.js";
 
 const policiesSchema = z.object({
+  aiDisabled: z.boolean().optional(),
   blockPublicLinksForConfidential: z.boolean().optional(),
   blockRestrictedShareLinks: z.boolean().optional(),
   trashRetentionDays: z.number().int().min(0).max(3650).optional(),

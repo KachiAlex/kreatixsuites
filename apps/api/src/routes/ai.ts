@@ -11,9 +11,14 @@ import { indexBody } from "../indexer.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { checkAiQuota, aiQuotaFor, modelFor, costMicros, noteAiSpend } from "../aiQuota.js";
+import { semanticRank } from "../embeddings.js";
 
-const AI_BASE = process.env.KREATIX_AI_BASE_URL || "https://api.openai.com/v1";
+const AI_BASE = (process.env.KREATIX_AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const AI_KEY = process.env.KREATIX_AI_KEY ?? "";
+// optional failover provider — same OpenAI-compatible contract
+const FB_KEY = process.env.KREATIX_AI_FALLBACK_KEY ?? "";
+const FB_BASE = (process.env.KREATIX_AI_FALLBACK_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+const FB_MODEL = process.env.KREATIX_AI_FALLBACK_MODEL ?? "";
 
 const MODE = z.enum(["ask", "edit", "plan", "explain"]);
 const chatSchema = z.object({
@@ -145,7 +150,8 @@ export function aiRoutes(app: FastifyInstance) {
   app.get("/api/ai/status", async (req) => {
     const { user } = req as AuthedRequest;
     const enabled = !!AI_KEY;
-    return { enabled, model: enabled ? modelFor("ask") : null, quota: await aiQuotaFor(user.orgId, user.id) };
+    const quota = await aiQuotaFor(user.orgId, user.id);
+    return { enabled, model: enabled ? modelFor("ask", quota.tier) : null, quota };
   });
 
   interface Prepared {
@@ -167,6 +173,7 @@ export function aiRoutes(app: FastifyInstance) {
       reply.code(gate.http ?? 429).send({ error: gate.error, message: gate.message, retryAfterSec: gate.retryAfterSec, quota: gate.quota });
       return null;
     }
+    const tier = gate.quota.tier;
     const body = chatSchema.parse(req.body);
     const item = await getItem(body.fileId);
     const need = body.mode === "edit" || body.mode === "plan" ? "editor" : "viewer";
@@ -186,11 +193,12 @@ export function aiRoutes(app: FastifyInstance) {
       { role: "user", content: `${lastUser.content}\n\n<document>\n${packed}\n</document>` },
     ];
     const promptChars = messages.reduce((n, m) => n + m.content.length, 0);
-    return { user, body, item, lastUser, messages, model: modelFor(body.mode), promptChars };
+    return { user, body, item, lastUser, messages, model: modelFor(body.mode, tier), promptChars };
   }
 
-  /** Parse + validate model output, meter tokens/cost, record provenance. */
-  async function finalize(p: Prepared, raw: string, usage?: { prompt_tokens?: number; completion_tokens?: number }) {
+  /** Parse + validate model output, meter tokens/cost, record provenance.
+   *  `servedModel` records the model that actually answered (fallback aware). */
+  async function finalize(p: Prepared, raw: string, usage?: { prompt_tokens?: number; completion_tokens?: number }, servedModel?: string) {
     const parsed = extractJson(raw) ?? { reply: raw };
     const replyText = typeof parsed.reply === "string" ? parsed.reply.slice(0, 8000) : "(no reply)";
     const plan = Array.isArray(parsed.plan) ? (parsed.plan as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 20) : undefined;
@@ -212,7 +220,7 @@ export function aiRoutes(app: FastifyInstance) {
     );
     void logActivity(p.user.orgId, p.user.id, p.item.id, "ai-chat", `${p.body.mode}: ${p.lastUser.content.slice(0, 80)}`);
 
-    await recordUsage(p.user, p.item.id, p.body.mode, p.model, p.promptChars, raw, usage);
+    await recordUsage(p.user, p.item.id, p.body.mode, servedModel ?? p.model, p.promptChars, raw, usage);
     return { actionId, reply: replyText, plan, ops };
   }
 
@@ -233,21 +241,43 @@ export function aiRoutes(app: FastifyInstance) {
   // so other OpenAI-compatible providers never see an unknown parameter
   const reasoningEffort = () => process.env.KREATIX_AI_REASONING_EFFORT || undefined;
 
+  /** POST /chat/completions — primary provider, one same-provider retry on
+   *  429/5xx, then the optional KREATIX_AI_FALLBACK_* provider. Returns the
+   *  model that actually served the response so metering stays honest. */
+  async function providerCall(bodyFor: (model: string) => string, model: string, signal: AbortSignal): Promise<{ res: Response; model: string }> {
+    const attempt = (key: string, base: string, m: string) =>
+      fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: bodyFor(m),
+        signal,
+      });
+    let res = await attempt(AI_KEY, AI_BASE, model);
+    if (res.status === 429 || res.status >= 500) {
+      await new Promise((r) => setTimeout(r, 600));
+      res = await attempt(AI_KEY, AI_BASE, model);
+    }
+    if ((res.status === 429 || res.status >= 500) && FB_KEY) {
+      const fm = FB_MODEL || model;
+      app.log.warn({ status: res.status, model, fallbackModel: fm }, "AI primary provider failing — failing over");
+      res = await attempt(FB_KEY, FB_BASE, fm);
+      return { res, model: res.ok ? fm : model };
+    }
+    return { res, model };
+  }
+
   const providerBody = (p: Prepared, stream: boolean) =>
     JSON.stringify({
       model: p.model, messages: p.messages, temperature: 0.2, max_tokens: 3000, stream,
+      // the chat contract is JSON — enforce it where the provider supports it
+      response_format: { type: "json_object" },
       reasoning_effort: reasoningEffort(),
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     });
 
   type Usage = { prompt_tokens?: number; completion_tokens?: number };
   const callProvider = (p: Prepared, stream: boolean, signal: AbortSignal) =>
-    fetch(`${AI_BASE}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
-      body: providerBody(p, stream),
-      signal,
-    });
+    providerCall((m) => providerBody({ ...p, model: m }, stream), p.model, signal);
 
   app.post("/api/ai/chat", async (req, reply) => {
     const p = await prepare(req, reply);
@@ -255,14 +285,10 @@ export function aiRoutes(app: FastifyInstance) {
 
     let raw: string;
     let usage: Usage | undefined;
+    let servedModel = p.model;
     try {
-      // one retry on provider-side 429/5xx — transient rate spikes shouldn't
-      // surface as errors, but never retry forever (cost)
-      let res = await callProvider(p, false, AbortSignal.timeout(60000));
-      if (res.status === 429 || res.status >= 500) {
-        await new Promise((r) => setTimeout(r, 600));
-        res = await callProvider(p, false, AbortSignal.timeout(60000));
-      }
+      const { res, model } = await callProvider(p, false, AbortSignal.timeout(60000));
+      servedModel = model;
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
         app.log.warn({ status: res.status, detail: detail.slice(0, 300) }, "AI provider error");
@@ -271,10 +297,32 @@ export function aiRoutes(app: FastifyInstance) {
       const data = await res.json() as { choices?: { message?: { content?: string } }[]; usage?: Usage };
       raw = data.choices?.[0]?.message?.content ?? "";
       usage = data.usage;
+
+      // Cheap models occasionally answer edit/plan requests in prose instead of
+      // the ops contract — meter the attempt, then retry once with a corrective
+      // nudge before giving up.
+      if (p.body.mode === "edit" || p.body.mode === "plan") {
+        const peek = extractJson(raw);
+        if (!peek || !Array.isArray(peek.ops) || peek.ops.length === 0) {
+          await recordUsage(p.user, p.item.id, p.body.mode, servedModel, p.promptChars, raw, usage);
+          const strict: Prepared = { ...p, promptChars: p.promptChars + raw.length + 200, messages: [
+            ...p.messages,
+            { role: "assistant", content: raw.slice(0, 3000) },
+            { role: "user", content: "That reply was not valid for this mode. Respond as strict JSON only: {\"reply\":\"…\",\"ops\":[…]} using only the allowed ops for this document type." },
+          ] };
+          const r2 = await providerCall((m) => providerBody({ ...strict, model: m }, false), p.model, AbortSignal.timeout(60000));
+          if (r2.res.ok) {
+            const d2 = await r2.res.json() as { choices?: { message?: { content?: string } }[]; usage?: Usage };
+            raw = d2.choices?.[0]?.message?.content ?? raw;
+            usage = d2.usage ?? usage;
+            servedModel = r2.model;
+          }
+        }
+      }
     } catch (e) {
       return reply.code(502).send({ error: "ai_error", message: `AI request failed: ${(e as Error).message.slice(0, 120)}` });
     }
-    return finalize(p, raw, usage);
+    return finalize(p, raw, usage, servedModel);
   });
 
 
@@ -300,8 +348,11 @@ export function aiRoutes(app: FastifyInstance) {
     req.raw.on("close", () => upstream.abort());
 
     let res: Response;
+    let servedModel = p.model;
     try {
-      res = await callProvider(p, true, AbortSignal.any([upstream.signal, AbortSignal.timeout(90000)]));
+      const out = await callProvider(p, true, AbortSignal.any([upstream.signal, AbortSignal.timeout(90000)]));
+      res = out.res;
+      servedModel = out.model;
     } catch (e) {
       send({ error: `AI request failed: ${(e as Error).message.slice(0, 120)}` });
       return done();
@@ -338,10 +389,10 @@ export function aiRoutes(app: FastifyInstance) {
           } catch { /* partial/non-data line */ }
         }
       }
-      send({ done: true, ...(await finalize(p, raw, usage)) });
+      send({ done: true, ...(await finalize(p, raw, usage, servedModel)) });
     } catch (e) {
       // aborted by client disconnect or provider failure — meter what streamed
-      if (raw) send({ done: true, ...(await finalize(p, raw, usage)) });
+      if (raw) send({ done: true, ...(await finalize(p, raw, usage, servedModel)) });
       else send({ error: `AI stream failed: ${(e as Error).message.slice(0, 120)}` });
     }
     done();
@@ -364,19 +415,22 @@ export function aiRoutes(app: FastifyInstance) {
       [userId],
     );
     const terms = Array.from(new Set(question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2))).slice(0, 8);
+    // semantic rank when embeddings are configured — paraphrases the lexical
+    // pass would miss ("headcount" vs "staff size")
+    const semantic = await semanticRank(question, rows.map((r) => r.id));
     const scored: { id: string; score: number; excerpt: string }[] = [];
     for (const r of rows) {
       const body = await indexBody(r.id);
       if (!body) continue;
       const lower = body.toLowerCase();
-      let score = 0;
+      let score = (semantic?.get(r.id) ?? 0) * 2; // rank points, weighted ~24 vs term hits
       let firstPos = lower.length;
       for (const t of terms) {
         let pos = lower.indexOf(t);
         while (pos !== -1) { score++; if (pos < firstPos) firstPos = pos; pos = lower.indexOf(t, pos + t.length); }
       }
       if (!score) continue;
-      const start = Math.max(0, firstPos - 200);
+      const start = firstPos < lower.length ? Math.max(0, firstPos - 200) : 0;
       scored.push({ id: r.id, score, excerpt: body.slice(start, start + 1400) });
     }
     scored.sort((a, b) => b.score - a.score);
@@ -424,20 +478,19 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
     const convo = (messages ?? []).map((m) => ({ role: m.role, content: m.content }));
     const msgs = [{ role: "system", content: sys }, ...convo, { role: "user", content: question }];
     const promptChars = msgs.reduce((n, m) => n + m.content.length, 0);
-    const model = modelFor("ask");
+    const model = modelFor("ask", gate.quota.tier);
 
     const upstream = new AbortController();
     req.raw.on("close", () => upstream.abort());
-    const call = (streamBody: boolean) => fetch(`${AI_BASE}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
-      body: JSON.stringify({
-        model, messages: msgs, temperature: 0.2, max_tokens: 2000, stream: streamBody,
+    const call = (streamBody: boolean) => providerCall(
+      (m) => JSON.stringify({
+        model: m, messages: msgs, temperature: 0.2, max_tokens: 2000, stream: streamBody,
         reasoning_effort: reasoningEffort(),
         ...(streamBody ? { stream_options: { include_usage: true } } : {}),
       }),
-      signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(90000)]),
-    });
+      model,
+      AbortSignal.any([upstream.signal, AbortSignal.timeout(90000)]),
+    );
 
     if (stream) {
       reply.hijack();
@@ -445,7 +498,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       const send = (obj: Record<string, unknown>) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
       const done = () => reply.raw.end();
       try {
-        const res = await call(true);
+        const { res, model: um } = await call(true);
         if (!res.ok || !res.body) { send({ error: `AI provider returned ${res.status}` }); return done(); }
         const reader = res.body.getReader();
         const dec = new TextDecoder();
@@ -470,7 +523,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
           }
         }
         const final = raw.slice(0, 6000);
-        await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage);
+        await recordUsage(user, null, "ask-workspace", um, promptChars, raw, usage);
         void logActivity(user.orgId, user.id, null, "ai-ask", question.slice(0, 80));
         send({ done: true, reply: final, sources: citedSources(final, top, names) });
       } catch (e) {
@@ -481,8 +534,11 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
 
     let raw = "";
     let usage: Usage | undefined;
+    let usedModel = model;
     try {
-      const res = await call(false);
+      const out = await call(false);
+      const res = out.res;
+      usedModel = out.model;
       if (!res.ok) return reply.code(502).send({ error: "ai_error", message: `AI provider returned ${res.status}` });
       const data = await res.json() as { choices?: { message?: { content?: string } }[]; usage?: Usage };
       raw = data.choices?.[0]?.message?.content ?? "";
@@ -492,7 +548,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
     }
 
     const replyText = raw.slice(0, 6000) || "(no reply)";
-    await recordUsage(user, null, "ask-workspace", model, promptChars, raw, usage);
+    await recordUsage(user, null, "ask-workspace", usedModel, promptChars, raw, usage);
     void logActivity(user.orgId, user.id, null, "ai-ask", question.slice(0, 80));
     return { reply: replyText, sources: citedSources(replyText, top, names) };
   });
@@ -524,21 +580,20 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       { role: "system", content: sys },
       { role: "user", content: `<before>\n${prefix}\n</before>${suffix ? `\n<after>\n${suffix}\n</after>` : ""}` },
     ];
-    const model = modelFor("complete");
+    const model = modelFor("complete", gate.quota.tier);
     const upstream = new AbortController();
     req.raw.on("close", () => upstream.abort());
     try {
-      const res = await fetch(`${AI_BASE}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
-        body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 80, reasoning_effort: reasoningEffort() }),
-        signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(20000)]),
-      });
+      const { res, model: um } = await providerCall(
+        (m) => JSON.stringify({ model: m, messages: msgs, temperature: 0.4, max_tokens: 80, reasoning_effort: reasoningEffort() }),
+        model,
+        AbortSignal.any([upstream.signal, AbortSignal.timeout(20000)]),
+      );
       if (!res.ok) return reply.code(502).send({ error: "ai_error", message: `AI provider returned ${res.status}` });
       const data = await res.json() as { choices?: { message?: { content?: string } }[]; usage?: Usage };
       const raw = data.choices?.[0]?.message?.content ?? "";
       const text = raw.replace(/^["'`\s]+|["'`\s]+$/g, "").split("\n\n")[0].slice(0, 600);
-      await recordUsage(user, item.id, "complete", model, msgs[0].content.length + msgs[1].content.length, raw, data.usage);
+      await recordUsage(user, item.id, "complete", um, msgs[0].content.length + msgs[1].content.length, raw, data.usage);
       return { text };
     } catch (e) {
       return reply.code(502).send({ error: "ai_error", message: (e as Error).message.slice(0, 120) });

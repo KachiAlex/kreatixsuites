@@ -293,7 +293,10 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
                   </ol>
                 )}
                 {pending.ops.map((o, i) => (
-                  <div key={i} className="ai-op">{describeOp(o)}</div>
+                  <div key={i} className="ai-op">
+                    {describeOp(o)}
+                    <OpPreview op={o} />
+                  </div>
                 ))}
                 {pending.ops.length > 0 && (
                   <button className="btn-primary btn-sm" onClick={() => { const p = pending; setPending(null); void apply(p); }} disabled={!canEdit}>
@@ -379,6 +382,21 @@ function scrubRaw(s: string): string {
 }
 
 /** Human-readable op description for the apply preview. */
+/** Visual before/after for ops carrying text — trust by inspection. */
+function OpPreview({ op }: { op: AiOp }) {
+  const clip = (v: unknown, max = 160) =>
+    typeof v === "string" ? (v.length > max ? v.slice(0, max) + "…" : v) : null;
+  const out = clip(op.find) ?? null;
+  const ins = clip(op.replace) ?? clip(op.text) ?? clip(op.notes);
+  if (!out && !ins) return null;
+  return (
+    <div className="ai-op-diff">
+      {out && <div className="ai-op-del">− {out}</div>}
+      {ins && <div className="ai-op-ins">+ {ins}</div>}
+    </div>
+  );
+}
+
 export function describeOp(o: AiOp): string {
   const q = (s: unknown) => (typeof s === "string" && s.length > 40 ? s.slice(0, 37) + "…" : String(s));
   switch (o.op) {

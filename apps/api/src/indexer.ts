@@ -5,6 +5,7 @@
 import { q, one, run } from "./db.js";
 import { getBlob } from "./blobs.js";
 import { encryptField, decryptField } from "./crypto.js";
+import { embedIndex } from "./embeddings.js";
 
 const stripTags = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
@@ -95,6 +96,7 @@ export async function indexFile(fileId: string, kind: string, content: unknown) 
   await run("DELETE FROM search_index WHERE file_id = $1", [fileId]);
   if (body.trim()) {
     await run("INSERT INTO search_index (file_id, body) VALUES ($1,$2)", [fileId, encryptField(body)!]);
+    void embedIndex(fileId, body); // optional semantic vector — no-op unless KREATIX_AI_EMBED_* set
   }
 }
 

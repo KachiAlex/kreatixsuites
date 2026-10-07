@@ -18,6 +18,8 @@ export interface OrgPolicies {
   /** Regex patterns (one per entry) — share links are blocked when a file's
    *  name or indexed text matches any of them. */
   dlpPatterns: string[];
+  /** Kill switch — admins can disable Kreatix AI workspace-wide. */
+  aiDisabled: boolean;
 }
 
 const DEFAULTS: OrgPolicies = {
@@ -25,6 +27,7 @@ const DEFAULTS: OrgPolicies = {
   blockRestrictedShareLinks: false,
   trashRetentionDays: 0,
   dlpPatterns: [],
+  aiDisabled: false,
 };
 
 /** Compile policy DLP regexes safely — bad patterns are skipped, not fatal. */

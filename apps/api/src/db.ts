@@ -326,6 +326,13 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   await pool.query(`ALTER TABLE subscriptions DROP COLUMN IF EXISTS ai_model`);
   // 80%-of-AI-budget notice bookkeeping for the daily sweep
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_budget_warned_at TIMESTAMPTZ`);
+  // pgvector — semantic retrieval for workspace Q&A (no-op on non-pgvector images)
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+    await pool.query(`ALTER TABLE search_index ADD COLUMN IF NOT EXISTS embedding vector`);
+  } catch {
+    console.warn("[db] pgvector extension unavailable — semantic search disabled");
+  }
   // seed the default billing config row (idempotent)
   await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
 }

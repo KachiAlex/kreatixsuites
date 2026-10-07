@@ -5,6 +5,7 @@
 import { one, q, run } from "./db.js";
 import { ensureSubscription, effectiveState, seatCount, type Subscription, type PlanTier } from "./billing.js";
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
+import { getPolicies } from "./policies.js";
 
 const envInt = (k: string, dflt: number) => {
   const raw = process.env[k]?.trim();
@@ -44,7 +45,7 @@ export interface AiQuota {
 export interface AiCheck {
   allowed: boolean;
   http?: number;
-  error?: "ai_not_in_plan" | "rate_limited" | "quota_exceeded" | "platform_budget";
+  error?: "ai_not_in_plan" | "rate_limited" | "quota_exceeded" | "platform_budget" | "ai_disabled";
   message?: string;
   retryAfterSec?: number;
   quota: AiQuota;
@@ -134,6 +135,11 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "AI is a paid-plan feature — the workspace subscription has expired" };
   }
+  // org policy kill-switch — admin can disable AI workspace-wide
+  if ((await getPolicies(orgId)).aiDisabled) {
+    return { allowed: false, http: 403, error: "ai_disabled", quota,
+      message: "Kreatix AI is disabled by this workspace's admin policy" };
+  }
   if (state === "trialing" && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "Trial AI quota used up — subscribe to keep using Kreatix AI" };
@@ -164,10 +170,16 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
 
 const secUntil = (iso: string) => Math.max(1, Math.ceil((new Date(iso).getTime() - Date.now()) / 1000));
 
-/** Per-mode model selection — edit/plan can ride a stronger model via env. */
-export function modelFor(mode: string): string {
-  const key = `KREATIX_AI_MODEL_${mode.toUpperCase()}`;
-  return process.env[key] || process.env.KREATIX_AI_MODEL || "gpt-4o-mini";
+/** Per-mode + per-tier model selection. Precedence:
+ *  MODEL_<MODE>_<TIER> → MODEL_<MODE> → MODEL_BUSINESS (business only) → MODEL. */
+export function modelFor(mode: string, tier?: PlanTier): string {
+  const e = process.env;
+  const M = mode.toUpperCase(), T = (tier ?? "standard").toUpperCase();
+  return e[`KREATIX_AI_MODEL_${M}_${T}`]
+    || e[`KREATIX_AI_MODEL_${M}`]
+    || (tier === "business" ? e.KREATIX_AI_MODEL_BUSINESS : undefined)
+    || e.KREATIX_AI_MODEL
+    || "gpt-4o-mini";
 }
 
 /** Microdollar cost for a request on a given model. Prices = USD per 1M tokens. */

@@ -4,7 +4,8 @@
 #   SITE_ADDRESS=suite.example.com docker compose --profile tls up -d
 services:
   db:
-    image: postgres:17-alpine
+    # pgvector-enabled Postgres — drop-in for postgres:17, adds CREATE EXTENSION vector
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       - POSTGRES_USER=kreatix
@@ -44,6 +45,18 @@ services:
       - KREATIX_AI_MODEL_ASK=${KREATIX_AI_MODEL_ASK:-}
       - KREATIX_AI_MODEL_COMPLETE=${KREATIX_AI_MODEL_COMPLETE:-}
       - KREATIX_AI_REASONING_EFFORT=${KREATIX_AI_REASONING_EFFORT:-}
+      - KREATIX_AI_MODEL_BUSINESS=${KREATIX_AI_MODEL_BUSINESS:-}
+      - KREATIX_AI_MODEL_ASK_BUSINESS=${KREATIX_AI_MODEL_ASK_BUSINESS:-}
+      - KREATIX_AI_MODEL_EDIT_BUSINESS=${KREATIX_AI_MODEL_EDIT_BUSINESS:-}
+      - KREATIX_AI_MODEL_PLAN_BUSINESS=${KREATIX_AI_MODEL_PLAN_BUSINESS:-}
+      - KREATIX_AI_MODEL_COMPLETE_BUSINESS=${KREATIX_AI_MODEL_COMPLETE_BUSINESS:-}
+      # provider failover + optional embeddings (semantic workspace search)
+      - KREATIX_AI_FALLBACK_KEY=${KREATIX_AI_FALLBACK_KEY:-}
+      - KREATIX_AI_FALLBACK_BASE_URL=${KREATIX_AI_FALLBACK_BASE_URL:-}
+      - KREATIX_AI_FALLBACK_MODEL=${KREATIX_AI_FALLBACK_MODEL:-}
+      - KREATIX_AI_EMBED_KEY=${KREATIX_AI_EMBED_KEY:-}
+      - KREATIX_AI_EMBED_BASE_URL=${KREATIX_AI_EMBED_BASE_URL:-}
+      - KREATIX_AI_EMBED_MODEL=${KREATIX_AI_EMBED_MODEL:-}
       # AI quota + cost controls (empty = app defaults)
       - KREATIX_AI_TRIAL_REQUESTS=${KREATIX_AI_TRIAL_REQUESTS:-}
       - KREATIX_AI_ORG_TOKENS_BASE=${KREATIX_AI_ORG_TOKENS_BASE:-}

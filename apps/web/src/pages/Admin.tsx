@@ -61,6 +61,7 @@ interface SaAiUsage {
 }
 interface SaPayment extends Payment { org_id: string; org_name: string }
 interface Policies {
+  aiDisabled: boolean;
   blockPublicLinksForConfidential: boolean;
   blockRestrictedShareLinks: boolean;
   trashRetentionDays: number;
@@ -320,6 +321,17 @@ export function Admin() {
         <h2>Data policies</h2>
         {policies && (
           <div className="admin-policies">
+            <label className="pol-row">
+              <input
+                type="checkbox"
+                checked={policies.aiDisabled}
+                onChange={(e) => patchPolicy({ aiDisabled: e.target.checked })}
+              />
+              <span>
+                <b>Disable Kreatix AI for this workspace</b>
+                <em>All AI requests (chat, workspace ask, completions) are refused immediately — nothing leaves for the provider.</em>
+              </span>
+            </label>
             <label className="pol-row">
               <input
                 type="checkbox"
