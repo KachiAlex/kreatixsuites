@@ -111,7 +111,7 @@ function SuperShell() {
     try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
   };
   return (
-    <div className="shell">
+    <div className="shell sap-shell">
       <aside className="rail">
         <div className="brand-mark"><AppIcon kind="suites" /></div>
         <div className="spacer" />

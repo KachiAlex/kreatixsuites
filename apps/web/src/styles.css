@@ -2464,6 +2464,10 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .admin-page:has(>.sap-page){max-width:1200px}
 
 /* ===== superadmin portal — platform console (is_super only) ===== */
+/* SuperShell has no sidebar — two-column grid, rail + main */
+.shell.sap-shell{grid-template-columns:76px minmax(0,1fr)}
+@media(max-width:1180px){.shell.sap-shell{grid-template-columns:64px minmax(0,1fr)}}
+@media(max-width:768px){.shell.sap-shell{grid-template-columns:minmax(0,1fr)}}
 :root{
   --sap-green:#1E7E44; --sap-green-bg:#E9F7EE;
   --sap-blue:#2563EB;  --sap-blue-bg:#E8EFFC;
