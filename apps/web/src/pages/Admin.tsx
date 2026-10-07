@@ -7,12 +7,7 @@ import { PUBLIC_ORIGIN } from "../lib/platform";
 import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/hooks";
-
-// module-scope so Date.now() runs outside the component's render scope
-async function grantDays(orgId: string, days: number) {
-  const until = new Date(Date.now() + days * 86400000).toISOString();
-  await api.patch(`/api/superadmin/orgs/${orgId}/subscription`, { overrideUntil: until });
-}
+import { SuperPortal } from "./SuperPortal";
 interface Member {
   id: string; email: string; displayName: string; initials: string;
   role: string; disabled: boolean; createdAt: string;
@@ -33,37 +28,12 @@ interface Payment {
   method: string; reference: string | null; status: string; plan?: string;
   period_start: string | null; period_end: string | null; created_at: string;
 }
-interface BillingCfg {
-  base_price_ngn: number; member_price_ngn: number; trial_months: number;
-  business_multiplier: number; currency: string;
-}
-interface SaOrg {
-  id: string; name: string; created_at: string; seats: number;
-  state: string; monthlyAmountNgn: number; status: string | null;
-  trial_ends_at: string | null; period_end: string | null; override_until: string | null;
-  ai_token_budget?: number | null;
-  plan?: string | null;
-}
-interface SaOverview {
-  orgs: number; users: number; activeSubs: number; trialing: number;
-  locked: number; pendingPayments: number; mrrNgn: number;
-}
 interface AiUsage {
   month: string; requests: number; tokens: number; costUsd: number;
   quota: { plan: string; tier?: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
   byUser: { userId: string; name: string; requests: number; tokens: number }[];
   byDay: { day: string; requests: number; tokens: number }[];
   byMode: { mode: string; requests: number; tokens: number }[];
-}
-interface SaAiUsage {
-  month: string; requests: number; tokens: number; costUsd: number; budgetUsd: number;
-  topOrgs: { orgId: string; name: string; requests: number; tokens: number; costUsd: number }[];
-}
-interface SaPayment extends Payment { org_id: string; org_name: string }
-interface SaFeedback {
-  id: string; sentiment: "good" | "ok" | "bad"; message: string; page: string | null;
-  reply: string | null; replied_at: string | null;
-  created_at: string; org_name: string; display_name: string; email: string;
 }
 interface Policies {
   aiDisabled: boolean;
@@ -108,16 +78,6 @@ export function Admin() {
   const [filter, setFilter] = useState("");
   const [scimTokens, setScimTokens] = useState<{ id: string; label: string | null; created_at: string }[]>([]);
   const [newScimToken, setNewScimToken] = useState("");
-  // superadmin (platform) state
-  const [saOverview, setSaOverview] = useState<SaOverview | null>(null);
-  const [saOrgs, setSaOrgs] = useState<SaOrg[]>([]);
-  const [saPayments, setSaPayments] = useState<SaPayment[]>([]);
-  const [billingCfg, setBillingCfg] = useState<BillingCfg | null>(null);
-  const [saAi, setSaAi] = useState<SaAiUsage | null>(null);
-  const [saFeedback, setSaFeedback] = useState<SaFeedback[]>([]);
-  const [fbStats, setFbStats] = useState<Record<string, number>>({});
-  const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
-  const [fbBusy, setFbBusy] = useState<Record<string, boolean>>({});
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -155,23 +115,6 @@ export function Admin() {
       setBilling(bill);
       setScimTokens(scim.tokens);
       setAiUsage(ai);
-    }
-    if (isSuper) {
-      const [ov, og, pay, cfg, sai, fb] = await Promise.all([
-        api.get<SaOverview>("/api/superadmin/overview"),
-        api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
-        api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
-        api.get<{ config: BillingCfg }>("/api/superadmin/billing-config"),
-        api.get<SaAiUsage>("/api/superadmin/ai-usage"),
-        api.get<{ feedback: SaFeedback[]; stats: Record<string, number> }>("/api/superadmin/feedback"),
-      ]);
-      setSaOverview(ov);
-      setSaOrgs(og.orgs);
-      setSaPayments(pay.payments);
-      setBillingCfg(cfg.config);
-      setSaAi(sai);
-      setSaFeedback(fb.feedback);
-      setFbStats(fb.stats);
     }
   }, [isSuper]);
 
@@ -249,53 +192,6 @@ export function Admin() {
     }
   };
 
-  const saveBillingCfg = async (patch: Partial<BillingCfg>) => {
-    try {
-      const r = await api.put<{ config: BillingCfg }>("/api/superadmin/billing-config", patch);
-      setBillingCfg(r.config);
-      toast("Pricing updated");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Update failed");
-    }
-  };
-
-  const saConfirm = async (id: string, confirm: boolean) => {
-    try {
-      await api.post(`/api/superadmin/payments/${id}/${confirm ? "confirm" : "reject"}`, {});
-      toast(confirm ? "Payment confirmed — workspace activated" : "Payment rejected");
-      void load();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed");
-    }
-  };
-
-  const saComp = async (orgId: string, days: number) => {
-    try {
-      await grantDays(orgId, days);
-      toast(`Granted ${days} days of access`);
-      void load();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed");
-    }
-  };
-
-  const saReply = async (id: string) => {
-    const message = (fbDrafts[id] ?? "").trim();
-    if (!message || fbBusy[id]) return;
-    setFbBusy((b) => ({ ...b, [id]: true }));
-    try {
-      await api.post(`/api/superadmin/feedback/${id}/reply`, { message });
-      setSaFeedback((rows) => rows.map((f) =>
-        f.id === id ? { ...f, reply: message, replied_at: new Date().toISOString() } : f));
-      setFbDrafts((d) => ({ ...d, [id]: "" }));
-      toast("Reply sent — shown in the user's widget and emailed");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Reply failed");
-    } finally {
-      setFbBusy((b) => ({ ...b, [id]: false }));
-    }
-  };
-
   const patchPolicy = async (patch: Partial<Policies>) => {
     try {
       const r = await api.put<{ policies: Policies }>("/api/admin/policies", patch);
@@ -313,7 +209,7 @@ export function Admin() {
     : audit;
 
   return (
-    <div className={`admin-page${isSuper ? " sa-wide" : ""}`}>
+    <div className="admin-page">
       {!isSuper && (
       <>
       <h1>Administration</h1>
@@ -683,224 +579,7 @@ export function Admin() {
       </>
       )}
 
-      {isSuper && (
-        <>
-          <header className="sa-head">
-            <div>
-              <h1>Platform</h1>
-              <div className="sub">Workspaces, billing, AI spend and user feedback — across every tenant.</div>
-            </div>
-            <button className="btn-secondary" onClick={() => void load()}>Refresh</button>
-          </header>
-
-          {saOverview && (
-            <div className="sa-kpis">
-              <div className="sa-kpi">
-                <span className="k-label">Workspaces</span>
-                <span className="k-value">{saOverview.orgs}</span>
-                <span className="k-sub">{saOverview.users} users</span>
-              </div>
-              <div className="sa-kpi">
-                <span className="k-label">MRR</span>
-                <span className="k-value">{fmtNgn(saOverview.mrrNgn, "₦")}</span>
-                <span className="k-sub">{saOverview.activeSubs} active · {saOverview.trialing} trialing · {saOverview.locked} locked</span>
-              </div>
-              <div className={`sa-kpi${saOverview.pendingPayments ? " warn" : ""}`}>
-                <span className="k-label">Pending payments</span>
-                <span className="k-value">{saOverview.pendingPayments}</span>
-                <span className="k-sub">{saOverview.pendingPayments ? "awaiting confirmation" : "all clear"}</span>
-              </div>
-              {saAi && (
-                <div className={`sa-kpi${saAi.costUsd >= saAi.budgetUsd * 0.8 ? " warn" : ""}`}>
-                  <span className="k-label">AI spend · this month</span>
-                  <span className="k-value">${saAi.costUsd.toFixed(2)}</span>
-                  <span className="k-bar">
-                    <i style={{ width: `${Math.min(100, (saAi.costUsd / Math.max(1, saAi.budgetUsd)) * 100)}%` }} />
-                  </span>
-                  <span className="k-sub">of ${saAi.budgetUsd} · {saAi.requests.toLocaleString()} req · {(saAi.tokens / 1e6).toFixed(2)}M tok</span>
-                </div>
-              )}
-              <div className="sa-kpi">
-                <span className="k-label">Feedback · 30d</span>
-                <span className="k-value">{(fbStats.good ?? 0) + (fbStats.ok ?? 0) + (fbStats.bad ?? 0)}</span>
-                <span className="k-sub">😊 {fbStats.good ?? 0} · 🙂 {fbStats.ok ?? 0} · 😞 {fbStats.bad ?? 0}</span>
-              </div>
-            </div>
-          )}
-
-          {saPayments.length > 0 && (
-            <section className="admin-card">
-              <h2>Pending payments</h2>
-              <div className="tbl-scroll"><table className="admin-table">
-                <thead><tr><th>When</th><th>Workspace</th><th>Amount</th><th>Method</th><th></th></tr></thead>
-                <tbody>
-                  {saPayments.map((p) => (
-                    <tr key={p.id}>
-                      <td style={{ whiteSpace: "nowrap" }}>{timeAgo(p.created_at)}</td>
-                      <td>{p.org_name}</td>
-                      <td>{fmtNgn(p.amount_ngn, "₦")}</td>
-                      <td>{p.method}{p.reference ? ` · ${p.reference.slice(0, 18)}` : ""}</td>
-                      <td>
-                        <button className="btn-primary" style={{ padding: "2px 10px", fontSize: 12, marginRight: 6 }}
-                          onClick={() => void saConfirm(p.id, true)}>Confirm</button>
-                        <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
-                          onClick={() => void saConfirm(p.id, false)}>Reject</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            </section>
-          )}
-
-          <section className="admin-card">
-            <div className="sa-card-head">
-              <h2>User feedback</h2>
-              <div className="sa-pills">
-                <span className="fb-pill good">😊 {fbStats.good ?? 0}</span>
-                <span className="fb-pill ok">🙂 {fbStats.ok ?? 0}</span>
-                <span className="fb-pill bad">😞 {fbStats.bad ?? 0}</span>
-                <span className="sub">last 30 days</span>
-              </div>
-            </div>
-            {saFeedback.length === 0 ? (
-              <div className="sa-empty">No feedback yet — submissions from the in-app widget land here.</div>
-            ) : (
-              <div className="tbl-scroll"><table className="admin-table">
-                <thead><tr><th>When</th><th>Mood</th><th>From</th><th>Workspace</th><th>Message</th></tr></thead>
-                <tbody>
-                  {saFeedback.map((f) => (
-                    <tr key={f.id}>
-                      <td title={f.created_at} style={{ whiteSpace: "nowrap" }}>{timeAgo(f.created_at)}</td>
-                      <td><span className={`fb-pill ${f.sentiment}`}>{f.sentiment === "good" ? "😊" : f.sentiment === "bad" ? "😞" : "🙂"}</span></td>
-                      <td>{f.display_name}<br /><span className="sub">{f.email}</span></td>
-                      <td>{f.org_name}{f.page ? <><br /><span className="sub">{f.page}</span></> : null}</td>
-                      <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minWidth: 220 }}>
-                        {f.message}
-                        {f.reply ? (
-                          <div className="sub" style={{ marginTop: 6, borderLeft: "2px solid var(--k-orange)", paddingLeft: 8 }}>
-                            ↳ {f.reply}
-                            {f.replied_at && <em> · {timeAgo(f.replied_at)}</em>}
-                          </div>
-                        ) : (
-                          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                            <input
-                              placeholder="Reply to this user…"
-                              style={{ flex: 1, padding: "3px 8px", fontSize: 12 }}
-                              value={fbDrafts[f.id] ?? ""}
-                              onChange={(e) => setFbDrafts((d) => ({ ...d, [f.id]: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === "Enter") void saReply(f.id); }}
-                            />
-                            <button className="btn-primary" style={{ padding: "2px 10px", fontSize: 12 }}
-                              disabled={fbBusy[f.id] || !(fbDrafts[f.id] ?? "").trim()}
-                              onClick={() => void saReply(f.id)}>Reply</button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            )}
-          </section>
-
-          <section className="admin-card">
-            <h2>Workspaces</h2>
-            <div className="tbl-scroll"><table className="admin-table">
-              <thead><tr><th>Workspace</th><th>Seats</th><th>State</th><th>Plan</th><th>Monthly</th><th>Created</th><th></th></tr></thead>
-              <tbody>
-                {saOrgs.map((o) => (
-                  <tr key={o.id}>
-                    <td>{o.name}</td>
-                    <td>{o.seats}</td>
-                    <td><span className={`sa-state ${o.state}`}>{o.state}</span></td>
-                    <td><span className={`sa-plan ${o.plan === "business" ? "biz" : ""}`}>{o.plan ?? "standard"}</span></td>
-                    <td>{fmtNgn(o.monthlyAmountNgn, "₦")}</td>
-                    <td style={{ whiteSpace: "nowrap" }}>{timeAgo(o.created_at)}</td>
-                    <td>
-                      <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
-                        onClick={() => void saComp(o.id, 30)}>+30d comp</button>
-                      <select style={{ marginLeft: 6, padding: "2px 6px", fontSize: 12 }}
-                        title="AI budget tier — business gets a much larger monthly token budget"
-                        value={o.plan ?? "standard"}
-                        onChange={(e) => {
-                          void api.patch(`/api/superadmin/orgs/${o.id}/subscription`, { plan: e.target.value })
-                            .then(() => toast(`${o.name} → ${e.target.value} AI tier`))
-                            .catch((err) => toast((err as Error).message));
-                        }}>
-                        <option value="standard">standard</option>
-                        <option value="business">business</option>
-                      </select>
-                      <input type="number" min={0} placeholder="AI tokens/mo" title="Monthly AI token budget override — blank = plan default"
-                        style={{ width: 110, marginLeft: 6, padding: "2px 8px", fontSize: 12 }}
-                        defaultValue={o.ai_token_budget ?? ""}
-                        onBlur={(e) => {
-                          const v = e.target.value === "" ? null : Number(e.target.value);
-                          if (v === (o.ai_token_budget ?? null)) return;
-                          void api.patch(`/api/superadmin/orgs/${o.id}/subscription`, { aiTokenBudget: v })
-                            .then(() => toast(`AI budget ${v == null ? "reset to plan" : `set to ${v.toLocaleString()}`} for ${o.name}`))
-                            .catch((err) => toast((err as Error).message));
-                        }} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table></div>
-          </section>
-
-          {saAi && saAi.topOrgs.length > 0 && (
-            <section className="admin-card">
-              <h2>AI usage by workspace</h2>
-              <div className="tbl-scroll"><table className="admin-table">
-                <thead><tr><th>Workspace</th><th>Requests</th><th>Tokens</th><th>Est. cost</th></tr></thead>
-                <tbody>
-                  {saAi.topOrgs.map((o) => (
-                    <tr key={o.orgId}>
-                      <td>{o.name}</td>
-                      <td>{o.requests}</td>
-                      <td>{o.tokens.toLocaleString()}</td>
-                      <td>${o.costUsd.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            </section>
-          )}
-
-          {billingCfg && (
-            <section className="admin-card">
-              <h2>Plan &amp; pricing</h2>
-              <div className="sa-cfg">
-                <label className="sa-field">
-                  <span><b>Admin seat (₦/mo)</b><em>The workspace owner's seat.</em></span>
-                  <input type="number" min={0} defaultValue={billingCfg.base_price_ngn}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.base_price_ngn) void saveBillingCfg({ base_price_ngn: v }); }} />
-                </label>
-                <label className="sa-field">
-                  <span><b>Per member (₦/mo)</b><em>Each additional enabled member.</em></span>
-                  <input type="number" min={0} defaultValue={billingCfg.member_price_ngn}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.member_price_ngn) void saveBillingCfg({ member_price_ngn: v }); }} />
-                </label>
-                <label className="sa-field">
-                  <span><b>Business plan multiplier</b><em>Business = ×N the standard price — includes the larger AI allowance.</em></span>
-                  <input type="number" min={1} max={10} defaultValue={billingCfg.business_multiplier}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.business_multiplier) void saveBillingCfg({ business_multiplier: v }); }} />
-                </label>
-                <label className="sa-field">
-                  <span><b>Free trial (months)</b><em>Applies to workspaces created after the change.</em></span>
-                  <input type="number" min={0} max={24} defaultValue={billingCfg.trial_months}
-                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.trial_months) void saveBillingCfg({ trial_months: v }); }} />
-                </label>
-                <label className="sa-field">
-                  <span><b>Currency</b><em>ISO code shown on invoices.</em></span>
-                  <input defaultValue={billingCfg.currency}
-                    onBlur={(e) => { if (e.target.value !== billingCfg.currency) void saveBillingCfg({ currency: e.target.value }); }} />
-                </label>
-              </div>
-            </section>
-          )}
-        </>
-      )}
+      {isSuper && <SuperPortal />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );

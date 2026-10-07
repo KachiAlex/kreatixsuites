@@ -135,9 +135,15 @@ function SuperShell() {
         {security && <SecurityDialog onClose={() => setSecurity(false)} toast={toast} />}
       </aside>
       <main>
-        <div className="topbar" style={{ justifyContent: "space-between" }}>
-          <b>Platform</b>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{user?.email}</span>
+        <div className="topbar sap-topbar">
+          <div className="sap-crumbs">Kreatix Suites <em>/</em> <b>Platform console</b></div>
+          <div className="sap-tbright">
+            <span className="sap-scope">
+              <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z" fill="none" stroke="currentColor" strokeWidth="1.7"/></svg>
+              Restricted superadmin surface
+            </span>
+            <span className="sap-avatar" aria-hidden="true">{user?.initials ?? "SA"}</span>
+          </div>
         </div>
         <Outlet />
       </main>
