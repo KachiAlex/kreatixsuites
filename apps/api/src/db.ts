@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS billing_config (
   base_price_ngn INTEGER NOT NULL DEFAULT 2000,    -- workspace admin seat / month
   member_price_ngn INTEGER NOT NULL DEFAULT 1000,  -- each additional member / month
   trial_months INTEGER NOT NULL DEFAULT 3,
+  business_multiplier INTEGER NOT NULL DEFAULT 2, -- business plan = ×N the standard price
   currency TEXT NOT NULL DEFAULT 'NGN',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -316,10 +317,13 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   // superadmin-set AI token budget override — null = computed (base + per-seat)
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_token_budget BIGINT`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'standard'`);
-  // BYOK — workspace's own OpenAI-compatible credentials (key encrypted at rest)
-  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_key TEXT`);
-  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_base_url TEXT`);
-  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_model TEXT`);
+  // per-plan pricing + AI budgets: payments carry the tier purchased
+  await pool.query(`ALTER TABLE billing_config ADD COLUMN IF NOT EXISTS business_multiplier INTEGER NOT NULL DEFAULT 2`);
+  await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'standard'`);
+  // retired BYOK columns — the platform key is the only provider
+  await pool.query(`ALTER TABLE subscriptions DROP COLUMN IF EXISTS ai_key`);
+  await pool.query(`ALTER TABLE subscriptions DROP COLUMN IF EXISTS ai_base_url`);
+  await pool.query(`ALTER TABLE subscriptions DROP COLUMN IF EXISTS ai_model`);
   // 80%-of-AI-budget notice bookkeeping for the daily sweep
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_budget_warned_at TIMESTAMPTZ`);
   // seed the default billing config row (idempotent)

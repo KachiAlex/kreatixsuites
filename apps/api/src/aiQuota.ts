@@ -3,9 +3,8 @@
 // token budget (cost control, scales with seats), a small lifetime taste
 // quota for trialing workspaces, and a platform-wide spend circuit-breaker.
 import { one, q, run } from "./db.js";
-import { ensureSubscription, effectiveState, seatCount, type Subscription } from "./billing.js";
+import { ensureSubscription, effectiveState, seatCount, type Subscription, type PlanTier } from "./billing.js";
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
-import { decryptField } from "./crypto.js";
 
 const envInt = (k: string, dflt: number) => {
   const v = Number(process.env[k]);
@@ -18,26 +17,19 @@ export const limits = {
   orgTokensPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_PER_SEAT", 1_000_000),
   businessBase: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_BASE", 12_000_000),
   businessPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_PER_SEAT", 4_000_000),
-  userDaily: () => envInt("KREATIX_AI_USER_DAILY", 300),
-  userPerMin: () => envInt("KREATIX_AI_USER_PER_MIN", 20),
+  // per-user caps scale with the plan tier — business users get more headroom
+  userDaily: (plan?: PlanTier) => plan === "business"
+    ? envInt("KREATIX_AI_USER_DAILY_BUSINESS", 1000)
+    : envInt("KREATIX_AI_USER_DAILY", 300),
+  userPerMin: (plan?: PlanTier) => plan === "business"
+    ? envInt("KREATIX_AI_USER_PER_MIN_BUSINESS", 40)
+    : envInt("KREATIX_AI_USER_PER_MIN", 20),
   platformBudgetUsd: () => envInt("KREATIX_AI_MONTHLY_BUDGET_USD", 200),
 };
 
-/** Workspace AI provider config — set when the org supplies its own
- *  OpenAI-compatible key (BYOK). Usage is still metered, but it costs the
- *  platform nothing so token budgets don't apply. */
-export interface OrgAiProvider { key: string; baseUrl: string; model: string | null }
-
-export async function orgAiProvider(orgId: string): Promise<OrgAiProvider | null> {
-  const r = await one<{ ai_key: string | null; ai_base_url: string | null; ai_model: string | null }>(
-    "SELECT ai_key, ai_base_url, ai_model FROM subscriptions WHERE org_id = $1", [orgId]);
-  const key = r?.ai_key ? decryptField(r.ai_key) : null;
-  return key ? { key, baseUrl: r!.ai_base_url || "https://api.openai.com/v1", model: r!.ai_model } : null;
-}
-
 export interface AiQuota {
   plan: "trial" | "paid";
-  byok?: boolean;
+  tier: PlanTier; // subscription tier — drives token budget + rate limits
   orgTokensUsed: number;
   orgTokensLimit: number;
   userTodayUsed: number;
@@ -96,7 +88,7 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
   const seats = await seatCount(orgId);
   const { state } = effectiveState(sub);
   const isTrial = state === "trialing";
-  const byok = !!(await orgAiProvider(orgId));
+  const tier = (sub.plan === "business" ? "business" : "standard") as PlanTier;
 
   const [orgTokens, userToday, trialReqs] = await Promise.all([
     isTrial ? Promise.resolve({ n: "0" }) : one<{ n: string }>(
@@ -113,11 +105,11 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
 
   return {
     plan: isTrial ? "trial" : "paid",
-    byok,
+    tier,
     orgTokensUsed: Number(orgTokens?.n ?? 0),
     orgTokensLimit: orgTokenLimit(sub, seats),
     userTodayUsed: Number(userToday?.n ?? 0),
-    userTodayLimit: limits.userDaily(),
+    userTodayLimit: limits.userDaily(tier),
     trialRequestsUsed: trialReqs ? Number(trialReqs.n) : undefined,
     trialRequestsLimit: isTrial ? limits.trialRequests() : undefined,
     resetsAt: isTrial ? nextDay() : nextMonth(),
@@ -140,32 +132,28 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "AI is a paid-plan feature — the workspace subscription has expired" };
   }
-  const byok = quota.byok ?? false;
-
-  if (state === "trialing" && !byok && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
+  if (state === "trialing" && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
       message: "Trial AI quota used up — subscribe to keep using Kreatix AI" };
   }
-  // BYOK orgs carry their own provider bill — token & platform budgets don't
-  // apply; burst/daily caps stay (they protect our infra, not our wallet)
-  if (!byok && !quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
+  if (!quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
     return { allowed: false, http: 429, error: "quota_exceeded", quota,
       message: "Workspace monthly AI budget reached — resets on the 1st", retryAfterSec: secUntil(quota.resetsAt) };
   }
-  if (quota.userTodayUsed >= limits.userDaily()) {
+  if (quota.userTodayUsed >= limits.userDaily(quota.tier)) {
     return { allowed: false, http: 429, error: "rate_limited", quota,
       message: "Daily AI limit reached — resets at midnight", retryAfterSec: secUntil(nextDay()) };
   }
   const nowTs = Date.now();
   const w = (burst.get(userId) ?? []).filter((t) => t > nowTs - 60_000);
-  if (w.length >= limits.userPerMin()) {
+  if (w.length >= limits.userPerMin(quota.tier)) {
     burst.set(userId, w);
     return { allowed: false, http: 429, error: "rate_limited", quota,
       message: "Too many AI requests — slow down", retryAfterSec: 60 };
   }
   w.push(nowTs); burst.set(userId, w);
 
-  if (!byok && await platformSpendUsd() >= limits.platformBudgetUsd()) {
+  if (await platformSpendUsd() >= limits.platformBudgetUsd()) {
     return { allowed: false, http: 503, error: "platform_budget", quota,
       message: "AI is temporarily unavailable — platform budget reached" };
   }

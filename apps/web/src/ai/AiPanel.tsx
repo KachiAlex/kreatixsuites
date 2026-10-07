@@ -17,10 +17,10 @@ interface Pending {
 interface ActionRow { id: string; mode: string; prompt: string; applied: boolean; ops: number; by: string; createdAt: string }
 export interface AiQuota {
   plan: "trial" | "paid";
+  tier?: "standard" | "business";
   orgTokensUsed: number; orgTokensLimit: number;
   userTodayUsed: number; userTodayLimit: number;
   trialRequestsUsed?: number; trialRequestsLimit?: number;
-  byok?: boolean;
   resetsAt: string;
 }
 interface AiDenied { kind: "upgrade" | "cooldown"; message: string; retryAfterSec?: number }
@@ -203,17 +203,10 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
       </div>
 
       {quota && (
-        <div className="ai-quota" title={quota.byok
-          ? "This workspace uses its own AI key — usage bills to your provider"
-          : quota.plan === "trial"
-            ? "Trial workspaces include a free taste of Kreatix AI"
-            : "Workspace monthly AI credit budget"}>
-          {quota.byok ? (
-            <div className="ai-quota-row">
-              <span>Own API key</span>
-              <span>{fmtTok(quota.orgTokensUsed)} tok used</span>
-            </div>
-          ) : quota.plan === "trial" ? (
+        <div className="ai-quota" title={quota.plan === "trial"
+          ? "Trial workspaces include a free taste of Kreatix AI"
+          : `Workspace monthly AI credit budget — ${quota.tier === "business" ? "Business" : "Standard"} plan`}>
+          {quota.plan === "trial" ? (
             <>
               <div className="ai-quota-row">
                 <span>{quota.trialRequestsUsed ?? 0}/{quota.trialRequestsLimit ?? 0} trial requests</span>
@@ -225,7 +218,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
             <>
               <div className="ai-quota-row">
                 <span>{fmtTok(quota.orgTokensUsed)} / {fmtTok(quota.orgTokensLimit)} credits</span>
-                <span>resets {new Date(quota.resetsAt).toLocaleDateString()}</span>
+                <span>{quota.tier === "business" ? "Business" : "Standard"} · resets {new Date(quota.resetsAt).toLocaleDateString()}</span>
               </div>
               <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, (quota.orgTokensUsed / Math.max(1, quota.orgTokensLimit)) * 100)}%` }} /></div>
             </>

@@ -23,18 +23,19 @@ interface Invite {
 }
 interface BillingSub {
   state: string; status: string; until: string | null; daysLeft: number | null;
-  seats: number; amountNgn: number; currency: string;
+  seats: number; amountNgn: number; businessAmountNgn: number; plan: string; currency: string;
   trialEndsAt: string | null; periodEnd: string | null;
-  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number };
+  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number; businessMultiplier: number };
   paystackEnabled: boolean;
 }
 interface Payment {
   id: string; amount_ngn: number; seats: number; months: number;
-  method: string; reference: string | null; status: string;
+  method: string; reference: string | null; status: string; plan?: string;
   period_start: string | null; period_end: string | null; created_at: string;
 }
 interface BillingCfg {
-  base_price_ngn: number; member_price_ngn: number; trial_months: number; currency: string;
+  base_price_ngn: number; member_price_ngn: number; trial_months: number;
+  business_multiplier: number; currency: string;
 }
 interface SaOrg {
   id: string; name: string; created_at: string; seats: number;
@@ -49,7 +50,7 @@ interface SaOverview {
 }
 interface AiUsage {
   month: string; requests: number; tokens: number; costUsd: number;
-  quota: { plan: string; byok?: boolean; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
+  quota: { plan: string; tier?: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
   byUser: { userId: string; name: string; requests: number; tokens: number }[];
   byDay: { day: string; requests: number; tokens: number }[];
   byMode: { mode: string; requests: number; tokens: number }[];
@@ -94,10 +95,6 @@ export function Admin() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [billing, setBilling] = useState<{ subscription: BillingSub; payments: Payment[] } | null>(null);
   const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
-  const [byokKey, setByokKey] = useState("");
-  const [byokBase, setByokBase] = useState("");
-  const [byokModel, setByokModel] = useState("");
-  const [byokBusy, setByokBusy] = useState(false);
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -220,10 +217,10 @@ export function Admin() {
     setScimTokens((xs) => xs.filter((t) => t.id !== id));
   };
 
-  const checkout = async () => {
+  const checkout = async (plan: "standard" | "business" = "standard") => {
     try {
       const r = await api.post<{ mode: string; authorizationUrl?: string; message?: string; amountNgn?: number }>(
-        "/api/billing/checkout", { months: 1 });
+        "/api/billing/checkout", { months: 1, plan });
       if (r.mode === "paystack" && r.authorizationUrl) {
         location.href = r.authorizationUrl; // Paystack hosted checkout
       } else {
@@ -398,18 +395,36 @@ export function Admin() {
                     <b>Status</b><span>{stateLabel[s.state] ?? s.state}</span>
                   </div>
                   <div className="flag on"><b>Plan</b>
-                    <span>{fmtNgn(s.config.basePriceNgn, "₦")} admin + {fmtNgn(s.config.memberPriceNgn, "₦")} × {Math.max(0, s.seats - 1)} member{s.seats - 1 === 1 ? "" : "s"} = <b>{fmtNgn(s.amountNgn, "₦")}/mo</b></span>
+                    <span><span className="role-badge owner" style={{ marginRight: 6 }}>{s.plan === "business" ? "Business" : "Standard"}</span>
+                      {fmtNgn(s.amountNgn, "₦")}/mo · {fmtNgn(s.config.basePriceNgn, "₦")} admin + {fmtNgn(s.config.memberPriceNgn, "₦")}/member
+                      {s.plan === "business" && ` (×${s.config.businessMultiplier})`}</span>
                   </div>
                   <div className="flag on"><b>Seats</b><span>{s.seats} active member{s.seats === 1 ? "" : "s"}</span></div>
                 </div>
                 {isOwnerOrAdmin && s.state !== "granted" && (
                   <div style={{ marginTop: 12 }}>
-                    <button className="btn-primary" onClick={() => void checkout()}>
-                      {s.state === "trialing" ? `Pay now (${fmtNgn(s.amountNgn, "₦")}/mo)` : `Renew — ${fmtNgn(s.amountNgn, "₦")}/mo`}
-                    </button>
-                    <span style={{ marginLeft: 10, color: "var(--sub)", fontSize: 13 }}>
+                    {s.plan !== "business" ? (
+                      <>
+                        <button className="btn-primary" onClick={() => void checkout("standard")}>
+                          {s.state === "trialing" ? `Pay now — Standard (${fmtNgn(s.amountNgn, "₦")}/mo)` : `Renew Standard — ${fmtNgn(s.amountNgn, "₦")}/mo`}
+                        </button>
+                        <button className="btn-secondary" style={{ marginLeft: 8 }} onClick={() => void checkout("business")}>
+                          Business — {fmtNgn(s.businessAmountNgn, "₦")}/mo (4× AI allowance)
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="btn-primary" onClick={() => void checkout("business")}>
+                          Renew Business — {fmtNgn(s.businessAmountNgn, "₦")}/mo
+                        </button>
+                        <button className="btn-secondary" style={{ marginLeft: 8 }} onClick={() => void checkout("standard")}>
+                          Switch to Standard — {fmtNgn(s.amountNgn, "₦")}/mo
+                        </button>
+                      </>
+                    )}
+                    <div style={{ marginTop: 8, color: "var(--sub)", fontSize: 13 }}>
                       {s.paystackEnabled ? "Card / bank via Paystack" : "Bank transfer — confirmed by admin within 24h"}
-                    </span>
+                    </div>
                   </div>
                 )}
                 {billing.payments.length > 0 && (
@@ -421,7 +436,7 @@ export function Admin() {
                           <td>{timeAgo(p.created_at)}</td>
                           <td>{fmtNgn(p.amount_ngn, "₦")}</td>
                           <td>{p.seats}</td>
-                          <td>{p.method}</td>
+                          <td>{p.method}{p.plan === "business" ? " · Business" : ""}</td>
                           <td><span className={`role-badge ${p.status === "confirmed" ? "owner" : ""}`}>{p.status}</span></td>
                         </tr>
                       ))}
@@ -455,54 +470,14 @@ export function Admin() {
               </span>
             </div>
             <div className="flag on"><b>Requests</b><span>{aiUsage.requests.toLocaleString()} this month</span></div>
-            {aiUsage.quota.byok && (
-              <div className="flag on"><b>Own API key</b><span>AI usage bills to your provider — token budget doesn't apply</span></div>
-            )}
-          </div>
-          {isOwnerOrAdmin && (
-            <div style={{ marginTop: 12, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 10 }}>
-              <b style={{ fontSize: 12 }}>Use your own AI key (BYOK)</b>
-              <p style={{ margin: "4px 0 8px", fontSize: 11.5, color: "var(--muted)" }}>
-                Plug in your workspace's OpenAI-compatible API key — unlimited AI on your own provider bill.
-                Stored encrypted, never shown again.
-              </p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <input type="password" style={{ flex: 2, minWidth: 180 }} placeholder="API key (sk-…)"
-                  value={byokKey} onChange={(e) => setByokKey(e.target.value)} autoComplete="off" />
-                <input style={{ flex: 2, minWidth: 180 }} placeholder="Base URL (default: api.openai.com)"
-                  value={byokBase} onChange={(e) => setByokBase(e.target.value)} />
-                <input style={{ flex: 1, minWidth: 120 }} placeholder="Model (optional)"
-                  value={byokModel} onChange={(e) => setByokModel(e.target.value)} />
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button className="btn-secondary btn-sm" disabled={byokBusy || byokKey.trim().length < 8}
-                  onClick={async () => {
-                    setByokBusy(true);
-                    try {
-                      await api.post("/api/billing/ai-key", {
-                        key: byokKey.trim(),
-                        baseUrl: byokBase.trim() || undefined,
-                        model: byokModel.trim() || undefined,
-                      });
-                      setByokKey(""); setByokBase(""); setByokModel("");
-                      toast("AI key saved — this workspace's usage now bills to your provider");
-                      api.get<AiUsage>("/api/billing/ai-usage").then(setAiUsage).catch(() => {});
-                    } catch (e) { toast((e as Error).message); } finally { setByokBusy(false); }
-                  }}>Save key</button>
-                {aiUsage.quota.byok && (
-                  <button className="btn-secondary btn-sm" disabled={byokBusy}
-                    onClick={async () => {
-                      setByokBusy(true);
-                      try {
-                        await api.del("/api/billing/ai-key");
-                        toast("AI key removed — back to the platform quota");
-                        api.get<AiUsage>("/api/billing/ai-usage").then(setAiUsage).catch(() => {});
-                      } catch (e) { toast((e as Error).message); } finally { setByokBusy(false); }
-                    }}>Remove key</button>
-                )}
-              </div>
+            <div className="flag on"><b>Plan tier</b>
+              <span>
+                {aiUsage.quota.plan === "trial"
+                  ? "Trial — subscribe for a monthly AI allowance"
+                  : `${aiUsage.quota.tier === "business" ? "Business" : "Standard"} — ${aiUsage.quota.orgTokensLimit.toLocaleString()} credits/mo${aiUsage.quota.tier !== "business" ? " · Business plan includes 4× more" : ""}`}
+              </span>
             </div>
-          )}
+          </div>
           {(aiUsage.byDay?.length ?? 0) > 0 && (() => {
             const days = aiUsage.byDay;
             const peak = Math.max(1, ...days.map((d) => d.tokens));
@@ -717,6 +692,11 @@ export function Admin() {
                   <input type="number" min={0} style={{ width: 100 }} defaultValue={billingCfg.member_price_ngn}
                     onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.member_price_ngn) void saveBillingCfg({ member_price_ngn: v }); }} />
                   <span><b>Per member (₦/mo)</b><em>Each additional enabled member.</em></span>
+                </label>
+                <label className="pol-row">
+                  <input type="number" min={1} max={10} style={{ width: 72 }} defaultValue={billingCfg.business_multiplier}
+                    onBlur={(e) => { const v = Number(e.target.value); if (v !== billingCfg.business_multiplier) void saveBillingCfg({ business_multiplier: v }); }} />
+                  <span><b>Business plan multiplier</b><em>Business = ×N the standard price — includes the larger AI allowance.</em></span>
                 </label>
                 <label className="pol-row">
                   <input type="number" min={0} max={24} style={{ width: 72 }} defaultValue={billingCfg.trial_months}

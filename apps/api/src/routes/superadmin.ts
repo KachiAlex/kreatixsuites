@@ -58,7 +58,7 @@ export function superadminRoutes(app: FastifyInstance) {
       orgs: rows.map((r) => ({
         ...r,
         state: r.status ? effectiveState({ org_id: r.id, seats: r.seats, ...pickSub(r) }).state : "none",
-        monthlyAmountNgn: monthlyAmount(cfg, r.seats),
+        monthlyAmountNgn: monthlyAmount(cfg, r.seats, r.plan === "business" ? "business" : "standard"),
       })),
     };
   });
@@ -71,6 +71,7 @@ export function superadminRoutes(app: FastifyInstance) {
       base_price_ngn: z.number().int().min(0).max(10_000_000).optional(),
       member_price_ngn: z.number().int().min(0).max(10_000_000).optional(),
       trial_months: z.number().int().min(0).max(24).optional(),
+      business_multiplier: z.number().int().min(1).max(10).optional(),
       currency: z.string().min(3).max(8).optional(),
     }).parse(req.body);
     return { config: await setConfig(patch) };

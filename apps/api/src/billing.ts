@@ -12,6 +12,7 @@ export interface BillingConfig {
   base_price_ngn: number;
   member_price_ngn: number;
   trial_months: number;
+  business_multiplier: number; // business plan costs ×N standard (per month)
   currency: string;
 }
 
@@ -26,10 +27,7 @@ export interface Subscription {
   override_until: string | null;
   ai_token_budget?: number | null;      // superadmin AI quota override
   ai_budget_warned_at?: string | null;  // 80%-of-budget notice bookkeeping
-  plan?: string;                        // 'standard' | 'business' — AI budget tier
-  ai_key?: string | null;               // BYOK: encrypted org OpenAI-compatible key
-  ai_base_url?: string | null;
-  ai_model?: string | null;
+  plan?: string;                        // 'standard' | 'business' — price + AI budget tier
 }
 
 export type SubState = "trialing" | "active" | "grace" | "locked" | "granted";
@@ -41,16 +39,17 @@ export async function getConfig(): Promise<BillingConfig> {
   return (await one<BillingConfig>("SELECT * FROM billing_config WHERE id = 'default'"))!;
 }
 
-export async function setConfig(patch: Partial<Pick<BillingConfig, "base_price_ngn" | "member_price_ngn" | "trial_months" | "currency">>): Promise<BillingConfig> {
+export async function setConfig(patch: Partial<Pick<BillingConfig, "base_price_ngn" | "member_price_ngn" | "trial_months" | "business_multiplier" | "currency">>): Promise<BillingConfig> {
   await run(
     `UPDATE billing_config SET
-       base_price_ngn   = COALESCE($2, base_price_ngn),
-       member_price_ngn = COALESCE($3, member_price_ngn),
-       trial_months     = COALESCE($4, trial_months),
-       currency         = COALESCE($5, currency),
-       updated_at = $6
+       base_price_ngn      = COALESCE($2, base_price_ngn),
+       member_price_ngn    = COALESCE($3, member_price_ngn),
+       trial_months        = COALESCE($4, trial_months),
+       business_multiplier = COALESCE($5, business_multiplier),
+       currency            = COALESCE($6, currency),
+       updated_at = $7
      WHERE id = 'default'`,
-    ["default", patch.base_price_ngn ?? null, patch.member_price_ngn ?? null, patch.trial_months ?? null, patch.currency ?? null, now()],
+    ["default", patch.base_price_ngn ?? null, patch.member_price_ngn ?? null, patch.trial_months ?? null, patch.business_multiplier ?? null, patch.currency ?? null, now()],
   );
   return getConfig();
 }
@@ -62,8 +61,11 @@ export async function seatCount(orgId: string): Promise<number> {
   return r?.n ?? 1;
 }
 
-export function monthlyAmount(cfg: BillingConfig, seats: number): number {
-  return cfg.base_price_ngn + cfg.member_price_ngn * Math.max(0, seats - 1);
+export type PlanTier = "standard" | "business";
+
+export function monthlyAmount(cfg: BillingConfig, seats: number, plan: PlanTier = "standard"): number {
+  const base = cfg.base_price_ngn + cfg.member_price_ngn * Math.max(0, seats - 1);
+  return plan === "business" ? base * (cfg.business_multiplier || 2) : base;
 }
 
 const addMonths = (iso: string, months: number) => {
@@ -112,10 +114,12 @@ export interface BillingSummary {
   daysLeft: number | null;
   seats: number;
   amountNgn: number;
+  businessAmountNgn: number;
+  plan: PlanTier;
   currency: string;
   trialEndsAt: string | null;
   periodEnd: string | null;
-  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number };
+  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number; businessMultiplier: number };
   paystackEnabled: boolean;
 }
 
@@ -123,13 +127,15 @@ export async function summary(orgId: string): Promise<BillingSummary> {
   const [sub, cfg, seats] = await Promise.all([ensureSubscription(orgId), getConfig(), seatCount(orgId)]);
   const { state, until } = effectiveState(sub);
   const daysLeft = until ? Math.ceil((new Date(until).getTime() - Date.now()) / DAY) : null;
+  const plan = (sub.plan === "business" ? "business" : "standard") as PlanTier;
   return {
-    state, status: sub.status, until, daysLeft, seats,
-    amountNgn: monthlyAmount(cfg, seats),
+    state, status: sub.status, until, daysLeft, seats, plan,
+    amountNgn: monthlyAmount(cfg, seats, "standard"),
+    businessAmountNgn: monthlyAmount(cfg, seats, "business"),
     currency: cfg.currency,
     trialEndsAt: sub.trial_ends_at,
     periodEnd: sub.period_end,
-    config: { basePriceNgn: cfg.base_price_ngn, memberPriceNgn: cfg.member_price_ngn, trialMonths: cfg.trial_months },
+    config: { basePriceNgn: cfg.base_price_ngn, memberPriceNgn: cfg.member_price_ngn, trialMonths: cfg.trial_months, businessMultiplier: cfg.business_multiplier || 2 },
     paystackEnabled: !!process.env.KREATIX_PAYSTACK_SECRET,
   };
 }
@@ -141,7 +147,7 @@ export async function summary(orgId: string): Promise<BillingSummary> {
  */
 export async function confirmPayment(paymentId: string, confirmedBy: string | null): Promise<Subscription | undefined> {
   const p = await one<{
-    id: string; org_id: string; months: number; amount_ngn: number; seats: number; status: string;
+    id: string; org_id: string; months: number; amount_ngn: number; seats: number; status: string; plan: string;
   }>("SELECT * FROM payments WHERE id = $1", [paymentId]);
   if (!p || p.status === "confirmed") return p ? ensureSubscription(p.org_id) : undefined;
 
@@ -154,8 +160,8 @@ export async function confirmPayment(paymentId: string, confirmedBy: string | nu
     [p.id, confirmedBy, start, end]);
   await run(
     `UPDATE subscriptions SET status = 'active', period_start = $2, period_end = $3,
-       amount_ngn = $4, seats = $5, locked_notified_at = NULL, updated_at = $6 WHERE org_id = $1`,
-    [p.org_id, start, end, p.amount_ngn, p.seats, now()],
+       amount_ngn = $4, seats = $5, plan = $7, locked_notified_at = NULL, updated_at = $6 WHERE org_id = $1`,
+    [p.org_id, start, end, p.amount_ngn, p.seats, now(), p.plan === "business" ? "business" : "standard"],
   );
 
   // receipt to the workspace admins — fire-and-forget
@@ -183,7 +189,7 @@ export async function billingNotices(log?: { warn: (o: unknown, m: string) => vo
     `SELECT s.*, o.name FROM subscriptions s JOIN orgs o ON o.id = s.org_id`);
   for (const sub of subs) {
     const { state, until } = effectiveState(sub);
-    const amount = monthlyAmount(cfg, sub.seats || 1);
+    const amount = monthlyAmount(cfg, sub.seats || 1, sub.plan === "business" ? "business" : "standard");
     const t =
       state === "trialing" && until && !sub.trial_warned_at &&
         new Date(until).getTime() - Date.now() < 7 * DAY
@@ -207,17 +213,17 @@ export async function billingNotices(log?: { warn: (o: unknown, m: string) => vo
   return out;
 }
 
-/** Create a pending payment row for the org's next `months` periods —
- *  amount_ngn is the TOTAL for the whole term so confirmation math and
- *  payment-provider verification stay consistent. */
-export async function createPayment(orgId: string, method: string, reference?: string, months = 1): Promise<{ id: string; amountNgn: number; seats: number; months: number }> {
+/** Create a pending payment row for the org's next `months` periods on the
+ *  given plan tier — amount_ngn is the TOTAL for the whole term so
+ *  confirmation math and payment-provider verification stay consistent. */
+export async function createPayment(orgId: string, method: string, reference?: string, months = 1, plan: PlanTier = "standard"): Promise<{ id: string; amountNgn: number; seats: number; months: number }> {
   const [cfg, seats] = await Promise.all([getConfig(), seatCount(orgId)]);
-  const amount = monthlyAmount(cfg, seats) * months;
+  const amount = monthlyAmount(cfg, seats, plan) * months;
   const id = randomUUID();
   await run(
-    `INSERT INTO payments (id, org_id, amount_ngn, seats, months, method, reference, status, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8)`,
-    [id, orgId, amount, seats, months, method, reference ?? null, now()],
+    `INSERT INTO payments (id, org_id, amount_ngn, seats, months, method, reference, status, plan, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9)`,
+    [id, orgId, amount, seats, months, method, reference ?? null, plan, now()],
   );
   return { id, amountNgn: amount, seats, months };
 }
