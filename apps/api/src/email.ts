@@ -140,6 +140,16 @@ ${btn(`${publicUrl()}/admin`, "Subscribe now")}`),
     };
   },
 
+  aiBudgetWarning(workspace: string, pct: number): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `${workspace} is nearing its AI usage budget`,
+      html: shell("AI budget almost reached", `
+<p><b>${esc(workspace)}</b> has used <b>${pct}%</b> of its monthly AI credit budget.</p>
+<p>Kreatix AI pauses at 100% and resets on the 1st of next month — files are never affected.</p>
+${btn(`${publicUrl()}/admin`, "View usage")}`),
+    };
+  },
+
   workspaceLocked(workspace: string, amountNgn: number): Pick<Mail, "subject" | "html"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {

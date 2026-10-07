@@ -68,6 +68,7 @@ export const ar: Record<string, string> = {
   "home.aiNoFiles": "لا ملفات بعد — سيفتح طلب الذكاء الاصطناعي مستنداً جديداً",
   "home.aiSend": "إرسال إلى Kreatix AI",
   "home.aiExpand": "توسيع ←",
+  "home.aiQuotaDone": "تم استهلاك حصة الذكاء الاصطناعي — قم بترقية مساحة العمل للمتابعة",
   "home.chipDraft": "صياغة مستند",
   "home.chipAnalyze": "تحليل البيانات",
   "home.chipSlides": "إنشاء شرائح",

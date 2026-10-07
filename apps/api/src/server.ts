@@ -24,6 +24,7 @@ import { billingRoutes } from "./routes/billing.js";
 import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack } from "./billing.js";
+import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
@@ -237,6 +238,9 @@ async function main() {
     billingNotices(app.log)
       .then((n) => { if (n.warned || n.locked) app.log.info(n, "billing notices sent"); })
       .catch((e) => app.log.warn(e, "billing notice sweep failed"));
+    aiBudgetNotices(app.log)
+      .then((n) => { if (n.orgs || n.platform) app.log.info(n, "AI budget notices sent"); })
+      .catch((e) => app.log.warn(e, "AI budget notice sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

@@ -212,6 +212,25 @@ CREATE TABLE IF NOT EXISTS ai_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_actions_file ON ai_actions(file_id, created_at DESC);
 
+-- AI token metering — one row per completed chat request. Cost is USD × 1e6
+-- (integer microdollars) so monthly aggregates are exact. No prompt text here
+-- — content stays in ai_actions, field-encrypted.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_id TEXT REFERENCES items(id) ON DELETE SET NULL,
+  mode TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_micros BIGINT NOT NULL DEFAULT 0,
+  estimated BOOLEAN NOT NULL DEFAULT false,  -- true when provider omitted usage
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_org_month ON ai_usage(org_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_user_day ON ai_usage(user_id, created_at);
+
 -- document text index — body is AES-256-GCM encrypted when KREATIX_DATA_KEY is
 -- set, so full-text search runs JS-side over permission-scoped candidates
 -- (indexer.ts / routes/search.ts). Populated on save + at boot.
@@ -259,6 +278,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   amount_ngn INTEGER,                        -- amount of the last confirmed period
   seats INTEGER NOT NULL DEFAULT 1,          -- seat count at last pricing
   override_until TIMESTAMPTZ,                -- superadmin comp/extension, wins over all
+  ai_token_budget BIGINT,                    -- superadmin AI quota override (null = computed)
+  ai_budget_warned_at TIMESTAMPTZ,           -- 80%-of-budget notice, once per month
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -292,6 +313,10 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);
+  // superadmin-set AI token budget override — null = computed (base + per-seat)
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_token_budget BIGINT`);
+  // 80%-of-AI-budget notice bookkeeping for the daily sweep
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ai_budget_warned_at TIMESTAMPTZ`);
   // seed the default billing config row (idempotent)
   await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
 }

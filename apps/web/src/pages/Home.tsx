@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api } from "../lib/api";
+import type { AiQuota } from "../ai/AiPanel";
 import { useT } from "../lib/i18n";
 import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
@@ -21,6 +22,14 @@ export function Home() {
   const [pickFiles, setPickFiles] = useState(false);
   const [tplOpen, setTplOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+
+  // AI quota — blocks doc-creation when the workspace is out of credits so
+  // no orphan doc gets created for a prompt that will immediately 402
+  const [aiQuota, setAiQuota] = useState<AiQuota | null>(null);
+  useEffect(() => {
+    api.get<{ quota?: AiQuota }>("/api/ai/status")
+      .then((r) => setAiQuota(r.quota ?? null)).catch(() => {});
+  }, []);
 
   const open = (it: DriveItem) =>
     navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`);
@@ -44,6 +53,16 @@ export function Home() {
   // AI is per-file — open the attached file's AI panel with the prompt
   // (auto-sends there), or start a fresh document when nothing is attached.
   const askAi = async (text: string) => {
+    if (aiQuota) {
+      const out = aiQuota.plan === "trial"
+        ? (aiQuota.trialRequestsUsed ?? 0) >= (aiQuota.trialRequestsLimit ?? 1)
+        : aiQuota.orgTokensUsed >= aiQuota.orgTokensLimit;
+      if (out) {
+        toast(t("home.aiQuotaDone"));
+        navigate("/admin");
+        return;
+      }
+    }
     try {
       let id = attached?.id;
       if (!id) {

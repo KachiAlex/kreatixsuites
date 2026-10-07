@@ -68,6 +68,7 @@ export const fr: Record<string, string> = {
   "home.aiNoFiles": "Aucun fichier pour l'instant — la commande IA ouvrira un nouveau document",
   "home.aiSend": "Envoyer à Kreatix AI",
   "home.aiExpand": "Agrandir →",
+  "home.aiQuotaDone": "Quota d’IA épuisé — passez à l’abonnement pour continuer",
   "home.chipDraft": "Rédiger un document",
   "home.chipAnalyze": "Analyser des données",
   "home.chipSlides": "Créer des diapositives",

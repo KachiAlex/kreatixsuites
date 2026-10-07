@@ -2,8 +2,10 @@
 // tool-constrained ops with plan + diff preview before apply, provenance log.
 // Streams replies over SSE; optional auto-apply (still undoable via Ctrl+Z).
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../lib/api";
 import { timeAgo } from "../lib/format";
+import { useAuth } from "../lib/auth";
 
 export type AiMode = "ask" | "explain" | "edit" | "plan";
 export type AiOp = Record<string, unknown> & { op: string };
@@ -13,8 +15,20 @@ interface Pending {
   actionId: string; plan?: string[]; ops: AiOp[];
 }
 interface ActionRow { id: string; mode: string; prompt: string; applied: boolean; ops: number; by: string; createdAt: string }
+export interface AiQuota {
+  plan: "trial" | "paid";
+  orgTokensUsed: number; orgTokensLimit: number;
+  userTodayUsed: number; userTodayLimit: number;
+  trialRequestsUsed?: number; trialRequestsLimit?: number;
+  resetsAt: string;
+}
+interface AiDenied { kind: "upgrade" | "cooldown"; message: string; retryAfterSec?: number }
 
 const AUTOAPPLY_KEY = "kreatix.ai.autoApply";
+
+/** 1,234,567 → "1.2M"; 12,340 → "12k"; 42 → "42" */
+const fmtTok = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
 
 export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps, onClose, toast, initialPrompt }: {
   fileId: string;
@@ -29,8 +43,13 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
    *  once AI availability is known. */
   initialPrompt?: string;
 }) {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [mode, setMode] = useState<AiMode>(canEdit ? "edit" : "ask");
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [quota, setQuota] = useState<AiQuota | null>(null);
+  const [denied, setDenied] = useState<AiDenied | null>(null);
+  const [cooldown, setCooldown] = useState(0);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState(initialPrompt ?? "");
   const [busy, setBusy] = useState(false);
@@ -41,9 +60,22 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    api.get<{ enabled: boolean }>("/api/ai/status").then((r) => setEnabled(r.enabled)).catch(() => setEnabled(false));
+  const refreshStatus = useCallback(() => {
+    api.get<{ enabled: boolean; quota?: AiQuota }>("/api/ai/status")
+      .then((r) => { setEnabled(r.enabled); if (r.quota) setQuota(r.quota); })
+      .catch(() => setEnabled(false));
   }, []);
+  useEffect(() => { refreshStatus(); }, [refreshStatus]);
+
+  // cooldown countdown for 429s — clears the denial when it reaches 0
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const iv = setInterval(() => setCooldown((s) => {
+      if (s <= 1) { setDenied(null); return 0; }
+      return s - 1;
+    }), 1000);
+    return () => clearInterval(iv);
+  }, [cooldown > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   const sentInitial = useRef(false);
   useEffect(() => {
     if (enabled === true && initialPrompt?.trim() && !sentInitial.current) {
@@ -90,7 +122,19 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
-        const err = await res.json().catch(() => null) as { message?: string } | null;
+        const err = await res.json().catch(() => null) as
+          { error?: string; message?: string; retryAfterSec?: number; quota?: AiQuota } | null;
+        if (err?.quota) setQuota(err.quota);
+        if (err?.error === "ai_not_in_plan") {
+          setDenied({ kind: "upgrade", message: err.message ?? "" });
+          throw new Error("__handled__");
+        }
+        if (err?.error === "rate_limited" || err?.error === "quota_exceeded" || err?.error === "platform_budget") {
+          const secs = err.retryAfterSec ?? 60;
+          setDenied({ kind: "cooldown", message: err.message ?? "", retryAfterSec: secs });
+          setCooldown(Math.min(secs, 86400));
+          throw new Error("__handled__");
+        }
         throw new Error(err?.message ?? `Request failed (${res.status})`);
       }
       const reader = res.body.getReader();
@@ -125,8 +169,9 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
       } else {
         setMsgs([...next, { role: "assistant", content: "⚠ The AI stream ended without a response." }]);
       }
+      refreshStatus(); // keep the quota meter honest after each request
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if ((e as Error).name !== "AbortError" && (e as Error).message !== "__handled__") {
         setMsgs([...next, { role: "assistant", content: `⚠ ${(e as Error).message}` }]);
       }
     } finally {
@@ -156,7 +201,57 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
         <button className={`ai-mode ${history !== null ? "on" : ""}`} title="AI action log" onClick={() => history === null ? loadHistory() : setHistory(null)}>🕘</button>
       </div>
 
-      {enabled === false && (
+      {quota && (
+        <div className="ai-quota" title={quota.plan === "trial"
+          ? "Trial workspaces include a free taste of Kreatix AI"
+          : "Workspace monthly AI credit budget"}>
+          {quota.plan === "trial" ? (
+            <>
+              <div className="ai-quota-row">
+                <span>{quota.trialRequestsUsed ?? 0}/{quota.trialRequestsLimit ?? 0} trial requests</span>
+                <span>trial</span>
+              </div>
+              <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, ((quota.trialRequestsUsed ?? 0) / Math.max(1, quota.trialRequestsLimit ?? 1)) * 100)}%` }} /></div>
+            </>
+          ) : (
+            <>
+              <div className="ai-quota-row">
+                <span>{fmtTok(quota.orgTokensUsed)} / {fmtTok(quota.orgTokensLimit)} credits</span>
+                <span>resets {new Date(quota.resetsAt).toLocaleDateString()}</span>
+              </div>
+              <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, (quota.orgTokensUsed / Math.max(1, quota.orgTokensLimit)) * 100)}%` }} /></div>
+            </>
+          )}
+        </div>
+      )}
+
+      {denied && (
+        <div className="ai-denied">
+          {denied.kind === "upgrade" ? (
+            <>
+              <b>Kreatix AI is part of the paid plan</b>
+              <p>{denied.message}</p>
+              {user?.role === "owner" || user?.role === "admin"
+                ? <button className="btn-primary btn-sm" onClick={() => navigate("/admin")}>Upgrade workspace</button>
+                : <p className="ai-denied-sub">Ask your workspace admin to subscribe.</p>}
+            </>
+          ) : (
+            <>
+              <b>Slow down a little</b>
+              <p>{denied.message}{cooldown > 0 && cooldown < 3600 ? ` — retry in ${cooldown}s` : ""}</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {enabled === false && !getToken() && (
+        <div className="ai-setup">
+          Kreatix AI needs a signed-in workspace —{" "}
+          <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => navigate("/login")}>sign in</a>{" "}
+          to use it.
+        </div>
+      )}
+      {enabled === false && !!getToken() && (
         <div className="ai-setup">
           AI is not configured on this server. Set <code>KREATIX_AI_KEY</code>
           (and optionally <code>KREATIX_AI_BASE_URL</code> / <code>KREATIX_AI_MODEL</code>)
@@ -231,7 +326,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
             </div>
           )}
           <div className="ai-input">
-            <input value={input} disabled={busy || enabled === false}
+            <input value={input} disabled={busy || enabled === false || denied !== null}
               placeholder={mode === "ask" ? "Ask about this document…" : mode === "explain" ? "What should I explain?" : "Describe the change…"}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()} />

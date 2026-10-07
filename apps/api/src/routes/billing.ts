@@ -7,6 +7,7 @@ import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, signEntitlement, type AuthedRequest } from "../auth.js";
 import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig } from "../billing.js";
+import { aiQuotaFor } from "../aiQuota.js";
 
 async function requireOrgAdmin(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
@@ -37,6 +38,38 @@ export function billingRoutes(app: FastifyInstance) {
       org: user.orgId, status: s.state, seats: s.seats, periodEnd: s.periodEnd ?? null,
     });
     return { token, subscription: s };
+  });
+
+  /**
+   * AI usage for this workspace this month — requests, tokens, estimated
+   * cost, per-member breakdown. Any member can read their org's meter.
+   */
+  app.get("/api/billing/ai-usage", async (req) => {
+    const { user } = req as AuthedRequest;
+    const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
+    const [totals, byUser, quota] = await Promise.all([
+      one<{ requests: string; tokens: string; cost_usd: string }>(
+        `SELECT COUNT(*)::text AS requests,
+                COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens,
+                (COALESCE(SUM(cost_micros),0)/1000000.0)::text AS cost_usd
+         FROM ai_usage WHERE org_id = $1 AND created_at >= $2`, [user.orgId, monthStart]),
+      q<{ user_id: string; display_name: string; requests: string; tokens: string }>(
+        `SELECT u.user_id, usr.display_name, COUNT(*)::text AS requests,
+                COALESCE(SUM(u.prompt_tokens + u.completion_tokens),0)::text AS tokens
+         FROM ai_usage u JOIN users usr ON usr.id = u.user_id
+         WHERE u.org_id = $1 AND u.created_at >= $2
+         GROUP BY u.user_id, usr.display_name ORDER BY SUM(u.prompt_tokens + u.completion_tokens) DESC LIMIT 5`,
+        [user.orgId, monthStart]),
+      aiQuotaFor(user.orgId, user.id),
+    ]);
+    return {
+      month: monthStart,
+      requests: Number(totals?.requests ?? 0),
+      tokens: Number(totals?.tokens ?? 0),
+      costUsd: Number(totals?.cost_usd ?? 0),
+      quota,
+      byUser: byUser.map((r) => ({ userId: r.user_id, name: r.display_name, requests: Number(r.requests), tokens: Number(r.tokens) })),
+    };
   });
 
   /** Full billing view (status, seats, price, payment history) — owner/admin. */

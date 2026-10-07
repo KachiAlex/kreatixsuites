@@ -24,6 +24,8 @@ export interface Subscription {
   amount_ngn: number | null;
   seats: number;
   override_until: string | null;
+  ai_token_budget?: number | null;      // superadmin AI quota override
+  ai_budget_warned_at?: string | null;  // 80%-of-budget notice bookkeeping
 }
 
 export type SubState = "trialing" | "active" | "grace" | "locked" | "granted";

@@ -71,6 +71,7 @@ export const en: Record<string, string> = {
   "home.aiNoFiles": "No files yet — the AI prompt will open a new document",
   "home.aiSend": "Send to Kreatix AI",
   "home.aiExpand": "Expand →",
+  "home.aiQuotaDone": "AI quota used up — upgrade the workspace to keep going",
   "home.chipDraft": "Draft document",
   "home.chipAnalyze": "Analyze data",
   "home.chipSlides": "Build slides",

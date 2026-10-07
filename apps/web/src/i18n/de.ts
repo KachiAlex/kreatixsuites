@@ -68,6 +68,7 @@ export const de: Record<string, string> = {
   "home.aiNoFiles": "Noch keine Dateien — die KI-Eingabe öffnet ein neues Dokument",
   "home.aiSend": "An Kreatix AI senden",
   "home.aiExpand": "Erweitern →",
+  "home.aiQuotaDone": "KI-Kontingent aufgebraucht — Arbeitsbereich upgraden, um fortzufahren",
   "home.chipDraft": "Dokument entwerfen",
   "home.chipAnalyze": "Daten analysieren",
   "home.chipSlides": "Folien erstellen",

@@ -40,10 +40,20 @@ interface SaOrg {
   id: string; name: string; created_at: string; seats: number;
   state: string; monthlyAmountNgn: number; status: string | null;
   trial_ends_at: string | null; period_end: string | null; override_until: string | null;
+  ai_token_budget?: number | null;
 }
 interface SaOverview {
   orgs: number; users: number; activeSubs: number; trialing: number;
   locked: number; pendingPayments: number; mrrNgn: number;
+}
+interface AiUsage {
+  month: string; requests: number; tokens: number; costUsd: number;
+  quota: { plan: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
+  byUser: { userId: string; name: string; requests: number; tokens: number }[];
+}
+interface SaAiUsage {
+  month: string; requests: number; tokens: number; costUsd: number; budgetUsd: number;
+  topOrgs: { orgId: string; name: string; requests: number; tokens: number; costUsd: number }[];
 }
 interface SaPayment extends Payment { org_id: string; org_name: string }
 interface Policies {
@@ -80,6 +90,7 @@ export function Admin() {
   const [invites, setInvites] = useState<Invite[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
   const [billing, setBilling] = useState<{ subscription: BillingSub; payments: Payment[] } | null>(null);
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -92,6 +103,7 @@ export function Admin() {
   const [saOrgs, setSaOrgs] = useState<SaOrg[]>([]);
   const [saPayments, setSaPayments] = useState<SaPayment[]>([]);
   const [billingCfg, setBillingCfg] = useState<BillingCfg | null>(null);
+  const [saAi, setSaAi] = useState<SaAiUsage | null>(null);
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -105,8 +117,9 @@ export function Admin() {
       api.get<{ invites: Invite[] }>("/api/admin/invites"),
       api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
       api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
+      api.get<AiUsage>("/api/billing/ai-usage"),
     ];
-    const [m, p, a, mx, inv, bill, scim] = await Promise.all(reqs) as [
+    const [m, p, a, mx, inv, bill, scim, ai] = await Promise.all(reqs) as [
       { members: Member[] },
       { policies: Policies; encryptionAtRest: boolean },
       { entries: AuditEntry[] },
@@ -114,6 +127,7 @@ export function Admin() {
       { invites: Invite[] },
       { subscription: BillingSub; payments: Payment[] },
       { tokens: { id: string; label: string | null; created_at: string }[] },
+      AiUsage,
     ];
     setMembers(m.members);
     setPolicies(p.policies);
@@ -123,17 +137,20 @@ export function Admin() {
     setInvites(inv.invites);
     setBilling(bill);
     setScimTokens(scim.tokens);
+    setAiUsage(ai);
     if (isSuper) {
-      const [ov, og, pay, cfg] = await Promise.all([
+      const [ov, og, pay, cfg, sai] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
         api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
         api.get<{ config: BillingCfg }>("/api/superadmin/billing-config"),
+        api.get<SaAiUsage>("/api/superadmin/ai-usage"),
       ]);
       setSaOverview(ov);
       setSaOrgs(og.orgs);
       setSaPayments(pay.payments);
       setBillingCfg(cfg.config);
+      setSaAi(sai);
     }
   }, [isSuper]);
 
@@ -410,6 +427,45 @@ export function Admin() {
         </section>
       )}
 
+      {aiUsage && (
+        <section className="admin-card" id="ai-usage">
+          <h2>Kreatix AI usage</h2>
+          <div className="admin-flags">
+            <div className="flag on">
+              <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : "This month"}</b>
+              <span>
+                {aiUsage.quota.plan === "trial"
+                  ? `${aiUsage.quota.trialRequestsUsed ?? 0} / ${aiUsage.quota.trialRequestsLimit ?? 0} requests used`
+                  : `${aiUsage.tokens.toLocaleString()} tokens · ~$${aiUsage.costUsd.toFixed(2)} est. cost`}
+              </span>
+            </div>
+            <div className={`flag ${aiUsage.tokens >= aiUsage.quota.orgTokensLimit * 0.8 ? "off" : "on"}`}>
+              <b>Budget</b>
+              <span>
+                {aiUsage.quota.plan === "trial"
+                  ? "Subscribe for a monthly AI budget"
+                  : `${Math.round((aiUsage.tokens / Math.max(1, aiUsage.quota.orgTokensLimit)) * 100)}% of ${aiUsage.quota.orgTokensLimit.toLocaleString()} credits`}
+              </span>
+            </div>
+            <div className="flag on"><b>Requests</b><span>{aiUsage.requests.toLocaleString()} this month</span></div>
+          </div>
+          {aiUsage.byUser.length > 0 && (
+            <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
+              <thead><tr><th>Member</th><th>Requests</th><th>Tokens</th></tr></thead>
+              <tbody>
+                {aiUsage.byUser.map((u) => (
+                  <tr key={u.userId}>
+                    <td>{u.name}</td>
+                    <td>{u.requests}</td>
+                    <td>{u.tokens.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+          )}
+        </section>
+      )}
+
       <section className="admin-card">
         <h2>Members</h2>
         <div className="audit-bar" style={{ marginBottom: 10 }}>
@@ -539,6 +595,33 @@ export function Admin() {
             </section>
           )}
 
+          {saAi && (
+            <section className="admin-card">
+              <h2>Platform AI spend</h2>
+              <div className="admin-flags">
+                <div className={`flag ${saAi.costUsd >= saAi.budgetUsd * 0.8 ? "off" : "on"}`}>
+                  <b>This month</b>
+                  <span>~${saAi.costUsd.toFixed(2)} of ${saAi.budgetUsd} budget · {saAi.requests.toLocaleString()} requests · {(saAi.tokens / 1e6).toFixed(2)}M tokens</span>
+                </div>
+              </div>
+              {saAi.topOrgs.length > 0 && (
+                <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
+                  <thead><tr><th>Workspace</th><th>Requests</th><th>Tokens</th><th>Est. cost</th></tr></thead>
+                  <tbody>
+                    {saAi.topOrgs.map((o) => (
+                      <tr key={o.orgId}>
+                        <td>{o.name}</td>
+                        <td>{o.requests}</td>
+                        <td>{o.tokens.toLocaleString()}</td>
+                        <td>${o.costUsd.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              )}
+            </section>
+          )}
+
           {billingCfg && (
             <section className="admin-card">
               <h2>Plan &amp; pricing</h2>
@@ -607,6 +690,16 @@ export function Admin() {
                     <td>
                       <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
                         onClick={() => void saComp(o.id, 30)}>+30d comp</button>
+                      <input type="number" min={0} placeholder="AI tokens/mo" title="Monthly AI token budget override — blank = plan default"
+                        style={{ width: 110, marginLeft: 6, padding: "2px 8px", fontSize: 12 }}
+                        defaultValue={o.ai_token_budget ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value === "" ? null : Number(e.target.value);
+                          if (v === (o.ai_token_budget ?? null)) return;
+                          void api.patch(`/api/superadmin/orgs/${o.id}/subscription`, { aiTokenBudget: v })
+                            .then(() => toast(`AI budget ${v == null ? "reset to plan" : `set to ${v.toLocaleString()}`} for ${o.name}`))
+                            .catch((err) => toast((err as Error).message));
+                        }} />
                     </td>
                   </tr>
                 ))}

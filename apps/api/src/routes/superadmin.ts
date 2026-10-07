@@ -9,6 +9,7 @@ import {
   monthlyAmount, effectiveState,
 } from "../billing.js";
 import { mailEnabled, sendMail, tpl } from "../email.js";
+import { limits } from "../aiQuota.js";
 
 async function requireSuper(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
@@ -45,11 +46,11 @@ export function superadminRoutes(app: FastifyInstance) {
     const rows = await q<{
       id: string; name: string; created_at: string; seats: number;
       status: string | null; trial_ends_at: string | null; period_end: string | null;
-      amount_ngn: number | null; override_until: string | null;
+      amount_ngn: number | null; override_until: string | null; ai_token_budget: number | null;
     }>(
       `SELECT o.id, o.name, o.created_at,
               (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND NOT u.disabled) AS seats,
-              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until
+              s.status, s.trial_ends_at, s.period_end, s.amount_ngn, s.override_until, s.ai_token_budget
        FROM orgs o LEFT JOIN subscriptions s ON s.org_id = o.id
        ORDER BY o.created_at DESC LIMIT 500`);
     const cfg = await getConfig();
@@ -118,6 +119,7 @@ export function superadminRoutes(app: FastifyInstance) {
       overrideUntil: z.string().datetime().nullable().optional(), // comp N months / grant access
       extendTrialDays: z.number().int().min(1).max(730).optional(),
       status: z.enum(["canceled"]).optional(),
+      aiTokenBudget: z.number().int().min(0).nullable().optional(), // AI quota override (null = computed)
     }).parse(req.body);
     await ensureSubscription(orgId);
     if (body.extendTrialDays) {
@@ -133,7 +135,38 @@ export function superadminRoutes(app: FastifyInstance) {
     if (body.status === "canceled") {
       await run("UPDATE subscriptions SET status = 'canceled', updated_at = $2 WHERE org_id = $1", [orgId, now()]);
     }
+    if (body.aiTokenBudget !== undefined) {
+      await run("UPDATE subscriptions SET ai_token_budget = $2, updated_at = $3 WHERE org_id = $1",
+        [orgId, body.aiTokenBudget, now()]);
+    }
     return { subscription: await ensureSubscription(orgId) };
+  });
+
+  /** Platform AI spend this month + heaviest workspaces (cost control). */
+  app.get("/api/superadmin/ai-usage", async () => {
+    const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
+    const [totals, topOrgs] = await Promise.all([
+      one<{ requests: string; tokens: string; cost_usd: string }>(
+        `SELECT COUNT(*)::text AS requests,
+                COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens,
+                (COALESCE(SUM(cost_micros),0)/1000000.0)::text AS cost_usd
+         FROM ai_usage WHERE created_at >= $1`, [monthStart]),
+      q<{ org_id: string; name: string; requests: string; tokens: string; cost_usd: string }>(
+        `SELECT u.org_id, o.name, COUNT(*)::text AS requests,
+                COALESCE(SUM(u.prompt_tokens + u.completion_tokens),0)::text AS tokens,
+                (COALESCE(SUM(u.cost_micros),0)/1000000.0)::text AS cost_usd
+         FROM ai_usage u JOIN orgs o ON o.id = u.org_id
+         WHERE u.created_at >= $1
+         GROUP BY u.org_id, o.name ORDER BY SUM(u.cost_micros) DESC LIMIT 20`, [monthStart]),
+    ]);
+    return {
+      month: monthStart,
+      requests: Number(totals?.requests ?? 0),
+      tokens: Number(totals?.tokens ?? 0),
+      costUsd: Number(totals?.cost_usd ?? 0),
+      budgetUsd: limits.platformBudgetUsd(),
+      topOrgs: topOrgs.map((r) => ({ orgId: r.org_id, name: r.name, requests: Number(r.requests), tokens: Number(r.tokens), costUsd: Number(r.cost_usd) })),
+    };
   });
 }
 
