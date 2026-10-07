@@ -219,13 +219,17 @@ export function superadminRoutes(app: FastifyInstance) {
   /** Hard-delete one workspace — full tenant purge (DB rows + orphan blobs). */
   app.delete("/api/superadmin/orgs/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const r = await deleteOrg(id);
+    const r = await deleteOrg(id).catch((e) => {
+      req.log.error(e, `org delete failed: ${id}`);
+      return { ok: false as const, error: "failed" as const };
+    });
     if (!r.ok) {
-      return reply.code(r.error === "not_found" ? 404 : 409).send({
+      const code = r.error === "not_found" ? 404 : r.error === "super_org" ? 409 : 500;
+      return reply.code(code).send({
         error: r.error,
         message: r.error === "super_org"
           ? "This workspace hosts a platform superadmin account and cannot be deleted"
-          : "Workspace not found",
+          : r.error === "not_found" ? "Workspace not found" : "Delete failed — check server logs",
       });
     }
     return r;
@@ -236,7 +240,14 @@ export function superadminRoutes(app: FastifyInstance) {
     const parsed = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "bad_request", message: "Expected { ids: string[] }" });
     const results = [];
-    for (const id of parsed.data.ids) results.push({ id, ...(await deleteOrg(id)) });
+    for (const id of parsed.data.ids) {
+      try {
+        results.push({ id, ...(await deleteOrg(id)) });
+      } catch (e) {
+        req.log.error(e, `org delete failed: ${id}`);
+        results.push({ id, ok: false, error: "failed" });
+      }
+    }
     return { results, deleted: results.filter((r) => r.ok).length };
   });
 }
@@ -273,9 +284,13 @@ async function deleteOrg(orgId: string): Promise<OrgDeleteResult> {
       await del("DELETE FROM items WHERE org_id = $1", [orgId]);
     }
     if (userIds.length) {
-      // belt & braces — rows in other orgs that reference these users
+      // cross-org safety: content these users authored on OTHER workspaces'
+      // files (shared-file edits) is reassigned to each file's owner so the
+      // other tenant keeps its history; ephemeral traces are deleted.
+      await del("UPDATE versions v SET created_by = (SELECT owner_id FROM items i WHERE i.id = v.file_id) WHERE v.created_by = ANY($1)", [userIds]);
+      await del("UPDATE comments c SET author_id = (SELECT owner_id FROM items i WHERE i.id = c.file_id) WHERE c.author_id = ANY($1)", [userIds]);
+      await del("UPDATE items SET owner_id = (SELECT u2.id FROM users u2 WHERE u2.org_id = items.org_id ORDER BY NOT u2.disabled DESC, u2.created_at LIMIT 1) WHERE owner_id = ANY($1) AND org_id <> $2", [userIds, orgId]);
       await del("DELETE FROM mentions WHERE from_user_id = ANY($1) OR to_user_id = ANY($1)", [userIds]);
-      await del("DELETE FROM comments WHERE author_id = ANY($1)", [userIds]);
       await del("DELETE FROM activity WHERE actor_id = ANY($1)", [userIds]);
       await del("DELETE FROM ai_usage WHERE user_id = ANY($1)", [userIds]);
       await del("DELETE FROM ai_actions WHERE user_id = ANY($1)", [userIds]);
