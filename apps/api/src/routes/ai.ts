@@ -229,9 +229,14 @@ export function aiRoutes(app: FastifyInstance) {
     noteAiSpend();
   }
 
+  // reasoning_effort is a Groq/gpt-oss knob — omitted unless explicitly set,
+  // so other OpenAI-compatible providers never see an unknown parameter
+  const reasoningEffort = () => process.env.KREATIX_AI_REASONING_EFFORT || undefined;
+
   const providerBody = (p: Prepared, stream: boolean) =>
     JSON.stringify({
       model: p.model, messages: p.messages, temperature: 0.2, max_tokens: 3000, stream,
+      reasoning_effort: reasoningEffort(),
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     });
 
@@ -428,6 +433,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
       body: JSON.stringify({
         model, messages: msgs, temperature: 0.2, max_tokens: 2000, stream: streamBody,
+        reasoning_effort: reasoningEffort(),
         ...(streamBody ? { stream_options: { include_usage: true } } : {}),
       }),
       signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(90000)]),
@@ -525,7 +531,7 @@ ${docs ? `\n<sources>\n${docs}\n</sources>` : "\n(no matching sources found in t
       const res = await fetch(`${AI_BASE}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${AI_KEY}` },
-        body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 80 }),
+        body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 80, reasoning_effort: reasoningEffort() }),
         signal: AbortSignal.any([upstream.signal, AbortSignal.timeout(20000)]),
       });
       if (!res.ok) return reply.code(502).send({ error: "ai_error", message: `AI provider returned ${res.status}` });
