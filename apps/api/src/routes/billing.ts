@@ -47,7 +47,7 @@ export function billingRoutes(app: FastifyInstance) {
   app.get("/api/billing/ai-usage", async (req) => {
     const { user } = req as AuthedRequest;
     const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
-    const [totals, byUser, quota] = await Promise.all([
+    const [totals, byUser, byDay, byMode, quota] = await Promise.all([
       one<{ requests: string; tokens: string; cost_usd: string }>(
         `SELECT COUNT(*)::text AS requests,
                 COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens,
@@ -60,6 +60,17 @@ export function billingRoutes(app: FastifyInstance) {
          WHERE u.org_id = $1 AND u.created_at >= $2
          GROUP BY u.user_id, usr.display_name ORDER BY SUM(u.prompt_tokens + u.completion_tokens) DESC LIMIT 5`,
         [user.orgId, monthStart]),
+      q<{ day: string; requests: string; tokens: string }>(
+        `SELECT created_at::date::text AS day, COUNT(*)::text AS requests,
+                COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens
+         FROM ai_usage WHERE org_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '29 days'
+         GROUP BY 1 ORDER BY 1`, [user.orgId]),
+      q<{ mode: string; requests: string; tokens: string }>(
+        `SELECT mode, COUNT(*)::text AS requests,
+                COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens
+         FROM ai_usage WHERE org_id = $1 AND created_at >= $2
+         GROUP BY mode ORDER BY SUM(prompt_tokens + completion_tokens) DESC`,
+        [user.orgId, monthStart]),
       aiQuotaFor(user.orgId, user.id),
     ]);
     return {
@@ -69,6 +80,8 @@ export function billingRoutes(app: FastifyInstance) {
       costUsd: Number(totals?.cost_usd ?? 0),
       quota,
       byUser: byUser.map((r) => ({ userId: r.user_id, name: r.display_name, requests: Number(r.requests), tokens: Number(r.tokens) })),
+      byDay: byDay.map((r) => ({ day: r.day, requests: Number(r.requests), tokens: Number(r.tokens) })),
+      byMode: byMode.map((r) => ({ mode: r.mode, requests: Number(r.requests), tokens: Number(r.tokens) })),
     };
   });
 

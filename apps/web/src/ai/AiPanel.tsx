@@ -330,7 +330,12 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
             const chip = (label: string, run: () => void) =>
               <button key={label} className="ai-chip" onClick={run}>{label}</button>;
             let chips: (ReactNode | null)[] = [];
-            if (kind === "sheets" && canEdit) chips = [
+            if (kind === "writer" && canEdit && !sel) chips = [
+              chip("Continue writing", () => { setMode("edit"); void send("Continue this document — write the next section in the same tone and direction (insert_content or append_paragraph ops)"); }),
+              chip("Summarize document", () => { setMode("ask"); void send("Summarize this document — key points, structure, action items"); }),
+              chip("Suggest a title", () => { setMode("ask"); void send("Suggest 3 strong titles for this document"); }),
+            ];
+            else if (kind === "sheets" && canEdit) chips = [
               chip("Suggest a formula…", () => { setMode("edit"); setInput("Write a formula for: "); }),
               chip("Summarize this sheet", () => { setMode("ask"); void send("Summarize the data in this spreadsheet — what does it contain, key totals, anything notable?"); }),
               sel ? chip("Explain this selection", () => { setMode("explain"); void send("Explain the selected cells/formulas"); }) : null,

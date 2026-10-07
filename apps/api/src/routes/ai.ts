@@ -77,6 +77,9 @@ const opSchemas: Record<string, z.ZodTypeAny[]> = {
     }),
     z.object({ op: z.literal("delete_annotation"), index: z.number().int().min(0).max(9999) }),
     z.object({ op: z.literal("set_form_value"), name: z.string().min(1).max(120), value: z.union([z.string().max(2000), z.boolean(), z.number()]) }),
+    // redact-by-request: scan pages for query matches → mark redact rects
+    // (content is permanently removed on export, not just visually hidden)
+    z.object({ op: z.literal("redact_find"), query: z.string().min(1).max(200), regex: z.boolean().optional(), max: z.number().int().min(1).max(100).optional() }),
   ],
 };
 
@@ -85,7 +88,7 @@ const OP_GUIDE: Record<string, string> = {
 
   sheets: `ops: set_cells{sheet,cells:{"A1":"value or =formula"}} · set_format{sheet,refs,style:{b,i,u,color,bg,align,fmt}} · add_sheet{name}`,
   present: `ops: update_slide{slide(0-based),notes?,bg?} · add_slide{layout?} · add_text{slide,x,y,w,h,html,fontSize?,color?,align?} · add_shape{slide,x,y,w,h,shape,fill?,stroke?,html?} · add_table{slide,x,y,w,h,rows:[[..]]} · add_chart{slide,x,y,w,h,type:bar|line|pie,labels,series:[{name,values}],title?} · edit_object_text{slide,index,html} · delete_object{slide,index} · delete_slide{slide}`,
-  pdf: `ops: add_annotation{page(1-based),type:highlight|note|textbox|stamp,rects?|points?,text?,color?} · delete_annotation{index(0-based into the annotation list)} · set_form_value{name(annotation-storage id shown in the document),value}`,
+  pdf: `ops: add_annotation{page(1-based),type:highlight|note|textbox|stamp,rects?|points?,text?,color?} · delete_annotation{index(0-based into the annotation list)} · set_form_value{name(annotation-storage id shown in the document),value} · redact_find{query,regex?,max? — scans every page for text matches and marks true-redaction rects (content is permanently removed on export); use for "redact all X" requests}`,
 };
 
 function systemPrompt(kind: string, mode: string): string {

@@ -50,6 +50,8 @@ interface AiUsage {
   month: string; requests: number; tokens: number; costUsd: number;
   quota: { plan: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
   byUser: { userId: string; name: string; requests: number; tokens: number }[];
+  byDay: { day: string; requests: number; tokens: number }[];
+  byMode: { mode: string; requests: number; tokens: number }[];
 }
 interface SaAiUsage {
   month: string; requests: number; tokens: number; costUsd: number; budgetUsd: number;
@@ -449,6 +451,34 @@ export function Admin() {
             </div>
             <div className="flag on"><b>Requests</b><span>{aiUsage.requests.toLocaleString()} this month</span></div>
           </div>
+          {(aiUsage.byDay?.length ?? 0) > 0 && (() => {
+            const days = aiUsage.byDay;
+            const peak = Math.max(1, ...days.map((d) => d.tokens));
+            return (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 48 }} role="img"
+                  aria-label={`AI tokens per day, peak ${peak.toLocaleString()}`}>
+                  {days.map((d) => (
+                    <div key={d.day} title={`${d.day.slice(5)}: ${d.requests} req · ${d.tokens.toLocaleString()} tok`}
+                      style={{ flex: 1, minWidth: 2, height: `${Math.max(4, (d.tokens / peak) * 100)}%`,
+                        background: "var(--k-orange)", borderRadius: "2px 2px 0 0", opacity: 0.85 }} />
+                  ))}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                  <span>{days[0].day.slice(5)}</span><span>tokens/day (30d)</span><span>{days[days.length - 1].day.slice(5)}</span>
+                </div>
+              </div>
+            );
+          })()}
+          {(aiUsage.byMode?.length ?? 0) > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
+              {aiUsage.byMode.map((m) => (
+                <span key={m.mode} className="role-badge" title={`${m.requests} requests`}>
+                  {m.mode} · {m.tokens.toLocaleString()} tok
+                </span>
+              ))}
+            </div>
+          )}
           {aiUsage.byUser.length > 0 && (
             <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
               <thead><tr><th>Member</th><th>Requests</th><th>Tokens</th></tr></thead>

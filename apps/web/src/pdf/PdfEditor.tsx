@@ -1160,6 +1160,21 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
         const name = String(o.name);
         mutate((d) => { d.form = { ...d.form, [name]: { value: o.value } }; });
         try { doc?.annotationStorage.setValue(name, { value: o.value }); } catch { /* field may not exist */ }
+      } else if (o.op === "redact_find") {
+        // AI-driven redaction: literal query (or regex when the model opted in)
+        // → mark redact rects; export rasterizes them out permanently
+        const query = String(o.query ?? "");
+        if (!query) continue;
+        const src = o.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const cap = Math.min(500, Number(o.max) || 50);
+        void scanForRedact(new RegExp(src, "gi"), cap).then((hits) => {
+          if (!hits.length) { toast(`AI redact: no matches for "${query.slice(0, 40)}"`); return; }
+          mutate((d) => {
+            for (const h of hits) d.annotations.push({ id: crypto.randomUUID().slice(0, 8), type: "redact",
+              page: h.page, rects: h.rects, author: "Kreatix AI", createdAt: new Date().toISOString() });
+          });
+          toast(`AI marked ${hits.length} redaction${hits.length === 1 ? "" : "s"} — Save applies them permanently`);
+        }).catch(() => toast("AI redact scan failed"));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1274,6 +1289,42 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
     return out;
   };
 
+  /** Scan every page for regex hits → {page, text, rects} (shared by the
+   *  Find & redact dialog and the AI redact_find op). */
+  const scanForRedact = async (re: RegExp, cap = 500): Promise<{ page: number; text: string; rects: Rect4[] }[]> => {
+    if (!doc) return [];
+    const out: { page: number; text: string; rects: Rect4[] }[] = [];
+    for (let p = 1; p <= doc.numPages && out.length < cap; p++) {
+      const pg = await doc.getPage(p);
+      const tc = await pg.getTextContent();
+      const vp1 = pg.getViewport({ scale: 1 });
+      // joined text so matches spanning text items still hit — then map the
+      // char range back to per-item rects (same mapping as search marks)
+      const text = tc.items.map((i) => ("str" in i ? i.str : "")).join("");
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        const rects: Rect4[] = [];
+        let off = 0;
+        for (const it of tc.items) {
+          const str = "str" in it ? it.str : "";
+          const s = off, e = off + str.length; off = e;
+          const os = Math.max(s, m.index), oe = Math.min(e, m.index + m[0].length);
+          if (oe <= os || !("transform" in it) || !str) continue;
+          const tx = pdfjs.Util.transform(vp1.transform, it.transform);
+          const fh = Math.max(2, Math.hypot(tx[2], tx[3]));
+          const [ix, iy] = vp1.convertToPdfPoint(tx[4], tx[5]);
+          const cw = it.width / Math.max(1, str.length);
+          rects.push([ix + cw * (os - s) - 0.5, iy - fh * 0.32, Math.max(2.5, cw * (oe - os)) + 1, fh * 1.18]);
+        }
+        if (rects.length) out.push({ page: p, text: m[0], rects });
+        if (m[0].length === 0) re.lastIndex++;
+        if (out.length >= cap) break;
+      }
+    }
+    return out;
+  };
+
   // ---------- find & redact: scan every page for pattern hits → mark rects ----------
   const redactRunScan = async () => {
     if (!doc || redactBusy) return;
@@ -1282,35 +1333,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
       const src = redactPat === "custom" ? redactCustom.trim() : REDACT_PRESETS[redactPat].re;
       if (!src) { toast("Enter a pattern to search for"); return; }
       const re = new RegExp(src, `g${redactCase ? "" : "i"}`);
-      const out: { page: number; text: string; rects: Rect4[] }[] = [];
-      for (let p = 1; p <= doc.numPages && out.length < 500; p++) {
-        const pg = await doc.getPage(p);
-        const tc = await pg.getTextContent();
-        const vp1 = pg.getViewport({ scale: 1 });
-        // joined text so matches spanning text items still hit — then map the
-        // char range back to per-item rects (same mapping as search marks)
-        const text = tc.items.map((i) => ("str" in i ? i.str : "")).join("");
-        re.lastIndex = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text))) {
-          const rects: Rect4[] = [];
-          let off = 0;
-          for (const it of tc.items) {
-            const str = "str" in it ? it.str : "";
-            const s = off, e = off + str.length; off = e;
-            const os = Math.max(s, m.index), oe = Math.min(e, m.index + m[0].length);
-            if (oe <= os || !("transform" in it) || !str) continue;
-            const tx = pdfjs.Util.transform(vp1.transform, it.transform);
-            const fh = Math.max(2, Math.hypot(tx[2], tx[3]));
-            const [ix, iy] = vp1.convertToPdfPoint(tx[4], tx[5]);
-            const cw = it.width / Math.max(1, str.length);
-            rects.push([ix + cw * (os - s) - 0.5, iy - fh * 0.32, Math.max(2.5, cw * (oe - os)) + 1, fh * 1.18]);
-          }
-          if (rects.length) out.push({ page: p, text: m[0], rects });
-          if (m[0].length === 0) re.lastIndex++;
-          if (out.length >= 500) break;
-        }
-      }
+      const out = await scanForRedact(re);
       setRedactScan(out);
       if (!out.length) toast("No matches found");
     } catch { toast("Invalid pattern"); }
