@@ -287,4 +287,15 @@ export const en: Record<string, string> = {
   "dl.s3.p": "Use your workspace account — local files sync to Drive automatically.",
   "dl.web.line": "Prefer the browser?",
   "dl.web.link": "Open the web app",
+  // ---------- feedback widget ----------
+  "fb.title": "Share feedback",
+  "fb.subtitle": "Tell the Kreatix team what's working — or what isn't",
+  "fb.intro": "Hi! How's Kreatix Suites treating you? Pick a mood, type a note, hit send — every message reaches our team.",
+  "fb.sentiment": "How's it going?",
+  "fb.good": "Good",
+  "fb.ok": "Okay",
+  "fb.bad": "Bad",
+  "fb.placeholder": "Type your feedback…",
+  "fb.send": "Send",
+  "fb.thanks": "Thanks! Your feedback was sent to the Kreatix team. 💛",
 };

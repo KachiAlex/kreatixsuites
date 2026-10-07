@@ -148,6 +148,25 @@ export function superadminRoutes(app: FastifyInstance) {
     return { subscription: await ensureSubscription(orgId) };
   });
 
+  /** User feedback stream — newest first, optional sentiment filter. */
+  app.get("/api/superadmin/feedback", async (req) => {
+    const sentiment = (req.query as { sentiment?: string }).sentiment || null;
+    const [rows, stats] = await Promise.all([
+      q(
+        `SELECT f.id, f.sentiment, f.message, f.page, f.created_at,
+                o.name AS org_name, u.display_name, u.email
+         FROM feedback f
+         JOIN orgs o ON o.id = f.org_id
+         JOIN users u ON u.id = f.user_id
+         WHERE ($1::text IS NULL OR f.sentiment = $1)
+         ORDER BY f.created_at DESC LIMIT 300`, [sentiment]),
+      q<{ sentiment: string; n: string }>(
+        `SELECT sentiment, COUNT(*)::text AS n FROM feedback
+         WHERE created_at >= CURRENT_DATE - INTERVAL '29 days' GROUP BY sentiment`, []),
+    ]);
+    return { feedback: rows, stats: Object.fromEntries(stats.map((s) => [s.sentiment, Number(s.n)])) };
+  });
+
   /** Platform AI spend this month + heaviest workspaces (cost control). */
   app.get("/api/superadmin/ai-usage", async () => {
     const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();

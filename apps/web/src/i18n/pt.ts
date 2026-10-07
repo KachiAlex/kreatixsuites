@@ -282,4 +282,15 @@ export const pt: Record<string, string> = {
   "dl.s3.p": "Use sua conta do workspace — os arquivos locais sincronizam com o Drive automaticamente.",
   "dl.web.line": "Prefere o navegador?",
   "dl.web.link": "Abrir o app web",
+  // ---------- feedback widget ----------
+  "fb.title": "Enviar feedback",
+  "fb.subtitle": "Conte à equipe Kreatix o que funciona — e o que não",
+  "fb.intro": "Oi! Como está sendo sua experiência com o Kreatix Suites? Escolha um humor, escreva uma nota e envie — cada mensagem chega à nossa equipe.",
+  "fb.sentiment": "Como vai?",
+  "fb.good": "Bom",
+  "fb.ok": "Ok",
+  "fb.bad": "Ruim",
+  "fb.placeholder": "Digite seu feedback…",
+  "fb.send": "Enviar",
+  "fb.thanks": "Obrigado! Seu feedback foi enviado à equipe Kreatix. 💛",
 };

@@ -301,6 +301,18 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_org ON payments(org_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+
+-- in-app user feedback — mini chat widget submissions, reviewed in superadmin
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sentiment TEXT NOT NULL DEFAULT 'ok',   -- good | ok | bad
+  message TEXT NOT NULL,
+  page TEXT,                              -- app route the user was on
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
 `);
   // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);

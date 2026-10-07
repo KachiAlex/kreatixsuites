@@ -60,6 +60,10 @@ interface SaAiUsage {
   topOrgs: { orgId: string; name: string; requests: number; tokens: number; costUsd: number }[];
 }
 interface SaPayment extends Payment { org_id: string; org_name: string }
+interface SaFeedback {
+  id: string; sentiment: "good" | "ok" | "bad"; message: string; page: string | null;
+  created_at: string; org_name: string; display_name: string; email: string;
+}
 interface Policies {
   aiDisabled: boolean;
   blockPublicLinksForConfidential: boolean;
@@ -109,6 +113,8 @@ export function Admin() {
   const [saPayments, setSaPayments] = useState<SaPayment[]>([]);
   const [billingCfg, setBillingCfg] = useState<BillingCfg | null>(null);
   const [saAi, setSaAi] = useState<SaAiUsage | null>(null);
+  const [saFeedback, setSaFeedback] = useState<SaFeedback[]>([]);
+  const [fbStats, setFbStats] = useState<Record<string, number>>({});
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -144,18 +150,21 @@ export function Admin() {
     setScimTokens(scim.tokens);
     setAiUsage(ai);
     if (isSuper) {
-      const [ov, og, pay, cfg, sai] = await Promise.all([
+      const [ov, og, pay, cfg, sai, fb] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
         api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
         api.get<{ config: BillingCfg }>("/api/superadmin/billing-config"),
         api.get<SaAiUsage>("/api/superadmin/ai-usage"),
+        api.get<{ feedback: SaFeedback[]; stats: Record<string, number> }>("/api/superadmin/feedback"),
       ]);
       setSaOverview(ov);
       setSaOrgs(og.orgs);
       setSaPayments(pay.payments);
       setBillingCfg(cfg.config);
       setSaAi(sai);
+      setSaFeedback(fb.feedback);
+      setFbStats(fb.stats);
     }
   }, [isSuper]);
 
@@ -690,6 +699,34 @@ export function Admin() {
               )}
             </section>
           )}
+
+          <section className="admin-card">
+            <h2>User feedback</h2>
+            <div className="admin-flags">
+              <div className="flag on"><b>😊 Good</b><span>{fbStats.good ?? 0} · last 30 days</span></div>
+              <div className="flag on"><b>🙂 Okay</b><span>{fbStats.ok ?? 0} · last 30 days</span></div>
+              <div className={`flag ${(fbStats.bad ?? 0) > 0 ? "off" : "on"}`}><b>😞 Bad</b><span>{fbStats.bad ?? 0} · last 30 days</span></div>
+            </div>
+            {saFeedback.length === 0 ? (
+              <div className="sub" style={{ marginTop: 12 }}>No feedback yet — it will appear here as users submit it from the in-app widget.</div>
+            ) : (
+              <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 14 }}>
+                <thead><tr><th>When</th><th></th><th>From</th><th>Workspace</th><th>Where</th><th>Message</th></tr></thead>
+                <tbody>
+                  {saFeedback.map((f) => (
+                    <tr key={f.id}>
+                      <td title={f.created_at}>{timeAgo(f.created_at)}</td>
+                      <td>{f.sentiment === "good" ? "😊" : f.sentiment === "bad" ? "😞" : "🙂"}</td>
+                      <td>{f.display_name}<br /><span className="sub">{f.email}</span></td>
+                      <td>{f.org_name}</td>
+                      <td className="sub">{f.page ?? "—"}</td>
+                      <td style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minWidth: 220 }}>{f.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            )}
+          </section>
 
           {billingCfg && (
             <section className="admin-card">
