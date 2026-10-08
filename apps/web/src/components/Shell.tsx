@@ -95,16 +95,25 @@ function SuperShell() {
   const navigate = useNavigate();
   const { msg, toast } = useToast();
   const [menu, setMenu] = useState(false);
+  const [acctMenu, setAcctMenu] = useState(false);
   const [security, setSecurity] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const acctRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!menu) return;
     const close = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false);
+      if (acctRef.current && !acctRef.current.contains(e.target as Node)) setAcctMenu(false);
+    };
+    const esc = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") { setMenu(false); setAcctMenu(false); }
     };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [menu]);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, []);
   const toggleTheme = () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
@@ -142,7 +151,25 @@ function SuperShell() {
               <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z" fill="none" stroke="currentColor" strokeWidth="1.7"/></svg>
               Restricted superadmin surface
             </span>
-            <span className="sap-avatar" aria-hidden="true">{user?.initials ?? "SA"}</span>
+            <div ref={acctRef} style={{ position: "relative" }}>
+              <button className="sap-avatar sap-avatarbtn" aria-haspopup="menu" aria-expanded={acctMenu}
+                aria-label={`Superadmin account — ${user?.email ?? ""}`}
+                onClick={() => setAcctMenu((v) => !v)}>{user?.initials ?? "SA"}</button>
+              {acctMenu && (
+                <div className="user-menu sap-acctmenu" role="menu">
+                  <div className="um-head">
+                    <b>{user?.displayName ?? "Superadmin"}</b>
+                    <span>{user?.email}</span>
+                    <span className="sap-acctrole">Platform superadmin · all tenants</span>
+                  </div>
+                  <button role="menuitem" onClick={() => { setAcctMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
+                  <button role="menuitem" className="sap-signout"
+                    onClick={() => { setAcctMenu(false); logout(); navigate("/login"); }}>
+                    {t("shell.signOut")}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <Outlet />
