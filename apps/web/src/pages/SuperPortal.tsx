@@ -138,7 +138,12 @@ export function SuperPortal() {
   const [acting, setActing] = useState(false);
   const [cfgSaved, setCfgSaved] = useState<"ok" | "err">("ok");
   const [emailTo, setEmailTo] = useState("");
-  const [activeSec, setActiveSec] = useState("payments");
+  const SECTIONS = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email"] as const;
+  type Section = (typeof SECTIONS)[number];
+  const [activeSec, setActiveSec] = useState<Section>(() => {
+    const h = window.location.hash.slice(1);
+    return (SECTIONS as readonly string[]).includes(h) ? (h as Section) : "payments";
+  });
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -165,21 +170,15 @@ export function SuperPortal() {
   }, [toast]);
   useEffect(() => { void load(); }, [load]);
 
-  // section-nav scrollspy — mirrors the design's active-anchor tracking
+  // tabs are hash-synced — deep links (/admin#feedback) and back/forward work
   useEffect(() => {
-    const ids = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email"];
-    const onScroll = () => {
-      let current = ids[0];
-      for (const id of ids) {
-        const el = document.getElementById(id);
-        if (el && !el.hidden && el.getBoundingClientRect().top < 170) current = id;
-      }
-      setActiveSec(current);
+    const onHash = () => {
+      const h = window.location.hash.slice(1);
+      if ((SECTIONS as readonly string[]).includes(h)) setActiveSec(h as Section);
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [payments.length]);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   // Escape closes the review dialog / workspace drawer (unless a request runs)
   useEffect(() => {
@@ -429,7 +428,11 @@ export function SuperPortal() {
     toast("Workspace view exported");
   };
 
-  const nav = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const nav = (id: Section) => {
+    setActiveSec(id);
+    if (window.location.hash !== `#${id}`) window.location.hash = id;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const gotoBadFeedback = () => { setMood("bad"); nav("feedback"); };
 
   /* ---------- render ---------- */
@@ -519,28 +522,37 @@ export function SuperPortal() {
         </div>
       </div>
 
-      <nav className="sap-nav" aria-label="Page sections">
-        <a href="#payments" className={activeSec === "payments" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("payments"); }}>
-          Payments {payments.length > 0 && <span className="sap-count warn">{payments.length}</span>}
-        </a>
-        <a href="#feedback" className={activeSec === "feedback" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("feedback"); }}>
-          Feedback <span className="sap-count">{feedback.length}</span>
-        </a>
-        <a href="#workspaces" className={activeSec === "workspaces" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("workspaces"); }}>Workspaces</a>
-        <a href="#ai-usage" className={activeSec === "ai-usage" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("ai-usage"); }}>AI usage</a>
-        <a href="#pricing" className={activeSec === "pricing" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("pricing"); }}>Plan &amp; pricing</a>
-        <a href="#email" className={activeSec === "email" ? "active" : ""} onClick={(e) => { e.preventDefault(); nav("email"); }}>Email tools</a>
+      <nav className="sap-nav" aria-label="Portal sections" role="tablist">
+        {(
+          [
+            ["payments", <>Payments {payments.length > 0 && <span className="sap-count warn">{payments.length}</span>}</>],
+            ["feedback", <>Feedback <span className="sap-count">{feedback.length}</span></>],
+            ["workspaces", "Workspaces"],
+            ["ai-usage", "AI usage"],
+            ["pricing", <>Plan &amp; pricing</>],
+            ["email", "Email tools"],
+          ] as [Section, ReactNode][]
+        ).map(([id, label]) => (
+          <a key={id} href={`#${id}`} role="tab" aria-selected={activeSec === id}
+            className={activeSec === id ? "active" : ""}
+            onClick={(e) => { e.preventDefault(); nav(id); }}>
+            {label}
+          </a>
+        ))}
       </nav>
 
       {/* ---------- pending payments ---------- */}
-      <section className="sap-card" id="payments" hidden={payments.length === 0}>
+      <section className="sap-card" id="payments" hidden={activeSec !== "payments"}>
         <div className="sap-cardhead">
           <div>
             <div className="sap-cardtitle"><I n="wallet" s={17} /><h2>Pending payments</h2><span className="sap-count warn">{payments.length}</span></div>
             <p>Review receipts and activate workspace subscriptions.</p>
           </div>
-          <span className="sap-tag">{ngn(queueTotal)} in queue</span>
+          <span className="sap-tag">{queueTotal ? `${ngn(queueTotal)} in queue` : "No queue"}</span>
         </div>
+        {payments.length === 0 ? (
+          <div className="sap-empty"><I n="check" s={18} /><strong>All clear</strong>No payments awaiting review.</div>
+        ) : (
         <div className="sap-tablewrap"><table className="sap-table">
           <thead><tr><th>Received</th><th>Workspace</th><th className="num">Amount</th><th>Method / reference</th><th className="num">Review</th></tr></thead>
           <tbody>
@@ -558,6 +570,7 @@ export function SuperPortal() {
             ))}
           </tbody>
         </table></div>
+        )}
         <div className="sap-cardfoot">
           <span><I n="shield" s={13} /> Confirmation activates access and emails a receipt.</span>
           <span>No automatic confirmation</span>
@@ -565,7 +578,7 @@ export function SuperPortal() {
       </section>
 
       {/* ---------- feedback ---------- */}
-      <section className="sap-card" id="feedback">
+      <section className="sap-card" id="feedback" hidden={activeSec !== "feedback"}>
         <div className="sap-cardhead">
           <div>
             <div className="sap-cardtitle"><I n="chat" s={17} /><h2>User feedback</h2><span className="sap-count">30 days</span></div>
@@ -615,7 +628,7 @@ export function SuperPortal() {
       </section>
 
       {/* ---------- workspaces ---------- */}
-      <section className="sap-card" id="workspaces">
+      <section className="sap-card" id="workspaces" hidden={activeSec !== "workspaces"}>
         <div className="sap-cardhead">
           <div>
             <div className="sap-cardtitle"><I n="building" s={17} /><h2>Workspaces</h2><span className="sap-count">{orgs.length}</span></div>
@@ -703,9 +716,8 @@ export function SuperPortal() {
         </div>
       </section>
 
-      <div className="sap-split">
-        {/* ---------- AI usage ---------- */}
-        <section className="sap-card" id="ai-usage">
+      {/* ---------- AI usage ---------- */}
+      <section className="sap-card" id="ai-usage" hidden={activeSec !== "ai-usage"}>
           <div className="sap-cardhead">
             <div>
               <div className="sap-cardtitle"><I n="spark" s={17} /><h2>AI usage by workspace</h2></div>
@@ -754,8 +766,8 @@ export function SuperPortal() {
           </div>
         </section>
 
-        {/* ---------- plan & pricing ---------- */}
-        <section className="sap-card" id="pricing">
+      {/* ---------- plan & pricing ---------- */}
+      <section className="sap-card" id="pricing" hidden={activeSec !== "pricing"}>
           <div className="sap-cardhead">
             <div>
               <div className="sap-cardtitle"><I n="settings" s={17} /><h2>Plan &amp; pricing</h2></div>
@@ -798,11 +810,10 @@ export function SuperPortal() {
               </div>
             </>
           )}
-        </section>
-      </div>
+      </section>
 
       {/* ---------- email tools ---------- */}
-      <section className="sap-card sap-email" id="email">
+      <section className="sap-card sap-email" id="email" hidden={activeSec !== "email"}>
         <div className="sap-emailflex">
           <div>
             <h2>Test transactional email</h2>
