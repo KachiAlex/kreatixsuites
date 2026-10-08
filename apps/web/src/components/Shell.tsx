@@ -6,7 +6,6 @@ import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
 import { CommandPalette, renderSnippet } from "./CommandPalette";
-import { FeedbackWidget } from "./FeedbackWidget";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { SecurityDialog } from "./SecurityDialog";
@@ -79,7 +78,6 @@ export function Shell() {
         onUpload={() => { setPalette(false); fileInput.current?.click(); }}
         toast={toast} />
       {templates && <TemplatesDialog onClose={() => setTemplates(false)} toast={toast} />}
-      <FeedbackWidget />
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
