@@ -75,7 +75,13 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       prefetchAppShell();
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("auth.genericError"));
+      // a dead connection surfaces as TypeError("Failed to fetch") — say so
+      // plainly instead of dumping the raw network error on the user
+      if (!navigator.onLine || (err instanceof TypeError && /fetch|network|resolve/i.test(err.message))) {
+        setError(t("auth.offline"));
+      } else {
+        setError(err instanceof Error ? err.message : t("auth.genericError"));
+      }
       if (mfaToken && err instanceof Error && /expired/i.test(err.message)) setMfaToken(null);
     } finally {
       setBusy(false);

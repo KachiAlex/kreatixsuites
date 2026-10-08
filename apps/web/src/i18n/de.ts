@@ -25,6 +25,7 @@ export const de: Record<string, string> = {
   "auth.backToSignIn": "Zurück zur Anmeldung",
   "auth.ssoFailed": "Single Sign-on fehlgeschlagen: {msg}",
   "auth.inviteExpired": "Dieser Einladungslink ist abgelaufen oder ungültig",
+  "auth.offline": "Server nicht erreichbar — prüfe deine Verbindung und versuche es erneut.",
   "auth.genericError": "Etwas ist schiefgelaufen",
 
   "nav.workspace": "Workspace",

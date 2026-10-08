@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png', 'og.png'],
+      includeAssets: ['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png', 'og.png', 'manifest.webmanifest', 'brand/*.png'],
       manifest: false, // manifest.webmanifest already lives in public/
       workbox: {
         // SPA shell offline: serve index.html for navigations (never /api)

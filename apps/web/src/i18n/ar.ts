@@ -25,6 +25,7 @@ export const ar: Record<string, string> = {
   "auth.backToSignIn": "العودة إلى تسجيل الدخول",
   "auth.ssoFailed": "فشل تسجيل الدخول الموحّد: {msg}",
   "auth.inviteExpired": "رابط الدعوة هذا منتهي الصلاحية أو غير صالح",
+  "auth.offline": "تعذّر الوصول إلى الخادم — تحقق من اتصالك وحاول مجددًا.",
   "auth.genericError": "حدث خطأ ما",
 
   "nav.workspace": "مساحة العمل",

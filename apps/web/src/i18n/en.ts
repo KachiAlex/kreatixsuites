@@ -26,6 +26,7 @@ export const en: Record<string, string> = {
   "auth.backToSignIn": "Back to sign in",
   "auth.ssoFailed": "Single sign-on failed: {msg}",
   "auth.inviteExpired": "This invite link is expired or invalid",
+  "auth.offline": "Can't reach the server — check your connection and try again.",
   "auth.genericError": "Something went wrong",
 
   // ---------- navigation / shell ----------

@@ -25,6 +25,7 @@ export const es: Record<string, string> = {
   "auth.backToSignIn": "Volver a iniciar sesión",
   "auth.ssoFailed": "Error en el inicio de sesión único: {msg}",
   "auth.inviteExpired": "Este enlace de invitación ha caducado o no es válido",
+  "auth.offline": "No se puede conectar al servidor — comprueba tu conexión e inténtalo de nuevo.",
   "auth.genericError": "Algo salió mal",
 
   "nav.workspace": "Espacio de trabajo",
