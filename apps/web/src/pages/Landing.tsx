@@ -77,8 +77,27 @@ const NAVLINKS = [
   { id: "products", key: "lp.nav.suite" },
   { id: "experience", key: "lp.nav.explore" },
   { id: "workflow", key: "lp.nav.why" },
+  { id: "pricing", key: "lp.nav.pricing" },
   { id: "faq", key: "lp.nav.faq" },
 ];
+
+/* ===== live pricing — served from the plan catalog the superadmin edits ===== */
+interface PublicPlan {
+  slug: string; name: string;
+  priceNgn: number; memberPriceNgn: number;
+  features: Record<string, boolean>; limits: Record<string, number>;
+}
+const FEATURE_LABELS: [string, string][] = [
+  ["export", "lp.price.f.export"],
+  ["pdf_sign", "lp.price.f.pdf_sign"],
+  ["pdf_edit", "lp.price.f.pdf_edit"],
+  ["share_protect", "lp.price.f.share_protect"],
+  ["writer_advanced", "lp.price.f.writer_advanced"],
+  ["sso", "lp.price.f.sso"],
+  ["scim", "lp.price.f.scim"],
+  ["priority_support", "lp.price.f.priority_support"],
+];
+const fmtGB = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0)} GB` : `${mb} MB`);
 
 const reducedMotion = () =>
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -91,6 +110,7 @@ export function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [active, setActive] = useState("");
   const [openFaq, setOpenFaq] = useState<ReadonlySet<number>>(new Set([0]));
+  const [plans, setPlans] = useState<PublicPlan[] | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
 
@@ -145,6 +165,16 @@ export function Landing() {
       document.removeEventListener("mousedown", onDown);
     };
   }, [menuOpen]);
+
+  /* live plan catalog — superadmin edits surface here within a minute */
+  useEffect(() => {
+    let dead = false;
+    fetch("/api/plans")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d: { plans: PublicPlan[] }) => { if (!dead) setPlans(d.plans); })
+      .catch(() => { if (!dead) setPlans([]); });
+    return () => { dead = true; };
+  }, []);
 
   /* warm the post-signup bundle while the visitor reads the page */
   useEffect(() => {
@@ -407,6 +437,57 @@ export function Landing() {
               </div>
               <div className="lp-typing" aria-hidden="true"><i /><i /><i /></div>
             </div>
+          </div>
+        </section>
+
+        {/* ===== pricing — live from the superadmin-edited plan catalog ===== */}
+        <section className="lp-section" id="pricing">
+          <div className="lp-wrap">
+            <div className="lp-section-top lp-reveal">
+              <div>
+                <div className="lp-eyebrow">{t("lp.price.eyebrow")}</div>
+                <h2>{t("lp.price.h1")}<br />{t("lp.price.h2")}</h2>
+              </div>
+              <p>{t("lp.price.lead")}</p>
+            </div>
+            {plans === null ? (
+              <div className="lp-plans" aria-busy="true">
+                {[0, 1, 2].map((i) => <div key={i} className="lp-plan lp-plan-skel" />)}
+              </div>
+            ) : (
+              <div className="lp-plans">
+                {plans.map((p) => {
+                  const members = p.limits.max_members ?? 0;
+                  const vdays = p.limits.version_days ?? 0;
+                  return (
+                    <article key={p.slug} className={`lp-plan lp-reveal${p.slug === "pro" ? " popular" : ""}`}>
+                      {p.slug === "pro" && <span className="lp-plan-badge">{t("lp.price.popular")}</span>}
+                      <h3>{p.name}</h3>
+                      <div className="lp-plan-price">
+                        {p.priceNgn === 0
+                          ? <b>{t("lp.price.free")}</b>
+                          : <><b>₦{p.priceNgn.toLocaleString()}</b><span>{t("lp.price.perMonth")}</span></>}
+                      </div>
+                      {p.memberPriceNgn > 0 && (
+                        <small className="lp-plan-member">{t("lp.price.member", { n: p.memberPriceNgn.toLocaleString() })}</small>
+                      )}
+                      <ul className="lp-plan-feats">
+                        <li>{members === 1 ? t("lp.price.members.one", { n: 1 })
+                          : members > 0 ? t("lp.price.members.many", { n: members })
+                          : t("lp.price.members.all")}</li>
+                        <li>{t("lp.price.storage", { n: fmtGB(p.limits.storage_mb ?? 0) })}</li>
+                        <li>{p.features.ai ? t("lp.price.ai", { n: p.limits.ai_daily ?? 0 }) : t("lp.price.ai.none")}</li>
+                        <li>{vdays > 0 ? t("lp.price.versions", { n: vdays }) : t("lp.price.versions.all")}</li>
+                        {FEATURE_LABELS.map(([k, key]) => (p.features[k] ? <li key={k}>{t(key)}</li> : null))}
+                      </ul>
+                      <Link to="/register" className={`lp-btn lp-plan-cta ${p.priceNgn === 0 ? "lp-btn-outline" : "lp-btn-orange"}`}>
+                        {p.priceNgn === 0 ? t("lp.price.cta.free") : t("lp.price.cta.paid", { name: p.name })}
+                      </Link>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </section>
 

@@ -2782,3 +2782,20 @@ html[data-theme="dark"]{
 .sap-newplan input{font:inherit;font-size:12.5px;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px;flex:1;min-width:120px}
 .sap-state.free{background:var(--subtle);color:var(--muted)}
 .rbpro{display:block;font-size:8px;font-weight:700;color:var(--k-orange,#F2782E);letter-spacing:.5px;margin-top:1px}
+
+/* ── landing pricing — live plan catalog ── */
+.lp-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;max-width:1020px}
+.lp-plan{border:1px solid var(--l-line);border-radius:14px;padding:30px 26px 26px;background:#fff;position:relative;display:flex;flex-direction:column;transition:transform .35s,box-shadow .35s}
+.lp-plan:hover{transform:translateY(-6px);box-shadow:0 18px 45px #0000000c}
+.lp-plan.popular{border-color:var(--l-orange);box-shadow:0 14px 40px #f5792818}
+.lp-plan-badge{position:absolute;top:-11px;left:24px;background:var(--l-orange);color:#171717;font-size:9.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:999px}
+.lp-plan h3{font-size:21px;letter-spacing:-.6px;margin:0 0 14px}
+.lp-plan-price b{font-size:38px;letter-spacing:-1.5px;font-weight:700}
+.lp-plan-price span{color:var(--l-muted);font-size:13px;font-weight:600;margin-left:5px}
+.lp-plan-member{display:block;color:var(--l-muted);font-size:11.5px;margin-top:4px}
+.lp-plan-feats{list-style:none;margin:22px 0 26px;padding:0;display:flex;flex-direction:column;gap:9px;flex:1}
+.lp-plan-feats li{font-size:12.5px;color:var(--l-ink);padding-left:20px;position:relative;line-height:1.5}
+.lp-plan-feats li:before{content:"✓";position:absolute;left:0;color:var(--l-orange);font-weight:700}
+.lp-plan-cta{margin-top:auto;justify-content:center}
+.lp-plan-skel{min-height:380px;border-radius:14px;background:linear-gradient(100deg,var(--l-cream) 40%,#fff 50%,var(--l-cream) 60%);background-size:200% 100%;animation:lp-skel 1.4s infinite}
+@keyframes lp-skel{to{background-position:-100% 0}}

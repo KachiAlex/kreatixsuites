@@ -24,7 +24,7 @@ import { billingRoutes } from "./routes/billing.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
-import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention } from "./billing.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention, getPlans } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
@@ -183,6 +183,23 @@ async function main() {
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
+
+  /**
+   * Public plan catalog — the landing page renders pricing straight from this,
+   * so superadmin edits in the portal surface on the site within a minute.
+   * No auth: prices and feature flags are public marketing data.
+   */
+  app.get("/api/plans", async (_req, reply) => {
+    reply.header("Cache-Control", "public, max-age=60");
+    const plans = await getPlans(true);
+    return {
+      plans: plans.map((p) => ({
+        slug: p.slug, name: p.name,
+        priceNgn: p.price_ngn, memberPriceNgn: p.member_price_ngn,
+        features: p.features ?? {}, limits: p.limits ?? {},
+      })),
+    };
+  });
 
   /**
    * Paystack webhook — lives outside billingRoutes' requireAuth so Paystack can
