@@ -609,7 +609,7 @@ export function SuperPortal() {
   const nav = (id: Section) => {
     setActiveSec(id);
     if (window.location.hash !== `#${id}`) window.location.hash = id;
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    document.querySelector(".sap-body")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const gotoBadFeedback = () => { setMood("bad"); nav("feedback"); };
 
@@ -700,25 +700,30 @@ export function SuperPortal() {
         </div>
       </div>
 
-      <nav className="sap-nav" aria-label="Portal sections" role="tablist">
-        {(
-          [
-            ["payments", <>Payments {pendingCount > 0 && <span className="sap-count warn">{pendingCount}</span>}</>],
-            ["feedback", <>Feedback <span className="sap-count">{feedback.length}</span></>],
-            ["workspaces", "Workspaces"],
-            ["ai-usage", "AI usage"],
-            ["pricing", <>Plan &amp; pricing</>],
-            ["email", "Email tools"],
-            ["history", <>History</>],
-          ] as [Section, ReactNode][]
-        ).map(([id, label]) => (
-          <a key={id} href={`#${id}`} role="tab" aria-selected={activeSec === id}
-            className={activeSec === id ? "active" : ""}
-            onClick={(e) => { e.preventDefault(); nav(id); }}>
-            {label}
-          </a>
-        ))}
-      </nav>
+      <div className="sap-body">
+      <aside className="sap-side">
+        <nav className="sap-sidenav" aria-label="Portal sections" role="tablist">
+          <span className="sap-sidecap">Console</span>
+          {(
+            [
+              ["payments", "wallet", <>Payments {pendingCount > 0 && <span className="sap-count warn">{pendingCount}</span>}</>],
+              ["feedback", "chat", <>Feedback <span className="sap-count">{feedback.length}</span></>],
+              ["workspaces", "building", "Workspaces"],
+              ["ai-usage", "spark", "AI usage"],
+              ["pricing", "settings", <>Plan &amp; pricing</>],
+              ["email", "mail", "Email tools"],
+              ["history", "clock", "History"],
+            ] as [Section, string, ReactNode][]
+          ).map(([id, ico, label]) => (
+            <a key={id} href={`#${id}`} role="tab" aria-selected={activeSec === id}
+              className={activeSec === id ? "active" : ""}
+              onClick={(e) => { e.preventDefault(); nav(id); }}>
+              <I n={ico} s={15} /><span className="sap-sidelabel">{label}</span>
+            </a>
+          ))}
+        </nav>
+      </aside>
+      <div className="sap-pane">
 
       {/* ---------- payments ledger ---------- */}
       <section className="sap-card" id="payments" hidden={activeSec !== "payments"}>
@@ -1076,6 +1081,8 @@ export function SuperPortal() {
           <span>Newest 300 entries · shown {auditFiltered.length}</span>
         </div>
       </section>
+      </div>{/* .sap-pane */}
+      </div>{/* .sap-body */}
 
       <footer className="sap-bottom">
         <span><I n="shield" s={13} /> Superadmin only · tenant data restricted to this console</span>
