@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -42,29 +42,9 @@ export function FeedbackWidget() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [msgs, setMsgs] = useState<FbMsg[]>([]);
-  const [bubW, setBubW] = useState<Record<number, number>>({});
   const bodyRef = useRef<HTMLDivElement>(null);
-  const probeRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => { bodyRef.current?.scrollTo(0, bodyRef.current.scrollHeight); }, [msgs, open, min]);
-
-  // Some engines (older WebView/Blink) collapse fit-content bubbles toward
-  // min-content when overflow-wrap allows breaks anywhere — user bubbles then
-  // render one word per line. Measure the natural line width in a probe and
-  // apply it explicitly so the width is engine-independent.
-  useLayoutEffect(() => {
-    const probe = probeRef.current, body = bodyRef.current;
-    if (!probe || !body) return;
-    // width is border-box: include bubble padding (18px) and the emoji slot
-    const max = Math.max(140, Math.floor(body.clientWidth * 0.82) - 4);
-    const next: Record<number, number> = {};
-    msgs.forEach((m, i) => {
-      if (m.role !== "user") return;
-      probe.textContent = m.text;
-      next[i] = Math.min(probe.offsetWidth + (m.sentiment ? 22 : 0) + 18, max);
-    });
-    setBubW(next);
-  }, [msgs, open]);
 
   // reload the full thread on each open so superadmin replies appear
   useEffect(() => {
@@ -177,9 +157,9 @@ export function FeedbackWidget() {
                       </div>
                     </div>
                   ) : (
-                    <div key={i} className="fb-row user">
-                      <div className="fb-col user">
-                        <div className="fb-bubble user" style={bubW[i] ? { width: bubW[i] } : undefined}>
+                    <div key={i} className="fb-row fb-user">
+                      <div className="fb-col fb-user">
+                        <div className="fb-bubble fb-user">
                           {m.sentiment && <span className="fb-emoji">{ICONS[m.sentiment]}</span>}
                           {m.text}
                         </div>
@@ -189,7 +169,6 @@ export function FeedbackWidget() {
                   ),
                 )}
               </div>
-              <span ref={probeRef} className="fb-probe" aria-hidden="true" />
               <div className="fb-input">
                 <input
                   value={draft}
