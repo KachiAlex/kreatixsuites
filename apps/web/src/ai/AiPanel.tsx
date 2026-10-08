@@ -16,8 +16,8 @@ interface Pending {
 }
 interface ActionRow { id: string; mode: string; prompt: string; applied: boolean; ops: number; by: string; createdAt: string }
 export interface AiQuota {
-  plan: "trial" | "paid";
-  tier?: "standard" | "business";
+  plan: "free" | "trial" | "paid";
+  tier?: string; // plan slug — free/pro/business or a custom catalog slug
   orgTokensUsed: number; orgTokensLimit: number;
   userTodayUsed: number; userTodayLimit: number;
   trialRequestsUsed?: number; trialRequestsLimit?: number;
@@ -205,7 +205,9 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
       {quota && (
         <div className="ai-quota" title={quota.plan === "trial"
           ? "Trial workspaces include a free taste of Kreatix AI"
-          : `Workspace monthly AI credit budget — ${quota.tier === "business" ? "Business" : "Standard"} plan`}>
+          : quota.plan === "free"
+            ? "Free plan — daily AI requests, resets at midnight"
+            : `Workspace monthly AI credit budget — ${quota.tier ?? "paid"} plan`}>
           {quota.plan === "trial" ? (
             <>
               <div className="ai-quota-row">
@@ -214,11 +216,19 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
               </div>
               <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, ((quota.trialRequestsUsed ?? 0) / Math.max(1, quota.trialRequestsLimit ?? 1)) * 100)}%` }} /></div>
             </>
+          ) : quota.plan === "free" ? (
+            <>
+              <div className="ai-quota-row">
+                <span>{quota.userTodayUsed}/{quota.userTodayLimit} requests today</span>
+                <span>Free</span>
+              </div>
+              <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, (quota.userTodayUsed / Math.max(1, quota.userTodayLimit)) * 100)}%` }} /></div>
+            </>
           ) : (
             <>
               <div className="ai-quota-row">
                 <span>{fmtTok(quota.orgTokensUsed)} / {fmtTok(quota.orgTokensLimit)} credits</span>
-                <span>{quota.tier === "business" ? "Business" : "Standard"} · resets {new Date(quota.resetsAt).toLocaleDateString()}</span>
+                <span>{(quota.tier ?? "paid").replace(/^./, (c) => c.toUpperCase())} · resets {new Date(quota.resetsAt).toLocaleDateString()}</span>
               </div>
               <div className="ai-quota-bar"><div style={{ width: `${Math.min(100, (quota.orgTokensUsed / Math.max(1, quota.orgTokensLimit)) * 100)}%` }} /></div>
             </>

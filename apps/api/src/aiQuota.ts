@@ -3,7 +3,7 @@
 // token budget (cost control, scales with seats), a small lifetime taste
 // quota for trialing workspaces, and a platform-wide spend circuit-breaker.
 import { one, q, run } from "./db.js";
-import { ensureSubscription, effectiveState, seatCount, type Subscription, type PlanTier } from "./billing.js";
+import { ensureSubscription, effectiveState, effectivePlan, seatCount, planLimit, type Subscription, type PlanTier, type Plan } from "./billing.js";
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
 import { getPolicies } from "./policies.js";
 
@@ -16,23 +16,23 @@ const envInt = (k: string, dflt: number) => {
 
 export const limits = {
   trialRequests: () => envInt("KREATIX_AI_TRIAL_REQUESTS", 50),
-  orgTokensBase: () => envInt("KREATIX_AI_ORG_TOKENS_BASE", 3_000_000),
-  orgTokensPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_PER_SEAT", 1_000_000),
-  businessBase: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_BASE", 12_000_000),
-  businessPerSeat: () => envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_PER_SEAT", 4_000_000),
-  // per-user caps scale with the plan tier — business users get more headroom
-  userDaily: (plan?: PlanTier) => plan === "business"
-    ? envInt("KREATIX_AI_USER_DAILY_BUSINESS", 1000)
-    : envInt("KREATIX_AI_USER_DAILY", 300),
-  userPerMin: (plan?: PlanTier) => plan === "business"
-    ? envInt("KREATIX_AI_USER_PER_MIN_BUSINESS", 40)
-    : envInt("KREATIX_AI_USER_PER_MIN", 20),
+  // per-user caps + monthly token budgets come from the plan's limits JSONB;
+  // env vars are the fallback when a limit key is absent
+  userDaily: (plan: Plan) => planLimit(plan, "ai_daily",
+    plan.slug === "business" ? envInt("KREATIX_AI_USER_DAILY_BUSINESS", 1000) : envInt("KREATIX_AI_USER_DAILY", 300)),
+  userPerMin: (plan: Plan) => planLimit(plan, "ai_per_min",
+    plan.slug === "business" ? envInt("KREATIX_AI_USER_PER_MIN_BUSINESS", 40) : envInt("KREATIX_AI_USER_PER_MIN", 20)),
+  orgTokens: (plan: Plan, seats: number) =>
+    planLimit(plan, "ai_tokens_base", envInt("KREATIX_AI_ORG_TOKENS_BASE", 3_000_000))
+    + planLimit(plan, "ai_tokens_per_seat",
+        plan.slug === "business" ? envInt("KREATIX_AI_ORG_TOKENS_BUSINESS_PER_SEAT", 4_000_000)
+                                 : envInt("KREATIX_AI_ORG_TOKENS_PER_SEAT", 1_000_000)) * Math.max(0, seats - 1),
   platformBudgetUsd: () => envInt("KREATIX_AI_MONTHLY_BUDGET_USD", 200),
 };
 
 export interface AiQuota {
-  plan: "trial" | "paid";
-  tier: PlanTier; // subscription tier — drives token budget + rate limits
+  plan: "free" | "trial" | "paid";
+  tier: PlanTier; // effective plan slug — drives token budget + rate limits
   orgTokensUsed: number;
   orgTokensLimit: number;
   userTodayUsed: number;
@@ -61,13 +61,11 @@ const nextMonth = () => {
 };
 const nextDay = () => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) + "T00:00:00.000Z";
 
-/** Monthly token budget for a paid org — seat-scaled by plan tier,
- *  explicit override wins over everything. */
-export function orgTokenLimit(sub: Subscription, seats: number): number {
+/** Monthly token budget — seat-scaled from the plan's limits;
+ *  explicit superadmin override wins over everything. */
+export function orgTokenLimit(sub: Subscription, seats: number, plan: Plan): number {
   if (sub.ai_token_budget != null) return sub.ai_token_budget;
-  if (sub.plan === "business")
-    return limits.businessBase() + limits.businessPerSeat() * Math.max(0, seats - 1);
-  return limits.orgTokensBase() + limits.orgTokensPerSeat() * Math.max(0, seats - 1);
+  return limits.orgTokens(plan, seats);
 }
 
 /** Platform-wide spend this month (USD, from micros) — 5-min cached. */
@@ -91,7 +89,8 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
   const seats = await seatCount(orgId);
   const { state } = effectiveState(sub);
   const isTrial = state === "trialing";
-  const tier = (sub.plan === "business" ? "business" : "standard") as PlanTier;
+  const plan = await effectivePlan(sub);       // downgraded orgs get free-plan limits
+  const isFree = plan.slug === "free";
 
   const [orgTokens, userToday, trialReqs] = await Promise.all([
     isTrial ? Promise.resolve({ n: "0" }) : one<{ n: string }>(
@@ -107,15 +106,15 @@ export async function aiQuotaFor(orgId: string, userId: string): Promise<AiQuota
   ]);
 
   return {
-    plan: isTrial ? "trial" : "paid",
-    tier,
+    plan: isFree ? "free" : isTrial ? "trial" : "paid",
+    tier: plan.slug,
     orgTokensUsed: Number(orgTokens?.n ?? 0),
-    orgTokensLimit: orgTokenLimit(sub, seats),
+    orgTokensLimit: orgTokenLimit(sub, seats, plan),
     userTodayUsed: Number(userToday?.n ?? 0),
-    userTodayLimit: limits.userDaily(tier),
+    userTodayLimit: limits.userDaily(plan),
     trialRequestsUsed: trialReqs ? Number(trialReqs.n) : undefined,
     trialRequestsLimit: isTrial ? limits.trialRequests() : undefined,
-    resetsAt: isTrial ? nextDay() : nextMonth(),
+    resetsAt: isTrial || isFree ? nextDay() : nextMonth(),
   };
 }
 
@@ -130,10 +129,15 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
   const sub = await ensureSubscription(orgId);
   const { state } = effectiveState(sub);
   const quota = await aiQuotaFor(orgId, userId);
+  const plan = await effectivePlan(sub);
 
   if (state === "locked") {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
-      message: "AI is a paid-plan feature — the workspace subscription has expired" };
+      message: "This workspace is suspended — contact the platform admin" };
+  }
+  if (!plan.features?.ai) {
+    return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
+      message: "Kreatix AI is not included in this workspace's plan" };
   }
   // org policy kill-switch — admin can disable AI workspace-wide
   if ((await getPolicies(orgId)).aiDisabled) {
@@ -146,15 +150,17 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
   }
   if (!quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
     return { allowed: false, http: 429, error: "quota_exceeded", quota,
-      message: "Workspace monthly AI budget reached — resets on the 1st", retryAfterSec: secUntil(quota.resetsAt) };
+      message: quota.plan === "free"
+        ? "Free AI credits used up — upgrade for a bigger monthly budget"
+        : "Workspace monthly AI budget reached — resets on the 1st", retryAfterSec: secUntil(quota.resetsAt) };
   }
-  if (quota.userTodayUsed >= limits.userDaily(quota.tier)) {
+  if (quota.userTodayUsed >= limits.userDaily(plan)) {
     return { allowed: false, http: 429, error: "rate_limited", quota,
       message: "Daily AI limit reached — resets at midnight", retryAfterSec: secUntil(nextDay()) };
   }
   const nowTs = Date.now();
   const w = (burst.get(userId) ?? []).filter((t) => t > nowTs - 60_000);
-  if (w.length >= limits.userPerMin(quota.tier)) {
+  if (w.length >= limits.userPerMin(plan)) {
     burst.set(userId, w);
     return { allowed: false, http: 429, error: "rate_limited", quota,
       message: "Too many AI requests — slow down", retryAfterSec: 60 };
@@ -171,10 +177,11 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
 const secUntil = (iso: string) => Math.max(1, Math.ceil((new Date(iso).getTime() - Date.now()) / 1000));
 
 /** Per-mode + per-tier model selection. Precedence:
- *  MODEL_<MODE>_<TIER> → MODEL_<MODE> → MODEL_BUSINESS (business only) → MODEL. */
+ *  MODEL_<MODE>_<TIER> → MODEL_<MODE> → MODEL_BUSINESS (business only) → MODEL.
+ *  free/pro share the STANDARD env naming (legacy alias); business → BUSINESS. */
 export function modelFor(mode: string, tier?: PlanTier): string {
   const e = process.env;
-  const M = mode.toUpperCase(), T = (tier ?? "standard").toUpperCase();
+  const M = mode.toUpperCase(), T = tier === "business" ? "BUSINESS" : "STANDARD";
   return e[`KREATIX_AI_MODEL_${M}_${T}`]
     || e[`KREATIX_AI_MODEL_${M}`]
     || (tier === "business" ? e.KREATIX_AI_MODEL_BUSINESS : undefined)
@@ -207,7 +214,7 @@ export async function aiBudgetNotices(log?: { warn: (o: unknown, m: string) => v
       try {
         const { state } = effectiveState(sub);
         if (state !== "active" && state !== "granted") continue;
-        const limit = orgTokenLimit(sub, await seatCount(sub.org_id));
+        const limit = orgTokenLimit(sub, await seatCount(sub.org_id), await effectivePlan(sub));
         const used = await one<{ n: string }>(
           "SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS n FROM ai_usage WHERE org_id = $1 AND created_at >= $2",
           [sub.org_id, ms]);

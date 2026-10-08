@@ -9,6 +9,7 @@ import {
 } from "../auth.js";
 import { getBlob } from "../blobs.js";
 import { getPolicies, dlpHit } from "../policies.js";
+import { entitled } from "../billing.js";
 import { sendRawBlob } from "./content.js";
 
 const shareSchema = z.object({
@@ -114,6 +115,13 @@ export function sharingRoutes(app: FastifyInstance) {
         return reply.code(403).send({
           error: "policy_blocked",
           message: "Org DLP policy blocks share links for content matching a restricted pattern",
+        });
+      }
+      // password/expiry-protected links are a paid-plan feature
+      if ((body.password || body.expiresAt) && !(await entitled(user.orgId, "share_protect"))) {
+        return reply.code(402).send({
+          error: "upgrade_required",
+          message: "Password-protected and expiring share links require a paid plan",
         });
       }
       const token = randomBytes(24).toString("base64url");

@@ -51,6 +51,7 @@ export async function signToken(userId: string, ttl = "7d"): Promise<string> {
  *  client can verify without connectivity (14-day offline grace). */
 export async function signEntitlement(claims: {
   org: string; status: string; seats: number; periodEnd?: string | null;
+  plan?: string; features?: Record<string, boolean>;
 }): Promise<string> {
   return new SignJWT({ ...claims })
     .setProtectedHeader({ alg: "HS256" })

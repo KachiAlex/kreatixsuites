@@ -16,11 +16,16 @@ interface Invite {
   id: string; token: string; max_uses: number; uses: number;
   expires_at: string | null; created_at: string; created_by_name: string;
 }
+interface PlanPub {
+  slug: string; name: string; priceNgn: number; memberPriceNgn: number; amountNgn: number;
+  features: Record<string, boolean>; limits: Record<string, number>;
+}
 interface BillingSub {
   state: string; status: string; until: string | null; daysLeft: number | null;
-  seats: number; amountNgn: number; businessAmountNgn: number; plan: string; currency: string;
+  seats: number; amountNgn: number; plan: string; planName: string; currency: string;
+  features: Record<string, boolean>; limits: Record<string, number>; plans: PlanPub[];
   trialEndsAt: string | null; periodEnd: string | null;
-  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number; businessMultiplier: number };
+  config: { trialMonths: number };
   paystackEnabled: boolean;
 }
 interface Payment {
@@ -30,7 +35,7 @@ interface Payment {
 }
 interface AiUsage {
   month: string; requests: number; tokens: number; costUsd: number;
-  quota: { plan: string; tier?: string; orgTokensUsed: number; orgTokensLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
+  quota: { plan: string; tier?: string; orgTokensUsed: number; orgTokensLimit: number; userTodayUsed: number; userTodayLimit: number; trialRequestsUsed?: number; trialRequestsLimit?: number; resetsAt: string };
   byUser: { userId: string; name: string; requests: number; tokens: number }[];
   byDay: { day: string; requests: number; tokens: number }[];
   byMode: { mode: string; requests: number; tokens: number }[];
@@ -177,7 +182,7 @@ export function Admin() {
     setScimTokens((xs) => xs.filter((t) => t.id !== id));
   };
 
-  const checkout = async (plan: "standard" | "business" = "standard") => {
+  const checkout = async (plan: string) => {
     try {
       const r = await api.post<{ mode: string; authorizationUrl?: string; message?: string; amountNgn?: number }>(
         "/api/billing/checkout", { months: 1, plan });
@@ -325,12 +330,14 @@ export function Admin() {
           {(() => {
             const s = billing.subscription;
             const stateLabel: Record<string, string> = {
+              free: "Free plan — upgrade for more",
               trialing: `Free trial — ${s.daysLeft ?? 0} days left`,
               active: `Active — renews ${s.periodEnd ? new Date(s.periodEnd).toLocaleDateString() : "—"}`,
               grace: `Payment overdue — ${s.daysLeft ?? 0} days of grace left`,
-              locked: "Locked — workspace is read-only",
+              locked: "Suspended — workspace is read-only",
               granted: `Complimentary access until ${s.until ? new Date(s.until).toLocaleDateString() : "—"}`,
             };
+            const paidPlans = s.plans.filter((p) => p.priceNgn > 0 || p.memberPriceNgn > 0);
             return (
               <>
                 <div className="admin-flags">
@@ -338,34 +345,25 @@ export function Admin() {
                     <b>Status</b><span>{stateLabel[s.state] ?? s.state}</span>
                   </div>
                   <div className="flag on"><b>Plan</b>
-                    <span><span className="role-badge owner" style={{ marginRight: 6 }}>{s.plan === "business" ? "Business" : "Standard"}</span>
-                      {fmtNgn(s.amountNgn, "₦")}/mo · {fmtNgn(s.config.basePriceNgn, "₦")} admin + {fmtNgn(s.config.memberPriceNgn, "₦")}/member
-                      {s.plan === "business" && ` (×${s.config.businessMultiplier})`}</span>
+                    <span><span className="role-badge owner" style={{ marginRight: 6 }}>{s.planName}</span>
+                      {s.amountNgn > 0
+                        ? `${fmtNgn(s.amountNgn, "₦")}/mo`
+                        : "₦0 — basic editing always free"}</span>
                   </div>
                   <div className="flag on"><b>Seats</b><span>{s.seats} active member{s.seats === 1 ? "" : "s"}</span></div>
                 </div>
-                {isOwnerOrAdmin && s.state !== "granted" && (
-                  <div style={{ marginTop: 12 }}>
-                    {s.plan !== "business" ? (
-                      <>
-                        <button className="btn-primary" onClick={() => void checkout("standard")}>
-                          {s.state === "trialing" ? `Pay now — Standard (${fmtNgn(s.amountNgn, "₦")}/mo)` : `Renew Standard — ${fmtNgn(s.amountNgn, "₦")}/mo`}
-                        </button>
-                        <button className="btn-secondary" style={{ marginLeft: 8 }} onClick={() => void checkout("business")}>
-                          Business — {fmtNgn(s.businessAmountNgn, "₦")}/mo (4× AI allowance)
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button className="btn-primary" onClick={() => void checkout("business")}>
-                          Renew Business — {fmtNgn(s.businessAmountNgn, "₦")}/mo
-                        </button>
-                        <button className="btn-secondary" style={{ marginLeft: 8 }} onClick={() => void checkout("standard")}>
-                          Switch to Standard — {fmtNgn(s.amountNgn, "₦")}/mo
-                        </button>
-                      </>
-                    )}
-                    <div style={{ marginTop: 8, color: "var(--sub)", fontSize: 13 }}>
+                {isOwnerOrAdmin && s.state !== "granted" && paidPlans.length > 0 && (
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {paidPlans.map((p) => (
+                      <button key={p.slug}
+                        className={p.slug === s.plan ? "btn-primary" : "btn-secondary"}
+                        onClick={() => void checkout(p.slug)}>
+                        {p.slug === s.plan && s.state === "active" ? `Renew ${p.name}` :
+                          `${s.state === "free" ? "Upgrade to " : p.slug === s.plan ? "Pay " : ""}${p.name}`} — {fmtNgn(p.amountNgn, "₦")}/mo
+                        {p.memberPriceNgn > 0 && s.seats > 1 ? ` (${fmtNgn(p.priceNgn, "₦")} + ${s.seats - 1}×${fmtNgn(p.memberPriceNgn, "₦")})` : ""}
+                      </button>
+                    ))}
+                    <div style={{ marginTop: 8, color: "var(--sub)", fontSize: 13, flexBasis: "100%" }}>
                       {s.paystackEnabled ? "Card / bank via Paystack" : "Bank transfer — confirmed by admin within 24h"}
                     </div>
                   </div>
@@ -397,7 +395,7 @@ export function Admin() {
           <h2>Kreatix AI usage</h2>
           <div className="admin-flags">
             <div className="flag on">
-              <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : "This month"}</b>
+              <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : aiUsage.quota.plan === "free" ? "Free tier AI" : "This month"}</b>
               <span>
                 {aiUsage.quota.plan === "trial"
                   ? `${aiUsage.quota.trialRequestsUsed ?? 0} / ${aiUsage.quota.trialRequestsLimit ?? 0} requests used`
@@ -417,7 +415,9 @@ export function Admin() {
               <span>
                 {aiUsage.quota.plan === "trial"
                   ? "Trial — subscribe for a monthly AI allowance"
-                  : `${aiUsage.quota.tier === "business" ? "Business" : "Standard"} — ${aiUsage.quota.orgTokensLimit.toLocaleString()} credits/mo${aiUsage.quota.tier !== "business" ? " · Business plan includes 4× more" : ""}`}
+                  : aiUsage.quota.plan === "free"
+                    ? `Free — ${aiUsage.quota.userTodayLimit ?? 0} requests/day/user · upgrade for more`
+                    : `${billing?.subscription.planName ?? aiUsage.quota.tier} — ${aiUsage.quota.orgTokensLimit.toLocaleString()} credits/mo`}
               </span>
             </div>
           </div>

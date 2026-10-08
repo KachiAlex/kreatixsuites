@@ -24,7 +24,7 @@ import { billingRoutes } from "./routes/billing.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
-import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack } from "./billing.js";
+import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
@@ -273,6 +273,9 @@ async function main() {
     aiBudgetNotices(app.log)
       .then((n) => { if (n.orgs || n.platform) app.log.info(n, "AI budget notices sent"); })
       .catch((e) => app.log.warn(e, "AI budget notice sweep failed"));
+    sweepVersionRetention()
+      .then((n) => { if (n) app.log.info({ pruned: n }, "free-tier version retention applied"); })
+      .catch((e) => app.log.warn(e, "version retention sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

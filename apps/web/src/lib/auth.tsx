@@ -5,8 +5,21 @@ import { isDesktop } from "./platform";
 import { clearEntitlement, refreshEntitlement } from "./offline/license";
 import { ANON_USER, endAnonymousSession, isAnonymous, startAnonymousSession } from "./offline/trial";
 
+/** Effective plan snapshot from /api/auth/me — the UI entitlement map. */
+export interface SessionPlan {
+  slug: string; name: string;
+  features: Record<string, boolean>;
+  limits: Record<string, number>;
+  state: string;
+}
+
 interface AuthState {
   user: User | null;
+  plan: SessionPlan | null;
+  /** Feature gate — signed-in users resolve via their plan; anonymous/local
+   *  sessions aren't gated (local processing costs nothing, server-side
+   *  entitlements stay authoritative for anything that hits the API). */
+  hasFeature: (key: string) => boolean;
   loading: boolean;
   /** Resolves null on success, or the short-lived mfaToken when the account
    *  requires a second factor — the caller then completes via completeMfaLogin. */
@@ -24,6 +37,7 @@ const Ctx = createContext<AuthState>(null as never);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [plan, setPlan] = useState<SessionPlan | null>(null);
   const [loading, setLoading] = useState(!!getToken() || isAnonymous());
 
   useEffect(() => {
@@ -35,8 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (!getToken()) return;
-    api.get<{ user: User }>("/api/auth/me")
-      .then((r) => setUser(r.user))
+    api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me")
+      .then((r) => { setUser(r.user); setPlan(r.plan ?? null); })
       .catch(() => setToken(null))
       .finally(() => setLoading(false));
   }, []);
@@ -59,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (r.mfaRequired) return r.mfaToken ?? null;
     setToken(r.token!);
     setUser(r.user!);
+    void refreshUser();
     if (isDesktop) void refreshEntitlement();
     void convertAnonymous(wasAnon);
     return null;
@@ -70,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       { mfaToken, code, ...(isDesktop ? { client: "desktop" } : {}) });
     setToken(r.token);
     setUser(r.user);
+    void refreshUser();
     if (isDesktop) void refreshEntitlement();
     void convertAnonymous(wasAnon);
   };
@@ -81,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     setToken(r.token);
     setUser(r.user);
+    void refreshUser();
     if (isDesktop) void refreshEntitlement();
     void convertAnonymous(wasAnon);
   };
@@ -89,8 +106,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = async (token: string) => {
     const wasAnon = localStorage.getItem("kx.anon") === "1";
     setToken(token);
-    const r = await api.get<{ user: User }>("/api/auth/me");
+    const r = await api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me");
     setUser(r.user);
+    setPlan(r.plan ?? null);
     void convertAnonymous(wasAnon);
   };
 
@@ -102,20 +120,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshUser = async () => {
-    const r = await api.get<{ user: User }>("/api/auth/me");
+    const r = await api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me");
     setUser(r.user);
+    setPlan(r.plan ?? null);
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
+    setPlan(null);
     // clear the anonymous-tier flag too — otherwise the next load resurrects
     // the local pseudo-user and the user appears signed in again
     if (isAnonymous()) endAnonymousSession();
     if (isDesktop) void clearEntitlement();
   };
 
-  return <Ctx.Provider value={{ user, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, enterAnonymous, logout }}>{children}</Ctx.Provider>;
+  const hasFeature = (key: string) => (plan ? plan.features?.[key] === true : true);
+  return <Ctx.Provider value={{ user, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, enterAnonymous, logout }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

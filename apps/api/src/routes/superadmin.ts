@@ -9,7 +9,7 @@ import { q, one, run, now, tx, DATA_DIR } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getConfig, setConfig, ensureSubscription, confirmPayment, seatCount,
-  monthlyAmount, effectiveState,
+  monthlyAmount, effectiveState, getPlans, resolvePlan, bustPlanCache, type Plan,
 } from "../billing.js";
 import { mailEnabled, sendMail, tpl } from "../email.js";
 import { limits } from "../aiQuota.js";
@@ -38,17 +38,16 @@ export function superadminRoutes(app: FastifyInstance) {
     const count = async (sql: string, params?: unknown[]) => ((await one<{ n: number }>(sql, params))?.n ?? 0);
     const mrr = await one<{ total: number | null }>(
       `SELECT SUM(amount_ngn) AS total FROM subscriptions WHERE status = 'active' AND period_end > $1`, [now()]);
+    const orgs = await count("SELECT COUNT(*) n FROM orgs");
+    const activeSubs = await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'active' AND period_end > $1", [now()]);
+    const trialing = await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'trialing' AND trial_ends_at > $1", [now()]);
+    const locked = await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'suspended'", []);
+    const granted = await count("SELECT COUNT(*) n FROM subscriptions WHERE override_until > $1", [now()]);
     return {
-      orgs: await count("SELECT COUNT(*) n FROM orgs"),
+      orgs,
       users: await count("SELECT COUNT(*) n FROM users WHERE NOT disabled"),
-      activeSubs: await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'active' AND period_end > $1", [now()]),
-      trialing: await count("SELECT COUNT(*) n FROM subscriptions WHERE status = 'trialing' AND trial_ends_at > $1", [now()]),
-      locked: await count(
-        `SELECT COUNT(*) n FROM subscriptions s WHERE
-           COALESCE(s.override_until, '1970-01-01'::timestamptz) < $1 AND (
-             (s.status = 'trialing' AND COALESCE(s.trial_ends_at, '1970-01-01'::timestamptz) + interval '7 days' < $1)
-             OR (s.status = 'active' AND COALESCE(s.period_end, '1970-01-01'::timestamptz) + interval '7 days' < $1)
-             OR s.status = 'canceled')`, [now()]),
+      activeSubs, trialing, locked, granted,
+      freeTier: Math.max(0, orgs - activeSubs - trialing - locked - granted),
       pendingPayments: await count("SELECT COUNT(*) n FROM payments WHERE status = 'pending'"),
       mrrNgn: mrr?.total ?? 0,
     };
@@ -67,14 +66,83 @@ export function superadminRoutes(app: FastifyInstance) {
               EXISTS(SELECT 1 FROM users su WHERE su.org_id = o.id AND su.is_super) AS has_super
        FROM orgs o LEFT JOIN subscriptions s ON s.org_id = o.id
        ORDER BY o.created_at DESC LIMIT 500`);
-    const cfg = await getConfig();
+    const plans = await getPlans();
     return {
       orgs: rows.map((r) => ({
         ...r,
         state: r.status ? effectiveState({ org_id: r.id, seats: r.seats, ...pickSub(r) }).state : "none",
-        monthlyAmountNgn: monthlyAmount(cfg, r.seats, r.plan === "business" ? "business" : "standard"),
+        monthlyAmountNgn: monthlyAmount(resolvePlan(plans, r.plan), r.seats),
       })),
     };
+  });
+
+  /** Plan catalog — pricing tiers + entitlement matrix, editable below. */
+  app.get("/api/superadmin/plans", async () => ({ plans: await getPlans() }));
+
+  app.put("/api/superadmin/plans/:slug", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const slug = (req.params as { slug: string }).slug;
+    const body = z.object({
+      name: z.string().min(1).max(60).optional(),
+      price_ngn: z.number().int().min(0).max(100_000_000).optional(),
+      member_price_ngn: z.number().int().min(0).max(100_000_000).optional(),
+      features: z.record(z.string(), z.boolean()).optional(),
+      limits: z.record(z.string(), z.number().int().min(0).max(1_000_000_000)).optional(),
+      active: z.boolean().optional(),
+      sort: z.number().int().min(0).max(999).optional(),
+    }).parse(req.body);
+    const before = await one<Plan>("SELECT * FROM plans WHERE slug = $1", [slug]);
+    if (!before) return reply.code(404).send({ error: "not_found" });
+    const after: Plan = {
+      ...before,
+      name: body.name ?? before.name,
+      price_ngn: body.price_ngn ?? before.price_ngn,
+      member_price_ngn: body.member_price_ngn ?? before.member_price_ngn,
+      features: body.features ? { ...before.features, ...body.features } : before.features,
+      limits: body.limits ? { ...before.limits, ...body.limits } : before.limits,
+      active: body.active ?? before.active,
+      sort: body.sort ?? before.sort,
+    };
+    if (after.slug === "free" && (after.price_ngn > 0 || after.member_price_ngn > 0)) {
+      return reply.code(400).send({ error: "bad_request", message: "The free plan must stay priced at ₦0" });
+    }
+    if (!after.active && after.slug === "free") {
+      return reply.code(400).send({ error: "bad_request", message: "The free plan cannot be deactivated" });
+    }
+    await run(
+      `UPDATE plans SET name=$2, price_ngn=$3, member_price_ngn=$4, features=$5, limits=$6, active=$7, sort=$8 WHERE slug=$1`,
+      [slug, after.name, after.price_ngn, after.member_price_ngn,
+       JSON.stringify(after.features), JSON.stringify(after.limits), after.active, after.sort]);
+    bustPlanCache();
+    await logSa(user, "plan.update", `${after.name} (${slug})`,
+      { priceNgn: { from: before.price_ngn, to: after.price_ngn },
+        memberPriceNgn: { from: before.member_price_ngn, to: after.member_price_ngn },
+        featuresChanged: Object.keys(body.features ?? {}).filter((k) => before.features?.[k] !== after.features[k]),
+        limitsChanged: Object.keys(body.limits ?? {}).filter((k) => before.limits?.[k] !== after.limits[k]),
+        active: { from: before.active, to: after.active } });
+    return { plan: after };
+  });
+
+  app.post("/api/superadmin/plans", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const body = z.object({
+      slug: z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/),
+      name: z.string().min(1).max(60),
+      price_ngn: z.number().int().min(0).max(100_000_000),
+      member_price_ngn: z.number().int().min(0).max(100_000_000).default(0),
+      features: z.record(z.string(), z.boolean()).default({}),
+      limits: z.record(z.string(), z.number().int().min(0).max(1_000_000_000)).default({}),
+    }).parse(req.body);
+    if (await one("SELECT slug FROM plans WHERE slug = $1", [body.slug])) {
+      return reply.code(409).send({ error: "conflict", message: "Plan slug already exists" });
+    }
+    await run(
+      `INSERT INTO plans (slug, name, price_ngn, member_price_ngn, features, limits, sort) VALUES ($1,$2,$3,$4,$5,$6,99)`,
+      [body.slug, body.name, body.price_ngn, body.member_price_ngn,
+       JSON.stringify(body.features), JSON.stringify(body.limits)]);
+    bustPlanCache();
+    await logSa(user, "plan.create", `${body.name} (${body.slug})`, { priceNgn: body.price_ngn, memberPriceNgn: body.member_price_ngn });
+    return { plan: await one("SELECT * FROM plans WHERE slug = $1", [body.slug]) };
   });
 
   /** Pricing/plan config — what every workspace pays. */
@@ -158,7 +226,7 @@ export function superadminRoutes(app: FastifyInstance) {
       extendTrialDays: z.number().int().min(1).max(730).optional(),
       status: z.enum(["canceled"]).optional(),
       aiTokenBudget: z.number().int().min(0).nullable().optional(), // AI quota override (null = computed)
-      plan: z.enum(["standard", "business"]).optional(),            // AI budget tier
+      plan: z.string().min(1).max(40).optional(),                   // plan slug from the catalog
     }).parse(req.body);
     await ensureSubscription(orgId);
     const applied: Record<string, unknown> = {};
@@ -184,9 +252,11 @@ export function superadminRoutes(app: FastifyInstance) {
       applied.aiTokenBudget = body.aiTokenBudget;
     }
     if (body.plan !== undefined) {
+      const pl = (await getPlans(true)).find((p) => p.slug === body.plan);
+      if (!pl) return reply.code(400).send({ error: "bad_plan", message: "Unknown or inactive plan" });
       await run("UPDATE subscriptions SET plan = $2, updated_at = $3 WHERE org_id = $1",
-        [orgId, body.plan, now()]);
-      applied.plan = body.plan;
+        [orgId, pl.slug, now()]);
+      applied.plan = pl.slug;
     }
     if (Object.keys(applied).length) await logSa(user, "org.subscription", orgRow.name, applied);
     return { subscription: await ensureSubscription(orgId) };
@@ -221,13 +291,13 @@ export function superadminRoutes(app: FastifyInstance) {
          FROM payments WHERE org_id = $1 ORDER BY created_at DESC LIMIT 50`, [orgId]),
       one<{ n: string }>("SELECT COUNT(*)::text AS n FROM feedback WHERE org_id = $1", [orgId]),
     ]);
-    const cfg = await getConfig();
+    const plans = await getPlans();
     return {
       org: {
         id: org.id, name: org.name, createdAt: org.created_at, seats: Number(org.seats),
         subscription: sub,
         state: sub.status ? effectiveState({ org_id: org.id, seats: Number(org.seats), ...pickSub(sub) }).state : "none",
-        monthlyAmountNgn: monthlyAmount(cfg, Number(org.seats), sub.plan === "business" ? "business" : "standard"),
+        monthlyAmountNgn: monthlyAmount(resolvePlan(plans, sub.plan), Number(org.seats)),
       },
       members,
       usage: { files: Number(usage?.files ?? 0), bytes: Number(usage?.bytes ?? 0), versions: Number(usage?.versions ?? 0), comments: Number(usage?.comments ?? 0) },

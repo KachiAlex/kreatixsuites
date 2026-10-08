@@ -4,6 +4,7 @@ import { z } from "zod";
 import { one, run, now } from "../db.js";
 import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
 import { sendMailSafe, tpl } from "../email.js";
+import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
 
@@ -46,6 +47,12 @@ export function authRoutes(app: FastifyInstance) {
          WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
         [body.invite, now()]);
       if (!inv) return reply.code(400).send({ error: "bad_invite", message: "Invite link is expired or invalid" });
+      // plan seat cap — free/pro workspaces have a member ceiling (0 = unlimited)
+      const sub = await ensureSubscription(inv.org_id);
+      const maxMembers = planLimit(await effectivePlan(sub), "max_members", 0);
+      if (maxMembers > 0 && (await seatCount(inv.org_id)) >= maxMembers) {
+        return reply.code(402).send({ error: "seat_limit", message: "This workspace is full — its plan's member limit has been reached" });
+      }
       await run("UPDATE org_invites SET uses = uses + 1 WHERE id = $1", [inv.id]);
       orgId = inv.org_id;
       orgName = inv.name;
@@ -151,6 +158,12 @@ export function authRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/auth/me", { preHandler: requireAuth }, async (req) => {
-    return { user: (req as AuthedRequest).user };
+    const { user } = req as AuthedRequest;
+    const sub = await ensureSubscription(user.orgId);
+    const plan = await effectivePlan(sub);
+    return {
+      user,
+      plan: { slug: plan.slug, name: plan.name, features: plan.features ?? {}, limits: plan.limits ?? {}, state: effectiveState(sub).state },
+    };
   });
 }

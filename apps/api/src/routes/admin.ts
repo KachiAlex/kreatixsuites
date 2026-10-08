@@ -12,6 +12,7 @@ import { activeCollabRooms, collabPeers } from "../collab.js";
 import { ssoEnabled } from "./sso.js";
 import { samlEnabled } from "./saml.js";
 import { sendMailSafe, tpl } from "../email.js";
+import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../billing.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -95,19 +96,29 @@ export function adminRoutes(app: FastifyInstance) {
     return { invites: rows };
   });
 
-  app.post("/api/admin/invites", async (req) => {
+  app.post("/api/admin/invites", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const body = z.object({
       maxUses: z.number().int().min(1).max(500).default(25),
       expiresDays: z.number().int().min(1).max(90).default(14),
       email: z.string().email().optional(),      // also mail the link to this address
     }).parse(req.body ?? {});
+    // plan seat cap — clamp uses to the seats left (0 = unlimited plan)
+    const maxMembers = planLimit(await effectivePlan(await ensureSubscription(user.orgId)), "max_members", 0);
+    const seatsLeft = maxMembers > 0 ? Math.max(0, maxMembers - await seatCount(user.orgId)) : null;
+    if (seatsLeft === 0) {
+      return reply.code(402).send({
+        error: "seat_limit",
+        message: "This workspace is at its plan's member limit — upgrade to add more people",
+      });
+    }
+    const maxUses = seatsLeft === null ? body.maxUses : Math.min(body.maxUses, seatsLeft);
     const id = randomUUID();
     const token = randomBytes(18).toString("base64url");
     const expires = new Date(Date.now() + body.expiresDays * 86400000).toISOString();
     await run(
       "INSERT INTO org_invites (id, org_id, token, created_by, max_uses, expires_at, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [id, user.orgId, token, user.id, body.maxUses, expires, now()],
+      [id, user.orgId, token, user.id, maxUses, expires, now()],
     );
     if (body.email) {
       const org = await one<{ name: string }>("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
@@ -116,7 +127,7 @@ export function adminRoutes(app: FastifyInstance) {
         ...tpl.invite(org?.name ?? "a workspace", user.displayName, token),
       });
     }
-    return { id, token, expiresAt: expires, emailed: !!body.email };
+    return { id, token, expiresAt: expires, emailed: !!body.email, maxUses, seatsLeft };
   });
 
   app.delete("/api/admin/invites/:id", async (req) => {

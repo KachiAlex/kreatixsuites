@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DriveItem, FileShare, ShareLink } from "@kreatix/shared";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { PUBLIC_ORIGIN } from "../lib/platform";
 import { Modal } from "./Modal";
 
@@ -13,6 +14,10 @@ export function ShareDialog({ item, onClose, toast }: {
   const [perm, setPerm] = useState("viewer");
   const [linkPerm, setLinkPerm] = useState<"viewer" | "commenter" | "editor">("viewer");
   const [newLink, setNewLink] = useState<string | null>(null);
+  const { hasFeature } = useAuth();
+  const canProtect = hasFeature("share_protect");
+  const [linkPw, setLinkPw] = useState("");
+  const [linkDays, setLinkDays] = useState("");
 
   const load = useCallback(async () => {
     const [s, l] = await Promise.all([
@@ -36,9 +41,19 @@ export function ShareDialog({ item, onClose, toast }: {
   };
 
   const createLink = async () => {
-    const r = await api.post<{ link: ShareLink; url: string }>(`/api/files/${item.id}/links`, { permission: linkPerm });
-    setNewLink(`${PUBLIC_ORIGIN}${r.url}`);
-    load();
+    try {
+      const days = parseInt(linkDays, 10);
+      const r = await api.post<{ link: ShareLink; url: string }>(`/api/files/${item.id}/links`, {
+        permission: linkPerm,
+        password: canProtect && linkPw ? linkPw : undefined,
+        expiresAt: canProtect && days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : undefined,
+      });
+      setNewLink(`${PUBLIC_ORIGIN}${r.url}`);
+      setLinkPw(""); setLinkDays("");
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create link");
+    }
   };
 
   const copy = (text: string) => {
@@ -85,6 +100,21 @@ export function ShareDialog({ item, onClose, toast }: {
             </select>
             <button className="btn-ghost btn-sm" onClick={createLink}>Create link</button>
           </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+            <input type="password" placeholder={canProtect ? "Password (optional)" : "Password — Pro"}
+              value={linkPw} onChange={(e) => setLinkPw(e.target.value)}
+              disabled={!canProtect} style={{ flex: 1 }}
+              title={canProtect ? "Require this password to open the link" : "Password-protected links need a paid plan"} />
+            <input type="number" min={1} placeholder={canProtect ? "Expires in days" : "Expiry — Pro"}
+              value={linkDays} onChange={(e) => setLinkDays(e.target.value)}
+              disabled={!canProtect} style={{ width: 130 }}
+              title={canProtect ? "Link stops working after this many days" : "Expiring links need a paid plan"} />
+          </div>
+          {!canProtect && (
+            <small className="d-sub" style={{ marginTop: 4, display: "block" }}>
+              Password and expiry protection are included in paid plans — upgrade in Admin → Billing.
+            </small>
+          )}
         </div>
 
         {newLink && (

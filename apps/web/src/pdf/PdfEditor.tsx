@@ -117,6 +117,15 @@ const COLOR_NAMES: Record<string, string> = {
   "#1F9D66": "Green", "#3578E5": "Blue", "#8E6BC8": "Purple",
 };
 const MARKUP_TOOLS = new Set<Tool>(["highlight", "underline", "strikeout", "squiggly", "freehand", "polyline", "rect", "ellipse", "line", "arrow", "callout", "cloud", "note", "textbox", "stamp", "measure", "edittext", "image", "whiteout", "redact", "caret", "replace", "check", "cross"]);
+/** Premium tool gates — soft-locked on the free tier (server stays
+ *  authoritative for anything that costs compute; editing is local). */
+const SIGN_TOOLS = new Set<Tool>(["sign", "cryptosign"]);
+const PRO_EDIT_TOOLS = new Set<Tool>(["edittext", "image", "whiteout", "redact", "field", "caret", "replace"]);
+export function pdfToolLocked(t: Tool | string, has: (k: string) => boolean): string | null {
+  if (SIGN_TOOLS.has(t as Tool) && !has("pdf_sign")) return "pdf_sign";
+  if (PRO_EDIT_TOOLS.has(t as Tool) && !has("pdf_edit")) return "pdf_edit";
+  return null;
+}
 
 const REDACT_PRESETS: Record<string, { label: string; re: string }> = {
   ssn:    { label: "SSN (###-##-####)",  re: "\\b\\d{3}-\\d{2}-\\d{4}\\b" },
@@ -147,7 +156,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
   aiPrompt?: string;
 }) {
   const { msg, toast } = useToast();
-  const { user } = useAuth();
+  const { user, hasFeature } = useAuth();
   const navigate = useNavigate();
   const canEdit = permission === "owner" || permission === "editor";
   const [title, setTitle] = useState(item.name);
@@ -255,10 +264,21 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
   const [cmp, setCmp] = useState<{ page: number; st: string; a?: string; b?: string }[] | null>(null);
   // shared tool picker — ribbon dropdowns and the menubar route through here
   const pickTool = (t: Tool) => {
+    const gate = pdfToolLocked(t, hasFeature);
+    if (gate) {
+      toast(gate === "pdf_sign"
+        ? "PDF signatures are a paid-plan feature — upgrade in Admin → Billing"
+        : "Advanced PDF editing needs a paid plan — upgrade in Admin → Billing");
+      return;
+    }
     setTool(t);
     if (t === "sign" && !sigImg) setSigPadOpen(true);
     if (t === "cryptosign" && !digId) setDigSignDlg(true);
   };
+  /** Gated dialog openers — every signature entry point routes here. */
+  const needSignUpgrade = () => toast("PDF signatures are a paid-plan feature — upgrade in Admin → Billing");
+  const openSigPad = () => (hasFeature("pdf_sign") ? setSigPadOpen(true) : needSignUpgrade());
+  const openDigSign = () => (hasFeature("pdf_sign") ? setDigSignDlg(true) : needSignUpgrade());
   const cmpRef = useRef<HTMLInputElement>(null);
   const openFileRef = useRef<HTMLInputElement>(null);
   // PDF-11.1 — optional content groups (layers)
@@ -915,6 +935,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
   const sigFieldRef = useRef<string | null>(null);
   // PDF-10.3 — signature field: click applies the saved signature or opens the pad
   const signField = (id: string) => {
+    if (!hasFeature("pdf_sign")) { needSignUpgrade(); return; }
     if (sigImg) { patchField(id, { value: sigImg }); return; }
     sigFieldRef.current = id;
     setSigPadOpen(true);
@@ -1785,20 +1806,20 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
             ))}
           </>},
           { id: "sgn", label: "Sign", node: <>
-            <button className={`rb ${tool === "sign" ? "on" : ""}`} title="Signature — draw or type, then click to place"
-              disabled={!canEdit} onClick={() => pickTool("sign")}>✍</button>
-            <button className={`rb ${tool === "cryptosign" ? "on" : ""}`} title="Digital signature — sign with certificate"
-              disabled={!canEdit} onClick={() => (digId ? pickTool("cryptosign") : setDigSignDlg(true))}>🖋</button>
+            <button className={`rb ${tool === "sign" ? "on" : ""}`} title={`Signature — draw or type, then click to place${hasFeature("pdf_sign") ? "" : " (Pro)"}`}
+              disabled={!canEdit} onClick={() => pickTool("sign")}>✍{!hasFeature("pdf_sign") && <small className="rbpro">PRO</small>}</button>
+            <button className={`rb ${tool === "cryptosign" ? "on" : ""}`} title={`Digital signature — sign with certificate${hasFeature("pdf_sign") ? "" : " (Pro)"}`}
+              disabled={!canEdit} onClick={() => (digId ? pickTool("cryptosign") : openDigSign())}>🖋{!hasFeature("pdf_sign") && <small className="rbpro">PRO</small>}</button>
             <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
-              title={sigImg ? "Change signature" : "Create signature"}
-              disabled={!canEdit} onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
+              title={hasFeature("pdf_sign") ? (sigImg ? "Change signature" : "Create signature") : "Signatures are a paid-plan feature"}
+              disabled={!canEdit} onClick={openSigPad}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
           </>},
           { id: "ns", label: "Note & Stamp", node: <>
             <button className={`rb ${tool === "note" ? "on" : ""}`} title="Sticky note" disabled={!canEdit} onClick={() => pickTool("note")}>💬</button>
             <button className={`rb ${tool === "stamp" ? "on" : ""}`} title="Stamp (APPROVED / DRAFT / …)" disabled={!canEdit} onClick={() => pickTool("stamp")}>✅</button>
           </>},
           { id: "dig", label: "Digital ID", items: [
-            { label: "Digital ID settings…", icon: "🖋", onClick: () => setDigSignDlg(true), disabled: !canEdit },
+            { label: "Digital ID settings…", icon: "🖋", onClick: openDigSign, disabled: !canEdit },
           ]},
         ]},
         { id: "forms", label: "Forms", icon: "▣", groups: [
@@ -1990,7 +2011,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
           {tool === "sign" && (
             <button className="rb" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}
               title={sigImg ? "Change signature" : "Create signature"}
-              onClick={() => setSigPadOpen(true)}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
+              onClick={openSigPad}>{sigImg ? "✍ Edit" : "✍ Create"}</button>
           )}
           {tool === "stamp" && (
             <select className="rb-sel" value={stampText} onChange={(e) => setStampText(e.target.value)} title="Stamp text">
@@ -2368,8 +2389,8 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
                 selAnn={selAnn} setSelAnn={setSelAnn}
                 tool={canEdit || VIEW_TOOLS.has(tool) ? tool : "select"} toolColor={toolColor} stampText={stampText} sigImg={sigImg}
                 showAnns={showAnns} showGrid={showGrid} showRulers={showRulers}
-                markSize={markSize} onDigSign={(x, y) => { if (!digId) { setDigSignDlg(true); return; } void cryptoSignAt(p, x, y); }}
-                onNeedSig={() => setSigPadOpen(true)} onInfo={toast}
+                markSize={markSize} onDigSign={(x, y) => { if (!digId) { openDigSign(); return; } void cryptoSignAt(p, x, y); }}
+                onNeedSig={openSigPad} onInfo={toast}
                 onZoomStep={(dir, cx, cy) => {
                   const el = scrollRef.current; if (!el) return;
                   const r = el.getBoundingClientRect();

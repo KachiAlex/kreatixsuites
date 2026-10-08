@@ -233,7 +233,14 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const collabReady = useRef(false);
 
   // collab session — created synchronously so useEditor can bind the Y.Doc
-  const { user } = useAuth();
+  const { user, hasFeature } = useAuth();
+  /** Soft plan gate — free tier keeps full editing; a few advanced
+   *  surfaces (comments, version history, merge/TOC) prompt upgrade. */
+  const gate = (feature: string, what: string) => {
+    if (hasFeature(feature)) return false;
+    toast(`${what} — available on paid plans. Upgrade in Admin → Billing.`);
+    return true;
+  };
   const sessionRef = useRef<CollabSession | null>(null);
   if (user && !sessionRef.current) sessionRef.current = createCollabSession(item.id, user);
   const session = sessionRef.current;
@@ -506,6 +513,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   /** Word File ▸ Save As named version — flush a labeled immutable version. */
   const saveNamedVersion = useCallback(async () => {
     if (!editorRef.current) return;
+    if (gate("writer_version_history", "Named versions require version history")) return;
     const label = await askText({ title: "Name this version", placeholder: "e.g. Draft for review" });
     if (label === null || !label.trim()) return;
     const payload = {
@@ -980,6 +988,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   // ---- comments ----
   const startComment = () => {
     if (!canComment) { toast("You don't have comment access"); return; }
+    if (gate("writer_comments", "Comments")) return;
     if (editor && !editor.state.selection.empty) {
       setNewComment(true);
       setPanel("comments");
@@ -1764,7 +1773,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       ] : []),
       ...(canEdit ? [{ label: "Rename", onClick: () => { titleInputRef.current?.focus(); titleInputRef.current?.select(); } }] : []),
       { label: "Share…", onClick: () => setSharing(true) },
-      { label: "Version history", checked: panel === "versions", onClick: () => setPanel(panel === "versions" ? "none" : "versions") },
+      { label: "Version history", checked: panel === "versions", onClick: () => setPanel(panel === "versions" || gate("writer_version_history", "Version history") ? "none" : "versions") },
       ...(canMutate ? [{ label: "Save named version…", onClick: () => void saveNamedVersion() }] : []),
       { divider: true },
       { label: "Properties…", onClick: () => setPropsDlg(true) },
@@ -1857,7 +1866,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           : { label: "Restrict editing…", onClick: () => setRestrictDlg(true) } as MenuItem,
       ] : []),
       { divider: true },
-      { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" ? "none" : "comments") },
+      { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" || gate("writer_comments", "Comments") ? "none" : "comments") },
       ...(canMutate ? [
         { label: "Kreatix AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
         { divider: true } as MenuItem,
@@ -1947,16 +1956,18 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           { label: "Table of contents…", onClick: () => setTocOpts(true) },
           { label: "Table of figures", onClick: () => ed.chain().focus().insertTof().run() },
           { divider: true },
-          { label: "Citation…", onClick: () => setCiteDlg(true) },
-          { label: "Bibliography", onClick: () => { if (!ed.chain().focus().insertBibliography().run()) toast("No citations in the document"); } },
+          { label: "Citation…", onClick: () => { if (!gate("writer_advanced", "Citations")) setCiteDlg(true); } },
+          { label: "Bibliography", onClick: () => { if (!gate("writer_advanced", "Bibliography") && !ed.chain().focus().insertBibliography().run()) toast("No citations in the document"); } },
           {
             label: "Mark index entry…", onClick: () => {
+              if (gate("writer_advanced", "Index entries")) return;
               void askText({ title: "Mark index entry", placeholder: "Index entry text" })
                 .then((en) => { if (en) ed.chain().focus().markIndexEntry(en).run(); });
             },
           },
           {
             label: "Insert index", onClick: () => {
+              if (gate("writer_advanced", "Index")) return;
               if (!insertIndexAt(ed)) toast("No marked index entries — select text and use Mark index entry first");
             },
           },
@@ -1969,7 +1980,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
             label: "Drop cap", checked: !!ed.getAttributes("paragraph").dropCap,
             onClick: () => { if (!ed.chain().focus().toggleDropCap(3).run()) toast("Drop caps apply to body paragraphs"); },
           },
-          { label: "Mail merge…", onClick: () => setMergeDlg(true) },
+          { label: "Mail merge…", onClick: () => { if (!gate("writer_advanced", "Mail merge")) setMergeDlg(true); } },
           {
             label: "Embed (YouTube / URL)…", onClick: () => {
               void askText({ title: "Embed", placeholder: "https://" })

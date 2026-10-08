@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, signEntitlement, type AuthedRequest } from "../auth.js";
-import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig } from "../billing.js";
+import { summary, createPayment, confirmPayment, paystackInit, paystackVerify, getConfig, getPlans, effectivePlan, ensureSubscription } from "../billing.js";
 import { aiQuotaFor } from "../aiQuota.js";
 
 async function requireOrgAdmin(req: FastifyRequest, reply: FastifyReply) {
@@ -36,6 +36,7 @@ export function billingRoutes(app: FastifyInstance) {
     const s = await summary(user.orgId);
     const token = await signEntitlement({
       org: user.orgId, status: s.state, seats: s.seats, periodEnd: s.periodEnd ?? null,
+      plan: s.plan, features: s.features,
     });
     return { token, subscription: s };
   });
@@ -105,11 +106,17 @@ export function billingRoutes(app: FastifyInstance) {
    */
   app.post("/api/billing/checkout", { preHandler: requireOrgAdmin }, async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const { months, plan } = z.object({
+    const { months, plan: planSlug } = z.object({
       months: z.number().int().min(1).max(12).default(1),
-      plan: z.enum(["standard", "business"]).default("standard"),
+      plan: z.string().min(1).max(40).default("pro"),
     }).parse(req.body ?? {});
-    const p = await createPayment(user.orgId, process.env.KREATIX_PAYSTACK_SECRET ? "paystack" : "manual", undefined, months, plan);
+    const planRow = (await getPlans(true)).find((pl) => pl.slug === planSlug);
+    if (!planRow) return reply.code(400).send({ error: "bad_plan", message: "Unknown or inactive plan" });
+    if (planRow.price_ngn <= 0 && planRow.member_price_ngn <= 0) {
+      return reply.code(400).send({ error: "free_plan", message: "The free plan needs no payment" });
+    }
+    const p = await createPayment(user.orgId, process.env.KREATIX_PAYSTACK_SECRET ? "paystack" : "manual", undefined, months, planSlug);
+    if ("error" in p) return reply.code(400).send({ error: p.error, message: "This plan is free" });
     const cfg = await getConfig();
 
     if (process.env.KREATIX_PAYSTACK_SECRET) {

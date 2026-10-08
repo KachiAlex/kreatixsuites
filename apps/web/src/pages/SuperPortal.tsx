@@ -43,7 +43,12 @@ interface SaOrg {
 }
 interface SaOverview {
   orgs: number; users: number; activeSubs: number; trialing: number;
-  locked: number; pendingPayments: number; mrrNgn: number;
+  locked: number; granted: number; freeTier: number; pendingPayments: number; mrrNgn: number;
+}
+interface PlanRow {
+  slug: string; name: string; price_ngn: number; member_price_ngn: number;
+  features: Record<string, boolean>; limits: Record<string, number>;
+  active: boolean; sort: number;
 }
 interface SaPayment {
   id: string; org_id: string; org_name: string; amount_ngn: number;
@@ -105,13 +110,13 @@ const fmtBytes = (n: number) =>
     : n >= (1 << 20) ? `${(n / (1 << 20)).toFixed(1)} MB`
     : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
 
-const PLAN_ALLOWANCE: Record<string, { base: number; perSeat: number; daily: number }> = {
-  standard: { base: 3_000_000, perSeat: 1_000_000, daily: 300 },
-  business: { base: 12_000_000, perSeat: 4_000_000, daily: 1000 },
-};
-const allowance = (o: { seats: number; plan?: string | null }) => {
-  const p = PLAN_ALLOWANCE[o.plan === "business" ? "business" : "standard"];
-  return p.base + o.seats * p.perSeat;
+/** Resolve a plan slug (with legacy 'standard' → 'pro' alias) from the catalog. */
+const planRow = (plans: PlanRow[], slug?: string | null) =>
+  plans.find((p) => p.slug === (slug === "standard" ? "pro" : slug))
+  ?? plans.find((p) => p.slug === "free");
+const allowance = (plans: PlanRow[], o: { seats: number; plan?: string | null }) => {
+  const p = planRow(plans, o.plan);
+  return (p?.limits?.ai_tokens_base ?? 0) + Math.max(0, o.seats - 1) * (p?.limits?.ai_tokens_per_seat ?? 0);
 };
 
 function When({ v }: { v: string }) {
@@ -145,6 +150,9 @@ export function SuperPortal() {
   const [orgs, setOrgs] = useState<SaOrg[]>([]);
   const [payments, setPayments] = useState<SaPayment[]>([]);
   const [cfg, setCfg] = useState<BillingCfg | null>(null);
+  const [plans, setPlans] = useState<PlanRow[]>([]);
+  const [newPlan, setNewPlan] = useState({ slug: "", name: "", price: "", member: "" });
+  const [planFormOpen, setPlanFormOpen] = useState(false);
   const [ai, setAi] = useState<SaAiUsage | null>(null);
   const [feedback, setFeedback] = useState<SaFeedback[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
@@ -184,15 +192,16 @@ export function SuperPortal() {
     setRefreshing(true);
     setLoadErr(null);
     try {
-      const [o, og, pay, c, a, fb] = await Promise.all([
+      const [o, og, pay, c, a, fb, pl] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
         api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
         api.get<{ config: BillingCfg }>("/api/superadmin/billing-config"),
         api.get<SaAiUsage>("/api/superadmin/ai-usage"),
         api.get<{ feedback: SaFeedback[]; stats: Record<string, number> }>("/api/superadmin/feedback"),
+        api.get<{ plans: PlanRow[] }>("/api/superadmin/plans"),
       ]);
-      setOv(o); setOrgs(og.orgs); setPayments(pay.payments); setCfg(c.config);
+      setOv(o); setOrgs(og.orgs); setPayments(pay.payments); setCfg(c.config); setPlans(pl.plans);
       setAi(a); setFeedback(fb.feedback); setStats(fb.stats);
       setRefreshedAt(new Date());
     } catch (e) {
@@ -285,7 +294,7 @@ export function SuperPortal() {
         : "Remove this payment from the pending queue. The subscription stays unchanged."}</p>
       <ReviewBox rows={[
         ["Workspace", p.org_name], ["Amount", ngn(p.amount_ngn)],
-        ["Reference", <code key="r">{p.reference ?? "—"}</code>], ["Plan", title(p.plan ?? "standard")],
+        ["Reference", <code key="r">{p.reference ?? "—"}</code>], ["Plan", planRow(plans, p.plan)?.name ?? title(p.plan ?? "pro")],
       ]} />
     </>),
     run: async () => {
@@ -336,7 +345,7 @@ export function SuperPortal() {
       <ReviewBox rows={[
         ["Plan", title(plan)],
         ["Monthly AI budget", budget === null
-          ? `Plan default: ${compact.format(allowance({ ...o, plan }))} tokens`
+          ? `Plan default: ${compact.format(allowance(plans, { ...o, plan }))} tokens`
           : `${nf.format(budget)} tokens`],
       ]} />
     </>),
@@ -408,6 +417,55 @@ export function SuperPortal() {
     }
   };
 
+  /** Save an edited plan — pricing/feature changes hit every workspace on it. */
+  const savePlan = (draft: PlanRow) => ask({
+    title: `Save ${draft.name} plan`,
+    label: "Save plan",
+    danger: !draft.active || draft.price_ngn === 0 && draft.slug !== "free",
+    body: (<>
+      <p>Applies to every workspace on <strong>{draft.name}</strong> — price changes
+        affect the next billing period; feature changes apply immediately.</p>
+      <ReviewBox rows={[
+        ["Base price", `${ngn(draft.price_ngn)} / mo`],
+        ["Extra member", draft.member_price_ngn > 0 ? `${ngn(draft.member_price_ngn)} / mo` : "Included"],
+        ["AI requests", `${draft.limits?.ai_daily ?? "—"} / user / day`],
+        ["Features on", Object.entries(draft.features).filter(([, v]) => v).map(([k]) => k).join(", ") || "—"],
+        ["Status", draft.active ? "Buyable" : "Hidden from checkout"],
+      ].map(([k, v]) => [k, v]) as [string, ReactNode][]} />
+    </>),
+    run: async () => {
+      const r = await api.put<{ plan: PlanRow }>(`/api/superadmin/plans/${draft.slug}`, {
+        name: draft.name, price_ngn: draft.price_ngn, member_price_ngn: draft.member_price_ngn,
+        features: draft.features, limits: draft.limits, active: draft.active,
+      });
+      setPlans((ps) => ps.map((p) => (p.slug === r.plan.slug ? r.plan : p)));
+      toast(`${r.plan.name} plan saved`);
+      await load();
+    },
+  });
+
+  const createPlan = () => {
+    const slug = newPlan.slug.trim().toLowerCase();
+    const name = newPlan.name.trim();
+    const price = Number(newPlan.price), member = Number(newPlan.member || "0");
+    if (!/^[a-z][a-z0-9_-]{0,39}$/.test(slug) || !name || !Number.isInteger(price) || price < 0 || !Number.isInteger(member) || member < 0) {
+      toast("Check the plan fields — slug is lowercase letters/digits, prices are whole naira");
+      return;
+    }
+    ask({
+      title: `Create ${name} plan`,
+      label: "Create plan",
+      body: <p>New plans start with no features enabled — toggle them in the editor after creation.</p>,
+      run: async () => {
+        await api.post("/api/superadmin/plans", { slug, name, price_ngn: price, member_price_ngn: member });
+        setNewPlan({ slug: "", name: "", price: "", member: "" });
+        setPlanFormOpen(false);
+        toast(`${name} plan created`);
+        await load();
+      },
+    });
+  };
+
   const deleteOrgs = (targets: SaOrg[]) => ask({
     title: targets.length === 1 ? `Delete ${targets[0].name}?` : `Delete ${targets.length} workspaces?`,
     label: targets.length === 1 ? "Delete workspace" : `Delete ${targets.length} workspaces`,
@@ -471,7 +529,7 @@ export function SuperPortal() {
     };
     const rows = [
       ["Payment ID", "Workspace", "Amount NGN", "Method", "Reference", "Plan", "Status", "Received"],
-      ...shownPayments.map((p) => [p.id, p.org_name, p.amount_ngn, p.method, p.reference ?? "", p.plan ?? "standard", p.status, p.created_at]),
+      ...shownPayments.map((p) => [p.id, p.org_name, p.amount_ngn, p.method, p.reference ?? "", p.plan ?? "free", p.status, p.created_at]),
     ];
     const url = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a");
@@ -523,7 +581,7 @@ export function SuperPortal() {
     const rows = orgs.filter((o) =>
       o.name.toLowerCase().includes(search.toLowerCase()) &&
       (stateFilter === "all" || o.state === stateFilter) &&
-      (planFilter === "all" || (o.plan ?? "standard") === planFilter));
+      (planFilter === "all" || (planRow(plans, o.plan)?.slug ?? "free") === planFilter));
     if (sortDir) rows.sort((a, b) => a.name.localeCompare(b.name) * (sortDir === "asc" ? 1 : -1));
     return rows;
   }, [orgs, search, stateFilter, planFilter, sortDir]);
@@ -538,7 +596,7 @@ export function SuperPortal() {
     };
     const rows = [
       ["Workspace ID", "Workspace", "Seats", "State", "Plan", "Monthly amount NGN", "Created", "AI token budget override"],
-      ...visibleOrgs.map((o) => [o.id, o.name, o.seats, o.state, o.plan ?? "standard", o.monthlyAmountNgn, o.created_at, o.ai_token_budget ?? "Plan default"]),
+      ...visibleOrgs.map((o) => [o.id, o.name, o.seats, o.state, planRow(plans, o.plan)?.name ?? "Free", o.monthlyAmountNgn, o.created_at, o.ai_token_budget ?? "Plan default"]),
     ];
     const url = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a");
@@ -597,7 +655,7 @@ export function SuperPortal() {
           <article className="sap-kpi">
             <div className="k-label">Monthly recurring revenue <I n="trend" s={14} /></div>
             <div className="k-value">{ngn(ov.mrrNgn)}</div>
-            <div className="k-sub">{ov.activeSubs} active · {ov.trialing} trialing · {ov.locked} locked</div>
+            <div className="k-sub">{ov.activeSubs} active · {ov.trialing} trialing · {ov.freeTier} free{ov.locked ? ` · ${ov.locked} suspended` : ""}</div>
           </article>
           <article className={`sap-kpi${ov.pendingPayments ? " alert" : ""}`}>
             <div className="k-label">Pending payments <I n="wallet" s={14} /></div>
@@ -703,7 +761,7 @@ export function SuperPortal() {
             {shownPayments.map((p) => (
               <tr key={p.id}>
                 <td><When v={p.created_at} /></td>
-                <td><div className="sap-orgcell"><OrgIcon name={p.org_name} /><span><b>{p.org_name}</b><small>{title(p.plan ?? "standard")} plan</small></span></div></td>
+                <td><div className="sap-orgcell"><OrgIcon name={p.org_name} /><span><b>{p.org_name}</b><small>{planRow(plans, p.plan)?.name ?? title(p.plan ?? "pro")} plan</small></span></div></td>
                 <td className="num" style={{ fontWeight: 600 }}>{ngn(p.amount_ngn)}</td>
                 <td className="sap-method"><b>{p.method}</b><span className="mono">{p.reference}</span></td>
                 <td><span className={`sap-paystate ${p.status}`}>{title(p.status)}</span></td>
@@ -791,16 +849,16 @@ export function SuperPortal() {
           <select value={stateFilter} aria-label="Filter workspace state" onChange={(e) => setStateFilter(e.target.value)}>
             <option value="all">All states</option>
             <option value="active">Active</option>
+            <option value="free">Free tier</option>
             <option value="trialing">Trialing</option>
-            <option value="locked">Locked</option>
+            <option value="locked">Suspended</option>
             <option value="granted">Granted</option>
             <option value="none">No subscription</option>
             <option value="canceled">Canceled</option>
           </select>
           <select value={planFilter} aria-label="Filter plan" onChange={(e) => setPlanFilter(e.target.value)}>
             <option value="all">All plans</option>
-            <option value="standard">Standard</option>
-            <option value="business">Business</option>
+            {plans.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
           </select>
           <span className="sap-hint">Select a workspace to manage access</span>
         </div>
@@ -844,7 +902,7 @@ export function SuperPortal() {
                 </td>
                 <td className="num">{o.seats}</td>
                 <td><StateBadge s={o.state} /></td>
-                <td><span className={`sap-plan ${o.plan === "business" ? "business" : "standard"}`}>{title(o.plan ?? "standard")}</span></td>
+                <td><span className={`sap-plan ${(planRow(plans, o.plan)?.price_ngn ?? 0) > 0 ? "business" : ""}`}>{planRow(plans, o.plan)?.name ?? "Free"}</span></td>
                 <td className="num" style={{ fontWeight: 500 }}>{ngn(o.monthlyAmountNgn)}</td>
                 <td className="sap-age">{dayOf(o.created_at)}<small>{Math.max(0, Math.floor((Date.now() - new Date(o.created_at).getTime()) / 86400000))} days ago</small></td>
                 <td><div className="sap-rowact">
@@ -913,49 +971,46 @@ export function SuperPortal() {
           </div>
         </section>
 
-      {/* ---------- plan & pricing ---------- */}
+      {/* ---------- plans & pricing ---------- */}
       <section className="sap-card" id="pricing" hidden={activeSec !== "pricing"}>
           <div className="sap-cardhead">
             <div>
-              <div className="sap-cardtitle"><I n="settings" s={17} /><h2>Plan &amp; pricing</h2></div>
-              <p>Platform defaults. Changes save when you leave a field.</p>
+              <div className="sap-cardtitle"><I n="settings" s={17} /><h2>Plans &amp; pricing</h2><span className="sap-count">{plans.length}</span></div>
+              <p>Price, feature gates and usage limits per tier. Feature changes apply immediately — price changes hit the next billing period.</p>
             </div>
-            <span className={`sap-save ${cfgSaved === "err" ? "err" : ""}`} role="status">
-              <I n={cfgSaved === "err" ? "alert" : "check"} s={13} /> {cfgSaved === "err" ? "Check value" : "Saved"}
-            </span>
+            <div className="sap-rowact">
+              <span className={`sap-save ${cfgSaved === "err" ? "err" : ""}`} role="status">
+                <I n={cfgSaved === "err" ? "alert" : "check"} s={13} /> {cfgSaved === "err" ? "Check value" : "Saved"}
+              </span>
+              <button className="btn-secondary sap-btn sm" onClick={() => setPlanFormOpen((v) => !v)}>+ New plan</button>
+            </div>
+          </div>
+          {planFormOpen && (
+            <div className="sap-newplan">
+              <input placeholder="slug (e.g. starter)" value={newPlan.slug} maxLength={40}
+                onChange={(e) => setNewPlan({ ...newPlan, slug: e.target.value })} aria-label="Plan slug" />
+              <input placeholder="Display name" value={newPlan.name} maxLength={60}
+                onChange={(e) => setNewPlan({ ...newPlan, name: e.target.value })} aria-label="Plan name" />
+              <input placeholder="Base ₦/mo" type="number" min={0} value={newPlan.price}
+                onChange={(e) => setNewPlan({ ...newPlan, price: e.target.value })} aria-label="Base price" />
+              <input placeholder="Extra member ₦/mo" type="number" min={0} value={newPlan.member}
+                onChange={(e) => setNewPlan({ ...newPlan, member: e.target.value })} aria-label="Member price" />
+              <button className="btn-primary sap-btn sm" onClick={createPlan}>Create</button>
+            </div>
+          )}
+          <div className="sap-plans">
+            {plans.map((p) => (
+              <PlanEditor key={`${p.slug}-${p.price_ngn}-${p.member_price_ngn}-${JSON.stringify(p.features)}-${JSON.stringify(p.limits)}-${p.active}`}
+                plan={p} onSave={savePlan} />
+            ))}
           </div>
           {cfg && (
-            <>
-              <div className="sap-settings">
-                <CfgField label="Admin seat / month" hint="Owner's seat for each workspace." unit="₦">
-                  <input type="number" min={0} step={1} defaultValue={cfg.base_price_ngn} key={`bp${cfg.base_price_ngn}`}
-                    onBlur={(e) => void saveCfg("base_price_ngn", e.target.value, e.target)} />
-                </CfgField>
-                <CfgField label="Additional member / month" hint="Each additional enabled member." unit="₦">
-                  <input type="number" min={0} step={1} defaultValue={cfg.member_price_ngn} key={`mp${cfg.member_price_ngn}`}
-                    onBlur={(e) => void saveCfg("member_price_ngn", e.target.value, e.target)} />
-                </CfgField>
-                <CfgField label="Business multiplier" hint="Standard price × multiplier. Includes 4× AI allowance." unit="×">
-                  <input type="number" min={1} max={10} step={1} defaultValue={cfg.business_multiplier} key={`bm${cfg.business_multiplier}`}
-                    onBlur={(e) => void saveCfg("business_multiplier", e.target.value, e.target)} />
-                </CfgField>
-                <CfgField label="Free trial" hint="New workspaces only." unit="months" unitAfter>
-                  <input type="number" min={0} max={24} step={1} defaultValue={cfg.trial_months} key={`tm${cfg.trial_months}`}
-                    onBlur={(e) => void saveCfg("trial_months", e.target.value, e.target)} />
-                </CfgField>
-                <CfgField label="Billing currency" hint="ISO currency label; price inputs remain in NGN. No FX conversion." full>
-                  <input type="text" maxLength={3} defaultValue={cfg.currency} key={`cy${cfg.currency}`}
-                    onBlur={(e) => void saveCfg("currency", e.target.value, e.target)} />
-                </CfgField>
-              </div>
-              <div className="sap-example">
-                <strong>Example: a workspace with 5 seats</strong>
-                <span>
-                  Standard {ngn(cfg.base_price_ngn + 4 * cfg.member_price_ngn)} / mo · Business{" "}
-                  {ngn(Math.round((cfg.base_price_ngn + 4 * cfg.member_price_ngn) * cfg.business_multiplier))} / mo
-                </span>
-              </div>
-            </>
+            <div className="sap-settings" style={{ marginTop: 14 }}>
+              <CfgField label="Billing currency" hint="ISO currency label; price inputs remain in NGN. No FX conversion.">
+                <input type="text" maxLength={3} defaultValue={cfg.currency} key={`cy${cfg.currency}`}
+                  onBlur={(e) => void saveCfg("currency", e.target.value, e.target)} />
+              </CfgField>
+            </div>
           )}
       </section>
 
@@ -1056,7 +1111,7 @@ export function SuperPortal() {
               </div>
               <button className="sap-iconbtn" aria-label="Close workspace controls" onClick={() => setSelOrgId(null)}><I n="close" s={15} /></button>
             </div>
-            <OrgDrawer key={selOrg.id} org={selOrg} tick={memberTick}
+            <OrgDrawer key={selOrg.id} org={selOrg} tick={memberTick} plans={plans}
               onSave={(plan, budget) => saveOrgSettings(selOrg, plan, budget)}
               onComp={() => compOrg(selOrg)}
               onExtend={(d) => extendTrial(selOrg, d)}
@@ -1104,9 +1159,109 @@ function CfgField({ label, hint, unit, unitAfter, full, children }: {
 }
 
 /** Workspace management drawer — plan tier, AI budget override, trial extension, cancel. */
-function OrgDrawer({ org, tick, onSave, onComp, onExtend, onCancel, onDelete, onToggleMember }: {
+const FEATURE_KEYS: [string, string][] = [
+  ["ai", "Kreatix AI"],
+  ["export", "All export formats"],
+  ["pdf_sign", "PDF signature"],
+  ["pdf_edit", "PDF text/object editing"],
+  ["share_protect", "Protected share links"],
+  ["sso", "SSO (SAML/OIDC)"],
+  ["scim", "SCIM provisioning"],
+  ["priority_support", "Priority support"],
+];
+const LIMIT_KEYS: [string, string][] = [
+  ["ai_daily", "AI requests / user / day"],
+  ["ai_per_min", "AI requests / user / min"],
+  ["ai_tokens_base", "AI tokens / mo (base)"],
+  ["ai_tokens_per_seat", "AI tokens / mo (extra seat)"],
+  ["storage_mb", "Storage (MB)"],
+  ["max_members", "Max members (0 = ∞)"],
+  ["version_days", "Version history days (0 = ∞)"],
+];
+
+/** Plan card editor — price, member price, feature toggles, numeric limits. */
+function PlanEditor({ plan, onSave }: { plan: PlanRow; onSave: (draft: PlanRow) => void }) {
+  const [price, setPrice] = useState(String(plan.price_ngn));
+  const [member, setMember] = useState(String(plan.member_price_ngn));
+  const [name, setName] = useState(plan.name);
+  const [feats, setFeats] = useState<Record<string, boolean>>({ ...plan.features });
+  const [lims, setLims] = useState<Record<string, string>>(
+    Object.fromEntries(Object.entries(plan.limits ?? {}).map(([k, v]) => [k, String(v)])));
+  const [active, setActive] = useState(plan.active);
+  const isFree = plan.slug === "free";
+  const p = Number(price), m = Number(member);
+  const valid = name.trim().length > 0 && Number.isInteger(p) && p >= 0 && Number.isInteger(m) && m >= 0
+    && (!isFree || (p === 0 && m === 0));
+  const dirty = name !== plan.name || p !== plan.price_ngn || m !== plan.member_price_ngn
+    || active !== plan.active || JSON.stringify(feats) !== JSON.stringify(plan.features)
+    || Object.entries(lims).some(([k, v]) => Number(v) !== (plan.limits?.[k] ?? NaN));
+
+  return (
+    <div className={`sap-plancard${active ? "" : " off"}`}>
+      <div className="sap-planhead">
+        <input className="sap-planname" value={name} maxLength={60} aria-label="Plan name"
+          onChange={(e) => setName(e.target.value)} />
+        <code className="sap-planslug">{plan.slug}</code>
+        {isFree && <span className="sap-tag">Default tier</span>}
+      </div>
+      <div className="sap-planpricing">
+        <label>Base ₦ / month
+          <input type="number" min={0} step={1} value={price} disabled={isFree}
+            onChange={(e) => setPrice(e.target.value)} aria-label="Base price per month" />
+        </label>
+        <label>+ per member ₦ / month
+          <input type="number" min={0} step={1} value={member} disabled={isFree}
+            onChange={(e) => setMember(e.target.value)} aria-label="Price per additional member" />
+        </label>
+      </div>
+      <div className="sap-planexample">
+        {p === 0 && m === 0 ? "Free forever" :
+          `3-seat workspace pays ${ngn(p + m * 2)} / mo`}
+      </div>
+      <div className="sap-planfeats">
+        {FEATURE_KEYS.map(([k, label]) => (
+          <label key={k} className="sap-feat">
+            <input type="checkbox" checked={!!feats[k]}
+              onChange={(e) => setFeats({ ...feats, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+      </div>
+      <details className="sap-planlimits">
+        <summary>Usage limits</summary>
+        <div className="sap-limgrid">
+          {LIMIT_KEYS.map(([k, label]) => (
+            <label key={k}>
+              <span>{label}</span>
+              <input type="number" min={0} step={1} value={lims[k] ?? ""} placeholder="—"
+                onChange={(e) => setLims({ ...lims, [k]: e.target.value })} aria-label={label} />
+            </label>
+          ))}
+        </div>
+      </details>
+      <div className="sap-planfoot">
+        <label className="sap-feat">
+          <input type="checkbox" checked={active} disabled={isFree}
+            onChange={(e) => setActive(e.target.checked)} />
+          Buyable
+        </label>
+        <button className="btn-primary sap-btn sm" disabled={!dirty || !valid}
+          onClick={() => onSave({
+            ...plan, name: name.trim(), price_ngn: p, member_price_ngn: m, active,
+            features: feats,
+            limits: Object.fromEntries(Object.entries(lims).filter(([, v]) => v !== "").map(([k, v]) => [k, Number(v)])),
+          })}>
+          Save plan
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OrgDrawer({ org, tick, plans, onSave, onComp, onExtend, onCancel, onDelete, onToggleMember }: {
   org: SaOrg;
   tick: number;
+  plans: PlanRow[];
   onSave: (plan: string, budget: number | null) => void;
   onComp: () => void;
   onExtend: (days: number) => void;
@@ -1114,13 +1269,13 @@ function OrgDrawer({ org, tick, onSave, onComp, onExtend, onCancel, onDelete, on
   onDelete: () => void;
   onToggleMember: (m: SaMember) => void;
 }) {
-  const [plan, setPlan] = useState(org.plan ?? "standard");
+  const [plan, setPlan] = useState(org.plan === "standard" ? "pro" : org.plan ?? "free");
   const [tokens, setTokens] = useState(org.ai_token_budget == null ? "" : String(org.ai_token_budget));
   const [days, setDays] = useState("30");
   const [detail, setDetail] = useState<OrgDetail | null>(null);
   const [detailErr, setDetailErr] = useState<string | null>(null);
   const preview = { ...org, plan };
-  const pa = PLAN_ALLOWANCE[plan === "business" ? "business" : "standard"];
+  const pa = planRow(plans, plan);
 
   useEffect(() => {
     let dead = false;
@@ -1158,14 +1313,13 @@ function OrgDrawer({ org, tick, onSave, onComp, onExtend, onCancel, onDelete, on
           <div className="sap-field">
             <label htmlFor="sap-org-plan">Subscription tier</label>
             <select id="sap-org-plan" value={plan} onChange={(e) => setPlan(e.target.value)}>
-              <option value="standard">Standard</option>
-              <option value="business">Business</option>
+              {plans.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
             </select>
-            <small>Business changes price and includes 4× AI allowance.</small>
+            <small>Tier determines price and AI allowance on the next billing period.</small>
           </div>
           <div className="sap-allowance">
-            Plan default: <b>{compact.format(allowance(preview))} tokens / month</b><br />
-            {pa.daily.toLocaleString()} requests / day / user
+            Plan default: <b>{compact.format(allowance(plans, preview))} tokens / month</b><br />
+            {(pa?.limits?.ai_daily ?? 0).toLocaleString()} requests / day / user
           </div>
           <div className="sap-field">
             <label htmlFor="sap-org-budget">Monthly AI token budget override</label>

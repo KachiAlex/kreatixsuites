@@ -3,7 +3,9 @@
 // States: trialing → active → past_due → locked (writes blocked, reads open).
 // A superadmin `override_until` comp/extension wins over every other state.
 import { randomUUID } from "node:crypto";
-import { one, run, now, q } from "./db.js";
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { one, run, now, q, DATA_DIR } from "./db.js";
 import { hashPassword } from "./auth.js";
 import { mailEnabled, sendMail, orgAdminRecipients, tpl } from "./email.js";
 
@@ -18,7 +20,7 @@ export interface BillingConfig {
 
 export interface Subscription {
   org_id: string;
-  status: string;               // trialing | active | past_due | canceled
+  status: string;               // trialing | active | suspended | canceled
   trial_ends_at: string | null;
   period_start: string | null;
   period_end: string | null;
@@ -27,10 +29,67 @@ export interface Subscription {
   override_until: string | null;
   ai_token_budget?: number | null;      // superadmin AI quota override
   ai_budget_warned_at?: string | null;  // 80%-of-budget notice bookkeeping
-  plan?: string;                        // 'standard' | 'business' — price + AI budget tier
+  plan?: string;                        // plan slug — resolved via plans table
 }
 
-export type SubState = "trialing" | "active" | "grace" | "locked" | "granted";
+/** Plan catalog row — superadmin-editable pricing + entitlement matrix. */
+export interface Plan {
+  slug: string;
+  name: string;
+  price_ngn: number;            // base/month, includes the owner seat
+  member_price_ngn: number;     // each additional enabled member
+  features: Record<string, boolean>;
+  limits: Record<string, number>;
+  active: boolean;
+  sort: number;
+}
+
+// legacy slugs → catalog slugs (existing DBs may hold 'standard')
+const PLAN_ALIAS: Record<string, string> = { standard: "pro" };
+
+const FREE_PLAN: Plan = {
+  slug: "free", name: "Free", price_ngn: 0, member_price_ngn: 0,
+  features: { ai: true, export: true }, limits: { ai_daily: 20 }, active: true, sort: 0,
+};
+
+let planCache: { rows: Plan[]; at: number } | null = null;
+export async function getPlans(activeOnly = false): Promise<Plan[]> {
+  if (!planCache || Date.now() - planCache.at > 10_000) {
+    planCache = { rows: await q<Plan>("SELECT * FROM plans ORDER BY sort, price_ngn"), at: Date.now() };
+  }
+  return activeOnly ? planCache.rows.filter((p) => p.active) : planCache.rows;
+}
+export function bustPlanCache(): void { planCache = null; }
+
+/** Sync resolver over a fetched plan list — aliases + free fallback. */
+export function resolvePlan(plans: Plan[], slug?: string | null): Plan {
+  const want = PLAN_ALIAS[slug ?? ""] ?? slug ?? "free";
+  return plans.find((p) => p.slug === want)
+      ?? plans.find((p) => p.slug === "free") ?? FREE_PLAN;
+}
+
+/** Resolve a subscription plan slug to a catalog row — aliases + free fallback. */
+export async function planOf(slug?: string | null): Promise<Plan> {
+  const plan = resolvePlan(await getPlans(), slug);
+  return plan.active ? plan : resolvePlan(await getPlans(), "free");
+}
+
+export function planEntitled(plan: Plan, feature: string): boolean {
+  return plan.features?.[feature] === true;
+}
+export function planLimit(plan: Plan, key: string, dflt: number): number {
+  const v = plan.limits?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : dflt;
+}
+/** Server-side entitlement check — resolves the org's *effective* plan
+ *  (downgraded/expired workspaces get the free plan's flags, not the paid one). */
+export async function entitled(orgId: string, feature: string): Promise<boolean> {
+  const sub = await ensureSubscription(orgId);
+  const plan = await effectivePlan(sub);
+  return planEntitled(plan, feature);
+}
+
+export type SubState = "free" | "trialing" | "active" | "grace" | "locked" | "granted";
 
 const GRACE_DAYS = 7;
 const DAY = 24 * 60 * 60 * 1000;
@@ -61,11 +120,11 @@ export async function seatCount(orgId: string): Promise<number> {
   return r?.n ?? 1;
 }
 
-export type PlanTier = "standard" | "business";
+export type PlanTier = string; // plan slug — resolved via the plans catalog
 
-export function monthlyAmount(cfg: BillingConfig, seats: number, plan: PlanTier = "standard"): number {
-  const base = cfg.base_price_ngn + cfg.member_price_ngn * Math.max(0, seats - 1);
-  return plan === "business" ? base * (cfg.business_multiplier || 2) : base;
+/** Monthly amount for a plan at a seat count. */
+export function monthlyAmount(plan: Plan, seats: number): number {
+  return plan.price_ngn + plan.member_price_ngn * Math.max(0, seats - 1);
 }
 
 const addMonths = (iso: string, months: number) => {
@@ -74,68 +133,96 @@ const addMonths = (iso: string, months: number) => {
   return d.toISOString();
 };
 
-/** Fetch-or-create the org's subscription (new orgs start on a free trial). */
+/** Fetch-or-create the org's subscription — new workspaces land on the free plan. */
 export async function ensureSubscription(orgId: string): Promise<Subscription> {
   let sub = await one<Subscription>("SELECT * FROM subscriptions WHERE org_id = $1", [orgId]);
   if (sub) return sub;
-  const cfg = await getConfig();
   await run(
-    `INSERT INTO subscriptions (org_id, status, trial_ends_at, seats, amount_ngn, updated_at)
-     VALUES ($1, 'trialing', $2, 1, NULL, $3) ON CONFLICT (org_id) DO NOTHING`,
-    [orgId, addMonths(now(), cfg.trial_months), now()],
+    `INSERT INTO subscriptions (org_id, status, seats, plan, updated_at)
+     VALUES ($1, 'active', 1, 'free', $2) ON CONFLICT (org_id) DO NOTHING`,
+    [orgId, now()],
   );
   sub = (await one<Subscription>("SELECT * FROM subscriptions WHERE org_id = $1", [orgId]))!;
   return sub;
 }
 
-/** Effective state — pure read; the write gate calls this on every mutation. */
+/**
+ * Effective state — pure read; the write gate calls this on every mutation.
+ * Freemium semantics: an expired/canceled paid workspace downgrades to "free"
+ * (basic editing stays usable) rather than locking. "locked" is reserved for
+ * explicit suspension (status='suspended') — an admin kill switch.
+ */
 export function effectiveState(sub: Subscription, at = Date.now()): { state: SubState; until: string | null } {
   if (sub.override_until && new Date(sub.override_until).getTime() > at) {
     return { state: "granted", until: sub.override_until };
   }
+  if (sub.status === "suspended") return { state: "locked", until: null };
+  if (sub.status === "canceled") return { state: "free", until: null };
   const end =
     sub.status === "trialing" ? sub.trial_ends_at
     : sub.status === "active" ? sub.period_end
     : null;
-  if (sub.status === "canceled") return { state: "locked", until: null };
   if (end && new Date(end).getTime() > at) {
     return { state: sub.status === "trialing" ? "trialing" : "active", until: end };
   }
   if (end && new Date(end).getTime() + GRACE_DAYS * DAY > at) {
     return { state: "grace", until: new Date(new Date(end).getTime() + GRACE_DAYS * DAY).toISOString() };
   }
-  return { state: "locked", until: end };
+  // paid period lapsed (or free plan from the start) → free tier
+  return { state: "free", until: end };
 }
 
+/** The plan whose features/limits actually apply right now — paid plans only
+ *  while the subscription is live; everything else resolves to free. */
+export async function effectivePlan(sub: Subscription): Promise<Plan> {
+  const { state } = effectiveState(sub);
+  if (state === "free" || state === "locked") return planOf("free");
+  return planOf(sub.plan);
+}
+
+export interface PlanPub {
+  slug: string; name: string; priceNgn: number; memberPriceNgn: number;
+  amountNgn: number;                       // computed for this org's seat count
+  features: Record<string, boolean>; limits: Record<string, number>;
+}
 export interface BillingSummary {
   state: SubState;
   status: string;
   until: string | null;
   daysLeft: number | null;
   seats: number;
-  amountNgn: number;
-  businessAmountNgn: number;
-  plan: PlanTier;
+  amountNgn: number;                       // current plan at current seats
+  plan: PlanTier;                          // effective plan slug (free when downgraded)
+  planName: string;
+  features: Record<string, boolean>;       // effective entitlements — the UI gate map
+  limits: Record<string, number>;
+  plans: PlanPub[];                        // upgrade catalog
   currency: string;
   trialEndsAt: string | null;
   periodEnd: string | null;
-  config: { basePriceNgn: number; memberPriceNgn: number; trialMonths: number; businessMultiplier: number };
+  config: { trialMonths: number };
   paystackEnabled: boolean;
 }
 
 export async function summary(orgId: string): Promise<BillingSummary> {
-  const [sub, cfg, seats] = await Promise.all([ensureSubscription(orgId), getConfig(), seatCount(orgId)]);
+  const [sub, cfg, seats, plans] = await Promise.all(
+    [ensureSubscription(orgId), getConfig(), seatCount(orgId), getPlans(true)]);
   const { state, until } = effectiveState(sub);
+  const plan = await effectivePlan(sub);
   const daysLeft = until ? Math.ceil((new Date(until).getTime() - Date.now()) / DAY) : null;
-  const plan = (sub.plan === "business" ? "business" : "standard") as PlanTier;
   return {
-    state, status: sub.status, until, daysLeft, seats, plan,
-    amountNgn: monthlyAmount(cfg, seats, "standard"),
-    businessAmountNgn: monthlyAmount(cfg, seats, "business"),
+    state, status: sub.status, until, daysLeft, seats,
+    plan: plan.slug, planName: plan.name,
+    features: plan.features ?? {}, limits: plan.limits ?? {},
+    plans: plans.map((p) => ({
+      slug: p.slug, name: p.name, priceNgn: p.price_ngn, memberPriceNgn: p.member_price_ngn,
+      amountNgn: monthlyAmount(p, seats), features: p.features ?? {}, limits: p.limits ?? {},
+    })),
+    amountNgn: monthlyAmount(plan, seats),
     currency: cfg.currency,
     trialEndsAt: sub.trial_ends_at,
     periodEnd: sub.period_end,
-    config: { basePriceNgn: cfg.base_price_ngn, memberPriceNgn: cfg.member_price_ngn, trialMonths: cfg.trial_months, businessMultiplier: cfg.business_multiplier || 2 },
+    config: { trialMonths: cfg.trial_months },
     paystackEnabled: !!process.env.KREATIX_PAYSTACK_SECRET,
   };
 }
@@ -158,10 +245,11 @@ export async function confirmPayment(paymentId: string, confirmedBy: string | nu
 
   await run("UPDATE payments SET status = 'confirmed', confirmed_by = $2, period_start = $3, period_end = $4 WHERE id = $1",
     [p.id, confirmedBy, start, end]);
+  const plan = await planOf(p.plan);
   await run(
     `UPDATE subscriptions SET status = 'active', period_start = $2, period_end = $3,
        amount_ngn = $4, seats = $5, plan = $7, locked_notified_at = NULL, updated_at = $6 WHERE org_id = $1`,
-    [p.org_id, start, end, p.amount_ngn, p.seats, now(), p.plan === "business" ? "business" : "standard"],
+    [p.org_id, start, end, p.amount_ngn, p.seats, now(), plan.slug],
   );
 
   // receipt to the workspace admins — fire-and-forget
@@ -189,12 +277,13 @@ export async function billingNotices(log?: { warn: (o: unknown, m: string) => vo
     `SELECT s.*, o.name FROM subscriptions s JOIN orgs o ON o.id = s.org_id`);
   for (const sub of subs) {
     const { state, until } = effectiveState(sub);
-    const amount = monthlyAmount(cfg, sub.seats || 1, sub.plan === "business" ? "business" : "standard");
+    const plan = await planOf(sub.plan);
+    const amount = monthlyAmount(plan, sub.seats || 1);
     const t =
       state === "trialing" && until && !sub.trial_warned_at &&
         new Date(until).getTime() - Date.now() < 7 * DAY
         ? tpl.trialEnding(sub.name, Math.ceil((new Date(until).getTime() - Date.now()) / DAY), amount)
-      : state === "locked" && !sub.locked_notified_at
+      : state === "locked" && !sub.locked_notified_at && plan.price_ngn > 0
         ? tpl.workspaceLocked(sub.name, amount)
       : null;
     if (!t) continue;
@@ -216,14 +305,16 @@ export async function billingNotices(log?: { warn: (o: unknown, m: string) => vo
 /** Create a pending payment row for the org's next `months` periods on the
  *  given plan tier — amount_ngn is the TOTAL for the whole term so
  *  confirmation math and payment-provider verification stay consistent. */
-export async function createPayment(orgId: string, method: string, reference?: string, months = 1, plan: PlanTier = "standard"): Promise<{ id: string; amountNgn: number; seats: number; months: number }> {
-  const [cfg, seats] = await Promise.all([getConfig(), seatCount(orgId)]);
-  const amount = monthlyAmount(cfg, seats, plan) * months;
+export async function createPayment(orgId: string, method: string, reference?: string, months = 1, planSlug = "pro"): Promise<{ id: string; amountNgn: number; seats: number; months: number } | { error: string }> {
+  const plan = await planOf(planSlug);
+  if (plan.price_ngn <= 0 && plan.member_price_ngn <= 0) return { error: "free_plan" };
+  const seats = await seatCount(orgId);
+  const amount = monthlyAmount(plan, seats) * months;
   const id = randomUUID();
   await run(
     `INSERT INTO payments (id, org_id, amount_ngn, seats, months, method, reference, status, plan, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9)`,
-    [id, orgId, amount, seats, months, method, reference ?? null, plan, now()],
+    [id, orgId, amount, seats, months, method, reference ?? null, plan.slug, now()],
   );
   return { id, amountNgn: amount, seats, months };
 }
@@ -280,6 +371,45 @@ export async function sweepPendingPaystack(log?: { warn: (o: unknown, m: string)
   return { confirmed };
 }
 
+/**
+ * Plan-level version retention — the free tier keeps bounded history
+ * (`limits.version_days`, 0 = unlimited). Applies to orgs whose effective
+ * tier is free: stored plan 'free', canceled, or a paid period expired past
+ * grace. A file's newest version is never pruned — it's the live content.
+ * Orphaned blobs are unlinked. Runs in the daily sweep.
+ */
+export async function sweepVersionRetention(): Promise<number> {
+  const free = await planOf("free");
+  const days = planLimit(free, "version_days", 0);
+  if (days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * DAY).toISOString();
+  const rows = await q<{ id: string; blob_key: string }>(
+    `SELECT v.id, v.blob_key FROM versions v
+     JOIN items i ON i.id = v.file_id
+     JOIN subscriptions s ON s.org_id = i.org_id
+     WHERE v.created_at < $1
+       AND v.id <> (SELECT id FROM versions v2 WHERE v2.file_id = v.file_id
+                    ORDER BY v2.created_at DESC, v2.id DESC LIMIT 1)
+       AND COALESCE(s.override_until, '1970-01-01'::timestamptz) < $2
+       AND (s.plan = 'free'
+            OR s.status = 'canceled'
+            OR COALESCE(
+                 CASE WHEN s.status = 'trialing' THEN s.trial_ends_at
+                      WHEN s.status = 'active' THEN s.period_end END,
+                 '1970-01-01'::timestamptz) + interval '7 days' < $2)`,
+    [cutoff, now()]);
+  let pruned = 0;
+  for (const v of rows) {
+    await run("DELETE FROM versions WHERE id = $1", [v.id]);
+    const stillUsed = await one("SELECT 1 FROM versions WHERE blob_key = $1 LIMIT 1", [v.blob_key]);
+    if (!stillUsed) {
+      try { unlinkSync(join(DATA_DIR, "blobs", v.blob_key.slice(0, 2), v.blob_key)); } catch { /* gone */ }
+    }
+    pruned++;
+  }
+  return pruned;
+}
+
 /** Seeded superadmin — credentials come from env, never from source. */
 export async function ensureSuperAdmin(): Promise<void> {
   const email = process.env.KREATIX_SUPERADMIN_EMAIL || "admin@kreatixtech.com";
@@ -302,8 +432,8 @@ export async function ensureSuperAdmin(): Promise<void> {
   }
   // the platform workspace never locks itself out — permanent comp override
   await run(
-    `INSERT INTO subscriptions (org_id, status, override_until, seats, updated_at)
-     VALUES ($1, 'active', '2100-01-01'::timestamptz, 1, $2)
+    `INSERT INTO subscriptions (org_id, status, override_until, seats, plan, updated_at)
+     VALUES ($1, 'active', '2100-01-01'::timestamptz, 1, 'business', $2)
      ON CONFLICT (org_id) DO UPDATE SET override_until = EXCLUDED.override_until, updated_at = EXCLUDED.updated_at`,
     [saOrg, now()],
   );
