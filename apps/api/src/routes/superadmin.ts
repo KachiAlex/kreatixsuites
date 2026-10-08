@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q, one, run, now, tx, DATA_DIR } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
@@ -16,6 +17,16 @@ import { limits } from "../aiQuota.js";
 async function requireSuper(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
   if (!user.isSuper) return reply.code(403).send({ error: "forbidden", message: "Superadmin only" });
+}
+
+/** Append-only operator log — actor denormalized (users/orgs may be deleted later). */
+async function logSa(user: { id: string; email: string }, action: string, target?: string | null, detail?: unknown) {
+  try {
+    await run(
+      "INSERT INTO sa_audit (id, actor_id, actor_email, action, target, detail, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [randomUUID(), user.id, user.email, action, target ?? null,
+       detail == null ? null : typeof detail === "string" ? detail : JSON.stringify(detail), now()]);
+  } catch (e) { console.warn("[sa_audit] write failed:", e); }
 }
 
 export function superadminRoutes(app: FastifyInstance) {
@@ -70,6 +81,7 @@ export function superadminRoutes(app: FastifyInstance) {
   app.get("/api/superadmin/billing-config", async () => ({ config: await getConfig() }));
 
   app.put("/api/superadmin/billing-config", async (req) => {
+    const { user } = req as AuthedRequest;
     const patch = z.object({
       base_price_ngn: z.number().int().min(0).max(10_000_000).optional(),
       member_price_ngn: z.number().int().min(0).max(10_000_000).optional(),
@@ -77,46 +89,68 @@ export function superadminRoutes(app: FastifyInstance) {
       business_multiplier: z.number().int().min(1).max(10).optional(),
       currency: z.string().min(3).max(8).optional(),
     }).parse(req.body);
-    return { config: await setConfig(patch) };
+    const before = await getConfig();
+    const config = await setConfig(patch);
+    const changes = Object.fromEntries(
+      Object.entries(patch).map(([k, v]) => [k, { from: (before as unknown as Record<string, unknown>)[k], to: v }]));
+    await logSa(user, "config.pricing", "platform billing", changes);
+    return { config };
   });
 
   /** Payment queue — confirm (bank transfer) or reject. */
   app.get("/api/superadmin/payments", async (req) => {
-    const status = ((req.query as { status?: string }).status ?? "pending");
+    const { status = "pending", from, to } = req.query as { status?: string; from?: string; to?: string };
     const rows = await q(
       `SELECT p.*, o.name AS org_name FROM payments p
        JOIN orgs o ON o.id = p.org_id
        WHERE ($1::text IS NULL OR p.status = $1)
-       ORDER BY p.created_at DESC LIMIT 200`, [status === "all" ? null : status]);
+         AND ($2::timestamptz IS NULL OR p.created_at >= $2::timestamptz)
+         AND ($3::timestamptz IS NULL OR p.created_at < $3::timestamptz)
+       ORDER BY p.created_at DESC LIMIT 500`,
+      [status === "all" ? null : status, from || null, to || null]);
     return { payments: rows };
   });
 
   app.post("/api/superadmin/payments/:id/confirm", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const id = (req.params as { id: string }).id;
+    const pay = await one<{ amount_ngn: number; reference: string | null; org_name: string; status: string }>(
+      `SELECT p.amount_ngn, p.reference, o.name AS org_name, p.status
+       FROM payments p JOIN orgs o ON o.id = p.org_id WHERE p.id = $1`, [id]);
     const sub = await confirmPayment(id, user.id);
     if (!sub) return reply.code(404).send({ error: "not_found" });
+    await logSa(user, "payment.confirm", pay?.org_name ?? id,
+      { amountNgn: pay?.amount_ngn, reference: pay?.reference, priorStatus: pay?.status });
     return { ok: true, subscription: sub };
   });
 
   app.post("/api/superadmin/payments/:id/reject", async (req) => {
+    const { user } = req as AuthedRequest;
     const id = (req.params as { id: string }).id;
-    await run("UPDATE payments SET status = 'rejected', confirmed_by = $2 WHERE id = $1 AND status = 'pending'", [id, (req as AuthedRequest).user.id]);
+    const pay = await one<{ amount_ngn: number; reference: string | null; org_name: string }>(
+      `SELECT p.amount_ngn, p.reference, o.name AS org_name
+       FROM payments p JOIN orgs o ON o.id = p.org_id WHERE p.id = $1`, [id]);
+    await run("UPDATE payments SET status = 'rejected', confirmed_by = $2 WHERE id = $1 AND status = 'pending'", [id, user.id]);
+    await logSa(user, "payment.reject", pay?.org_name ?? id, { amountNgn: pay?.amount_ngn, reference: pay?.reference });
     return { ok: true };
   });
 
   /** Send a test transactional email — verifies Brevo wiring end-to-end. */
   app.post("/api/superadmin/test-email", async (req, reply) => {
     if (!mailEnabled()) return reply.code(503).send({ error: "disabled", message: "KREATIX_BREVO_API_KEY not set" });
+    const { user } = req as AuthedRequest;
     const { to } = z.object({ to: z.string().email() }).parse(req.body);
     const r = await sendMail({ to, ...tpl.welcome("there", "Test Workspace") });
+    await logSa(user, "email.test", to, { ok: r.ok, messageId: r.messageId });
     return { ok: r.ok, messageId: r.messageId };
   });
 
   /** Per-workspace subscription control — comp time, extend trial, cancel. */
   app.patch("/api/superadmin/orgs/:id/subscription", async (req, reply) => {
+    const { user } = req as AuthedRequest;
     const orgId = (req.params as { id: string }).id;
-    if (!(await one("SELECT id FROM orgs WHERE id = $1", [orgId]))) {
+    const orgRow = await one<{ name: string }>("SELECT name FROM orgs WHERE id = $1", [orgId]);
+    if (!orgRow) {
       return reply.code(404).send({ error: "not_found" });
     }
     const body = z.object({
@@ -127,28 +161,95 @@ export function superadminRoutes(app: FastifyInstance) {
       plan: z.enum(["standard", "business"]).optional(),            // AI budget tier
     }).parse(req.body);
     await ensureSubscription(orgId);
+    const applied: Record<string, unknown> = {};
     if (body.extendTrialDays) {
       await run(
         `UPDATE subscriptions SET trial_ends_at = COALESCE(trial_ends_at, $2) + ($3 || ' days')::interval, updated_at = $2
          WHERE org_id = $1`,
         [orgId, now(), String(body.extendTrialDays)]);
+      applied.extendTrialDays = body.extendTrialDays;
     }
     if (body.overrideUntil !== undefined) {
       await run("UPDATE subscriptions SET override_until = $2, updated_at = $3 WHERE org_id = $1",
         [orgId, body.overrideUntil, now()]);
+      applied.overrideUntil = body.overrideUntil;
     }
     if (body.status === "canceled") {
       await run("UPDATE subscriptions SET status = 'canceled', updated_at = $2 WHERE org_id = $1", [orgId, now()]);
+      applied.status = "canceled";
     }
     if (body.aiTokenBudget !== undefined) {
       await run("UPDATE subscriptions SET ai_token_budget = $2, updated_at = $3 WHERE org_id = $1",
         [orgId, body.aiTokenBudget, now()]);
+      applied.aiTokenBudget = body.aiTokenBudget;
     }
     if (body.plan !== undefined) {
       await run("UPDATE subscriptions SET plan = $2, updated_at = $3 WHERE org_id = $1",
         [orgId, body.plan, now()]);
+      applied.plan = body.plan;
     }
+    if (Object.keys(applied).length) await logSa(user, "org.subscription", orgRow.name, applied);
     return { subscription: await ensureSubscription(orgId) };
+  });
+
+  /** Workspace drill-down — metadata only (never file contents). */
+  app.get("/api/superadmin/orgs/:id/detail", async (req, reply) => {
+    const orgId = (req.params as { id: string }).id;
+    const org = await one<{ id: string; name: string; created_at: string; seats: string }>(
+      `SELECT o.id, o.name, o.created_at,
+              (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND NOT u.disabled)::text AS seats
+       FROM orgs o WHERE o.id = $1`, [orgId]);
+    if (!org) return reply.code(404).send({ error: "not_found" });
+    const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
+    const [members, sub, usage, ai, payments, fbCount] = await Promise.all([
+      q(`SELECT id, display_name, email, initials, role, is_super, disabled, created_at,
+                (SELECT MAX(a.created_at) FROM activity a WHERE a.actor_id = u.id) AS last_active
+         FROM users u WHERE u.org_id = $1 ORDER BY u.created_at ASC`, [orgId]),
+      ensureSubscription(orgId),
+      one<{ files: string; bytes: string; versions: string; comments: string }>(
+        `SELECT COUNT(*)::text AS files,
+                COALESCE(SUM(size),0)::text AS bytes,
+                (SELECT COUNT(*) FROM versions v JOIN items i ON i.id = v.file_id WHERE i.org_id = $1)::text AS versions,
+                (SELECT COUNT(*) FROM comments c JOIN items i ON i.id = c.file_id WHERE i.org_id = $1)::text AS comments
+         FROM items WHERE org_id = $1`, [orgId]),
+      one<{ requests: string; tokens: string; cost_usd: string }>(
+        `SELECT COUNT(*)::text AS requests,
+                COALESCE(SUM(prompt_tokens + completion_tokens),0)::text AS tokens,
+                (COALESCE(SUM(cost_micros),0)/1000000.0)::text AS cost_usd
+         FROM ai_usage WHERE org_id = $1 AND created_at >= $2`, [orgId, monthStart]),
+      q(`SELECT id, amount_ngn, method, reference, plan, status, created_at
+         FROM payments WHERE org_id = $1 ORDER BY created_at DESC LIMIT 50`, [orgId]),
+      one<{ n: string }>("SELECT COUNT(*)::text AS n FROM feedback WHERE org_id = $1", [orgId]),
+    ]);
+    const cfg = await getConfig();
+    return {
+      org: {
+        id: org.id, name: org.name, createdAt: org.created_at, seats: Number(org.seats),
+        subscription: sub,
+        state: sub.status ? effectiveState({ org_id: org.id, seats: Number(org.seats), ...pickSub(sub) }).state : "none",
+        monthlyAmountNgn: monthlyAmount(cfg, Number(org.seats), sub.plan === "business" ? "business" : "standard"),
+      },
+      members,
+      usage: { files: Number(usage?.files ?? 0), bytes: Number(usage?.bytes ?? 0), versions: Number(usage?.versions ?? 0), comments: Number(usage?.comments ?? 0) },
+      ai: { requests: Number(ai?.requests ?? 0), tokens: Number(ai?.tokens ?? 0), costUsd: Number(ai?.cost_usd ?? 0) },
+      payments,
+      feedbackCount: Number(fbCount?.n ?? 0),
+    };
+  });
+
+  /** Enable/disable a member account in a workspace — support action, audited. */
+  app.post("/api/superadmin/orgs/:orgId/members/:userId", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { orgId, userId } = req.params as { orgId: string; userId: string };
+    const { disabled } = z.object({ disabled: z.boolean() }).parse(req.body);
+    const member = await one<{ email: string; display_name: string; is_super: boolean; disabled: boolean }>(
+      "SELECT email, display_name, is_super, disabled FROM users WHERE id = $1 AND org_id = $2", [userId, orgId]);
+    if (!member) return reply.code(404).send({ error: "not_found" });
+    if (member.is_super) return reply.code(409).send({ error: "protected", message: "Superadmin accounts cannot be disabled from here" });
+    if (userId === user.id) return reply.code(409).send({ error: "self", message: "Cannot disable your own account" });
+    await run("UPDATE users SET disabled = $2 WHERE id = $1", [userId, disabled]);
+    await logSa(user, disabled ? "member.disable" : "member.enable", member.email, { orgId });
+    return { ok: true, disabled };
   });
 
   /** User feedback stream — newest first, optional sentiment filter. */
@@ -186,6 +287,7 @@ export function superadminRoutes(app: FastifyInstance) {
       sendMail({ to: target.email, ...tpl.feedbackReply(target.display_name, fb.message, message.trim()) })
         .catch((e) => req.log.warn({ err: String(e), to: target.email }, "feedback reply email failed"));
     }
+    await logSa(user, "feedback.reply", target?.email ?? fb.user_id, { feedbackId: id });
     return { ok: true };
   });
 
@@ -218,6 +320,7 @@ export function superadminRoutes(app: FastifyInstance) {
 
   /** Hard-delete one workspace — full tenant purge (DB rows + orphan blobs). */
   app.delete("/api/superadmin/orgs/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
     const { id } = req.params as { id: string };
     const r = await deleteOrg(id).catch((e) => {
       req.log.error(e, `org delete failed: ${id}`);
@@ -232,11 +335,13 @@ export function superadminRoutes(app: FastifyInstance) {
           : r.error === "not_found" ? "Workspace not found" : "Delete failed — check server logs",
       });
     }
+    await logSa(user, "org.delete", r.name ?? id, { users: r.users, files: r.files, blobs: r.blobs });
     return r;
   });
 
   /** Bulk hard-delete — each workspace purged in its own transaction. */
   app.post("/api/superadmin/orgs/delete", async (req, reply) => {
+    const { user } = req as AuthedRequest;
     const parsed = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "bad_request", message: "Expected { ids: string[] }" });
     const results = [];
@@ -248,7 +353,25 @@ export function superadminRoutes(app: FastifyInstance) {
         results.push({ id, ok: false, error: "failed" });
       }
     }
-    return { results, deleted: results.filter((r) => r.ok).length };
+    const deleted = results.filter((r) => r.ok);
+    if (deleted.length) {
+      await logSa(user, "org.delete.bulk", `${deleted.length} workspaces`,
+        { deleted: deleted.map((r) => ({ id: r.id, name: (r as { name?: string }).name })), attempted: parsed.data.ids.length });
+    }
+    return { results, deleted: deleted.length };
+  });
+
+  /** Append-only audit trail — newest first, optional action/target filters. */
+  app.get("/api/superadmin/audit", async (req) => {
+    const { action, q: search } = req.query as { action?: string; q?: string };
+    const rows = await q(
+      `SELECT id, actor_email, action, target, detail, created_at
+       FROM sa_audit
+       WHERE ($1::text IS NULL OR action = $1)
+         AND ($2::text IS NULL OR target ILIKE '%' || $2 || '%' OR actor_email ILIKE '%' || $2 || '%')
+       ORDER BY created_at DESC LIMIT 300`,
+      [action || null, search || null]);
+    return { audit: rows };
   });
 }
 

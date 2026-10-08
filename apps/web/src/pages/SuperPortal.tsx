@@ -26,6 +26,8 @@ const PATHS: Record<string, string> = {
   download: "M12 3v12 M7 10l5 5 5-5 M3 17v4h18v-4",
   close: "M6 6l12 12 M18 6L6 18",
   clock: "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2",
+  user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8",
+  file: "M6 2h8l6 6v14H6z M14 2v6h6",
 };
 const I = ({ n, s = 18 }: { n: string; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden="true" className="sap-ico">
@@ -60,6 +62,26 @@ interface SaFeedback {
   reply: string | null; replied_at: string | null;
   created_at: string; org_name: string; display_name: string; email: string;
 }
+interface SaAudit {
+  id: string; actor_email: string; action: string; target: string | null;
+  detail: string | null; created_at: string;
+}
+interface SaMember {
+  id: string; display_name: string; email: string; initials: string | null;
+  role: string; is_super: boolean; disabled: boolean;
+  created_at: string; last_active: string | null;
+}
+interface OrgDetail {
+  org: { id: string; name: string; createdAt: string; seats: number;
+    subscription: { status: string | null; trial_ends_at: string | null; period_end: string | null;
+      override_until: string | null; plan: string | null; amount_ngn: number | null };
+    state: string; monthlyAmountNgn: number };
+  members: SaMember[];
+  usage: { files: number; bytes: number; versions: number; comments: number };
+  ai: { requests: number; tokens: number; costUsd: number };
+  payments: SaPayment[];
+  feedbackCount: number;
+}
 interface Review {
   title: string; body: ReactNode; label: string; danger?: boolean;
   run: () => Promise<void>;
@@ -78,6 +100,10 @@ const dayOf = (v: string) =>
   new Date(v).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 const monthLabel = (iso: string) =>
   new Date(iso).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+const fmtBytes = (n: number) =>
+  n >= (1 << 30) ? `${(n / (1 << 30)).toFixed(1)} GB`
+    : n >= (1 << 20) ? `${(n / (1 << 20)).toFixed(1)} MB`
+    : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
 
 const PLAN_ALLOWANCE: Record<string, { base: number; perSeat: number; daily: number }> = {
   standard: { base: 3_000_000, perSeat: 1_000_000, daily: 300 },
@@ -138,7 +164,16 @@ export function SuperPortal() {
   const [acting, setActing] = useState(false);
   const [cfgSaved, setCfgSaved] = useState<"ok" | "err">("ok");
   const [emailTo, setEmailTo] = useState("");
-  const SECTIONS = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email"] as const;
+  const [payStatus, setPayStatus] = useState<"pending" | "confirmed" | "rejected" | "all">("pending");
+  const [payFrom, setPayFrom] = useState("");
+  const [payTo, setPayTo] = useState("");
+  const [ledger, setLedger] = useState<SaPayment[] | null>(null); // null = pending queue
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [memberTick, setMemberTick] = useState(0);
+  const [audit, setAudit] = useState<SaAudit[] | null>(null);
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditAction, setAuditAction] = useState("all");
+  const SECTIONS = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email", "history"] as const;
   type Section = (typeof SECTIONS)[number];
   const [activeSec, setActiveSec] = useState<Section>(() => {
     const h = window.location.hash.slice(1);
@@ -179,6 +214,41 @@ export function SuperPortal() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // payments ledger — non-pending views fetched on filter change
+  const fetchLedger = useCallback(async () => {
+    const qs = new URLSearchParams({ status: payStatus });
+    if (payFrom) qs.set("from", new Date(`${payFrom}T00:00:00`).toISOString());
+    if (payTo) qs.set("to", new Date(`${payTo}T23:59:59`).toISOString());
+    const r = await api.get<{ payments: SaPayment[] }>(`/api/superadmin/payments?${qs}`);
+    setLedger(r.payments);
+  }, [payStatus, payFrom, payTo]);
+
+  useEffect(() => {
+    if (payStatus === "pending" && !payFrom && !payTo) { setLedger(null); return; }
+    let dead = false;
+    setLedgerLoading(true);
+    fetchLedger()
+      .catch((e) => { if (!dead) toast(e instanceof Error ? e.message : "Payments load failed"); })
+      .finally(() => { if (!dead) setLedgerLoading(false); });
+    return () => { dead = true; };
+  }, [fetchLedger, toast]);
+
+  // audit trail — lazily fetched on first visit to the History tab
+  useEffect(() => {
+    if (activeSec !== "history" || audit !== null) return;
+    let dead = false;
+    api.get<{ audit: SaAudit[] }>("/api/superadmin/audit")
+      .then((r) => { if (!dead) setAudit(r.audit); })
+      .catch((e) => { if (!dead) toast(e instanceof Error ? e.message : "Audit log failed to load"); });
+    return () => { dead = true; };
+  }, [activeSec, audit, toast]);
+
+  const refreshAudit = useCallback(() => {
+    api.get<{ audit: SaAudit[] }>("/api/superadmin/audit")
+      .then((r) => setAudit(r.audit))
+      .catch((e) => toast(e instanceof Error ? e.message : "Audit log failed to load"));
+  }, [toast]);
 
   // Escape closes the review dialog / workspace drawer (unless a request runs)
   useEffect(() => {
@@ -222,6 +292,7 @@ export function SuperPortal() {
       await api.post(`/api/superadmin/payments/${p.id}/${ok ? "confirm" : "reject"}`, {});
       toast(ok ? "Payment confirmed — workspace activated" : "Payment rejected");
       await load();
+      if (payStatus !== "pending" || payFrom || payTo) await fetchLedger();
     },
   });
 
@@ -371,6 +442,45 @@ export function SuperPortal() {
   };
   const selectedOrgs = orgs.filter((o) => selected.has(o.id));
 
+  const toggleMember = (orgId: string, orgName: string, m: SaMember) => {
+    const disable = !m.disabled;
+    ask({
+      title: disable ? "Disable member account" : "Enable member account",
+      label: disable ? "Disable account" : "Enable account",
+      danger: disable,
+      body: (<>
+        <p>{disable
+          ? <>Blocking sign-in for <strong>{m.email}</strong> in <strong>{orgName}</strong>. Their files and data stay intact; they can't log in until re-enabled.</>
+          : <>Restore sign-in for <strong>{m.email}</strong> in <strong>{orgName}</strong>.</>}</p>
+        <ReviewBox rows={[["Member", <b key="m">{m.display_name}</b>], ["Email", m.email], ["Role", title(m.role)]]} />
+      </>),
+      run: async () => {
+        await api.post(`/api/superadmin/orgs/${orgId}/members/${m.id}`, { disabled: disable });
+        toast(disable ? `${m.display_name} disabled` : `${m.display_name} enabled`);
+        setMemberTick((t) => t + 1);
+        await load();
+      },
+    });
+  };
+
+  const exportPayments = () => {
+    const cell = (v: unknown) => {
+      let s = String(v ?? "");
+      if (/^[=+@\-\t\r]/.test(s)) s = `'${s}`;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+    const rows = [
+      ["Payment ID", "Workspace", "Amount NGN", "Method", "Reference", "Plan", "Status", "Received"],
+      ...shownPayments.map((p) => [p.id, p.org_name, p.amount_ngn, p.method, p.reference ?? "", p.plan ?? "standard", p.status, p.created_at]),
+    ];
+    const url = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "Kreatix_Payments.csv";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast(`Exported ${shownPayments.length} payment${shownPayments.length === 1 ? "" : "s"}`);
+  };
+
   const testEmail = () => {
     const to = emailTo.trim();
     if (!to) return;
@@ -394,11 +504,21 @@ export function SuperPortal() {
 
   /* ---------- derived views ---------- */
 
+  const pendingCount = ov?.pendingPayments ?? 0;
   const queueTotal = payments.reduce((n, p) => n + p.amount_ngn, 0);
+  const shownPayments = ledger ?? payments; // null ledger = pending queue view
+  const ledgerTotal = shownPayments.reduce((n, p) => n + p.amount_ngn, 0);
   const aiPct = ai ? Math.min(100, (ai.costUsd / Math.max(1, ai.budgetUsd)) * 100) : 0;
   const fbFiltered = useMemo(
     () => feedback.filter((f) => mood === "all" || f.sentiment === mood), [feedback, mood]);
   const unrepliedBad = feedback.filter((f) => f.sentiment === "bad" && !f.reply).length;
+  const auditFiltered = useMemo(() => {
+    const s = auditSearch.trim().toLowerCase();
+    return (audit ?? []).filter((a) =>
+      (auditAction === "all" || a.action === auditAction) &&
+      (!s || `${a.actor_email} ${a.target ?? ""} ${a.action}`.toLowerCase().includes(s)));
+  }, [audit, auditAction, auditSearch]);
+  const auditActions = useMemo(() => [...new Set((audit ?? []).map((a) => a.action))], [audit]);
   const visibleOrgs = useMemo(() => {
     const rows = orgs.filter((o) =>
       o.name.toLowerCase().includes(search.toLowerCase()) &&
@@ -408,7 +528,7 @@ export function SuperPortal() {
     return rows;
   }, [orgs, search, stateFilter, planFilter, sortDir]);
   const selOrg = orgs.find((o) => o.id === selOrgId) ?? null;
-  const needsAttention = payments.length > 0 || aiPct >= 80 || unrepliedBad > 0;
+  const needsAttention = pendingCount > 0 || aiPct >= 80 || unrepliedBad > 0;
 
   const exportCsv = () => {
     const cell = (v: unknown) => {
@@ -516,7 +636,7 @@ export function SuperPortal() {
           </div>
         </div>
         <div className="a-links">
-          {payments.length > 0 && <a href="#payments" onClick={(e) => { e.preventDefault(); nav("payments"); }}>{payments.length} payment{payments.length > 1 ? "s" : ""} <I n="arrow" s={12} /></a>}
+          {pendingCount > 0 && <a href="#payments" onClick={(e) => { e.preventDefault(); nav("payments"); }}>{pendingCount} payment{pendingCount > 1 ? "s" : ""} <I n="arrow" s={12} /></a>}
           {aiPct >= 80 && <a href="#ai-usage" onClick={(e) => { e.preventDefault(); nav("ai-usage"); }}>{aiPct.toFixed(0)}% AI budget used <I n="arrow" s={12} /></a>}
           {unrepliedBad > 0 && <a href="#feedback" onClick={(e) => { e.preventDefault(); gotoBadFeedback(); }}>{unrepliedBad} poor review{unrepliedBad > 1 ? "s" : ""} to reply <I n="arrow" s={12} /></a>}
         </div>
@@ -525,12 +645,13 @@ export function SuperPortal() {
       <nav className="sap-nav" aria-label="Portal sections" role="tablist">
         {(
           [
-            ["payments", <>Payments {payments.length > 0 && <span className="sap-count warn">{payments.length}</span>}</>],
+            ["payments", <>Payments {pendingCount > 0 && <span className="sap-count warn">{pendingCount}</span>}</>],
             ["feedback", <>Feedback <span className="sap-count">{feedback.length}</span></>],
             ["workspaces", "Workspaces"],
             ["ai-usage", "AI usage"],
             ["pricing", <>Plan &amp; pricing</>],
             ["email", "Email tools"],
+            ["history", <>History</>],
           ] as [Section, ReactNode][]
         ).map(([id, label]) => (
           <a key={id} href={`#${id}`} role="tab" aria-selected={activeSec === id}
@@ -541,31 +662,57 @@ export function SuperPortal() {
         ))}
       </nav>
 
-      {/* ---------- pending payments ---------- */}
+      {/* ---------- payments ledger ---------- */}
       <section className="sap-card" id="payments" hidden={activeSec !== "payments"}>
         <div className="sap-cardhead">
           <div>
-            <div className="sap-cardtitle"><I n="wallet" s={17} /><h2>Pending payments</h2><span className="sap-count warn">{payments.length}</span></div>
-            <p>Review receipts and activate workspace subscriptions.</p>
+            <div className="sap-cardtitle"><I n="wallet" s={17} /><h2>Payments</h2><span className="sap-count warn">{pendingCount} pending</span></div>
+            <p>Review receipts, activate subscriptions, reconcile the full ledger.</p>
           </div>
-          <span className="sap-tag">{queueTotal ? `${ngn(queueTotal)} in queue` : "No queue"}</span>
+          <div className="sap-rowact">
+            <span className="sap-tag">{ngn(ledgerTotal)} in view</span>
+            <button className="btn-secondary sap-btn sm" onClick={exportPayments} disabled={shownPayments.length === 0}><I n="download" s={13} />Export CSV</button>
+          </div>
         </div>
-        {payments.length === 0 ? (
-          <div className="sap-empty"><I n="check" s={18} /><strong>All clear</strong>No payments awaiting review.</div>
+        <div className="sap-filters">
+          <div className="sap-tabs" role="group" aria-label="Filter payment status">
+            {(["pending", "confirmed", "rejected", "all"] as const).map((s) => (
+              <button key={s} className={`sap-pill ${s === payStatus ? "on" : ""}`} aria-pressed={s === payStatus}
+                onClick={() => setPayStatus(s)}>
+                {title(s)}{" "}<b>{s === "pending" ? pendingCount : s === "all" ? "—" : ""}</b>
+              </button>
+            ))}
+          </div>
+          <label className="sap-datefield">From
+            <input type="date" value={payFrom} onChange={(e) => setPayFrom(e.target.value)} aria-label="Payments from date" />
+          </label>
+          <label className="sap-datefield">To
+            <input type="date" value={payTo} onChange={(e) => setPayTo(e.target.value)} aria-label="Payments to date" />
+          </label>
+          {(payFrom || payTo) && (
+            <button className="btn-secondary sap-btn sm" onClick={() => { setPayFrom(""); setPayTo(""); }}>Clear dates</button>
+          )}
+        </div>
+        {shownPayments.length === 0 && !ledgerLoading ? (
+          <div className="sap-empty"><I n="check" s={18} /><strong>{ledger === null ? "All clear" : "Nothing here"}</strong>
+            {ledger === null ? "No payments awaiting review." : "No payments match this filter."}</div>
         ) : (
         <div className="sap-tablewrap"><table className="sap-table">
-          <thead><tr><th>Received</th><th>Workspace</th><th className="num">Amount</th><th>Method / reference</th><th className="num">Review</th></tr></thead>
+          <thead><tr><th>Received</th><th>Workspace</th><th className="num">Amount</th><th>Method / reference</th><th>Status</th><th className="num">Review</th></tr></thead>
           <tbody>
-            {payments.map((p) => (
+            {shownPayments.map((p) => (
               <tr key={p.id}>
                 <td><When v={p.created_at} /></td>
                 <td><div className="sap-orgcell"><OrgIcon name={p.org_name} /><span><b>{p.org_name}</b><small>{title(p.plan ?? "standard")} plan</small></span></div></td>
                 <td className="num" style={{ fontWeight: 600 }}>{ngn(p.amount_ngn)}</td>
                 <td className="sap-method"><b>{p.method}</b><span className="mono">{p.reference}</span></td>
-                <td><div className="sap-rowact">
-                  <button className="btn-primary sap-btn sm" disabled={acting} onClick={() => reviewPayment(p, true)}><I n="check" s={13} />Confirm</button>
-                  <button className="btn-secondary sap-btn sm" disabled={acting} onClick={() => reviewPayment(p, false)}>Reject</button>
-                </div></td>
+                <td><span className={`sap-paystate ${p.status}`}>{title(p.status)}</span></td>
+                <td>{p.status === "pending" ? (
+                  <div className="sap-rowact">
+                    <button className="btn-primary sap-btn sm" disabled={acting} onClick={() => reviewPayment(p, true)}><I n="check" s={13} />Confirm</button>
+                    <button className="btn-secondary sap-btn sm" disabled={acting} onClick={() => reviewPayment(p, false)}>Reject</button>
+                  </div>
+                ) : <span className="sap-dim">—</span>}</td>
               </tr>
             ))}
           </tbody>
@@ -573,7 +720,7 @@ export function SuperPortal() {
         )}
         <div className="sap-cardfoot">
           <span><I n="shield" s={13} /> Confirmation activates access and emails a receipt.</span>
-          <span>No automatic confirmation</span>
+          <span>{ledgerLoading ? "Loading…" : `${shownPayments.length} record${shownPayments.length === 1 ? "" : "s"} in view`}</span>
         </div>
       </section>
 
@@ -832,6 +979,49 @@ export function SuperPortal() {
         </div>
       </section>
 
+      {/* ---------- audit history ---------- */}
+      <section className="sap-card" id="history" hidden={activeSec !== "history"}>
+        <div className="sap-cardhead">
+          <div>
+            <div className="sap-cardtitle"><I n="clock" s={17} /><h2>Audit history</h2><span className="sap-count">{audit?.length ?? "—"}</span></div>
+            <p>Append-only record of every operator action — who did what, to which workspace, and when.</p>
+          </div>
+          <button className="btn-secondary sap-btn sm" onClick={refreshAudit}><I n="refresh" s={13} />Refresh</button>
+        </div>
+        <div className="sap-filters">
+          <label className="sap-search"><I n="search" s={14} />
+            <input type="search" placeholder="Search actor, workspace, action…" value={auditSearch}
+              aria-label="Search audit log" onChange={(e) => setAuditSearch(e.target.value)} />
+          </label>
+          <select value={auditAction} aria-label="Filter by action" onChange={(e) => setAuditAction(e.target.value)}>
+            <option value="all">All actions</option>
+            {auditActions.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div className="sap-tablewrap"><table className="sap-table">
+          <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+          <tbody>
+            {audit === null && <tr><td colSpan={5}><div className="sap-empty"><strong>Loading…</strong></div></td></tr>}
+            {audit !== null && auditFiltered.length === 0 && (
+              <tr><td colSpan={5}><div className="sap-empty"><I n="clock" s={18} /><strong>No entries yet</strong>Operator actions are recorded here as they happen.</div></td></tr>
+            )}
+            {auditFiltered.map((a) => (
+              <tr key={a.id}>
+                <td><When v={a.created_at} /></td>
+                <td className="sap-from"><b>{a.actor_email}</b></td>
+                <td><span className={`sap-act ${a.action.split(".")[0]}`}>{a.action}</span></td>
+                <td className="sap-wsname">{a.target ?? "—"}</td>
+                <td className="sap-detail"><code>{a.detail ?? "—"}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+        <div className="sap-cardfoot">
+          <span><I n="shield" s={13} /> Append-only — entries are never edited or removed.</span>
+          <span>Newest 300 entries · shown {auditFiltered.length}</span>
+        </div>
+      </section>
+
       <footer className="sap-bottom">
         <span><I n="shield" s={13} /> Superadmin only · tenant data restricted to this console</span>
         <span>{user?.email}</span>
@@ -866,12 +1056,13 @@ export function SuperPortal() {
               </div>
               <button className="sap-iconbtn" aria-label="Close workspace controls" onClick={() => setSelOrgId(null)}><I n="close" s={15} /></button>
             </div>
-            <OrgDrawer key={selOrg.id} org={selOrg}
+            <OrgDrawer key={selOrg.id} org={selOrg} tick={memberTick}
               onSave={(plan, budget) => saveOrgSettings(selOrg, plan, budget)}
               onComp={() => compOrg(selOrg)}
               onExtend={(d) => extendTrial(selOrg, d)}
               onCancel={() => cancelSub(selOrg)}
-              onDelete={() => deleteOrgs([selOrg])} />
+              onDelete={() => deleteOrgs([selOrg])}
+              onToggleMember={(m) => toggleMember(selOrg.id, selOrg.name, m)} />
           </div>
         </div>
       )}
@@ -913,19 +1104,32 @@ function CfgField({ label, hint, unit, unitAfter, full, children }: {
 }
 
 /** Workspace management drawer — plan tier, AI budget override, trial extension, cancel. */
-function OrgDrawer({ org, onSave, onComp, onExtend, onCancel, onDelete }: {
+function OrgDrawer({ org, tick, onSave, onComp, onExtend, onCancel, onDelete, onToggleMember }: {
   org: SaOrg;
+  tick: number;
   onSave: (plan: string, budget: number | null) => void;
   onComp: () => void;
   onExtend: (days: number) => void;
   onCancel: () => void;
   onDelete: () => void;
+  onToggleMember: (m: SaMember) => void;
 }) {
   const [plan, setPlan] = useState(org.plan ?? "standard");
   const [tokens, setTokens] = useState(org.ai_token_budget == null ? "" : String(org.ai_token_budget));
   const [days, setDays] = useState("30");
+  const [detail, setDetail] = useState<OrgDetail | null>(null);
+  const [detailErr, setDetailErr] = useState<string | null>(null);
   const preview = { ...org, plan };
   const pa = PLAN_ALLOWANCE[plan === "business" ? "business" : "standard"];
+
+  useEffect(() => {
+    let dead = false;
+    setDetailErr(null);
+    api.get<OrgDetail>(`/api/superadmin/orgs/${org.id}/detail`)
+      .then((d) => { if (!dead) setDetail(d); })
+      .catch((e) => { if (!dead) setDetailErr(e instanceof Error ? e.message : "Detail load failed"); });
+    return () => { dead = true; };
+  }, [org.id, tick]);
 
   return (
     <div className="sap-drawerbody">
@@ -991,6 +1195,71 @@ function OrgDrawer({ org, onSave, onComp, onExtend, onCancel, onDelete }: {
           </form>
         )}
       </div>
+
+      {detailErr ? (
+        <div className="sap-dsection"><p className="sap-dim">Workspace details failed to load: {detailErr}</p></div>
+      ) : !detail ? (
+        <div className="sap-dsection"><p className="sap-dim">Loading workspace details…</p></div>
+      ) : (<>
+        <div className="sap-dsection">
+          <h4>Workspace activity</h4>
+          <div className="sap-details">
+            <div><label>Files</label><strong>{nf.format(detail.usage.files)}</strong></div>
+            <div><label>Storage</label><strong>{fmtBytes(detail.usage.bytes)}</strong></div>
+            <div><label>Versions</label><strong>{nf.format(detail.usage.versions)}</strong></div>
+            <div><label>Comments</label><strong>{nf.format(detail.usage.comments)}</strong></div>
+            <div><label>AI this month</label><strong>{compact.format(detail.ai.tokens)} tok</strong></div>
+            <div><label>AI cost</label><strong>{usd(detail.ai.costUsd)}</strong></div>
+            <div><label>Feedback sent</label><strong>{detail.feedbackCount}</strong></div>
+            <div><label>AI requests</label><strong>{nf.format(detail.ai.requests)}</strong></div>
+          </div>
+        </div>
+
+        <div className="sap-dsection">
+          <h4>Members <span className="sap-count">{detail.members.length}</span></h4>
+          <div className="sap-members">
+            {detail.members.map((m) => (
+              <div key={m.id} className={`sap-member${m.disabled ? " off" : ""}`}>
+                <span className="sap-orgicon sm">{m.initials ?? initials(m.display_name)}</span>
+                <div className="sap-memberinfo">
+                  <b>{m.display_name}{m.is_super && <span className="sap-tag warn" style={{ marginLeft: 6 }}>super</span>}</b>
+                  <small>{m.email}</small>
+                </div>
+                <div className="sap-membermeta">
+                  <span className="sap-dim">{title(m.role)}</span>
+                  <span className="sap-dim">{m.last_active ? <When v={m.last_active} /> : "never active"}</span>
+                </div>
+                {!m.is_super && (
+                  <button className={`${m.disabled ? "btn-secondary" : "sap-danger"} sap-btn sm`}
+                    onClick={() => onToggleMember(m)}>
+                    {m.disabled ? "Enable" : "Disable"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {detail.payments.length > 0 && (
+          <div className="sap-dsection">
+            <h4>Payment history</h4>
+            <div className="sap-members">
+              {detail.payments.map((p) => (
+                <div key={p.id} className="sap-member">
+                  <div className="sap-memberinfo">
+                    <b>{ngn(p.amount_ngn)}</b>
+                    <small>{p.method}{p.reference ? ` · ${p.reference}` : ""}</small>
+                  </div>
+                  <div className="sap-membermeta">
+                    <span className={`sap-paystate ${p.status}`}>{title(p.status)}</span>
+                    <span className="sap-dim"><When v={p.created_at} /></span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </>)}
 
       <div className="sap-dsection sap-dangerzone">
         <h4>Danger zone</h4>

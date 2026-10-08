@@ -316,6 +316,20 @@ CREATE TABLE IF NOT EXISTS feedback (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
+
+-- superadmin audit log — append-only record of every platform mutation.
+-- Deliberately no FKs: the trail must survive deletion of the org/user it
+-- references (that's the point — "who deleted X" stays answerable).
+CREATE TABLE IF NOT EXISTS sa_audit (
+  id TEXT PRIMARY KEY,
+  actor_id TEXT,
+  actor_email TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT,                            -- org/payment/user name or id
+  detail TEXT,                            -- JSON payload or human summary
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sa_audit_created ON sa_audit(created_at DESC);
 `);
   // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
