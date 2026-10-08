@@ -2799,3 +2799,22 @@ html[data-theme="dark"]{
 .lp-plan-cta{margin-top:auto;justify-content:center}
 .lp-plan-skel{min-height:380px;border-radius:14px;background:linear-gradient(100deg,var(--l-cream) 40%,#fff 50%,var(--l-cream) 60%);background-size:200% 100%;animation:lp-skel 1.4s infinite}
 @keyframes lp-skel{to{background-position:-100% 0}}
+
+/* ── native app splash — kreatixtech.com launch animation ── */
+.kx-splash{position:fixed;inset:0;z-index:99999;background:#0E0E0F;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  animation:kx-splash-fade .6s ease-in 2.2s forwards}
+.kx-splash-logo{height:72px;width:auto;opacity:0;filter:drop-shadow(0 12px 30px rgba(0,0,0,.45));
+  animation:kx-splash-logo 1.2s cubic-bezier(.34,1.56,.64,1) forwards}
+.kx-splash-tag{margin-top:10px;color:#f0f1f3;font-size:12.5px;letter-spacing:.4px;opacity:0;
+  animation:kx-splash-tag .8s ease-out 1.4s forwards}
+.kx-splash-track{margin-top:38px;width:160px;height:4px;border-radius:999px;background:rgba(255,255,255,.1);overflow:hidden}
+.kx-splash-track span{display:block;height:100%;border-radius:999px;background:#F2782E;width:0;
+  animation:kx-splash-bar 1.8s ease-in-out .5s forwards}
+@keyframes kx-splash-fade{0%{opacity:1}to{opacity:0;visibility:hidden}}
+@keyframes kx-splash-logo{0%{transform:scale(0) rotate(-180deg);opacity:0}60%{transform:scale(1.15) rotate(10deg);opacity:1}to{transform:scale(1) rotate(0);opacity:1}}
+@keyframes kx-splash-tag{0%{transform:translateY(15px);opacity:0}to{transform:translateY(0);opacity:.7}}
+@keyframes kx-splash-bar{0%{width:0}to{width:100%}}
+@media (prefers-reduced-motion:reduce){
+  .kx-splash-logo,.kx-splash-tag{animation:none;opacity:1;transform:none}
+  .kx-splash-tag{opacity:.7}
+}

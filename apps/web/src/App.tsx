@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { I18nProvider, useT } from "./lib/i18n";
@@ -6,6 +6,7 @@ import { Login } from "./pages/Login";
 import { Landing } from "./pages/Landing";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
 import { useGlobalModalA11y } from "./lib/a11y";
+import { isNativeMobile } from "./lib/platform";
 import type { ReactNode } from "react";
 
 // App-shell routes are split out of the entry chunk — the public landing and
@@ -55,12 +56,33 @@ function TitleSync() {
   return null;
 }
 
-/** Public landing for guests, workspace home for signed-in users. */
+/** Public landing for guests, workspace home for signed-in users. The
+ *  native app skips marketing pages — splash → straight to sign-in. */
 function LandingOrHome() {
   const { user, loading } = useAuth();
   const t = useT();
   if (loading) return <div className="auth-wrap"><div className="empty">{t("app.loading")}</div></div>;
+  if (isNativeMobile) return user ? <Navigate to="/home" replace /> : <Navigate to="/login" replace />;
   return user ? <Navigate to="/home" replace /> : <Landing />;
+}
+
+/** Cold-start splash for the native app — the kreatixtech.com animation:
+ *  logo spins/scales in, tagline rises, orange progress bar, screen fades.
+ *  ~2.9s, then the app underneath (login for guests) is revealed. */
+function Splash() {
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setGone(true), 2900);
+    return () => clearTimeout(t);
+  }, []);
+  if (gone) return null;
+  return (
+    <div className="kx-splash" aria-hidden="true">
+      <img className="kx-splash-logo" src="/brand/kreatix-suites-dark.png" alt="" />
+      <div className="kx-splash-tag">Make room for your best work</div>
+      <div className="kx-splash-track"><span /></div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -69,6 +91,7 @@ export default function App() {
     <I18nProvider>
     <AuthProvider>
       <BrowserRouter>
+        {isNativeMobile && <Splash />}
         <TitleSync />
         <DesktopBootstrap />
         <Suspense fallback={<RouteFallback />}>
