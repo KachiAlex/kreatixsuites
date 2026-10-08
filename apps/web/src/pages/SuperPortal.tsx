@@ -1,7 +1,7 @@
 // Platform superadmin console — KPIs, payment queue, feedback, workspaces,
 // AI spend, pricing and email tools. The account is portal-only: every call
 // here is /api/superadmin/*, enforced server-side by the confinement guard.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -62,10 +62,15 @@ interface SaAiUsage {
   month: string; requests: number; tokens: number; costUsd: number; budgetUsd: number;
   topOrgs: { orgId: string; name: string; requests: number; tokens: number; costUsd: number }[];
 }
-interface SaFeedback {
-  id: string; sentiment: "good" | "ok" | "bad"; message: string; page: string | null;
-  reply: string | null; replied_at: string | null;
-  created_at: string; org_name: string; display_name: string; email: string;
+interface SaConvo {
+  user_id: string; display_name: string; email: string; org_name: string;
+  last_sender: "user" | "admin"; last_message: string; last_at: string;
+  last_sentiment: "good" | "ok" | "bad"; unread: number;
+}
+interface SaFbMsg {
+  id: string; sender: "user" | "admin"; sentiment: string;
+  message: string; page: string | null; read_at: string | null;
+  seen_at: string | null; created_at: string;
 }
 interface SaAudit {
   id: string; actor_email: string; action: string; target: string | null;
@@ -103,6 +108,22 @@ const dateOf = (v: string | null) =>
   v ? new Date(v).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
 const dayOf = (v: string) =>
   new Date(v).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+const MOOD_EMOJI: Record<string, string> = { good: "😊", ok: "🙂", bad: "😞" };
+const timeOf = (v: string) =>
+  new Date(v).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+/** Conversation list stamp — HH:MM today, short date otherwise. */
+const convTime = (v: string) => {
+  const d = new Date(v);
+  return d.toDateString() === new Date().toDateString() ? timeOf(v) : dayOf(v);
+};
+/** Day separator inside a thread — Today / Yesterday / date. */
+const dayLabel = (v: string) => {
+  const d = new Date(v);
+  const today = new Date();
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
+  return d.toDateString() === today.toDateString() ? "Today"
+    : d.toDateString() === yest.toDateString() ? "Yesterday" : dateOf(v);
+};
 const monthLabel = (iso: string) =>
   new Date(iso).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 const fmtBytes = (n: number) =>
@@ -154,8 +175,15 @@ export function SuperPortal() {
   const [newPlan, setNewPlan] = useState({ slug: "", name: "", price: "", member: "" });
   const [planFormOpen, setPlanFormOpen] = useState(false);
   const [ai, setAi] = useState<SaAiUsage | null>(null);
-  const [feedback, setFeedback] = useState<SaFeedback[]>([]);
+  const [convos, setConvos] = useState<SaConvo[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [activeConvo, setActiveConvo] = useState<SaConvo | null>(null);
+  const [thread, setThread] = useState<SaFbMsg[] | null>(null);
+  const [fbDraft, setFbDraft] = useState("");
+  const [fbSending, setFbSending] = useState(false);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const activeConvoRef = useRef<SaConvo | null>(null);
+  activeConvoRef.current = activeConvo;
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -198,11 +226,11 @@ export function SuperPortal() {
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
         api.get<{ config: BillingCfg }>("/api/superadmin/billing-config"),
         api.get<SaAiUsage>("/api/superadmin/ai-usage"),
-        api.get<{ feedback: SaFeedback[]; stats: Record<string, number> }>("/api/superadmin/feedback"),
+        api.get<{ conversations: SaConvo[]; stats: Record<string, number> }>("/api/superadmin/feedback/conversations"),
         api.get<{ plans: PlanRow[] }>("/api/superadmin/plans"),
       ]);
       setOv(o); setOrgs(og.orgs); setPayments(pay.payments); setCfg(c.config); setPlans(pl.plans);
-      setAi(a); setFeedback(fb.feedback); setStats(fb.stats);
+      setAi(a); setConvos(fb.conversations); setStats(fb.stats);
       setRefreshedAt(new Date());
     } catch (e) {
       const m = e instanceof Error ? e.message : "Load failed";
@@ -322,20 +350,66 @@ export function SuperPortal() {
     });
   };
 
-  const replyTo = (f: SaFeedback, message: string) => ask({
-    title: `Reply to ${f.display_name}`,
-    label: "Send reply",
-    body: (<>
-      <p>This reply appears in the user's feedback widget and is emailed to <strong>{f.email}</strong>.</p>
-      <div className="sap-reviewbox" style={{ whiteSpace: "pre-wrap", color: "var(--ink)" }}>{message}</div>
-    </>),
-    run: async () => {
-      await api.post(`/api/superadmin/feedback/${f.id}/reply`, { message });
-      setFeedback((rows) => rows.map((r) => r.id === f.id
-        ? { ...r, reply: message, replied_at: new Date().toISOString() } : r));
-      toast("Reply sent — shown in the user's widget and emailed");
-    },
-  });
+  /* ---------- support inbox (feedback threads) ---------- */
+
+  const pullThread = useCallback(async (userId: string) => {
+    const r = await api.get<{ user: { display_name: string; email: string; org_name: string }; messages: SaFbMsg[] }>(
+      `/api/superadmin/feedback/thread/${userId}`);
+    setThread(r.messages);
+  }, []);
+
+  const openConvo = async (c: SaConvo) => {
+    setActiveConvo(c);
+    setThread(null);
+    try {
+      await pullThread(c.user_id);
+      if (c.unread > 0) {
+        void api.post(`/api/superadmin/feedback/thread/${c.user_id}/read`, {});
+        setConvos((cs) => cs.map((x) => x.user_id === c.user_id ? { ...x, unread: 0 } : x));
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not load conversation");
+      setActiveConvo(null);
+    }
+  };
+
+  const sendReply = async () => {
+    const text = fbDraft.trim();
+    const c = activeConvo;
+    if (!text || !c || fbSending) return;
+    setFbSending(true);
+    setFbDraft("");
+    const at = new Date().toISOString();
+    try {
+      const r = await api.post<{ id: string }>(`/api/superadmin/feedback/thread/${c.user_id}/reply`, { message: text });
+      const msg: SaFbMsg = { id: r.id, sender: "admin", sentiment: "ok", message: text, page: null, read_at: null, seen_at: null, created_at: at };
+      setThread((t) => [...(t ?? []), msg]);
+      setConvos((cs) => cs.map((x) => x.user_id === c.user_id
+        ? { ...x, last_sender: "admin", last_message: text, last_at: at } : x));
+    } catch (e) {
+      setFbDraft(text);
+      toast(e instanceof Error ? e.message : "Reply failed");
+    } finally {
+      setFbSending(false);
+    }
+  };
+
+  // inbox polling — new widget messages land while the section is open
+  useEffect(() => {
+    if (activeSec !== "feedback") return;
+    const iv = setInterval(async () => {
+      try {
+        const r = await api.get<{ conversations: SaConvo[] }>("/api/superadmin/feedback/conversations");
+        setConvos(r.conversations);
+        const open = activeConvoRef.current;
+        if (open) await pullThread(open.user_id);
+      } catch { /* background refresh is best-effort */ }
+    }, 20000);
+    return () => clearInterval(iv);
+  }, [activeSec, pullThread]);
+
+  // keep the thread pinned to the latest message
+  useEffect(() => { threadRef.current?.scrollTo(0, threadRef.current.scrollHeight); }, [thread]);
 
   const saveOrgSettings = (o: SaOrg, plan: string, budget: number | null) => ask({
     title: "Update workspace settings",
@@ -567,9 +641,10 @@ export function SuperPortal() {
   const shownPayments = ledger ?? payments; // null ledger = pending queue view
   const ledgerTotal = shownPayments.reduce((n, p) => n + p.amount_ngn, 0);
   const aiPct = ai ? Math.min(100, (ai.costUsd / Math.max(1, ai.budgetUsd)) * 100) : 0;
-  const fbFiltered = useMemo(
-    () => feedback.filter((f) => mood === "all" || f.sentiment === mood), [feedback, mood]);
-  const unrepliedBad = feedback.filter((f) => f.sentiment === "bad" && !f.reply).length;
+  const convoFiltered = useMemo(
+    () => convos.filter((c) => mood === "all" || c.last_sentiment === mood), [convos, mood]);
+  const unrepliedBad = convos.filter((c) => c.last_sentiment === "bad" && c.last_sender === "user").length;
+  const unreadTotal = convos.reduce((n, c) => n + c.unread, 0);
   const auditFiltered = useMemo(() => {
     const s = auditSearch.trim().toLowerCase();
     return (audit ?? []).filter((a) =>
@@ -707,7 +782,7 @@ export function SuperPortal() {
           {(
             [
               ["payments", "wallet", <>Payments {pendingCount > 0 && <span className="sap-count warn">{pendingCount}</span>}</>],
-              ["feedback", "chat", <>Feedback <span className="sap-count">{feedback.length}</span></>],
+              ["feedback", "chat", <>Inbox {unreadTotal > 0 && <span className="sap-count warn">{unreadTotal}</span>}</>],
               ["workspaces", "building", "Workspaces"],
               ["ai-usage", "spark", "AI usage"],
               ["pricing", "settings", <>Plan &amp; pricing</>],
@@ -787,53 +862,102 @@ export function SuperPortal() {
         </div>
       </section>
 
-      {/* ---------- feedback ---------- */}
+      {/* ---------- feedback inbox (messenger) ---------- */}
       <section className="sap-card" id="feedback" hidden={activeSec !== "feedback"}>
         <div className="sap-cardhead">
           <div>
-            <div className="sap-cardtitle"><I n="chat" s={17} /><h2>User feedback</h2><span className="sap-count">30 days</span></div>
-            <p>Listen across tenants. Reply directly to the people behind the feedback.</p>
+            <div className="sap-cardtitle"><I n="chat" s={17} /><h2>Support inbox</h2><span className="sap-count">{convos.length} conversation{convos.length === 1 ? "" : "s"}</span></div>
+            <p>Widget chats threaded per person. Replies land in their in-app chat.</p>
           </div>
-          <div className="sap-tabs" role="group" aria-label="Filter feedback sentiment">
+          <div className="sap-tabs" role="group" aria-label="Filter conversations by latest mood">
             {(["all", "good", "ok", "bad"] as const).map((m) => (
               <button key={m} className={`sap-pill ${m}${mood === m ? " on" : ""}`} aria-pressed={mood === m}
                 onClick={() => setMood(m)}>
                 {m === "all" ? "All" : m === "good" ? "😊 Good" : m === "ok" ? "🙂 Okay" : "😞 Poor"}{" "}
-                <b>{m === "all" ? feedback.length : stats[m] ?? 0}</b>
+                <b>{m === "all" ? convos.length : stats[m] ?? 0}</b>
               </button>
             ))}
           </div>
         </div>
-        <div className="sap-tablewrap"><table className="sap-table">
-          <thead><tr><th>When</th><th>Mood</th><th>From</th><th>Workspace / page</th><th>Message &amp; reply</th></tr></thead>
-          <tbody>
-            {fbFiltered.length === 0 && (
-              <tr><td colSpan={5}><div className="sap-empty"><I n="chat" s={18} /><strong>No feedback in this view</strong>Try another sentiment filter.</div></td></tr>
+        <div className={`sapm${activeConvo ? " open" : ""}`}>
+          <aside className="sapm-list" aria-label="Conversations">
+            {convoFiltered.length === 0 && (
+              <div className="sap-empty"><I n="chat" s={18} /><strong>No conversations in this view</strong>Try another sentiment filter.</div>
             )}
-            {fbFiltered.map((f) => (
-              <tr key={f.id}>
-                <td><When v={f.created_at} /></td>
-                <td><span className={`sap-mood ${f.sentiment}`}>{f.sentiment === "good" ? "😊 Good" : f.sentiment === "bad" ? "😞 Poor" : "🙂 Okay"}</span></td>
-                <td className="sap-from"><b>{f.display_name}</b><small>{f.email}</small></td>
-                <td><span className="sap-wsname">{f.org_name}</span><span className="sap-pagepath">{f.page ?? "—"}</span></td>
-                <td><div className="sap-msg">
-                  {f.message}
-                  {f.reply ? (
-                    <div className="sap-replied">
-                      <b><I n="check" s={12} /> Replied{f.replied_at ? ` · ${dayOf(f.replied_at)}` : ""}</b>
-                      {f.reply}
-                    </div>
-                  ) : (
-                    <ReplyForm onSend={(message) => replyTo(f, message)} />
-                  )}
-                </div></td>
-              </tr>
+            {convoFiltered.map((c) => (
+              <button key={c.user_id} type="button"
+                className={`sapm-convo${activeConvo?.user_id === c.user_id ? " on" : ""}`}
+                onClick={() => void openConvo(c)}>
+                <span className="sapm-av" aria-hidden="true">{initials(c.display_name)}</span>
+                <span className="sapm-main">
+                  <span className="sapm-top"><b>{c.display_name}</b><small>{convTime(c.last_at)}</small></span>
+                  <span className="sapm-prev">{c.last_sender === "admin" ? "You: " : ""}{c.last_message}</span>
+                  <span className="sapm-sub">{c.org_name} · {c.email}</span>
+                </span>
+                <span className="sapm-side">
+                  <span className={`sapm-mooddot ${c.last_sentiment}`} title={`Latest mood: ${title(c.last_sentiment)}`} />
+                  {c.unread > 0 && <b className="sapm-unread">{c.unread}</b>}
+                </span>
+              </button>
             ))}
-          </tbody>
-        </table></div>
+          </aside>
+          <div className="sapm-chat">
+            {!activeConvo ? (
+              <div className="sap-empty"><I n="chat" s={18} /><strong>Pick a conversation</strong>Threads from the feedback widget appear here.</div>
+            ) : (
+              <>
+                <header className="sapm-head">
+                  <button type="button" className="sapm-back" onClick={() => setActiveConvo(null)} aria-label="Back to conversations">‹</button>
+                  <span className="sapm-av" aria-hidden="true">{initials(activeConvo.display_name)}</span>
+                  <div className="sapm-who">
+                    <b>{activeConvo.display_name}</b>
+                    <small>{activeConvo.email} · {activeConvo.org_name}</small>
+                  </div>
+                </header>
+                <div className="sapm-body" ref={threadRef}>
+                  {!thread ? (
+                    <div className="sap-empty"><strong>Loading thread…</strong></div>
+                  ) : (
+                    thread.map((m, i) => {
+                      const prev = thread[i - 1];
+                      const newDay = !prev || new Date(m.created_at).toDateString() !== new Date(prev.created_at).toDateString();
+                      const theirs = m.sender === "user";
+                      return (
+                        <Fragment key={m.id}>
+                          {newDay && <div className="sapm-day">{dayLabel(m.created_at)}</div>}
+                          <div className={`sapm-row ${theirs ? "them" : "me"}`}>
+                            <div className="sapm-col">
+                              <div className="sapm-bubble">
+                                {theirs && <span className="sapm-emoji">{MOOD_EMOJI[m.sentiment] ?? ""}</span>}
+                                {m.message}
+                                {theirs && m.page && <span className="sapm-pagechip">{m.page}</span>}
+                              </div>
+                              <span className="sapm-time">
+                                {timeOf(m.created_at)}{!theirs && (m.seen_at ? " · Seen" : " · Sent")}
+                              </span>
+                            </div>
+                          </div>
+                        </Fragment>
+                      );
+                    })
+                  )}
+                </div>
+                <form className="sapm-composer" onSubmit={(e) => { e.preventDefault(); void sendReply(); }}>
+                  <input value={fbDraft} maxLength={2000} placeholder={`Reply to ${activeConvo.display_name.split(" ")[0]}…`}
+                    onChange={(e) => setFbDraft(e.target.value)} aria-label="Reply message" />
+                  <button className="sapm-send" type="submit" disabled={fbSending || !fbDraft.trim()} aria-label="Send reply" title="Send">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M3.4 20.4l17.3-8.4L3.4 3.6l-.01 6.53L14 12 3.39 13.87z" fill="currentColor" />
+                    </svg>
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
         <div className="sap-cardfoot">
-          <span>Showing {fbFiltered.length} of {feedback.length} submissions</span>
-          <span><I n="mail" s={13} /> Replies appear in-app and are emailed</span>
+          <span>{convoFiltered.length} of {convos.length} conversations</span>
+          <span><I n="mail" s={13} /> First reply after their message is emailed; later ones stay in-app</span>
         </div>
       </section>
 
@@ -1131,20 +1255,6 @@ export function SuperPortal() {
 
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
-  );
-}
-
-/** Inline reply composer inside a feedback row — reviews before sending. */
-function ReplyForm({ onSend }: { onSend: (message: string) => void }) {
-  const [v, setV] = useState("");
-  return (
-    <form className="sap-replyline" onSubmit={(e) => { e.preventDefault(); const m = v.trim(); if (m) onSend(m); }}>
-      <textarea placeholder="Write a helpful reply…" required maxLength={2000} rows={2}
-        value={v} onChange={(e) => setV(e.target.value)} />
-      <button className="btn-secondary sap-btn sm" type="submit" disabled={!v.trim()}>
-        Reply <I n="arrow" s={12} />
-      </button>
-    </form>
   );
 }
 

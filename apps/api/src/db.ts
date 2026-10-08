@@ -373,6 +373,20 @@ CREATE TABLE IF NOT EXISTS plans (
   await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reply TEXT`);
   await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS replied_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS replied_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  // messenger-style threads: each feedback row is a message — sender marks who
+  // wrote it, read_at is the admin's read receipt, seen_at the user's
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS sender TEXT NOT NULL DEFAULT 'user'`);
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ`);
+  // fold legacy single-reply rows into threaded admin messages, then drop the column
+  const legacyReply = await pool.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 'feedback' AND column_name = 'reply'`);
+  if (legacyReply.rowCount) {
+    await pool.query(`INSERT INTO feedback (id, org_id, user_id, sender, sentiment, message, created_at, replied_by)
+      SELECT gen_random_uuid()::text, org_id, user_id, 'admin', 'ok', reply, replied_at, replied_by
+      FROM feedback f WHERE f.reply IS NOT NULL`);
+    await pool.query(`ALTER TABLE feedback DROP COLUMN reply, DROP COLUMN replied_at`);
+  }
   // pgvector — semantic retrieval for workspace Q&A (no-op on non-pgvector images)
   try {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);

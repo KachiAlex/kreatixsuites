@@ -2655,6 +2655,61 @@ html[data-theme="dark"]{
 .sap-replyline textarea{flex:1;resize:vertical;min-height:38px;max-height:140px;border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-family:inherit;font-size:12px;background:var(--bg);color:var(--ink)}
 .sap-replyline textarea:focus{outline:none;border-color:var(--k-orange);box-shadow:0 0 0 3px var(--k-orange-soft)}
 
+/* support inbox — messenger layout */
+.sapm{display:flex;border:1px solid var(--line);border-radius:14px;overflow:hidden;height:600px;background:var(--bg)}
+.sapm-list{flex:0 0 320px;border-right:1px solid var(--line);overflow-y:auto;background:var(--surface)}
+.sapm-convo{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;padding:12px 14px;border:0;border-bottom:1px solid var(--line);background:transparent;cursor:pointer;font-family:inherit}
+.sapm-convo:hover{background:var(--subtle)}
+.sapm-convo.on{background:var(--k-orange-soft)}
+.sapm-av{width:38px;height:38px;flex:0 0 38px;border-radius:12px;background:linear-gradient(135deg,var(--k-orange),var(--k-orange-dark));color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700}
+.sapm-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.sapm-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.sapm-top b{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sapm-top small{font-size:10.5px;color:var(--muted);flex:0 0 auto}
+.sapm-prev{font-size:12px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sapm-sub{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sapm-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto}
+.sapm-mooddot{width:9px;height:9px;border-radius:50%;background:#cbd5e1}
+.sapm-mooddot.good{background:#22c55e}
+.sapm-mooddot.ok{background:#f59e0b}
+.sapm-mooddot.bad{background:#ef4444}
+.sapm-unread{background:var(--k-orange);color:#fff;font-size:10.5px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:grid;place-items:center;padding:0 5px}
+.sapm-chat{flex:1;min-width:0;display:flex;flex-direction:column}
+.sapm-chat>.sap-empty{flex:1;justify-content:center}
+.sapm-head{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--surface)}
+.sapm-back{display:none;border:0;background:transparent;color:var(--muted);font-size:24px;cursor:pointer;padding:0 6px;line-height:1}
+.sapm-who{min-width:0}
+.sapm-who b{display:block;font-size:13.5px;color:var(--ink)}
+.sapm-who small{display:block;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sapm-body{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:10px}
+.sapm-day{align-self:center;font-size:10.5px;font-weight:700;color:var(--muted);background:var(--subtle);border-radius:99px;padding:3px 11px}
+.sapm-row{display:flex;width:100%}
+.sapm-row.them{justify-content:flex-start}
+.sapm-row.me{justify-content:flex-end}
+.sapm-col{display:flex;flex-direction:column;max-width:72%;min-width:0}
+.sapm-row.them .sapm-col{align-items:flex-start}
+.sapm-row.me .sapm-col{align-items:flex-end}
+.sapm-bubble{display:block;width:fit-content;max-width:100%;box-sizing:border-box;padding:10px 13px;border-radius:15px;font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;word-break:normal}
+.sapm-row.them .sapm-bubble{background:var(--surface);border:1px solid var(--line);color:var(--ink);border-bottom-left-radius:5px}
+.sapm-row.me .sapm-bubble{background:var(--k-orange);color:#fff;border-bottom-right-radius:5px}
+.sapm-emoji{margin-right:5px}
+.sapm-pagechip{display:block;margin-top:6px;font-size:10px;font-family:ui-monospace,monospace;color:var(--muted);background:var(--subtle);border-radius:6px;padding:2px 6px;width:fit-content}
+.sapm-time{display:block;margin-top:4px;font-size:10.5px;color:var(--muted)}
+.sapm-composer{display:flex;gap:9px;align-items:center;padding:11px 14px;border-top:1px solid var(--line);background:var(--surface)}
+.sapm-composer input{flex:1;min-width:0;border:1px solid var(--line);border-radius:99px;padding:10px 15px;font-family:inherit;font-size:13px;background:var(--bg);color:var(--ink)}
+.sapm-composer input:focus{outline:none;border-color:var(--k-orange);box-shadow:0 0 0 3px var(--k-orange-soft)}
+.sapm-send{width:38px;height:38px;flex:0 0 38px;border:0;border-radius:50%;background:var(--k-orange);color:#fff;display:grid;place-items:center;cursor:pointer;box-shadow:0 4px 12px rgba(242,120,46,.35)}
+.sapm-send:hover{background:var(--k-orange-dark)}
+.sapm-send:disabled{opacity:.45;cursor:default}
+@media (max-width:760px){
+  .sapm{height:70vh}
+  .sapm-list{flex:1;border-right:0}
+  .sapm.open .sapm-list{display:none}
+  .sapm-chat{display:none}
+  .sapm.open .sapm-chat{display:flex}
+  .sapm-back{display:block}
+}
+
 /* filters */
 .sap-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .sap-search{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:0 10px;color:var(--muted);flex:1;min-width:170px;max-width:280px}

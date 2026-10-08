@@ -289,7 +289,7 @@ export function superadminRoutes(app: FastifyInstance) {
          FROM ai_usage WHERE org_id = $1 AND created_at >= $2`, [orgId, monthStart]),
       q(`SELECT id, amount_ngn, method, reference, plan, status, created_at
          FROM payments WHERE org_id = $1 ORDER BY created_at DESC LIMIT 50`, [orgId]),
-      one<{ n: string }>("SELECT COUNT(*)::text AS n FROM feedback WHERE org_id = $1", [orgId]),
+      one<{ n: string }>("SELECT COUNT(*)::text AS n FROM feedback WHERE org_id = $1 AND sender = 'user'", [orgId]),
     ]);
     const plans = await getPlans();
     return {
@@ -322,43 +322,73 @@ export function superadminRoutes(app: FastifyInstance) {
     return { ok: true, disabled };
   });
 
-  /** User feedback stream — newest first, optional sentiment filter. */
-  app.get("/api/superadmin/feedback", async (req) => {
-    const sentiment = (req.query as { sentiment?: string }).sentiment || null;
+  /** Support inbox — one conversation per user, newest activity first. */
+  app.get("/api/superadmin/feedback/conversations", async () => {
     const [rows, stats] = await Promise.all([
       q(
-        `SELECT f.id, f.sentiment, f.message, f.reply, f.replied_at, f.page, f.created_at,
-                o.name AS org_name, u.display_name, u.email
-         FROM feedback f
-         JOIN orgs o ON o.id = f.org_id
-         JOIN users u ON u.id = f.user_id
-         WHERE ($1::text IS NULL OR f.sentiment = $1)
-         ORDER BY f.created_at DESC LIMIT 300`, [sentiment]),
+        `SELECT u.id AS user_id, u.display_name, u.email, o.name AS org_name,
+                lm.sender AS last_sender, lm.message AS last_message, lm.created_at::text AS last_at,
+                lu.sentiment AS last_sentiment,
+                (SELECT COUNT(*) FROM feedback c
+                 WHERE c.user_id = u.id AND c.sender = 'user' AND c.read_at IS NULL)::int AS unread
+         FROM (SELECT DISTINCT user_id FROM feedback) fu
+         JOIN users u ON u.id = fu.user_id
+         JOIN orgs o ON o.id = u.org_id
+         JOIN LATERAL (SELECT sender, message, created_at FROM feedback
+                       WHERE user_id = u.id ORDER BY created_at DESC LIMIT 1) lm ON true
+         JOIN LATERAL (SELECT sentiment FROM feedback
+                       WHERE user_id = u.id AND sender = 'user' ORDER BY created_at DESC LIMIT 1) lu ON true
+         ORDER BY lm.created_at DESC`, []),
       q<{ sentiment: string; n: string }>(
         `SELECT sentiment, COUNT(*)::text AS n FROM feedback
-         WHERE created_at >= CURRENT_DATE - INTERVAL '29 days' GROUP BY sentiment`, []),
+         WHERE sender = 'user' AND created_at >= CURRENT_DATE - INTERVAL '29 days' GROUP BY sentiment`, []),
     ]);
-    return { feedback: rows, stats: Object.fromEntries(stats.map((s) => [s.sentiment, Number(s.n)])) };
+    return { conversations: rows, stats: Object.fromEntries(stats.map((s) => [s.sentiment, Number(s.n)])) };
   });
 
-  /** Reply to a feedback item — lands in the user's widget thread + their inbox. */
-  app.post("/api/superadmin/feedback/:id/reply", async (req, reply) => {
+  /** One user's full thread. */
+  app.get("/api/superadmin/feedback/thread/:userId", async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const target = await one<{ display_name: string; email: string; org_name: string }>(
+      `SELECT u.display_name, u.email, o.name AS org_name
+       FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.id = $1`, [userId]);
+    if (!target) return reply.code(404).send({ error: "not_found", message: "User not found" });
+    const messages = await q(
+      `SELECT id, sender, sentiment, message, page, read_at, seen_at, created_at
+       FROM feedback WHERE user_id = $1 ORDER BY created_at ASC LIMIT 500`, [userId]);
+    return { user: target, messages };
+  });
+
+  /** Mark a thread's user messages read. */
+  app.post("/api/superadmin/feedback/thread/:userId/read", async (req) => {
+    const { userId } = req.params as { userId: string };
+    await run("UPDATE feedback SET read_at = $2 WHERE user_id = $1 AND sender = 'user' AND read_at IS NULL",
+      [userId, now()]);
+    return { ok: true };
+  });
+
+  /** Reply into the thread — lands in the user's widget. The first reply after
+   *  a user message also triggers an email; back-to-back admin sends don't
+   *  mail-bomb the user. */
+  app.post("/api/superadmin/feedback/thread/:userId/reply", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const { id } = req.params as { id: string };
+    const { userId } = req.params as { userId: string };
     const { message } = z.object({ message: z.string().min(1).max(2000) }).parse(req.body ?? {});
-    const fb = await one<{ user_id: string; message: string }>(
-      "SELECT user_id, message FROM feedback WHERE id = $1", [id]);
-    if (!fb) return reply.code(404).send({ error: "not_found", message: "Feedback not found" });
-    await run("UPDATE feedback SET reply = $2, replied_at = $3, replied_by = $4 WHERE id = $1",
-      [id, message.trim(), now(), user.id]);
-    const target = await one<{ email: string; display_name: string; disabled: boolean }>(
-      "SELECT email, display_name, disabled FROM users WHERE id = $1", [fb.user_id]);
-    if (target && !target.disabled && mailEnabled()) {
-      sendMail({ to: target.email, ...tpl.feedbackReply(target.display_name, fb.message, message.trim()) })
+    const target = await one<{ org_id: string; email: string; display_name: string; disabled: boolean }>(
+      "SELECT org_id, email, display_name, disabled FROM users WHERE id = $1", [userId]);
+    if (!target) return reply.code(404).send({ error: "not_found", message: "User not found" });
+    const last = await one<{ sender: string; message: string }>(
+      "SELECT sender, message FROM feedback WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1", [userId]);
+    const id = randomUUID();
+    await run(
+      "INSERT INTO feedback (id, org_id, user_id, sender, sentiment, message, created_at, replied_by) VALUES ($1,$2,$3,'admin','ok',$4,$5,$6)",
+      [id, target.org_id, userId, message.trim(), now(), user.id]);
+    if (last?.sender === "user" && !target.disabled && mailEnabled()) {
+      sendMail({ to: target.email, ...tpl.feedbackReply(target.display_name, last.message, message.trim()) })
         .catch((e) => req.log.warn({ err: String(e), to: target.email }, "feedback reply email failed"));
     }
-    await logSa(user, "feedback.reply", target?.email ?? fb.user_id, { feedbackId: id });
-    return { ok: true };
+    await logSa(user, "feedback.reply", target.email, { userId });
+    return { ok: true, id };
   });
 
   /** Platform AI spend this month + heaviest workspaces (cost control). */

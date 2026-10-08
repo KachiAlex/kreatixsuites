@@ -7,8 +7,8 @@ import { useI18n } from "../lib/i18n";
 type Sentiment = "good" | "ok" | "bad";
 interface FbMsg { role: "user" | "bot"; sentiment?: Sentiment; text: string; team?: boolean; at?: string; read?: boolean }
 interface FbRow {
-  id: string; sentiment: Sentiment; message: string;
-  reply: string | null; created_at: string; replied_at: string | null;
+  id: string; sender: "user" | "admin"; sentiment: Sentiment;
+  message: string; read_at: string | null; created_at: string;
 }
 
 const ICONS: Record<Sentiment, string> = { good: "🙂", ok: "😐", bad: "☹️" };
@@ -46,19 +46,23 @@ export function FeedbackWidget() {
 
   useEffect(() => { bodyRef.current?.scrollTo(0, bodyRef.current.scrollHeight); }, [msgs, open, min]);
 
-  // reload the full thread on each open so superadmin replies appear
+  // reload the thread on open, then poll — new portal replies land mid-chat
   useEffect(() => {
     if (!open || !user || user.id === "local") return;
-    api.get<{ feedback: FbRow[] }>("/api/feedback")
-      .then((r) => {
-        const hist: FbMsg[] = [];
-        for (const f of r.feedback) {
-          hist.push({ role: "user", sentiment: f.sentiment, text: f.message, at: f.created_at, read: !!f.reply });
-          if (f.reply) hist.push({ role: "bot", team: true, text: f.reply, at: f.replied_at ?? undefined });
-        }
-        setMsgs(hist);
-      })
-      .catch(() => { /* history is best-effort — the input still works */ });
+    let dead = false;
+    const pull = () =>
+      api.get<{ feedback: FbRow[] }>("/api/feedback")
+        .then((r) => {
+          if (dead) return;
+          setMsgs(r.feedback.map((f): FbMsg =>
+            f.sender === "admin"
+              ? { role: "bot", team: true, text: f.message, at: f.created_at }
+              : { role: "user", sentiment: f.sentiment, text: f.message, at: f.created_at, read: !!f.read_at }));
+        })
+        .catch(() => { /* history is best-effort — the input still works */ });
+    void pull();
+    const iv = setInterval(pull, 15000);
+    return () => { dead = true; clearInterval(iv); };
   }, [open, user]);
 
   // feedback needs a server account — anonymous/local-mode users have no workspace to attribute it to

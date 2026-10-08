@@ -32,12 +32,15 @@ export function feedbackRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** The user's own thread — the widget renders history + admin replies on open. */
+  /** The user's own thread — the widget renders the full message stream. */
   app.get("/api/feedback", async (req) => {
     const { user } = req as AuthedRequest;
     const rows = await q(
-      `SELECT id, sentiment, message, reply, page, created_at, replied_at
-       FROM feedback WHERE user_id = $1 ORDER BY created_at ASC LIMIT 200`, [user.id]);
+      `SELECT id, sender, sentiment, message, page, read_at, created_at
+       FROM feedback WHERE user_id = $1 ORDER BY created_at ASC LIMIT 500`, [user.id]);
+    // the widget is the read surface — mark admin replies seen for the portal's ✓✓
+    await run("UPDATE feedback SET seen_at = $2 WHERE user_id = $1 AND sender = 'admin' AND seen_at IS NULL",
+      [user.id, now()]);
     return { feedback: rows };
   });
 }
