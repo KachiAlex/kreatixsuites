@@ -1196,7 +1196,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!editor || !sourceFile || autoImported.current === editor) return;
     autoImported.current = editor;
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
-    void (["txt", "md", "html", "htm"].includes(ext) ? onTextImport(sourceFile) : onImport(sourceFile));
+    void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? onTextImport(sourceFile) : onImport(sourceFile));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, sourceFile]);
 

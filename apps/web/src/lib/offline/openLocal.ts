@@ -8,25 +8,35 @@ import { desktop } from "../platform";
 import { b64, store } from "./store";
 
 const KIND_BY_EXT: Record<string, string> = {
-  docx: "writer", doc: "writer", odt: "writer", rtf: "writer", txt: "writer",
-  xlsx: "sheets", xls: "sheets", csv: "sheets", ods: "sheets",
-  pptx: "present", odp: "present",
+  docx: "writer", docm: "writer", doc: "writer", odt: "writer", rtf: "writer",
+  txt: "writer", md: "writer", markdown: "writer", html: "writer", htm: "writer",
+  xlsx: "sheets", xlsm: "sheets", xlsb: "sheets", xls: "sheets",
+  csv: "sheets", tsv: "sheets", ods: "sheets",
+  pptx: "present", pptm: "present", odp: "present",
   pdf: "pdf",
 };
 
 const MIME_BY_EXT: Record<string, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  docm: "application/vnd.ms-word.document.macroEnabled.12",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xlsm: "application/vnd.ms-excel.sheet.macroEnabled.12",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  pptm: "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
   pdf: "application/pdf",
   csv: "text/csv",
+  tsv: "text/tab-separated-values",
   txt: "text/plain",
+  md: "text/markdown",
+  html: "text/html",
 };
 
 export const kindForPath = (p: string): string | null =>
   KIND_BY_EXT[p.split(".").pop()?.toLowerCase() ?? ""] ?? null;
 
-const ALL_EXTS = ".docx,.doc,.odt,.rtf,.txt,.xlsx,.xls,.csv,.ods,.pptx,.odp,.pdf";
+const ALL_EXTS =
+  ".docx,.docm,.doc,.odt,.rtf,.txt,.md,.markdown,.html,.htm," +
+  ".xlsx,.xlsm,.xlsb,.xls,.csv,.tsv,.ods,.pptx,.pptm,.odp,.pdf";
 
 /** Upload a picked File into Drive and return the new item's id. */
 export async function importLocalFile(f: File): Promise<string> {

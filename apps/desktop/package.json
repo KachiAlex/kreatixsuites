@@ -1,7 +1,7 @@
 {
   "name": "@kreatix/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "dist/main.js",
   "description": "Kreatix Business Suite — Windows desktop shell (Electron)",
@@ -39,26 +39,25 @@
       }
     ],
     "fileAssociations": [
-      {
-        "ext": "docx",
-        "name": "Word Document",
-        "role": "Editor"
-      },
-      {
-        "ext": "xlsx",
-        "name": "Excel Spreadsheet",
-        "role": "Editor"
-      },
-      {
-        "ext": "pptx",
-        "name": "PowerPoint Presentation",
-        "role": "Editor"
-      },
-      {
-        "ext": "pdf",
-        "name": "PDF Document",
-        "role": "Editor"
-      }
+      { "ext": "docx", "name": "Word Document", "role": "Editor" },
+      { "ext": "docm", "name": "Word Document (macro-enabled)", "role": "Editor" },
+      { "ext": "doc", "name": "Word 97-2003 Document", "role": "Editor" },
+      { "ext": "odt", "name": "OpenDocument Text", "role": "Editor" },
+      { "ext": "rtf", "name": "Rich Text Document", "role": "Editor" },
+      { "ext": "txt", "name": "Text Document", "role": "Editor" },
+      { "ext": "md", "name": "Markdown Document", "role": "Editor" },
+      { "ext": "xlsx", "name": "Excel Spreadsheet", "role": "Editor" },
+      { "ext": "xlsm", "name": "Excel Spreadsheet (macro-enabled)", "role": "Editor" },
+      { "ext": "xlsb", "name": "Excel Binary Spreadsheet", "role": "Editor" },
+      { "ext": "xls", "name": "Excel 97-2003 Spreadsheet", "role": "Editor" },
+      { "ext": "csv", "name": "CSV Spreadsheet", "role": "Editor" },
+      { "ext": "tsv", "name": "TSV Spreadsheet", "role": "Editor" },
+      { "ext": "ods", "name": "OpenDocument Spreadsheet", "role": "Editor" },
+      { "ext": "pptx", "name": "PowerPoint Presentation", "role": "Editor" },
+      { "ext": "pptm", "name": "PowerPoint Presentation (macro-enabled)", "role": "Editor" },
+      { "ext": "ppt", "name": "PowerPoint 97-2003 Presentation", "role": "Editor" },
+      { "ext": "odp", "name": "OpenDocument Presentation", "role": "Editor" },
+      { "ext": "pdf", "name": "PDF Document", "role": "Editor" }
     ],
     "win": {
       "target": "nsis",
