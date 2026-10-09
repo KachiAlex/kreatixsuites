@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/react";
 import katexCssUrl from "katex/dist/katex.min.css?url";
 import { downloadBlob, baseName, type Json } from "./common";
 import { saveFile } from "../../lib/saveFile";
+import { printHtmlFrame } from "../../lib/printFrame";
 import { isNativeMobile, PUBLIC_ORIGIN } from "../../lib/platform";
 import { jsonToMarkdown } from "./markdown";
 import { rtfBlob } from "./rtf";
@@ -108,10 +109,7 @@ export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
     void saveFile(new Blob([html], { type: "text/html" }), `${baseName(name)}.html`);
     return;
   }
-  const win = window.open("", "_blank", "width=900,height=1200");
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
+  printHtmlFrame(html);
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");

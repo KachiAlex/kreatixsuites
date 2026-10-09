@@ -33,7 +33,10 @@ export async function exportPdfToXlsx(doc: PDFDocumentProxy, fileName: string): 
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), `p${p}`.slice(0, 31));
   }
-  XLSX.writeFile(wb, fileName.replace(/\.pdf$/i, "") + ".xlsx");
+  // writeFile() anchor-clicks internally — dead in the native WebView
+  const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
+  download(new Blob([bytes as unknown as ArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    fileName.replace(/\.pdf$/i, "") + ".xlsx");
 }
 
 /** PDF-13.2 — each page renders to an image and fills a slide. */
@@ -53,7 +56,9 @@ export async function exportPdfToPptx(doc: PDFDocumentProxy, fileName: string): 
     await page.render({ canvas: c, viewport: v }).promise;
     pptx.addSlide().addImage({ data: c.toDataURL("image/jpeg", 0.85), x: 0, y: 0, w: "100%", h: "100%" });
   }
-  await pptx.writeFile({ fileName: fileName.replace(/\.pdf$/i, "") + ".pptx" });
+  // same story — writeFile anchor-clicks; take the blob and saveFile it
+  const blob = (await pptx.write({ outputType: "blob" })) as Blob;
+  download(blob, fileName.replace(/\.pdf$/i, "") + ".pptx");
 }
 
 /** PDF-13.2 — text-only exports. */

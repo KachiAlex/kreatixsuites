@@ -10,6 +10,7 @@ import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustFor
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
 import { saveFile } from "../lib/saveFile";
+import { printHtmlFrame } from "../lib/printFrame";
 import { isNativeMobile } from "../lib/platform";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
@@ -87,11 +88,14 @@ export async function workbookToXLSX(wb: Workbook, filename: string) {
   void saveFile(blob, filename.replace(/\.[^.]+$/, "") + ".xlsx");
 }
 
-/** ODS export (S8.4) — same workbook build, ods bookType. */
+/** ODS export (S8.4) — same workbook build, ods bookType. writeFile() clicks
+ *  an anchor internally — a no-op in the native WebView, so go through bytes. */
 export async function workbookToODS(wb: Workbook, filename: string) {
   const XLSX = await xlsxLib();
   const out = buildBook(XLSX, wb);
-  XLSX.writeFile(out, filename.replace(/\.[^.]+$/, "") + ".ods", { bookType: "ods" });
+  const bytes = XLSX.write(out, { type: "array", bookType: "ods" }) as Uint8Array;
+  void saveFile(new Blob([bytes as unknown as ArrayBuffer], { type: "application/vnd.oasis.opendocument.spreadsheet" }),
+    filename.replace(/\.[^.]+$/, "") + ".ods");
 }
 
 /** Kreatix CellStyle → xlsx-js-style `cell.s`. */
@@ -1618,10 +1622,9 @@ export function printSheet(sheet: SheetData, wb: Workbook | undefined, opts: Pri
     void saveFile(new Blob([html], { type: "text/html" }), `${opts.title ?? sheet.name}.html`);
     return;
   }
-  const w = window.open("", "_blank", "width=900,height=700");
-  if (!w) return;
-  w.document.write(html);
-  w.document.close();
+  // hidden iframe — the doc's embedded script self-prints; popup blockers
+  // can't intercept it the way they did window.open
+  printHtmlFrame(html);
 }
 
 // ---------- S17.2 HTML-table paste + S17.3 external links ----------

@@ -54,6 +54,10 @@ export async function saveFile(blob: Blob, filename: string): Promise<void> {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // revoking immediately after click can cancel the download in some engines
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
