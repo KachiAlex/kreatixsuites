@@ -131,7 +131,14 @@ export const ForcedBreaks = Extension.create({
                     widths = cols.map((c) =>
                       parseFloat(c.style.minWidth || c.style.width || "") || 0);
                   } else if (cells.length) {
-                    widths = cells.map((c) => c.getBoundingClientRect().width);
+                    // colspan'd cells must fan out to one entry per grid
+                    // column — a raw cell-width list leaves implicit columns
+                    // whose content overflows the template and clips
+                    widths = cells.flatMap((c) => {
+                      const w = c.getBoundingClientRect().width;
+                      const cs = parseInt(c.getAttribute("colspan") ?? "1") || 1;
+                      return Array(cs).fill(w / cs) as number[];
+                    });
                   }
                   // proportional fr so columns squeeze to row width the same
                   // way table-layout:fixed would — px values would overflow

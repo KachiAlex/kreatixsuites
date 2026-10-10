@@ -364,6 +364,67 @@ ${OPARA}
   check("docx re: docProps", res.docProps.title === "Spec Title" && res.docProps.author === "Kreatix");
 }
 
+// ---------- vMerge flattening (imported forms) ----------
+// rowspan cells make a table atomic; under the paginator's float-band layout an
+// atomic block taller than a band falls below all walls and buries the doc.
+// flattenTableVMerges expands them into per-row ghost cells pre-pagination.
+{
+  const { getSchema } = await import("@tiptap/core");
+  const { default: StarterKit } = await import("@tiptap/starter-kit");
+  const { KxTable, KxTableRow, KxTableCell, KxTableHeader, flattenTableVMerges } =
+    await import("./src/writer/extensions/table");
+  const schema = getSchema([StarterKit, KxTable, KxTableRow, KxTableCell, KxTableHeader]);
+  const mkCell = (text: string, attrs: Record<string, unknown> = {}) => ({
+    type: "tableCell", attrs,
+    content: [{ type: "paragraph", content: text ? [{ type: "text", text }] : undefined }],
+  });
+  const table = schema.nodeFromJSON({
+    type: "table", content: [
+      { type: "tableRow", content: [
+        { ...mkCell("Q", {}), attrs: { rowspan: 3 } },
+        mkCell("a1"),
+      ] },
+      { type: "tableRow", content: [mkCell("a2")] },
+      { type: "tableRow", content: [mkCell("a3")] },
+    ],
+  });
+  const flat = flattenTableVMerges(table);
+  check("vmerge: no rowspan remains", (() => {
+    let bad = false;
+    flat.forEach((row) => row.forEach((c) => { if ((c.attrs.rowspan || 1) > 1) bad = true; }));
+    return !bad;
+  })());
+  check("vmerge: row count preserved", flat.childCount === 3);
+  check("vmerge: ghost cells added", flat.child(1).childCount === 2 && flat.child(2).childCount === 2);
+  check("vmerge: ghost seam borders transparent",
+    flat.child(0).child(0).attrs.borders?.bottom?.color === "transparent" &&
+    flat.child(1).child(0).attrs.borders?.top?.color === "transparent");
+  check("vmerge: source content kept", flat.child(0).child(0).textContent === "Q");
+  check("vmerge: siblings untouched", flat.child(1).child(1).textContent === "a2");
+
+  // numbered-list distribution: one item per ghost row, continuation numbering
+  const listTable = schema.nodeFromJSON({
+    type: "table", content: [
+      { type: "tableRow", content: [
+        { type: "tableCell", attrs: { rowspan: 2 }, content: [
+          { type: "orderedList", attrs: { start: 1 }, content: [
+            { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "one" }] }] },
+            { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "two" }] }] },
+          ] },
+        ] },
+        mkCell("b1"),
+      ] },
+      { type: "tableRow", content: [mkCell("b2")] },
+    ],
+  });
+  const flatList = flattenTableVMerges(listTable);
+  const firstList = flatList.child(0).child(0).firstChild!;
+  const ghostList = flatList.child(1).child(0).firstChild!;
+  check("vmerge list: item 0 on first row", firstList.child(0).textContent === "one");
+  check("vmerge list: item 1 on ghost row", ghostList.child(0).textContent === "two");
+  check("vmerge list: ghost continues numbering", ghostList.attrs.start === 2);
+}
+
 // ---------- MD / RTF / ODT exporters ----------
 {
   const { jsonToMarkdown } = await import("./src/writer/export/markdown");

@@ -1,5 +1,5 @@
 diff --git a/dist/PaginationPlus.js b/dist/PaginationPlus.js
-index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f44defc1c1 100644
+index 186b6759ba503bbc707e3d8efa98e8b6e396b026..949d5aafa8e106bab2fc8493928170d14bb73b6f 100644
 --- a/dist/PaginationPlus.js
 +++ b/dist/PaginationPlus.js
 @@ -79,6 +79,8 @@ const getPageConfig = (_storage, _currentOptions) => {
@@ -64,7 +64,7 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f4
                                  const contentHeight = page === 1 ? _pageHeight + _pageHeaderHeight : _pageHeight;
                                  if (page === 1) {
                                      pageContentHeightVariable[`rm-page-content-first`] = `${contentHeight}px`;
-@@ -540,6 +559,22 @@ const calculatePageCount = (view, pageOptions, headerHeight = 0, footerHeight =
+@@ -540,10 +559,42 @@ const calculatePageCount = (view, pageOptions, headerHeight = 0, footerHeight =
              const lastPageGap = lastElementRect.bottom -
                  lastPageBreakRect.bottom;
              if (lastPageGap > 0) {
@@ -85,9 +85,29 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f4
 +                    return currentPageCount + added;
 +                }
                  const addPage = Math.ceil(lastPageGap / pageContentAreaHeight);
++                // kx: runaway guard — content pinned below the wall stack (an
++                // unbreakable block taller than a band, e.g. a rowspan table)
++                // measures the same gap after every wall added; growing then
++                // never converges. If the previous target was reached yet the
++                // gap is unchanged, freeze the count instead of adding pages
++                // forever. A smaller/larger gap resumes normal counting.
++                const rg = Math.round(lastPageGap);
++                const lastGap = Number(editorDom.dataset.kxPagGap || NaN);
++                const lastTarget = Number(editorDom.dataset.kxPagTarget || 0);
++                if (currentPageCount >= lastTarget && lastTarget > 0 && rg === lastGap) {
++                    return currentPageCount;
++                }
++                editorDom.dataset.kxPagGap = String(rg);
++                editorDom.dataset.kxPagTarget = String(currentPageCount + addPage);
                  return currentPageCount + addPage;
              }
-@@ -579,13 +614,42 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+             else {
++                delete editorDom.dataset.kxPagGap;
++                delete editorDom.dataset.kxPagTarget;
+                 const allBreaksAfterLastElement = Array.from(paginationElement.querySelectorAll(".breaker"));
+                 const allBreaksAfterLastElementRect = allBreaksAfterLastElement.filter(element => element.getBoundingClientRect().top > lastElementRect.bottom);
+                 const removePage = allBreaksAfterLastElementRect.length;
+@@ -579,13 +630,42 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
      }
      const commonHeaderOptions = { headerLeft: pageOptions.headerLeft, headerRight: pageOptions.headerRight };
      const commonFooterOptions = { footerLeft: pageOptions.footerLeft, footerRight: pageOptions.footerRight };
@@ -131,7 +151,7 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f4
              const pageContainer = document.createElement("div");
              pageContainer.classList.add("rm-page-break");
              const page = document.createElement("div");
-@@ -593,35 +657,94 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+@@ -593,35 +673,94 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
              page.style.position = "relative";
              page.style.float = "left";
              page.style.clear = "both";
@@ -238,7 +258,7 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f4
              pageSpace.style.left = "-1px";
              pageSpace.style.backgroundColor = _pageBreakBackground;
              pageSpace.style.borderLeftColor = _pageBreakBackground;
-@@ -658,7 +781,8 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+@@ -658,7 +797,8 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
              else {
                  const __pageHeader = getHeader(commonHeaderOptions.headerRight, commonHeaderOptions.headerLeft, headerClickEvent(headerPageNumber, pageOptions.onHeaderClick));
                  const __pageFooter = getFooter(commonFooterOptions.footerRight, commonFooterOptions.footerLeft, footerClickEvent(pageNumber, pageOptions.onFooterClick));
@@ -248,7 +268,7 @@ index 186b6759ba503bbc707e3d8efa98e8b6e396b026..920eafa82d3c0eed9d1777d0e48504f4
              }
          }
          el.append(fragment);
-@@ -674,6 +798,25 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
+@@ -674,6 +814,25 @@ function createDecoration(pageOptions, headerHeightMap, footerHeightMap) {
          }
          const el = getHeader(_headerOptions.headerRight, _headerOptions.headerLeft, headerClickEvent(pageNumber, pageOptions.onHeaderClick));
          el.classList.add("rm-first-page-header");

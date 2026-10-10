@@ -1145,6 +1145,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       const res = await importDocx(f);
       editor?.commands.setContent(res.html);
       editor?.commands.fixTables(); // repair any malformed table geometry post-import
+      editor?.commands.flattenVMerges(); // rowspan cells → row-splittable ghosts
       if (editor) applyDocxImport(editor, res); // named styles from styles.xml
       if (Object.values(res.docProps).some(Boolean))
         setDocProps({ ...docPropsRef.current, ...res.docProps });

@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   tiptap-pagination-plus@3.1.0:
-    hash: b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d
+    hash: afc79db9a11d2988934bfc6098c7ea186c63fa968e09573d0ba56de3efad5538
     path: patches/tiptap-pagination-plus@3.1.0.patch
 
 importers:
@@ -303,7 +303,7 @@ importers:
         version: 6.0.1
       tiptap-pagination-plus:
         specifier: ^3.1.0
-        version: 3.1.0(patch_hash=b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
+        version: 3.1.0(patch_hash=afc79db9a11d2988934bfc6098c7ea186c63fa968e09573d0ba56de3efad5538)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
       tiptap-track-changes:
         specifier: ^0.2.1
         version: 0.2.1(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
@@ -3845,8 +3845,8 @@ packages:
   lazy-val@1.0.5:
     resolution: {integrity: sha512-0/BnGCCfyUMkBpeDgWihanIAF9JmZhHBgUhEqzvf+adhNGLoP6TaiI5oF8oyb3I45P+PcnrqihSf01M0l0G5+Q==}
 
-  legacy-javascript@0.0.1:
-    resolution: {integrity: sha512-lPyntS4/aS7jpuvOlitZDFifBCb4W8L/3QU0PLbUTUj+zYah8rfVjYic88yG7ZKTxhS5h9iz7duT8oUXKszLhg==}
+  legacy-javascript@0.0.3:
+    resolution: {integrity: sha512-1r6MT4dVaJyXt4G07Cm2cQ0AUaLJdefiEp4SmIAylA++gnEQ82YvmzE58RkM5EP0fk5hROLCslUPGnwIYdZQVA==}
 
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
@@ -6923,7 +6923,7 @@ snapshots:
 
   '@paulirish/trace_engine@0.0.65':
     dependencies:
-      legacy-javascript: 0.0.1
+      legacy-javascript: 0.0.3
       third-party-web: 0.30.0
 
   '@pdf-lib/standard-fonts@1.0.0':
@@ -9072,7 +9072,7 @@ snapshots:
 
   lazy-val@1.0.5: {}
 
-  legacy-javascript@0.0.1: {}
+  legacy-javascript@0.0.3: {}
 
   leven@3.1.0: {}
 
@@ -10360,7 +10360,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
-  tiptap-pagination-plus@3.1.0(patch_hash=b5f36f520ecc5ea01dd28f360e264e7c646e8cfc06469b92c02275025932701d)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3):
+  tiptap-pagination-plus@3.1.0(patch_hash=afc79db9a11d2988934bfc6098c7ea186c63fa968e09573d0ba56de3efad5538)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3):
     dependencies:
       '@tiptap/core': 3.31.3(@tiptap/pm@3.31.3)
       '@tiptap/pm': 3.31.3

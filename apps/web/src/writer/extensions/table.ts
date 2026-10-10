@@ -52,6 +52,8 @@ declare module "@tiptap/core" {
       applyTablePreset: (preset: string) => ReturnType;
       convertTextToTable: (delim?: string) => ReturnType;
       convertTableToText: (delim?: string) => ReturnType;
+      /** Expand rowspan cells into per-row ghost cells (imported docs only). */
+      flattenVMerges: () => ReturnType;
     };
   }
 }
@@ -691,6 +693,65 @@ export const splitCellsInTable = (
   tr.replaceWith(tablePos, tablePos + table.nodeSize, table.type.create(table.attrs, newRows));
 };
 
+const VMERGE_GHOST: BorderSpec = { style: "solid", width: 1, color: "transparent" };
+
+/**
+ * Expand rowspan cells into per-row ghost cells so every table stays
+ * row-splittable under the paginator's float-band layout: an atomic block
+ * that crosses a band can never fit between wall floats — it drops below
+ * the whole stack, burying content and growing pages without bound.
+ * Shared borders go transparent so the merge still reads as one cell; a
+ * single list in the source cell is distributed one item per row (Word
+ * forms number rows that way).
+ */
+export const flattenTableVMerges = (table: PMNode): PMNode => {
+  const isNumberedList = (cell: PMNode, rs: number) =>
+    cell.childCount === 1 && /list$/i.test(cell.firstChild!.type.name)
+    && cell.firstChild!.childCount === rs ? cell.firstChild! : null;
+  const map = TableMap.get(table);
+  const H = map.height, W = map.width;
+  const newRows: PMNode[] = [];
+  for (let i = 0; i < H; i++) {
+    const kids: PMNode[] = [];
+    for (let c = 0; c < W;) {
+      const cell = table.nodeAt(map.map[i * W + c])!;
+      const rc = map.findCell(map.map[i * W + c]);
+      const spanW = rc.right - rc.left;
+      if (rc.top === i) {
+        const rs = (cell.attrs.rowspan as number) || 1;
+        if (rs > 1) {
+          const list = isNumberedList(cell, rs);
+          const borders: CellBorders = { ...(cell.attrs.borders ?? {}), bottom: VMERGE_GHOST };
+          kids.push(cell.type.create(
+            { ...cell.attrs, rowspan: 1, borders },
+            list ? list.type.create(list.attrs, [list.child(0)]) : cell.content,
+            cell.marks,
+          ));
+        } else kids.push(cell);
+      } else {
+        const k = i - rc.top;
+        const src = table.nodeAt(map.map[rc.top * W + rc.left])!;
+        const borders: CellBorders = { ...(src.attrs.borders ?? {}), top: VMERGE_GHOST };
+        if (i < rc.bottom - 1) borders.bottom = VMERGE_GHOST;
+        const list = isNumberedList(src, (src.attrs.rowspan as number) || 1);
+        const cont = src.type.createAndFill({
+          colspan: spanW > 1 ? spanW : null,
+          colwidth: src.attrs.colwidth ?? null,
+          backgroundColor: src.attrs.backgroundColor ?? null,
+          borders,
+        })!;
+        kids.push(list
+          ? cont.type.create(cont.attrs,
+              list.type.create({ ...list.attrs, start: k + 1 }, [list.child(k)]))
+          : cont);
+      }
+      c += spanW;
+    }
+    newRows.push(table.child(i).type.create(table.child(i).attrs, kids));
+  }
+  return table.type.create(table.attrs, newRows);
+};
+
 export const KxTableCommands = Extension.create({
   name: "kxTable",
 
@@ -1150,6 +1211,35 @@ export const KxTableCommands = Extension.create({
             pos, pos + table.nodeSize,
             lines.map((l) => para.create(undefined, l ? state.schema.text(l) : undefined)),
           ));
+          return true;
+        },
+
+      flattenVMerges:
+        () =>
+        ({ tr, state, dispatch }) => {
+          /**
+           * Expand rowspan cells into per-row ghost cells so every table stays
+           * row-splittable under the paginator's float-band layout: an atomic
+           * block that crosses a band can never fit between wall floats — it
+           * drops below the whole stack, burying content and growing pages
+           * without bound. Shared borders go transparent so the merge still
+           * reads as one cell; a single list in the source cell is distributed
+           * one item per row (Word forms number rows that way).
+           */
+          const jobs: { pos: number; table: PMNode }[] = [];
+          state.doc.descendants((node, pos) => {
+            if (node.type.name !== "table") return true;
+            let span = false;
+            node.forEach((row) => row.forEach((c) => {
+              if (((c.attrs.rowspan as number) || 1) > 1) span = true;
+            }));
+            if (span) jobs.push({ pos, table: node });
+            return false;
+          });
+          if (!jobs.length) return false;
+          if (!dispatch) return true;
+          for (const { pos, table } of jobs.reverse())
+            tr.replaceWith(pos, pos + table.nodeSize, flattenTableVMerges(table));
           return true;
         },
     };

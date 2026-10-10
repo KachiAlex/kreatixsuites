@@ -330,6 +330,15 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .rm-with-pagination table{display:table!important;width:var(--twidth,100%)!important}
 .rm-with-pagination table>tr{display:table-row!important}
 .rm-with-pagination table tbody{display:table-row-group!important;max-height:none!important;overflow:visible!important}
+/* PaginationPlus restyles blocks holding only a trailingBreak <br> as
+   display:table — that makes an empty paragraph a BFC, and a BFC can never
+   overlap the wall floats: one blank line landing on a page band drops below
+   the entire wall stack and buries everything after it (runaway page growth).
+   Keep it a normal block — the <br> still gives the line its height. */
+.rm-with-pagination *:has(>br.ProseMirror-trailingBreak:only-child){display:block!important}
+/* the lib's break-all chops words mid-column in split-table cells;
+   break-word still wraps tight columns but keeps whole words readable */
+.rm-with-pagination table tr td,.rm-with-pagination table tr th{word-break:normal;overflow-wrap:break-word}
 /* width:100% — the wrapper is a BFC (overflow-x:auto); inside the paginator's
    float-band layout an auto-width BFC gets squeezed to ~0 beside a wall float
    instead of pushed to the next band (collapsing the table to min-content).
