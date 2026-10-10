@@ -438,6 +438,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       const setup = (initialDoc as { pageSetup?: Parameters<typeof applyPageSetup>[1] })?.pageSetup;
       if (setup) applyPageSetup(editor, setup);
       loadStyleDefs(editor, (initialDoc as { styles?: Record<string, StyleDef> })?.styles);
+      // docs saved before the rowspan-flatten import fix still carry atomic
+      // merged tables — normalize on open too, not only at import time
+      if (canMutate) editor.commands.flattenVMerges();
     };
     // pre-mount editor has no view — defer until tiptap creates it
     if (editor.isInitialized) apply();
@@ -570,12 +573,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     let done = false;
     const elect = () => {
       collabReady.current = true;
+      if (canMutate) editor.commands.flattenVMerges(); // normalize synced rowspan tables
       if (done || !docIsEmpty() || meta.get("seeded")) return;
       const ids = [...session.awareness.getStates().keys()];
       if (Math.min(...ids) === session.awareness.clientID) { done = true; seed(); }
     };
     void session.whenSynced.then(() => setTimeout(elect, 150));
-    const t = setTimeout(() => { done = true; collabReady.current = true; seed(); }, 2500); // offline fallback
+    const t = setTimeout(() => { done = true; collabReady.current = true; if (canMutate) editor.commands.flattenVMerges(); seed(); }, 2500); // offline fallback
     return () => clearTimeout(t);
   }, [session, editor, initialDoc]);
 

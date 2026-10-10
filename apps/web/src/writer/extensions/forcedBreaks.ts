@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { TableMap } from "@tiptap/pm/tables";
 import {
   bandPadBottom, bandPadTop, keepNextPadTop, measureBands, splitPadTop, vAlignPadTop,
 } from "../banding";
@@ -49,7 +50,58 @@ export const ForcedBreaks = Extension.create({
         },
         props: {
           decorations(state) {
-            return pluginKey.getState(state);
+            const pads = pluginKey.getState(state) ?? DecorationSet.empty;
+            // Table split-mode as node decorations — PM-managed attributes
+            // re-applied on every render, so PM's DOM re-renders can't drop
+            // the marker the way direct DOM writes did (that race left an
+            // atomic BFC under the wall floats → runaway page growth).
+            // A display:contents chain puts each <tr> in the root flow so
+            // wall floats push rows individually; rowspan can't be expressed
+            // by independent grid rows → stays atomic (flattenVMerges removes
+            // them on open/import). Floating + colspans > 8 stay atomic too.
+            const extra: Decoration[] = [];
+            state.doc.descendants((node, pos) => {
+              if (node.type.name !== "table") return true;
+              let atomic = !!node.attrs.wrap;
+              let maxColspan = 1;
+              node.forEach((row) => row.forEach((c) => {
+                if (((c.attrs.rowspan as number) || 1) > 1) atomic = true;
+                const cs = (c.attrs.colspan as number) || 1;
+                if (cs > maxColspan) maxColspan = cs;
+              }));
+              if (!atomic && maxColspan <= 8) {
+                const map = TableMap.get(node);
+                const W = map.width;
+                const widths: (number | undefined)[] = new Array(W);
+                // first known colwidth per grid column, scanning every row —
+                // a colspan'd header cell doesn't carry widths for all the
+                // columns it spans, so row 0 alone leaves columns unsized
+                const seen = new Set<number>();
+                for (let i = 0; i < map.height; i++) {
+                  for (let c = 0; c < W; c++) {
+                    const p = map.map[i * W + c];
+                    if (seen.has(p)) continue;
+                    seen.add(p);
+                    const cell = node.nodeAt(p);
+                    const cw = (cell?.attrs.colwidth as (number | null)[] | null) ?? null;
+                    if (!cw) continue;
+                    const rc = map.findCell(p);
+                    for (let k = rc.left; k < rc.right; k++)
+                      if (widths[k] == null && (cw[k - rc.left] ?? 0) > 0)
+                        widths[k] = cw[k - rc.left]!;
+                  }
+                }
+                const known = widths.filter((w): w is number => w != null && w > 0);
+                const fill = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 0;
+                const tpl = known.length
+                  ? widths.map((w) => `minmax(0,${Math.max(((w ?? fill) || fill) / 100, 0.01)}fr)`).join(" ")
+                  : Array(W).fill("minmax(0,1fr)").join(" ");
+                extra.push(Decoration.node(pos, pos + node.nodeSize,
+                  { "data-kx-split": "", style: `--kx-cols:${tpl}` }));
+              }
+              return false; // nested tables keep their own box inside the cell
+            });
+            return DecorationSet.create(state.doc, [...pads.find(), ...extra]);
           },
         },
         view(editorView) {
@@ -100,58 +152,8 @@ export const ForcedBreaks = Extension.create({
             // forced N×W synchronous reflows on every keystroke
             const bands = measureBands(root);
 
-            // table split-mode: a display:contents chain puts each <tr> in the
-            // root flow, so wall floats push rows individually (Word splits a
-            // table at row boundaries instead of moving it whole). Grid needs
-            // the column template up front — colgroup min-widths when cells
-            // carry colwidth, otherwise the first row's measured cell widths.
-            // rowspan can't be expressed by independent grid rows → atomic.
-            for (const w of root.querySelectorAll<HTMLElement>(".tableWrapper")) {
-              const cols = [...w.querySelectorAll<HTMLElement>(":scope > table > colgroup > col")];
-              const firstRow = w.querySelector<HTMLElement>(":scope > table > tbody > tr");
-              const cells = firstRow ? [...firstRow.querySelectorAll<HTMLElement>(":scope > td, :scope > th")] : [];
-              const hasSpan = [...w.querySelectorAll<HTMLElement>("[rowspan]")]
-                  .some((c) => parseInt(c.getAttribute("rowspan") ?? "1") > 1)
-                // colspan 2–8 map to grid spans in CSS; beyond that stay atomic
-                || [...w.querySelectorAll<HTMLElement>("[colspan]")]
-                  .some((c) => parseInt(c.getAttribute("colspan") ?? "1") > 8)
-                || w.querySelector(":scope > table[data-wrap]") != null;
-              const anyColw = cells.some((c) => c.hasAttribute("colwidth"))
-                || w.querySelector("td[colwidth],th[colwidth]") != null;
-              const sig = hasSpan ? "span"
-                : cols.map((c) => c.getAttribute("style") ?? "").join("|") +
-                  "|" + (anyColw ? "w" : cells.map((c) => Math.round(c.getBoundingClientRect().width)).join(","));
-              if (w.dataset.kxSig !== sig) {
-                w.dataset.kxSig = sig;
-                if (hasSpan) {
-                  w.removeAttribute("data-kx-split");
-                } else {
-                  let widths: number[] = [];
-                  if (cols.length && anyColw) {
-                    widths = cols.map((c) =>
-                      parseFloat(c.style.minWidth || c.style.width || "") || 0);
-                  } else if (cells.length) {
-                    // colspan'd cells must fan out to one entry per grid
-                    // column — a raw cell-width list leaves implicit columns
-                    // whose content overflows the template and clips
-                    widths = cells.flatMap((c) => {
-                      const w = c.getBoundingClientRect().width;
-                      const cs = parseInt(c.getAttribute("colspan") ?? "1") || 1;
-                      return Array(cs).fill(w / cs) as number[];
-                    });
-                  }
-                  // proportional fr so columns squeeze to row width the same
-                  // way table-layout:fixed would — px values would overflow
-                  const tpl = widths.length
-                    ? widths.map((v) => `minmax(0,${Math.max(v / 100, 0.01)}fr)`).join(" ")
-                    : "";
-                  if (tpl) {
-                    w.style.setProperty("--kx-cols", tpl);
-                    w.setAttribute("data-kx-split", "");
-                  }
-                }
-              }
-            }
+            // table split-mode lives in the decorations prop — PM-managed
+            // attrs survive node re-renders; DOM writes here did not.
 
             for (const el of root.querySelectorAll<HTMLElement>("[data-pb-before]")) {
               add(el, bandPadTop(el, root, bands), null);
