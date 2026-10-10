@@ -425,6 +425,41 @@ ${OPARA}
   check("vmerge list: ghost continues numbering", ghostList.attrs.start === 2);
 }
 
+// ---------- DOCX: shared numId numbering continues across cells ----------
+// Word counts one numbering instance document-wide; a form that puts
+// numbered questions in separate table cells must render 1,2,3… not 1,1,1.
+{
+  const doc = {
+    type: "doc",
+    content: [{
+      type: "table",
+      content: [
+        { type: "tableRow", content: [
+          { type: "tableCell", content: [
+            { type: "orderedList", content: [
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "q1" }] }] },
+            ] },
+          ] },
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "a1" }] }] },
+        ] },
+        { type: "tableRow", content: [
+          { type: "tableCell", content: [
+            { type: "orderedList", content: [
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "q2" }] }] },
+            ] },
+          ] },
+          { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "a2" }] }] },
+        ] },
+      ],
+    }],
+  };
+  const blob = await exportDocxBytes(doc as never, "numcont");
+  const html = (await importDocx(fileOf(await blob.arrayBuffer(), "numcont.docx"))).html;
+  const ols = [...html.matchAll(/<ol[^>]*>/g)].map((m) => m[0]);
+  check("num: first cell stays 1", !!ols[0] && !/start="/.test(ols[0]));
+  check("num: second cell continues at 2", /<ol start="2"/.test(ols[1] ?? ""));
+}
+
 // ---------- MD / RTF / ODT exporters ----------
 {
   const { jsonToMarkdown } = await import("./src/writer/export/markdown");

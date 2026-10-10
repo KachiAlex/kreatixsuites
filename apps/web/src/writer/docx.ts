@@ -1990,7 +1990,11 @@ const NUM_CSS: Record<string, string> = {
 };
 
 /** ⟦KXN:numId:ilvl⟧ inside list items → list-style-type/start on the parent
- *  <ol>; sentinels stripped afterward. */
+ *  <ol>; sentinels stripped afterward. Word numbering continues across the
+ *  whole document per numId — including across table cells — but mammoth
+ *  emits a fresh <ol> per run of adjacent items, each rendering from 1.
+ *  Track a counter per numId and stamp each <ol>'s start with the ordinal
+ *  of its first numbered item. */
 function numMarkersToHtml(html: string, meta: DocxMeta): string {
   html = html.replace(
     /<(ol|ul)>((?:(?!<\/?(?:ol|ul)\b)[\s\S]){0,1200}?)(⟦KXN:(\d+):(\d+)⟧)/g,
@@ -1998,12 +2002,32 @@ function numMarkersToHtml(html: string, meta: DocxMeta): string {
       const info = meta.numFmt.get(`${numId}:${lvl}`) ?? meta.numFmt.get(numId);
       if (tag !== "ol" || !info || info.fmt === "bullet") return m;
       const css = NUM_CSS[info.fmt];
-      const attrs =
-        (css && css !== "decimal" ? ` style="list-style-type:${css}"` : "") +
-        (info.start && info.start > 1 ? ` start="${info.start}"` : "");
+      const attrs = css && css !== "decimal" ? ` style="list-style-type:${css}"` : "";
       return `<${tag}${attrs}>${pre}${sentinel}`;
     },
   );
+  const counters = new Map<string, number>();
+  const startFor = (id: string, lvl: string) =>
+    meta.numFmt.get(`${id}:${lvl}`)?.start ?? meta.numFmt.get(id)?.start ?? 1;
+  const inserts: { pos: number; text: string }[] = [];
+  const stack: { tag: string; pending: boolean; pos: number }[] = [];
+  const token = /<(ol|ul)\b[^>]*>|<\/(?:ol|ul)>|⟦KXN:(\d+):(\d+)⟧/g;
+  let m: RegExpExecArray | null;
+  while ((m = token.exec(html))) {
+    if (m[1]) stack.push({ tag: m[1], pending: true, pos: m.index + m[0].length - 1 });
+    else if (m[2] == null) stack.pop();
+    else {
+      const next = counters.get(m[2]) ?? startFor(m[2], m[3]);
+      counters.set(m[2], next + 1);
+      const top = stack[stack.length - 1];
+      if (top?.tag === "ol" && top.pending) {
+        top.pending = false;
+        if (next > 1) inserts.push({ pos: top.pos, text: ` start="${next}"` });
+      }
+    }
+  }
+  for (const ins of inserts.reverse())
+    html = html.slice(0, ins.pos) + ins.text + html.slice(ins.pos);
   return html.replace(/⟦KXN:\d+:\d+⟧/g, "");
 }
 
