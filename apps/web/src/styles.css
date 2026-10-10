@@ -342,6 +342,10 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
  * specificity loses; word-wrap like Word: whole words to the next line,
  * break only words wider than the cell itself */
 .rm-with-pagination table tr td,.rm-with-pagination table tr th{word-break:normal!important;overflow-wrap:break-word!important}
+/* Word ▸ Cell ▸ Options: nowrap/fit cells never break — fit is condensed
+ * horizontally by the kxCellFit plugin instead */
+.rm-with-pagination table tr td[data-cell-wrap],.rm-with-pagination table tr th[data-cell-wrap],
+.ProseMirror td[data-cell-wrap],.ProseMirror th[data-cell-wrap]{white-space:nowrap;overflow-wrap:normal!important;word-break:normal!important}
 /* width:100% — the wrapper is a BFC (overflow-x:auto); inside the paginator's
    float-band layout an auto-width BFC gets squeezed to ~0 beside a wall float
    instead of pushed to the next band (collapsing the table to min-content).

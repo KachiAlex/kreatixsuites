@@ -58,6 +58,7 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
   const [cantSplit, setCantSplit] = useState(!!ra.cantSplit);
   const [colW, setColW] = useState<number | "">(curColWidth ?? "");
   const [vAlign, setVAlign] = useState((ca.vAlign as string) ?? "top");
+  const [cellWrap, setCellWrap] = useState((ca.cellWrap as string) ?? "wrap");
   const [padding, setPadding] = useState<number | "">((ca.padding as number) ?? "");
   const [bg, setBg] = useState((ca.backgroundColor as string) ?? "");
   const borders = ca.borders as CellBorders | null;
@@ -100,6 +101,7 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
     });
     chain.setCellAttributes({
       vAlign,
+      cellWrap: cellWrap === "wrap" ? null : cellWrap,
       padding: padding === "" ? null : Number(padding),
       backgroundColor: bg || null,
     });
@@ -259,6 +261,19 @@ export function TablePropertiesDialog({ editor, onClose }: { editor: Editor; onC
                     <button key={v} className={`tp-opt ${vAlign === v ? "on" : ""}`} onClick={() => setVAlign(v)}>{v}</button>
                   ))}
                 </div>
+              ))}
+            </div>
+            <div className="ps-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#6B645E" }}>Text wrapping</span>
+              {([
+                ["wrap", "Wrap text"],
+                ["nowrap", "No wrap — keep text on one line"],
+                ["fit", "Fit text — condense to fit one line"],
+              ] as const).map(([k, lbl]) => (
+                <label className="ps-check" key={k}>
+                  <input type="radio" name="kx-cellwrap" checked={cellWrap === k} onChange={() => setCellWrap(k)} />
+                  {lbl}
+                </label>
               ))}
             </div>
             <div className="ps-row">

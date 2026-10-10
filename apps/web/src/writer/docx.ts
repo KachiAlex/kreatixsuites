@@ -504,8 +504,17 @@ function docxCell(c: Block): TableCell {
   const borders = a.borders as CellBorders | null | undefined;
   const pad = a.padding as number | null | undefined;
   const cw = Array.isArray(a.colwidth) ? (a.colwidth as number[])[0] : null;
+  const kids = ((c.content ?? []) as Block[]).flatMap(blockToParagraphs);
+  // docx lib has no noWrap/tcFitText — carry a hidden sentinel run inside the
+  // cell; patchCellWrapBlob swaps it for the real tcPr element post-pack
+  if (a.cellWrap) {
+    const mark = new TextRun({ text: `⟦KXNW:${a.cellWrap as string}⟧`, vanish: true });
+    const last = kids[kids.length - 1] as Paragraph | undefined;
+    if (last) last.addChildElement(mark);
+    else kids.push(new Paragraph({ children: [mark] }));
+  }
   return new TableCell({
-    children: ((c.content ?? []) as Block[]).flatMap(blockToParagraphs),
+    children: kids,
     columnSpan: (a.colspan as number) > 1 ? (a.colspan as number) : undefined,
     rowSpan: (a.rowspan as number) > 1 ? (a.rowspan as number) : undefined,
     width: cw ? { size: pxToDxa(cw)!, type: WidthType.DXA } : undefined,
@@ -802,7 +811,31 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
     footnotes: footnotes as never,
     sections,
   }) as DocxFile;
-  return Packer.toBlob(file);
+  const blob = await Packer.toBlob(file);
+  return patchCellWrapBlob(blob);
+}
+
+/** The docx lib can't emit w:noWrap/w:tcFitText — flagged cells carry a
+ *  hidden ⟦KXNW:mode⟧ run; swap it for the real tcPr element here. */
+async function patchCellWrapBlob(blob: Blob): Promise<Blob> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const f = zip.file("word/document.xml");
+  if (!f) return blob;
+  let xml = await f.async("text");
+  if (!xml.includes("⟦KXNW")) return blob;
+  xml = xml.replace(/<w:tc>([\s\S]*?)<\/w:tc>/g, (m, body: string) => {
+    const flag = body.match(/⟦KXNW:(nowrap|fit)⟧/);
+    if (!flag) return m;
+    const cleaned = body.replace(/<w:r>(?:(?!<\/w:r>)[\s\S])*?⟦KXNW:[a-z]+⟧[\s\S]*?<\/w:r>/g, "");
+    const tag = flag[1] === "fit" ? "<w:tcFitText/>" : "<w:noWrap/>";
+    const inner = /<w:tcPr>/.test(cleaned)
+      ? cleaned.replace(/<\/w:tcPr>/, `${tag}</w:tcPr>`)
+      : `<w:tcPr>${tag}</w:tcPr>${cleaned}`;
+    return `<w:tc>${inner}</w:tc>`;
+  });
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({ type: "blob" });
 }
 
 /** TipTap JSON → .docx download (KBS-WRITER-001) */
@@ -1778,6 +1811,8 @@ function breakMarkersToHtml(html: string): string {
 
 interface XmlCell {
   bg?: string; vAlign?: string; pad?: number; colw?: number; dir?: string;
+  /** Word cell text option: w:noWrap / w:tcFitText. */
+  wrap?: string;
   /** gridSpan — how many grid columns this cell occupies. */
   span?: number;
   /** vMerge-continue placeholder — mammoth drops these from the HTML. */
@@ -1864,6 +1899,8 @@ function extractXmlTables(docXml: string): XmlTbl[] {
       if (vm && (!/w:val="/.test(vm) || /w:val="continue"/.test(vm))) cell.merged = true;
       const gs = pr.match(/<w:gridSpan\b[^>]*w:val="(\d+)"/)?.[1];
       if (gs && parseInt(gs) > 1) cell.span = parseInt(gs);
+      if (/<w:tcFitText\b/.test(pr)) cell.wrap = "fit";
+      else if (/<w:noWrap\b/.test(pr)) cell.wrap = "nowrap";
       const shd = wVal(pr, "shd", "fill");
       if (shd && shd !== "auto") cell.bg = "#" + shd;
       const va = wVal(pr, "vAlign", "val");
@@ -1977,7 +2014,8 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
     const attrs = widths?.length
       ? ` colwidth="${widths.join(",")}"`
       : cell.colw ? ` colwidth="${cell.colw}"` : "";
-    return inject(open, attrs, style);
+    return inject(open,
+      attrs + (cell.wrap ? ` data-cell-wrap="${cell.wrap}"` : ""), style);
   });
 }
 

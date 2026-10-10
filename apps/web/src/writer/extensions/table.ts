@@ -11,7 +11,7 @@ import {
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { CommandProps } from "@tiptap/core";
 import { TableMap, CellSelection } from "@tiptap/pm/tables";
-import { TextSelection } from "@tiptap/pm/state";
+import { TextSelection, Plugin, PluginKey } from "@tiptap/pm/state";
 import type { ResolvedPos } from "@tiptap/pm/model";
 
 // ---- types ----------------------------------------------------------------
@@ -113,6 +113,20 @@ const cellAttrs = {
     default: null,
     parseHTML: (el: HTMLElement) => el.style.writingMode || null,
     renderHTML: (a: Record<string, unknown>) => a.textDirection ? { style: `writing-mode:${a.textDirection}` } : {},
+  },
+  // Word ▸ Table Properties ▸ Cell ▸ Options: null = wrap (default),
+  // "nowrap" = keep text on one line, "fit" = condense to fit one line
+  // (kxCellFit plugin scales the cell's blocks horizontally)
+  cellWrap: {
+    default: null,
+    parseHTML: (el: HTMLElement) => {
+      const v = el.getAttribute("data-cell-wrap");
+      if (v) return v;
+      return el.style.whiteSpace === "nowrap" ? "nowrap" : null;
+    },
+    renderHTML: (a: Record<string, unknown>) => a.cellWrap
+      ? { "data-cell-wrap": a.cellWrap as string, style: "white-space:nowrap" }
+      : {},
   },
 };
 
@@ -1255,5 +1269,34 @@ export const KxTableCommands = Extension.create({
       "Alt-Shift-ArrowUp": () => this.editor.commands.moveTableRow("up"),
       "Alt-Shift-ArrowDown": () => this.editor.commands.moveTableRow("down"),
     };
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      // "Fit text" cells (Word ▸ Cell ▸ Options): condense each block
+      // horizontally so the content fits on one line — Word's tcFitText
+      // keeps font height and squeezes width; scaleX approximates it.
+      new Plugin({
+        key: new PluginKey("kxCellFit"),
+        view: (view) => {
+          const apply = () => {
+            view.dom.querySelectorAll<HTMLElement>(
+              'td[data-cell-wrap="fit"],th[data-cell-wrap="fit"]').forEach((td) => {
+              const kids = [...td.children] as HTMLElement[];
+              for (const el of kids) el.style.transform = "";
+              const f = td.clientWidth > 0 && td.scrollWidth > td.clientWidth
+                ? td.clientWidth / td.scrollWidth : 1;
+              for (const el of kids) {
+                el.style.transformOrigin = "left center";
+                el.style.transform = f < 1 ? `scaleX(${f})` : "";
+              }
+            });
+          };
+          const sched = () => requestAnimationFrame(apply);
+          sched();
+          return { update: sched };
+        },
+      }),
+    ];
   },
 });

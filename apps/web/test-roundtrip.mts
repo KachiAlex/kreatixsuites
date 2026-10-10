@@ -527,6 +527,34 @@ ${OPARA}
   check("bullet: no private-use leak", !html.includes(""));
 }
 
+// cell text options (Word ▸ Cell ▸ Options) round-trip w:noWrap / w:tcFitText
+{
+  const JSZip = (await import("jszip")).default;
+  const doc = {
+    type: "doc",
+    content: [{
+      type: "table",
+      content: [
+        { type: "tableRow", content: [
+          { type: "tableCell", attrs: { cellWrap: "nowrap" },
+            content: [{ type: "paragraph", content: [{ type: "text", text: "keep one line" }] }] },
+          { type: "tableCell", attrs: { cellWrap: "fit" },
+            content: [{ type: "paragraph", content: [{ type: "text", text: "condense me" }] }] },
+        ] },
+      ],
+    }],
+  };
+  const blob = await exportDocxBytes(doc as never, "cw");
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const xml = await zip.file("word/document.xml")?.async("text") ?? "";
+  check("cellwrap export: noWrap", xml.includes("<w:noWrap/>"));
+  check("cellwrap export: tcFitText", xml.includes("<w:tcFitText/>"));
+  check("cellwrap export: no sentinel leak", !xml.includes("KXNW"));
+  const html = (await importDocx(fileOf(await blob.arrayBuffer(), "cw.docx"))).html;
+  check("cellwrap import: nowrap", html.includes('data-cell-wrap="nowrap"'));
+  check("cellwrap import: fit", html.includes('data-cell-wrap="fit"'));
+}
+
 // ---------- MD / RTF / ODT exporters ----------
 {
   const { jsonToMarkdown } = await import("./src/writer/export/markdown");
