@@ -301,9 +301,14 @@ export const KxTableRow = BaseTableRow.extend({
       ...this.parent?.(),
       height: {
         default: null,
-        parseHTML: (el: HTMLElement) => (el.style.height ? parseInt(el.style.height) : null),
+        // Word trHeight is a minimum unless hRule="exact" — import writes
+        // min-height for atLeast rows so grid-split rows can still grow
+        parseHTML: (el: HTMLElement) => {
+          const v = el.style.height || el.style.minHeight;
+          return v ? parseInt(v) : null;
+        },
         renderHTML: (a: Record<string, unknown>) =>
-          a.height ? { style: `height:${a.height}px` } : {},
+          a.height ? { style: `${a.heightMode === "exact" ? "height" : "min-height"}:${a.height}px` } : {},
       },
       heightMode: {
         default: null,

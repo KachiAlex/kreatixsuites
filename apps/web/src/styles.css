@@ -1794,6 +1794,9 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 .ProseMirror [data-hidden]{display:none}
 .ProseMirror.kx-marks-on [data-hidden]{display:inline;color:var(--muted);border-bottom:1px dotted #999}
 
+/* ===== DOCX symbol-font bullets (✓ etc. from Wingdings) ===== */
+.ProseMirror ul[data-kx-bullet]>li::marker{content:var(--kx-bullet) "\2002"}
+
 /* ===== multilevel list (1. / 1.1 / 1.1.1) ===== */
 .ProseMirror ol.ml,.ProseMirror ol.ml ol{list-style:none;counter-reset:ml}
 .ProseMirror ol.ml li{counter-increment:ml;position:relative}

@@ -31,7 +31,25 @@ export const ListStyle = Extension.create({
           listStyle: {
             default: null,
             parseHTML: (el) => (el as HTMLElement).style.listStyleType || null,
-            renderHTML: (attrs) => (attrs.listStyle ? { style: `list-style-type:${attrs.listStyle}` } : {}),
+            renderHTML: (attrs) => (attrs.listStyle && !attrs.bullet ? { style: `list-style-type:${attrs.listStyle}` } : {}),
+          },
+          // DOCX symbol-font bullets (Wingdings ü = ✓ etc.) — import writes
+          // --kx-bullet on the <ul>; CSS renders it as the ::marker glyph
+          bullet: {
+            default: null,
+            parseHTML: (el) => {
+              const h = el as HTMLElement;
+              if (!h.hasAttribute("data-kx-bullet")) return null;
+              const g = h.style.getPropertyValue("--kx-bullet").trim().replace(/^['"]|['"]$/g, "");
+              return g || "•";
+            },
+            renderHTML: (attrs) => attrs.bullet
+              ? {
+                  "data-kx-bullet": "",
+                  style: `--kx-bullet:'${String(attrs.bullet).replace(/'/g, "\\'")}'`
+                    + (attrs.listStyle ? `;list-style-type:${attrs.listStyle}` : ""),
+                }
+              : {},
           },
         },
       },

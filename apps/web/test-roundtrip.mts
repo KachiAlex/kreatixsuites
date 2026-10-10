@@ -471,7 +471,7 @@ ${OPARA}
 <w:tbl>
 <w:tblPr><w:tblW w:w="9085" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
 <w:tblGrid><w:gridCol w:w="468"/><w:gridCol w:w="2227"/><w:gridCol w:w="360"/><w:gridCol w:w="90"/><w:gridCol w:w="5940"/></w:tblGrid>
-<w:tr>
+<w:tr><w:trPr><w:trHeight w:val="300"/></w:trPr>
 <w:tc><w:tcPr><w:tcW w:w="468" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
 <w:tc><w:tcPr><w:tcW w:w="2227" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc>
 <w:tc><w:tcPr><w:tcW w:w="6390" w:type="dxa"/><w:gridSpan w:val="3"/></w:tcPr><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
@@ -498,6 +498,33 @@ ${OPARA}
   check("grid: span-2 cell after offset gets per-col widths", html.includes('colwidth="148,24"'));
   check("grid: span-3 at offset 3", html.includes('colwidth="6,396"'));
   check("grid: tcW total never used as colwidth", !html.includes('colwidth="426"') && !html.includes('colwidth="6390"'));
+  // trHeight without hRule is a MINIMUM (atLeast) — must not hard-clip rows
+  check("grid: trHeight atLeast → min-height", html.includes('min-height:20px'));
+}
+
+// Wingdings/Symbol bullet glyphs (numFmt=bullet + private-use lvlText) must
+// become real Unicode markers — mammoth drops them to plain <ul> discs
+{
+  const JSZip = (await import("jszip")).default;
+  const BUL_DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr></w:pPr><w:r><w:t>Private Company</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr></w:pPr><w:r><w:t>Public Company</w:t></w:r></w:p>
+</w:body></w:document>`;
+  const BUL_NUM = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val=""/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Wingdings" w:hAnsi="Wingdings" w:hint="default"/></w:rPr></w:lvl></w:abstractNum>
+<w:num w:numId="9"><w:abstractNumId w:val="7"/></w:num>
+</w:numbering>`;
+  const carrier = await exportDocxBytes({ type: "doc", content: [{ type: "paragraph" }] } as never, "carrier");
+  const zin = await JSZip.loadAsync(await carrier.arrayBuffer());
+  zin.file("word/document.xml", BUL_DOC);
+  zin.file("word/numbering.xml", BUL_NUM);
+  const html = (await importDocx(fileOf(await zin.generateAsync({ type: "arraybuffer" }), "bul.docx"))).html;
+  check("bullet: Wingdings ü → ✓ glyph", html.includes("--kx-bullet:'✓'"));
+  check("bullet: ul flagged", html.includes("<ul data-kx-bullet"));
+  check("bullet: no private-use leak", !html.includes(""));
 }
 
 // ---------- MD / RTF / ODT exporters ----------

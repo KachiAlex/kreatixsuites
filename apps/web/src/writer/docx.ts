@@ -1068,7 +1068,7 @@ interface ImportedStyle {
   def: Partial<StyleDef> & { node: "paragraph" };
   nextId?: string;
 }
-interface NumberingInfo { fmt: string; start?: number }
+interface NumberingInfo { fmt: string; start?: number; bullet?: string }
 /** word/settings.xml + first-section geometry that maps onto PageSetup. */
 interface DocxSettings {
   hyphenate?: boolean;
@@ -1206,6 +1206,27 @@ function parseCharStylesXml(xml: string): DocxMeta["charStyles"] {
   return out;
 }
 
+/** Symbol-font (Wingdings/Symbol/…) private-use bullet chars → real Unicode
+ * glyphs. Word bullets store the font's code point as U+F0xx. */
+const SYMBOL_BULLETS: Record<number, string> = {
+  0xF0B7: "•", 0xF0A7: "▪", 0xF0FC: "✓", 0xF0FB: "✓", 0xF0FE: "✔",
+  0xF0D8: "➤", 0xF0E8: "➤", 0xF0B2: "▪", 0xF0A8: "▸", 0xF0BB: "»",
+  0xF06C: "●", 0xF06E: "■", 0xF06F: "❏", 0xF075: "▲", 0xF0BE: "⦿",
+  0xF02D: "–", 0xF0F0: "➔", 0xF0E0: "➔", 0xF04E: "➢",
+};
+const bulletGlyph = (lvlText: string | undefined, font: string | undefined): string | undefined => {
+  if (!lvlText || /%\d/.test(lvlText)) return undefined;
+  const ch = lvlText.codePointAt(0)!;
+  if (ch >= 0xF000 && ch <= 0xF0FF) {
+    const mapped = SYMBOL_BULLETS[ch];
+    if (mapped) return mapped;
+    // unknown private-use glyph — Wingdings/Symbol chars don't render in
+    // normal fonts, so fall back to a disc rather than a tofu box
+    return /wingdings|symbol|monotype/i.test(font ?? "") ? "•" : undefined;
+  }
+  return lvlText;
+};
+
 /** Parse word/numbering.xml → "numId:ilvl" → fmt + start. */
 function parseNumberingXml(xml: string): Map<string, NumberingInfo> {
   const out = new Map<string, NumberingInfo>();
@@ -1218,9 +1239,14 @@ function parseNumberingXml(xml: string): Map<string, NumberingInfo> {
   for (const m of xml.matchAll(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"[\s\S]*?<\/w:abstractNum>/g)) {
     const lvls = new Map<string, NumberingInfo>();
     for (const l of m[0].matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[\s\S]*?<\/w:lvl>/g)) {
+      const fmt = wAttr(l[0].match(/<w:numFmt\b[^>]*>/)?.[0] ?? "", "val") ?? "decimal";
       lvls.set(l[1], {
-        fmt: wAttr(l[0].match(/<w:numFmt\b[^>]*>/)?.[0] ?? "", "val") ?? "decimal",
+        fmt,
         start: parseInt(wAttr(l[0].match(/<w:start\b[^>]*>/)?.[0] ?? "", "val") ?? "1") || 1,
+        bullet: fmt === "bullet"
+          ? bulletGlyph(wAttr(l[0].match(/<w:lvlText\b[^>]*>/)?.[0] ?? "", "val"),
+              wAttr(l[0].match(/<w:rFonts\b[^>]*>/)?.[0] ?? "", "ascii"))
+          : undefined,
       });
     }
     absMap.set(m[1], lvls);
@@ -1924,7 +1950,7 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
       return inject(tok,
         (row.cantSplit ? ` data-cant-split="true"` : "") +
         (row.exact ? ` data-height-mode="exact"` : ""),
-        row.height ? `height:${row.height}px` : "");
+        row.height ? `${row.exact ? "height" : "min-height"}:${row.height}px` : "");
     }
     if (name === "tr") return tok;
     // td / th — skip XML vMerge-continue cells (mammoth emits no td for them)
@@ -2030,7 +2056,12 @@ function numMarkersToHtml(html: string, meta: DocxMeta): string {
     /<(ol|ul)>((?:(?!<\/?(?:ol|ul)\b)[\s\S]){0,1200}?)(⟦KXN:(\d+):(\d+)⟧)/g,
     (m, tag, pre, sentinel, numId, lvl) => {
       const info = meta.numFmt.get(`${numId}:${lvl}`) ?? meta.numFmt.get(numId);
-      if (tag !== "ol" || !info || info.fmt === "bullet") return m;
+      if (!info) return m;
+      // symbol-font bullets (Wingdings ü = ✓ etc.) don't survive <ul> — carry
+      // the resolved glyph on the list so CSS can render it as the marker
+      if (tag === "ul" && info.fmt === "bullet" && info.bullet && info.bullet !== "•")
+        return `<ul data-kx-bullet style="--kx-bullet:'${info.bullet.replace(/'/g, "\\'")}'">${pre}${sentinel}`;
+      if (tag !== "ol" || info.fmt === "bullet") return m;
       const css = NUM_CSS[info.fmt];
       const attrs = css && css !== "decimal" ? ` style="list-style-type:${css}"` : "";
       return `<${tag}${attrs}>${pre}${sentinel}`;
@@ -2225,6 +2256,8 @@ function readRunProps(rpr: string): Record<string, unknown> {
   if (shd && shd !== "auto" && shd !== "clear" && !p.h) p.h = `#${shd}`;
   const sp = attr("spacing", "val");
   if (sp && /^-?\d+$/.test(sp)) p.ls = parseInt(sp) / 20; // twentieths of a pt
+  const pos = attr("position", "val");
+  if (pos && /^-?\d+$/.test(pos) && pos !== "0") p.pos = parseInt(pos) / 2; // half-pt raise → pt
   if (flag("caps")) p.caps = 1;
   if (flag("smallCaps")) p.scaps = 1;
   if (flag("vanish")) p.hid = 1;
@@ -2361,6 +2394,7 @@ function runPropsCss(p: Record<string, unknown>): string {
   if (p.c) css.push(`color:${p.c}`);
   if (p.h) css.push(`background-color:${p.h}`);
   if (p.ls) css.push(`letter-spacing:${p.ls}pt`);
+  if (p.pos) css.push(`vertical-align:${p.pos}pt`);
   if (p.caps) css.push("text-transform:uppercase");
   if (p.scaps) css.push("font-variant:small-caps");
   const decoLine = [p.us ? "underline" : "", p.ds ? "line-through" : ""].filter(Boolean).join(" ");
