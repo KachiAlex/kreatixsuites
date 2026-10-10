@@ -1752,12 +1752,14 @@ function breakMarkersToHtml(html: string): string {
 
 interface XmlCell {
   bg?: string; vAlign?: string; pad?: number; colw?: number; dir?: string;
+  /** gridSpan — how many grid columns this cell occupies. */
+  span?: number;
   /** vMerge-continue placeholder — mammoth drops these from the HTML. */
   merged?: boolean;
   borders?: { side: string; w: number; style: string; color: string }[];
 }
-interface XmlRow { height?: number; exact?: boolean; cantSplit?: boolean; header?: boolean; cells: XmlCell[] }
-interface XmlTbl { align?: string; widthPct?: number; indent?: number; fixed?: boolean; repeatHeader?: boolean; rows: XmlRow[] }
+interface XmlRow { height?: number; exact?: boolean; cantSplit?: boolean; header?: boolean; cells: XmlCell[]; colStarts?: number[] }
+interface XmlTbl { align?: string; widthPct?: number; indent?: number; fixed?: boolean; repeatHeader?: boolean; grid?: number[]; rows: XmlRow[] }
 
 const wVal = (tag: string, prop: string, name: string) =>
   tag.match(new RegExp(`<w:${prop}\\b[^>]*w:${name}="([^"]*)"`))?.[1];
@@ -1803,6 +1805,16 @@ function extractXmlTables(docXml: string): XmlTbl[] {
         fixed: /w:tblLayout\b[^>]*w:type="fixed"/.test(pr) || undefined,
         rows: [],
       };
+      // tblGrid holds the authoritative column widths — a cell's tcW is its
+      // whole span, so writing it as a per-column colwidth inflates that
+      // column at the expense of its neighbors
+      const segEnd = docXml.indexOf("<w:tr", re.lastIndex);
+      const gridXml = docXml.slice(re.lastIndex, segEnd < 0 ? re.lastIndex + 2000 : segEnd)
+        .match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/)?.[1];
+      if (gridXml) {
+        tbl.grid = [...gridXml.matchAll(/<w:gridCol\b[^>]*w:w="(\d+)"/g)]
+          .map((g) => Math.round(parseInt(g[1]) / 15));
+      }
       tables.push(tbl);
       if (!selfClose) stack.push({ kind: "tbl", tbl });
     } else if (name === "tr") {
@@ -1824,6 +1836,8 @@ function extractXmlTables(docXml: string): XmlTbl[] {
       const cell: XmlCell = {};
       const vm = pr.match(/<w:vMerge\b[^>]*>/)?.[0];
       if (vm && (!/w:val="/.test(vm) || /w:val="continue"/.test(vm))) cell.merged = true;
+      const gs = pr.match(/<w:gridSpan\b[^>]*w:val="(\d+)"/)?.[1];
+      if (gs && parseInt(gs) > 1) cell.span = parseInt(gs);
       const shd = wVal(pr, "shd", "fill");
       if (shd && shd !== "auto") cell.bg = "#" + shd;
       const va = wVal(pr, "vAlign", "val");
@@ -1900,6 +1914,13 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
       const row = top.tbl?.rows[top.r];
       top.headerRow = !!row?.header;
       if (!row) return tok;
+      if (top.tbl?.grid) {
+        // grid column where each cell begins — merged placeholders consume
+        // columns too, so the cursor advances by every cell's span
+        row.colStarts = [];
+        let cursor = 0;
+        for (const xc of row.cells) { row.colStarts.push(cursor); cursor += xc.span ?? 1; }
+      }
       return inject(tok,
         (row.cantSplit ? ` data-cant-split="true"` : "") +
         (row.exact ? ` data-height-mode="exact"` : ""),
@@ -1920,7 +1941,16 @@ function annotateTableHtml(html: string, tables: XmlTbl[]): string {
       cell.dir ? `writing-mode:${cell.dir}` : "",
       ...(cell.borders ?? []).map((b) => `border-${b.side}:${b.w}px ${b.style} ${b.color}`),
     ].filter(Boolean).join("; ");
-    const attrs = cell.colw ? ` colwidth="${cell.colw}"` : "";
+    // per-column widths come from tblGrid when we have it — the cell's own
+    // tcW is the total for its span and would inflate one grid column
+    const row = top.tbl?.rows[top.r];
+    const start = row?.colStarts?.[top.c];
+    const widths = top.tbl?.grid && start != null
+      ? top.tbl.grid.slice(start, start + (cell.span ?? 1))
+      : null;
+    const attrs = widths?.length
+      ? ` colwidth="${widths.join(",")}"`
+      : cell.colw ? ` colwidth="${cell.colw}"` : "";
     return inject(open, attrs, style);
   });
 }

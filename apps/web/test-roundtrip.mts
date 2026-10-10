@@ -460,6 +460,46 @@ ${OPARA}
   check("num: second cell continues at 2", /<ol start="2"/.test(ols[1] ?? ""));
 }
 
+// cell tcW is a cell's TOTAL span width — per-column colwidth must come from
+// tblGrid instead, or a colspan'd cell inflates one grid column and crushes
+// its neighbors (questionnaire: grid 468|2227|360|90|5940 dxa)
+{
+  const JSZip = (await import("jszip")).default;
+  const GRID_DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="9085" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="468"/><w:gridCol w:w="2227"/><w:gridCol w:w="360"/><w:gridCol w:w="90"/><w:gridCol w:w="5940"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="468" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="2227" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="6390" w:type="dxa"/><w:gridSpan w:val="3"/></w:tcPr><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
+</w:tr>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="468" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="2695" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>E</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="6390" w:type="dxa"/><w:gridSpan w:val="3"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>F</w:t></w:r></w:p></w:tc>
+</w:tr>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="468" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>G</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="2695" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p><w:r><w:t>E-cont</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="6390" w:type="dxa"/><w:gridSpan w:val="3"/><w:vMerge/></w:tcPr><w:p><w:r><w:t>F-cont</w:t></w:r></w:p></w:tc>
+</w:tr>
+</w:tbl>
+</w:body></w:document>`;
+  const carrier = await exportDocxBytes({ type: "doc", content: [{ type: "paragraph" }] } as never, "carrier");
+  const zin = await JSZip.loadAsync(await carrier.arrayBuffer());
+  zin.file("word/document.xml", GRID_DOC);
+  const html = (await importDocx(fileOf(await zin.generateAsync({ type: "arraybuffer" }), "grid.docx"))).html;
+  // 468/15=31, 2227/15=148, 360/15=24, 90/15=6, 5940/15=396 px
+  check("grid: narrow cols get own width", /<td[^>]*colwidth="31"[^>]*>/.test(html) && /<td[^>]*colwidth="148"[^>]*>/.test(html));
+  check("grid: span-3 cell gets per-col widths", html.includes('colwidth="24,6,396"'));
+  check("grid: span-2 cell after offset gets per-col widths", html.includes('colwidth="148,24"'));
+  check("grid: span-3 at offset 3", html.includes('colwidth="6,396"'));
+  check("grid: tcW total never used as colwidth", !html.includes('colwidth="426"') && !html.includes('colwidth="6390"'));
+}
+
 // ---------- MD / RTF / ODT exporters ----------
 {
   const { jsonToMarkdown } = await import("./src/writer/export/markdown");
