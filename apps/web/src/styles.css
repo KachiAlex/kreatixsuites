@@ -338,7 +338,10 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .rm-with-pagination *:has(>br.ProseMirror-trailingBreak:only-child){display:block!important}
 /* the lib's break-all chops words mid-column in split-table cells;
    break-word still wraps tight columns but keeps whole words readable */
-.rm-with-pagination table tr td,.rm-with-pagination table tr th{word-break:normal;overflow-wrap:break-word}
+/* lib injects its <style> at editor init — after our sheet — so equal
+ * specificity loses; word-wrap like Word: whole words to the next line,
+ * break only words wider than the cell itself */
+.rm-with-pagination table tr td,.rm-with-pagination table tr th{word-break:normal!important;overflow-wrap:break-word!important}
 /* width:100% — the wrapper is a BFC (overflow-x:auto); inside the paginator's
    float-band layout an auto-width BFC gets squeezed to ~0 beside a wall float
    instead of pushed to the next band (collapsing the table to min-content).
@@ -1796,6 +1799,9 @@ pre code{font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;fo
 
 /* ===== DOCX symbol-font bullets (✓ etc. from Wingdings) ===== */
 .ProseMirror ul[data-kx-bullet]>li::marker{content:var(--kx-bullet) "\2002"}
+
+/* a marker is atomic — never let a narrow cell split "1." across lines */
+.ProseMirror li::marker{white-space:pre}
 
 /* ===== multilevel list (1. / 1.1 / 1.1.1) ===== */
 .ProseMirror ol.ml,.ProseMirror ol.ml ol{list-style:none;counter-reset:ml}
