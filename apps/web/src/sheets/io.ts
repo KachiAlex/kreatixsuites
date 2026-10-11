@@ -88,14 +88,25 @@ export async function workbookToXLSX(wb: Workbook, filename: string) {
   void saveFile(blob, filename.replace(/\.[^.]+$/, "") + ".xlsx");
 }
 
+/** Workbook → .ods bytes (no download side effect — export dialog Drive path). */
+export async function workbookToODSBytes(wb: Workbook): Promise<Uint8Array> {
+  const XLSX = await xlsxLib();
+  const out = buildBook(XLSX, wb);
+  return XLSX.write(out, { type: "array", bookType: "ods" }) as Uint8Array;
+}
+
 /** ODS export (S8.4) — same workbook build, ods bookType. writeFile() clicks
  *  an anchor internally — a no-op in the native WebView, so go through bytes. */
 export async function workbookToODS(wb: Workbook, filename: string) {
-  const XLSX = await xlsxLib();
-  const out = buildBook(XLSX, wb);
-  const bytes = XLSX.write(out, { type: "array", bookType: "ods" }) as Uint8Array;
+  const bytes = await workbookToODSBytes(wb);
   void saveFile(new Blob([bytes as unknown as ArrayBuffer], { type: "application/vnd.oasis.opendocument.spreadsheet" }),
     filename.replace(/\.[^.]+$/, "") + ".ods");
+}
+
+/** Used range → .tsv text (new export format — rangeToTSV already powers copy). */
+export function sheetToTSV(sheet: SheetData, wb?: Workbook): string {
+  const rng = parseRange(usedRangeA1(sheet.cells)) ?? { c1: 0, r1: 0, c2: 0, r2: 0 };
+  return rangeToTSV(sheet, rng, wb);
 }
 
 /** Kreatix CellStyle → xlsx-js-style `cell.s`. */

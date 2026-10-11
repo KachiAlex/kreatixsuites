@@ -72,9 +72,14 @@ function pageShell(name: string, html: string, setup?: PageSetup, rendered = fal
     `<style>${pageRule(setup, rendered)}${PRINT_CSS}${rendered ? PAGED_CSS : ""}</style></head><body>${html}</body></html>`;
 }
 
+/** Standalone .html as bytes — for the export dialog's Drive path. */
+export function htmlBlobFor(name: string, html: string, setup?: PageSetup): Blob {
+  return new Blob([pageShell(name, absolutize(html), setup)], { type: "text/html" });
+}
+
 /** Standalone .html file — embeds the editor-rendered HTML with print styles. */
 export function downloadHtml(name: string, html: string, setup?: PageSetup) {
-  downloadBlob(new Blob([pageShell(name, absolutize(html), setup)], { type: "text/html" }), `${baseName(name)}.html`);
+  downloadBlob(htmlBlobFor(name, html, setup), `${baseName(name)}.html`);
 }
 
 export function downloadMd(doc: Json, name: string) {

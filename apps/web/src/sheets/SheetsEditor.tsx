@@ -22,7 +22,8 @@ import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, C
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
 import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
-import { sheetToCSV, csvToSheet, workbookToXLSX, workbookToODS, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
+import { sheetToCSV, sheetToTSV, csvToSheet, workbookToXLSXBytes, workbookToODSBytes, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
+import { ExportDialog, type ExportFormat } from "../components/ExportDialog";
 import { runScript } from "./script";
 import { runQuery, queryToSheet, type QueryResult } from "./query";
 import { Grid } from "./Grid";
@@ -72,6 +73,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [panel, setPanel] = useState<"none" | "comments" | "versions" | "ai">(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
   const [cfOpen, setCfOpen] = useState(false);
@@ -1325,7 +1327,27 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   };
 
   // ---- import/export ----
-  const exportCSV = () => {
+  const exportFormats = (): ExportFormat[] => {
+    const base = title.replace(/\.[^.]+$/, "");
+    const sheetBase = `${base}-${sheet.name}`;
+    return [
+      { id: "xlsx", label: "Excel (.xlsx)", hint: "Full workbook — formulas, styles, charts",
+        produce: async () => ({ name: `${base}.xlsx`,
+          blob: new Blob([(await workbookToXLSXBytes(wb)).buffer as ArrayBuffer],
+            { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }) }) },
+      { id: "ods", label: "OpenDocument (.ods)", hint: "LibreOffice Calc",
+        produce: async () => ({ name: `${base}.ods`,
+          blob: new Blob([(await workbookToODSBytes(wb)).buffer as ArrayBuffer],
+            { type: "application/vnd.oasis.opendocument.spreadsheet" }) }) },
+      { id: "csv", label: `CSV — ${sheet.name} (.csv)`, hint: "Current sheet, values only",
+        produce: async () => ({ name: `${sheetBase}.csv`, blob: new Blob([sheetToCSV(sheet, wb)], { type: "text/csv" }) }) },
+      { id: "tsv", label: `TSV — ${sheet.name} (.tsv)`, hint: "Tab-separated, values only",
+        produce: async () => ({ name: `${sheetBase}.tsv`, blob: new Blob([sheetToTSV(sheet, wb)], { type: "text/tab-separated-values" }) }) },
+      { id: "pdf", label: "PDF / Print", hint: "Print layout with titles, areas, scale",
+        action: { label: "Print options…", run: () => setPrintDlg(true) } },
+    ];
+  };
+  const exportCSV = () => { // kept for the quick File-menu path
     const blob = new Blob([sheetToCSV(sheet, wb)], { type: "text/csv" });
     void saveFile(blob, `${title}-${sheet.name}.csv`);
   };
@@ -1507,7 +1529,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
         <PresenceBar session={session} />
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-primary btn-sm" onClick={() => void workbookToXLSX(wb, title)}>Export .xlsx</button>
+        <button className="btn-primary btn-sm" onClick={() => setExportOpen(true)}>Export</button>
       </div>
 
       {canEdit && (<>
@@ -1535,9 +1557,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
               { label: "Import XLSX / ODS…", onClick: () => xlsxRef.current?.click() },
               { label: "Link external workbook…", onClick: () => linkRef.current?.click() },
               { divider: true },
-              { label: "Export CSV", onClick: exportCSV },
-              { label: "Export .ods", onClick: () => void workbookToODS(wb, title) },
-              { label: "Export .xlsx", onClick: () => void workbookToXLSX(wb, title) },
+              { label: "Export / Download…", onClick: () => setExportOpen(true) },
+              { label: "Quick export CSV", onClick: exportCSV },
               { divider: true },
               { label: "Print / save as PDF…", onClick: () => setPrintDlg(true) },
               { label: "Version history", onClick: () => setPanel("versions") },
@@ -2455,6 +2476,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
           applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
+      {exportOpen && <ExportDialog docName={title} formats={exportFormats()} onClose={() => setExportOpen(false)} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );

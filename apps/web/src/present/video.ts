@@ -77,8 +77,9 @@ export async function rasterizeSlides(deck: Deck, onProgress?: (msg: string) => 
   return { dims, frames };
 }
 
-/** Export the deck's visible slides as a timed .webm video (default 3s/slide + 400ms fade). */
-export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+/** Render the deck's visible slides as a timed .webm Blob (default 3s/slide +
+ *  400ms fade) — no download side effect. */
+export async function exportVideoBlob(deck: Deck, onProgress?: (msg: string) => void): Promise<Blob> {
   const { dims, frames } = await rasterizeSlides(deck, onProgress);
   const slides = deck.slides.filter((s) => !s.hidden);
 
@@ -121,7 +122,11 @@ export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: 
   }
   rec.stop();
   await done;
+  return new Blob(chunks, { type: "video/webm" });
+}
 
-  const blob = new Blob(chunks, { type: "video/webm" });
+/** Export the deck's visible slides as a timed .webm video (default 3s/slide + 400ms fade). */
+export async function exportVideo(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+  const blob = await exportVideoBlob(deck, onProgress);
   void saveFile(blob, `${title.replace(/\.[^.]+$/, "")}.webm`);
 }

@@ -84,6 +84,7 @@ import { Ruler } from "./Ruler";
 const docxMod = () => import("./docx");
 import { ensureDocFonts } from "./fonts";
 import { ShareDialog } from "../components/ShareDialog";
+import { ExportDialog, type ExportFormat } from "../components/ExportDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { AppIcon } from "../components/AppIcon";
@@ -131,6 +132,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [panel, setPanel] = useState<Panel>(aiPrompt !== undefined ? "ai" : "none");
   const [sharing, setSharing] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -1207,62 +1209,75 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   const onImage = (f: File) => void uploadImage(f);
 
-  const download = async (fmt: string) => {
-    if (!editor) return;
-    // redact marks burn to block chars on every export path — the document
-    // keeps the text, but no exported artifact may contain it
-    const json = editor.getJSON() as never;
+  // redact marks burn to block chars on every export path — the document
+  // keeps the text, but no exported artifact may contain it
+  const scrubbedJson = () => {
+    const json = editor!.getJSON() as never;
     scrubRedactions(json as { content?: unknown[] });
-    const name = title;
-    try {
-      if (fmt === "docx") {
-        const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
-          .then((r) => r.comments).catch(() => [] as Comment[]);
-        return (await docxMod()).exportDocx(json, name, {
-          comments,
-          docProps: docPropsRef.current,
-          styles: serializeStyles(editor),
-          pageSetup: readPageSetup(editor),
-        });
-      }
-      const mod = await import("./export/index");
-      if (fmt === "md") return mod.downloadMd(json, name);
-      if (fmt === "html") {
-        const d = new DOMParser().parseFromString(editor.getHTML(), "text/html");
-        d.querySelectorAll("[data-redact]").forEach((el) => {
-          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
-        });
-        return mod.downloadHtml(name, `<body>${d.body.innerHTML}</body>`, readPageSetup(editor));
-      }
-      if (fmt === "txt") {
-        const doc = new DOMParser().parseFromString(editor.getHTML(), "text/html");
-        doc.querySelectorAll("[data-redact]").forEach((el) => {
-          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
-        });
-        return mod.downloadTxtRaw(doc.body.innerText, name);
-      }
-      if (fmt === "rtf") return mod.downloadRtf(json, name);
-      if (fmt === "odt") return mod.downloadOdt(json, name);
-      if (fmt === "pdf") {
-        // clone the rendered (paginated) DOM — headers/footers/page numbers
-        // and KaTeX all carry over; strip editing-only attrs
-        const clone = editor.view.dom.cloneNode(true) as HTMLElement;
-        clone.removeAttribute("contenteditable");
-        clone.removeAttribute("spellcheck");
-        clone.querySelectorAll("[data-redact]").forEach((el) => {
-          el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
-        });
-        clone.querySelectorAll(".img-resize-handle").forEach((el) => el.remove());
-        clone.querySelectorAll("[contenteditable],[data-drag-handle]")
-          .forEach((el) => { el.removeAttribute("contenteditable"); el.removeAttribute("data-drag-handle"); });
-        return mod.exportPdf(clone.outerHTML, name, readPageSetup(editor));
-      }
-    } catch (e) {
-      toast(`Export failed: ${(e as Error).message.slice(0, 60)}`);
-    }
+    return json;
+  };
+  const scrubbedInnerText = () => {
+    const doc = new DOMParser().parseFromString(editor!.getHTML(), "text/html");
+    doc.querySelectorAll("[data-redact]").forEach((el) => {
+      el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+    });
+    return doc.body.innerText;
+  };
+  const scrubbedHtml = () => {
+    const d = new DOMParser().parseFromString(editor!.getHTML(), "text/html");
+    d.querySelectorAll("[data-redact]").forEach((el) => {
+      el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+    });
+    return `<body>${d.body.innerHTML}</body>`;
   };
 
-  const print = () => { download("pdf"); };
+  /** PDF via the print pipeline — clone the rendered (paginated) DOM so
+   *  headers/footers/page numbers and KaTeX carry over. */
+  const exportPdfAction = async () => {
+    if (!editor) return;
+    const mod = await import("./export/index");
+    const clone = editor.view.dom.cloneNode(true) as HTMLElement;
+    clone.removeAttribute("contenteditable");
+    clone.removeAttribute("spellcheck");
+    clone.querySelectorAll("[data-redact]").forEach((el) => {
+      el.textContent = "█".repeat(Math.max(1, (el.textContent ?? "").length));
+    });
+    clone.querySelectorAll(".img-resize-handle").forEach((el) => el.remove());
+    clone.querySelectorAll("[contenteditable],[data-drag-handle]")
+      .forEach((el) => { el.removeAttribute("contenteditable"); el.removeAttribute("data-drag-handle"); });
+    mod.exportPdf(clone.outerHTML, title, readPageSetup(editor));
+  };
+
+  const exportFormats = (): ExportFormat[] => {
+    if (!editor) return [];
+    const name = title;
+    const base = name.replace(/\.[^.]+$/, "");
+    return [
+      { id: "docx", label: "Microsoft Word (.docx)", hint: "Full fidelity — styles, comments, page setup",
+        produce: async () => {
+          const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
+            .then((r) => r.comments).catch(() => [] as Comment[]);
+          const blob = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
+            comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
+          });
+          return { name: `${base}.docx`, blob };
+        } },
+      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — opens the system print dialog",
+        action: { label: "Print / Save as PDF", run: exportPdfAction } },
+      { id: "odt", label: "OpenDocument (.odt)", hint: "LibreOffice / OpenOffice",
+        produce: async () => ({ name: `${base}.odt`, blob: await (await import("./export/odt")).odtBlob(scrubbedJson(), name) }) },
+      { id: "rtf", label: "Rich Text (.rtf)", hint: "Legacy editors and WordPad",
+        produce: async () => { const { rtfBlob } = await import("./export/rtf"); return { name: `${base}.rtf`, blob: rtfBlob(scrubbedJson(), name) }; } },
+      { id: "html", label: "Web page (.html)", hint: "Standalone file with embedded styles",
+        produce: async () => ({ name: `${base}.html`, blob: (await import("./export/index")).htmlBlobFor(name, scrubbedHtml(), readPageSetup(editor!)) }) },
+      { id: "md", label: "Markdown (.md)", hint: "Plain-text markup for dev tools",
+        produce: async () => ({ name: `${base}.md`, blob: new Blob([(await import("./export/markdown")).jsonToMarkdown(scrubbedJson() as never)], { type: "text/markdown" }) }) },
+      { id: "txt", label: "Plain text (.txt)", hint: "Text only, no formatting",
+        produce: async () => ({ name: `${base}.txt`, blob: new Blob([scrubbedInnerText()], { type: "text/plain" }) }) },
+    ];
+  };
+
+  const print = () => { void exportPdfAction(); };
 
   /** Word "Create a style…" — snapshot the selection's look into a named style. */
   const createStyleFromSelection = useCallback(async () => {
@@ -1757,18 +1772,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         { label: "Open…", onClick: () => navigate("/drive") },
         { divider: true } as MenuItem,
       ]),
-      {
-        label: "Download", submenu: [
-          { label: "Microsoft Word (.docx)", onClick: () => void download("docx") },
-          { label: "PDF document (.pdf)", onClick: () => void download("pdf") },
-          { divider: true },
-          { label: "Markdown (.md)", onClick: () => void download("md") },
-          { label: "Web page (.html)", onClick: () => void download("html") },
-          { label: "Rich Text (.rtf)", onClick: () => void download("rtf") },
-          { label: "OpenDocument (.odt)", onClick: () => void download("odt") },
-          { label: "Plain text (.txt)", onClick: () => void download("txt") },
-        ],
-      },
+      { label: "Export / Download…", onClick: () => setExportOpen(true) },
       { label: "Make a copy", onClick: () => void makeCopy() },
       { label: "Print", shortcut: "Ctrl+P", onClick: print },
       { divider: true },
@@ -2267,7 +2271,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         <PresenceBar session={session} />
         <div className="spacer" />
         <button className="btn-ghost btn-sm" onClick={() => setSharing(true)}>Share</button>
-        <button className="btn-primary btn-sm" onClick={() => void download("docx")}>Export .docx</button>
+        <button className="btn-primary btn-sm" onClick={() => setExportOpen(true)}>Export</button>
       </div>
 
       {menus.length > 0 && (
@@ -2626,6 +2630,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         <SuggestionsPanel editor={editor} canResolve={canEdit} onClose={() => setPanel("none")} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
+      {exportOpen && <ExportDialog docName={title} formats={exportFormats()} onClose={() => setExportOpen(false)} toast={toast} />}
       {editor && <LinkPopover editor={editor} />}
       {specialChars && editor && <SpecialChars editor={editor} onClose={() => setSpecialChars(false)} />}
       {tableProps && editor && <TablePropertiesDialog editor={editor} onClose={() => setTableProps(false)} />}

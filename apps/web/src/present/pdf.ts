@@ -14,8 +14,8 @@ const imgToPng = async (img: HTMLImageElement, w: number, h: number): Promise<Ui
   return new Uint8Array(await blob.arrayBuffer());
 };
 
-/** Export the deck's visible slides as a PDF — one slide per page. */
-export async function exportDeckPdf(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+/** Deck → PDF bytes (no download side effect — export dialog Drive path). */
+export async function exportDeckPdfBytes(deck: Deck, onProgress?: (msg: string) => void): Promise<Uint8Array> {
   const { dims, frames } = await rasterizeSlides(deck, onProgress);
   const { PDFDocument } = await import("pdf-lib");
   const pdf = await PDFDocument.create();
@@ -26,7 +26,22 @@ export async function exportDeckPdf(deck: Deck, title: string, onProgress?: (msg
     const page = pdf.addPage([pw, ph]);
     page.drawImage(png, { x: 0, y: 0, width: pw, height: ph });
   }
-  const out = await pdf.save();
+  return pdf.save();
+}
+
+/** Export the deck's visible slides as a PDF — one slide per page. */
+export async function exportDeckPdf(deck: Deck, title: string, onProgress?: (msg: string) => void): Promise<void> {
+  const out = await exportDeckPdfBytes(deck, onProgress);
   void saveFile(new Blob([out.buffer as ArrayBuffer], { type: "application/pdf" }),
     `${title.replace(/\.[^.]+$/, "")}.pdf`);
+}
+
+/** Deck → .zip of one PNG per visible slide — for slide-as-image workflows. */
+export async function exportSlidesZipBlob(deck: Deck, onProgress?: (msg: string) => void): Promise<Blob> {
+  const { dims, frames } = await rasterizeSlides(deck, onProgress);
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  for (let i = 0; i < frames.length; i++)
+    zip.file(`slide-${i + 1}.png`, await imgToPng(frames[i], dims.w, dims.h));
+  return zip.generateAsync({ type: "blob" });
 }

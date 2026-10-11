@@ -22,9 +22,11 @@ import type { Deck, Slide, SlideObject, Theme, TransitionType, TransitionDir } f
 import { THEMES, LAYOUTS, themeOf, newId, applyLayout, blankSlide, SLIDE_W, SLIDE_H, chartSeries, anchorPoint, masterObjects, layoutObjects, deckSize, TRANSITION_DIRS, animKind } from "./model";
 import { SlideCanvas, SHAPE_MENU, type ObjPatch } from "./SlideCanvas";
 import { Presenter } from "./Presenter";
-import { exportPptx } from "./export";
+import { exportPptxBytes } from "./export";
 import { useIsMobile } from "../lib/mobile";
-import { exportVideo } from "./video";
+import { exportVideoBlob } from "./video";
+import { ExportDialog, type ExportFormat } from "../components/ExportDialog";
+import type { MenuItem } from "../writer/MenuBar";
 import { importPptx, importOdp } from "./import";
 import { sanitizeHtml, safeUrl } from "../lib/sanitize";
 
@@ -50,7 +52,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
   const [newComment, setNewComment] = useState(false);
   const [presenting, setPresenting] = useState<"none" | "present" | "presenter">("none");
   const [printing, setPrinting] = useState(false);
-  const [exporting, setExporting] = useState(false); // P6.3 — video export in progress
+  const [exportOpen, setExportOpen] = useState(false);
   const [editingObj, setEditingObj] = useState<string | null>(null); // P1.1 — text object in run-editing mode
   const [cropId, setCropId] = useState<string | null>(null); // P1.6 — image in crop mode
   const [paintArmed, setPaintArmed] = useState(false); // P1.8 — format painter armed
@@ -788,6 +790,26 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
     await api.patch(`/api/drive/${item.id}`, { name });
   }, [item.id]);
 
+  // ---- export formats (shared dialog) ----
+  const exportFormats = (): ExportFormat[] => {
+    const base = title.replace(/\.[^.]+$/, "");
+    return [
+      { id: "pptx", label: "PowerPoint (.pptx)", hint: "Edit in PowerPoint, Keynote, Impress",
+        produce: async () => ({ name: `${base}.pptx`,
+          blob: new Blob([await exportPptxBytes(deck, title)],
+            { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }) }) },
+      { id: "pdf", label: "PDF document (.pdf)", hint: "One slide per page — animation states rendered final",
+        produce: async (progress) => ({ name: `${base}.pdf`,
+          blob: new Blob([(await import("./pdf").then((m) => m.exportDeckPdfBytes(deck, progress))).buffer as ArrayBuffer],
+            { type: "application/pdf" }) }) },
+      { id: "images", label: "Slide images (.zip)", hint: "One PNG per slide",
+        produce: async (progress) => ({ name: `${base}-slides.zip`,
+          blob: await import("./pdf").then((m) => m.exportSlidesZipBlob(deck, progress)) }) },
+      { id: "video", label: "Video (.webm)", hint: "Timed slideshow with crossfades",
+        produce: async (progress) => ({ name: `${base}.webm`, blob: await exportVideoBlob(deck, progress) }) },
+    ];
+  };
+
   // ---- print (PDF export) ----
   useEffect(() => {
     if (!printing) return;
@@ -962,24 +984,17 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
               { divider: true },
               { label: "Import PPTX / ODP…", onClick: () => pptxRef.current?.click() },
               { divider: true },
-              // WebView has no window.print — mobile exports a real PDF file
-              { label: "Export PDF", submenu: isNativeMobile ? [
-                { label: "All slides — PDF file", onClick: () => void import("./pdf")
-                    .then((m) => m.exportDeckPdf(deck, title, toast)).catch(() => toast("PDF export failed")) },
-              ] : [
-                { label: "Full-page slides", onClick: () => { setPrintLayout("slides"); setPrinting(true); } },
-                { label: "Handouts · 2/page", onClick: () => { setPrintLayout("handout2"); setPrinting(true); } },
-                { label: "Handouts · 4/page", onClick: () => { setPrintLayout("handout4"); setPrinting(true); } },
-                { label: "Handouts · 6/page", onClick: () => { setPrintLayout("handout6"); setPrinting(true); } },
-                { label: "Notes pages", onClick: () => { setPrintLayout("notes"); setPrinting(true); } },
-              ]},
-              { label: "Export .pptx", onClick: () => void exportPptx(deck, title).catch(() => toast("Export failed")) },
-              { label: exporting ? "Recording video…" : "Export video", disabled: exporting, onClick: () => {
-                setExporting(true);
-                void exportVideo(deck, title, (m) => toast(m))
-                  .catch(() => toast("Video export failed"))
-                  .finally(() => setExporting(false));
-              }},
+              { label: "Export / Download…", onClick: () => setExportOpen(true) },
+              // print layouts stay menu-level on web — mobile gets real PDFs via the dialog
+              ...(isNativeMobile ? [] : [
+                { label: "Print layouts…", submenu: [
+                  { label: "Full-page slides", onClick: () => { setPrintLayout("slides"); setPrinting(true); } },
+                  { label: "Handouts · 2/page", onClick: () => { setPrintLayout("handout2"); setPrinting(true); } },
+                  { label: "Handouts · 4/page", onClick: () => { setPrintLayout("handout4"); setPrinting(true); } },
+                  { label: "Handouts · 6/page", onClick: () => { setPrintLayout("handout6"); setPrinting(true); } },
+                  { label: "Notes pages", onClick: () => { setPrintLayout("notes"); setPrinting(true); } },
+                ]} as MenuItem,
+              ]),
               { divider: true },
               { label: "Version history", onClick: () => setPanel("versions") },
             ]},
@@ -1769,6 +1784,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
           applyOps={aiApplyOps} onClose={() => setPanel("none")} toast={toast} initialPrompt={aiPrompt} />
       )}
       {sharing && <ShareDialog item={item} onClose={() => setSharing(false)} toast={toast} />}
+      {exportOpen && <ExportDialog docName={title} formats={exportFormats()} onClose={() => setExportOpen(false)} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </div>
   );

@@ -2965,3 +2965,15 @@ html[data-theme="dark"]{
 .pt-pct.good{color:#1F9D66}
 .pt-note{font-size:12px;color:var(--muted);background:rgba(242,120,46,.08);border:1px solid rgba(242,120,46,.3);border-radius:10px;padding:10px 12px}
 @media (max-width:640px){.pt-tabs{grid-template-columns:1fr}}
+
+/* ---- unified export dialog ---- */
+.export-dlg{width:480px}
+.export-list{display:flex;flex-direction:column;gap:8px}
+.export-row{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.export-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.export-info b{font-size:13px;color:var(--ink)}
+.export-info small{font-size:11px;color:var(--muted)}
+.export-info .export-prog{color:var(--k-orange-dark);font-weight:600}
+.export-actions{display:flex;gap:6px;flex-shrink:0}
+.export-actions .rb{font-size:11.5px;white-space:nowrap}
+@media (max-width:520px){.export-row{flex-direction:column;align-items:stretch}}
