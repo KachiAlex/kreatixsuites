@@ -17,6 +17,7 @@ const Drive = lazy(() => import("./pages/Drive").then((m) => ({ default: m.Drive
 const Editor = lazy(() => import("./pages/Editor").then((m) => ({ default: m.Editor })));
 const SharedLink = lazy(() => import("./pages/SharedLink").then((m) => ({ default: m.SharedLink })));
 const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
+const PdfTools = lazy(() => import("./pages/PdfTools").then((m) => ({ default: m.PdfTools })));
 const Download = lazy(() => import("./pages/Download").then((m) => ({ default: m.Download })));
 const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
 
@@ -45,6 +46,7 @@ function TitleSync() {
       : pathname === "/register" ? "Create account"
       : pathname === "/" ? "Make room for your best work"   // landing page headline
       : pathname === "/download" ? "Download"
+      : pathname === "/pdf-tools" ? "PDF tools"
       : pathname === "/home" ? "Home"
       : pathname.startsWith("/drive") ? "Drive"
       : pathname.startsWith("/admin") ? "Admin"
@@ -107,6 +109,7 @@ export default function App() {
             <Route path="/drive" element={<Drive />} />
             <Route path="/drive/:view" element={<Drive />} />
             <Route path="/drive/folder/:folderId" element={<Drive />} />
+            <Route path="/pdf-tools" element={<PdfTools />} />
             <Route path="/admin" element={<Admin />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -400,6 +400,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
 
       <div className="section-label">{t("nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
+      <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>
       {(user?.role === "owner" || user?.role === "admin") && (
         <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
       )}
