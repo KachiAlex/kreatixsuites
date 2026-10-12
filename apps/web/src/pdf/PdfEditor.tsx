@@ -1693,6 +1693,8 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
           { label: isNativeMobile ? "Save as PDF…" : "Print…", icon: "🖨", shortcut: isNativeMobile ? undefined : "Ctrl+P",
             onClick: () => isNativeMobile ? void downloadCurrent() : setPrinting(true) },
           { divider: true },
+          { label: "PDF tools — merge, split, compress…", icon: "🧰", onClick: () => navigate("/pdf-tools") },
+          { divider: true },
           { label: "Version history", icon: "🕘", onClick: () => setPanel("versions") },
           { label: "Comments", icon: "💬", onClick: () => setPanel("comments") },
           { divider: true },
