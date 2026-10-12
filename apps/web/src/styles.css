@@ -1266,8 +1266,14 @@ textarea.inp{padding:8px 10px;height:auto}
 .menu-shortcut{margin-left:24px;font-size:10.5px;color:var(--muted)}
 .menu-sub-arrow{margin-left:14px;color:var(--muted)}
 .menu-divider{height:1px;background:var(--line);margin:5px 8px}
-.menu-li{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;border-radius:8px;font-size:12.5px;cursor:pointer}
+.menu-li{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;border-radius:8px;font-size:12.5px;cursor:pointer;color:var(--ink)}
 .menu-li:hover{background:var(--subtle)}
+/* pdf.js's scoped stylesheet sets color-scheme:light dark on .pdfjs-scope,
+   which tracks the *OS* theme — on an OS-dark system every bare <button>
+   inside the editor inherits white UA ButtonText (invisible menu items on
+   our light surfaces). Tie the scope's color-scheme back to the app theme. */
+.editor.pdfjs-scope{color-scheme:light}
+html[data-theme="dark"] .editor.pdfjs-scope{color-scheme:dark}
 .drop-head{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:6px 10px 2px}
 
 /* ---- writer: ribbon dropdowns ---- */
