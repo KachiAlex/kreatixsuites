@@ -21,6 +21,7 @@ export interface LibraryRow {
   site_id: string;
   name: string;
   kind: Library["kind"];
+  versioning: "major" | "minor";
   created_at: string;
 }
 
@@ -116,6 +117,7 @@ export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Li
     siteId: row.site_id,
     name: decryptField(row.name) ?? row.name,
     kind: row.kind,
+    versioning: row.versioning === "minor" ? "minor" : "major",
     itemCount,
     createdAt: row.created_at,
   };

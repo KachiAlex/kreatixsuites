@@ -1,7 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { one } from "./db.js";
+import { one, q } from "./db.js";
 import { libraryPermission } from "./sites.js";
 import type { Permission, User, UserRole } from "@kreatix/shared";
 
@@ -152,11 +152,12 @@ const PERM_RANK: Record<Permission, number> = {
 };
 
 /** Effective permission of a user on an item, or null if no access.
- *  Items with `media_for` inherit viewer access from the document that embeds
- *  them (images inside shared docs must load for viewers of that doc). */
+ *  Sources (most-permissive wins): direct share, site-library membership,
+ *  a share on an ancestor folder (SharePoint-style inheritance), and
+ *  `media_for` host access (viewer-capped). */
 export async function permissionFor(
   userId: string,
-  item: { owner_id: string; id: string; media_for?: string | null; library_id?: string | null },
+  item: { owner_id: string; id: string; parent_id?: string | null; media_for?: string | null; library_id?: string | null },
   depth = 0,
 ): Promise<Permission | null> {
   // media_for inheritance is a DAG but can be arbitrarily deep — cap the walk
@@ -175,6 +176,11 @@ export async function permissionFor(
     const libPerm = await libraryPermission(userId, item.library_id);
     if (libPerm && (!best || PERM_RANK[libPerm] > PERM_RANK[best])) best = libPerm;
   }
+  // a share on an ancestor folder covers everything beneath it
+  if (item.parent_id) {
+    const ancShare = await ancestorShare(item.parent_id, userId);
+    if (ancShare && (!best || PERM_RANK[ancShare] > PERM_RANK[best])) best = ancShare;
+  }
   if (best) return best;
   if (item.media_for) {
     const host = await one<{ owner_id: string; id: string }>(
@@ -186,6 +192,26 @@ export async function permissionFor(
     }
   }
   return null;
+}
+
+/** Best share a user holds on any ancestor of `parentId` — walks the parent
+ *  chain (capped at 8 hops) in one recursive query. A folder share covers the
+ *  whole subtree beneath it (SharePoint permission inheritance). */
+async function ancestorShare(parentId: string, userId: string): Promise<Permission | null> {
+  const rows = await q<{ permission: Permission }>(
+    `WITH RECURSIVE anc AS (
+       SELECT parent_id, 1 AS depth FROM items WHERE id = $1
+       UNION ALL
+       SELECT i.parent_id, anc.depth + 1 FROM anc JOIN items i ON i.id = anc.parent_id
+       WHERE anc.parent_id IS NOT NULL AND anc.depth < 8
+     )
+     SELECT s.permission FROM anc JOIN shares s ON s.file_id = anc.parent_id
+     WHERE s.user_id = $2 AND anc.parent_id IS NOT NULL`,
+    [parentId, userId],
+  );
+  let best: Permission | null = null;
+  for (const r of rows) if (!best || PERM_RANK[r.permission] > PERM_RANK[best]) best = r.permission;
+  return best;
 }
 
 export function hasPermission(actual: Permission | null, required: Permission): boolean {

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
@@ -7,7 +7,7 @@ import {
   getSite, getLibrary, siteRoleFor, toSite, toLibrary, memberOut,
   type SiteRow, type LibraryRow,
 } from "../sites.js";
-import { ensureSubscription, effectivePlan, planLimit } from "../billing.js";
+import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { logActivity } from "../items.js";
 
@@ -35,6 +35,54 @@ const roleSchema = z.object({ role: z.enum(["owner", "member", "visitor"]) });
 const librarySchema = z.object({
   name: z.string().min(1).max(120),
   kind: z.enum(["documents", "media", "form"]).default("documents"),
+});
+
+const libraryPatchSchema = librarySchema.partial().extend({
+  versioning: z.enum(["major", "minor"]).optional(),
+});
+
+const columnSchema = z.object({
+  name: z.string().min(1).max(80),
+  type: z.enum(["text", "number", "date", "choice", "person", "yesno"]).default("text"),
+  required: z.boolean().default(false),
+  choices: z.array(z.string().max(120)).max(50).optional(),
+  position: z.number().int().min(0).optional(),
+});
+
+const viewSchema = z.object({
+  name: z.string().min(1).max(80),
+  config: z.object({
+    sort: z.enum(["name", "updated", "size"]).optional(),
+    dir: z.enum(["asc", "desc"]).optional(),
+    kind: z.string().optional(),
+    label: z.string().optional(),
+    query: z.string().max(200).optional(),
+    columnFilters: z.record(z.string(), z.string()).optional(),
+  }).default({}),
+  shared: z.boolean().default(true),
+});
+
+interface ColumnRow {
+  id: string; library_id: string; name: string; type: string;
+  required: boolean; choices: unknown; position: number; created_at: string;
+}
+
+interface ViewRow {
+  id: string; library_id: string; name: string; config: unknown;
+  created_by: string | null; shared: boolean; created_at: string;
+}
+
+const colOut = (r: ColumnRow) => ({
+  id: r.id, libraryId: r.library_id, name: decryptField(r.name) ?? r.name,
+  type: r.type, required: !!r.required,
+  choices: Array.isArray(r.choices) ? (r.choices as string[]) : undefined,
+  position: r.position, createdAt: r.created_at,
+});
+
+const viewOut = (r: ViewRow) => ({
+  id: r.id, libraryId: r.library_id, name: decryptField(r.name) ?? r.name,
+  config: (r.config ?? {}) as Record<string, unknown>, createdBy: r.created_by,
+  shared: !!r.shared, createdAt: r.created_at,
 });
 
 const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
@@ -240,9 +288,13 @@ export function siteRoutes(app: FastifyInstance) {
       const lib = site ? await getLibrary(lid) : undefined;
       if (!site || !lib || lib.site_id !== site.id || !atLeast(role, "member"))
         return reply.code(403).send({ error: "forbidden" });
-      const body = librarySchema.partial().parse(req.body);
-      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind) WHERE id = $1",
-        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null]);
+      const body = libraryPatchSchema.parse(req.body);
+      // versioning is a governance knob — owners only
+      if (body.versioning !== undefined && !atLeast(role, "owner")) {
+        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning" });
+      }
+      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning) WHERE id = $1",
+        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null]);
       return { library: await toLibrary((await getLibrary(lib.id))!) };
     });
 
@@ -260,6 +312,119 @@ export function siteRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "conflict", message: "Delete or move the library's files first" });
       }
       await run("DELETE FROM libraries WHERE id = $1", [lib.id]);
+      return { ok: true };
+    });
+
+    // ---- custom columns (SharePoint site columns) ----
+
+    /** Resolve site+library+role for nested routes; null reply handled by caller. */
+    const libCtx = async (req: FastifyRequest, reply: FastifyReply) => {
+      const { user } = req as AuthedRequest;
+      const { id, lid } = req.params as { id: string; lid: string };
+      const site = await getSite(id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      const lib = site ? await getLibrary(lid) : undefined;
+      if (!site || !lib || lib.site_id !== site.id || !role) {
+        void reply.code(404).send({ error: "not_found", message: "Library not found" });
+        return null;
+      }
+      return { user, site, lib, role };
+    };
+
+    authed.get("/api/sites/:id/libraries/:lid/columns", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const cols = await q<ColumnRow>(
+        "SELECT * FROM library_columns WHERE library_id = $1 ORDER BY position, created_at", [ctx.lib.id]);
+      return { columns: cols.map(colOut) };
+    });
+
+    authed.post("/api/sites/:id/libraries/:lid/columns", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      if (!(await entitled(ctx.user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Custom columns require a paid plan" });
+      }
+      const body = columnSchema.parse(req.body);
+      const id = randomUUID();
+      const pos = body.position ?? (await one<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM library_columns WHERE library_id = $1", [ctx.lib.id]))?.n ?? 0;
+      await run(
+        `INSERT INTO library_columns (id, library_id, name, type, required, choices, position, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, ctx.lib.id, encryptField(body.name), body.type, body.required,
+         body.choices ? JSON.stringify(body.choices) : null, pos, now()],
+      );
+      return { column: colOut((await one<ColumnRow>("SELECT * FROM library_columns WHERE id = $1", [id]))!) };
+    });
+
+    authed.patch("/api/sites/:id/libraries/:lid/columns/:cid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { cid } = req.params as { cid: string };
+      const body = columnSchema.partial().parse(req.body);
+      const res = await run(
+        `UPDATE library_columns SET name = COALESCE($2, name), type = COALESCE($3, type),
+         required = COALESCE($4, required), choices = COALESCE($5, choices), position = COALESCE($6, position)
+         WHERE id = $1 AND library_id = $7`,
+        [cid, body.name === undefined ? null : encryptField(body.name), body.type ?? null,
+         body.required ?? null, body.choices === undefined ? null : JSON.stringify(body.choices),
+         body.position ?? null, ctx.lib.id],
+      );
+      if (!(res as { rowCount?: number }).rowCount) return reply.code(404).send({ error: "not_found" });
+      return { column: colOut((await one<ColumnRow>("SELECT * FROM library_columns WHERE id = $1", [cid]))!) };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/columns/:cid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { cid } = req.params as { cid: string };
+      await run("DELETE FROM library_columns WHERE id = $1 AND library_id = $2", [cid, ctx.lib.id]);
+      return { ok: true };
+    });
+
+    // ---- saved views ----
+
+    authed.get("/api/sites/:id/libraries/:lid/views", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const rows = await q<ViewRow>(
+        `SELECT * FROM library_views WHERE library_id = $1 AND (shared OR created_by = $2)
+         ORDER BY created_at`, [ctx.lib.id, ctx.user.id]);
+      return { views: rows.map(viewOut) };
+    });
+
+    authed.post("/api/sites/:id/libraries/:lid/views", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      if (!(await entitled(ctx.user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Saved views require a paid plan" });
+      }
+      const body = viewSchema.parse(req.body);
+      const id = randomUUID();
+      await run(
+        `INSERT INTO library_views (id, library_id, name, config, created_by, shared, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, ctx.lib.id, encryptField(body.name), JSON.stringify(body.config), ctx.user.id, body.shared, now()],
+      );
+      return { view: viewOut((await one<ViewRow>("SELECT * FROM library_views WHERE id = $1", [id]))!) };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/views/:vid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const { vid } = req.params as { vid: string };
+      const row = await one<ViewRow>("SELECT * FROM library_views WHERE id = $1 AND library_id = $2", [vid, ctx.lib.id]);
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      // creator or site owner may delete
+      if (row.created_by !== ctx.user.id && !atLeast(ctx.role, "owner")) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      await run("DELETE FROM library_views WHERE id = $1", [vid]);
       return { ok: true };
     });
   });

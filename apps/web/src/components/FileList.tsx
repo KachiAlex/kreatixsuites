@@ -12,6 +12,8 @@ interface Props {
   onShare: (item: DriveItem) => void;
   onVersions: (item: DriveItem) => void;
   toast: (msg: string) => void;
+  onCheckin?: (item: DriveItem) => void;
+  onProperties?: (item: DriveItem) => void;
 }
 
 const LABELS = [
@@ -21,7 +23,7 @@ const LABELS = [
   { id: "restricted", name: "Restricted" },
 ];
 
-export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast }: Props) {
+export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast, onCheckin, onProperties }: Props) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [labelFor, setLabelFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -42,6 +44,25 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
       if (action === "label") { setMenuFor(item.id); setLabelFor(item.id); return; }
       if (action === "share") onShare(item);
       if (action === "versions") onVersions(item);
+      if (action === "properties") onProperties?.(item);
+      if (action === "checkout") {
+        await api.post(`/api/drive/${item.id}/checkout`);
+        toast("Checked out — only you can edit until check-in");
+        onRefresh();
+      }
+      if (action === "checkin") onCheckin?.(item);
+      if (action === "discard-checkout") {
+        if (confirm(`Discard the check-out on "${item.name}"?`)) {
+          await api.post(`/api/drive/${item.id}/checkout/discard`);
+          toast("Check-out discarded");
+          onRefresh();
+        }
+      }
+      if (action === "publish") {
+        await api.post(`/api/files/${item.id}/publish`);
+        toast("Published as a major version");
+        onRefresh();
+      }
       if (action === "trash") { await api.del(`/api/drive/${item.id}`); toast("Moved to recycle bin"); onRefresh(); }
       if (action === "restore") { await api.post(`/api/drive/${item.id}/restore`); toast("Restored"); onRefresh(); }
       if (action === "delete") {
@@ -84,11 +105,22 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
                 <>
                   <h4>
                     {it.name} {it.starred && <span style={{ color: "var(--k-orange)" }}>★</span>}
+                    {it.checkedOut && (
+                      <span className="lock-badge" title={`Checked out by ${it.checkedOut.name}`}>🔒</span>
+                    )}
                     {it.label && it.label !== "internal" && (
                       <span className={`label-badge ${it.label}`}>{it.label}</span>
                     )}
                   </h4>
-                  <p>{meta.label}{it.permission && it.permission !== "owner" ? ` · ${it.permission}` : " · Owned by you"}</p>
+                  <p>{meta.label}{it.checkedOut ? ` · Checked out by ${it.checkedOut.name}` : ""}
+                    {it.permission && it.permission !== "owner" ? ` · ${it.permission}` : " · Owned by you"}</p>
+                  {it.metadata && Object.keys(it.metadata).length > 0 && (
+                    <p className="meta-chips">
+                      {Object.entries(it.metadata).filter(([, v]) => v).map(([k, v]) => (
+                        <span key={k} className="meta-chip">{v}</span>
+                      ))}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -120,7 +152,21 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast 
                     <button onClick={() => act(it, "star")}>{it.starred ? "Unstar" : "Star"}</button>
                     <button onClick={() => act(it, "label")}>Set label…</button>
                     <button onClick={() => act(it, "share")}>Share…</button>
+                    {it.libraryId && onProperties && <button onClick={() => act(it, "properties")}>Properties…</button>}
                     {it.kind !== "folder" && <button onClick={() => act(it, "versions")}>Version history</button>}
+                    {it.kind !== "folder" && it.libraryId && (
+                      it.checkedOut ? (
+                        <>
+                          <button onClick={() => act(it, "checkin")}>Check in…</button>
+                          <button onClick={() => act(it, "discard-checkout")}>Discard check-out</button>
+                        </>
+                      ) : (
+                        <button onClick={() => act(it, "checkout")}>Check out</button>
+                      )
+                    )}
+                    {it.kind !== "folder" && it.libraryId && !it.checkedOut && (
+                      <button onClick={() => act(it, "publish")}>Publish major version</button>
+                    )}
                     <button className="danger" onClick={() => act(it, "trash")}>Move to recycle bin</button>
                   </>
                 )}

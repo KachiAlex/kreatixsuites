@@ -1,15 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { q as dbq, run, now } from "../db.js";
-import { getItem, toDriveItem, touchItem, logActivity, itemName, type ItemRow } from "../items.js";
+import { q as dbq, one, run, now } from "../db.js";
+import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, visibleLibraryIds } from "../sites.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
 import { indexFile } from "../indexer.js";
-import { encryptField } from "../crypto.js";
+import { encryptField, decryptField } from "../crypto.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(255),
@@ -103,6 +104,7 @@ export function driveRoutes(app: FastifyInstance) {
     const libIds = await visibleLibraryIds(user);
 
     let rows: ItemRow[];
+    let libRole: string | null = null; // set when browsing a library root
     // media_for items are embedded doc assets — never surfaced as Drive files
     const base = `
       SELECT DISTINCT i.* FROM items i
@@ -115,19 +117,34 @@ export function driveRoutes(app: FastifyInstance) {
       if (!lib || !site || !role) {
         return reply.code(404).send({ error: "not_found", message: "Library not found" });
       }
+      libRole = role;
       rows = await dbq<ItemRow>(
         `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.library_id = $2
          AND i.parent_id IS NULL`,
         [user.id, q.library],
       );
     } else if (q.parent !== undefined) {
-      // IS NOT DISTINCT FROM — null-safe equality (parent_id IS NULL at root).
-      // Root browsing excludes library items — those surface via Sites, not Drive.
-      rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($3))
-         AND i.parent_id IS NOT DISTINCT FROM $2 AND (i.library_id IS NULL OR $2 IS NOT NULL)`,
-        [user.id, q.parent === "" ? null : q.parent, libIds],
-      );
+      const parentId = q.parent === "" ? null : q.parent;
+      if (parentId) {
+        // folder-share inheritance: a readable folder exposes everything
+        // inside it — children need no share of their own
+        const parent = await getItem(parentId);
+        if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "viewer")) {
+          return reply.code(404).send({ error: "not_found", message: "Folder not found" });
+        }
+        rows = await dbq<ItemRow>(
+          `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.parent_id = $2`,
+          [user.id, parentId],
+        );
+      } else {
+        // root browse: own/shared items only, never library items — those
+        // surface via Sites
+        rows = await dbq<ItemRow>(
+          `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+           AND i.parent_id IS NULL AND i.library_id IS NULL`,
+          [user.id],
+        );
+      }
     } else if (q.view === "starred") {
       rows = await dbq<ItemRow>(
         `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.starred
@@ -165,8 +182,38 @@ export function driveRoutes(app: FastifyInstance) {
       );
     }
 
+    // viewer-level readers never see items that have only draft versions
+    // (SharePoint: unpublished files are invisible to readers)
+    let visibleIds: Set<string> | null = null;
+    const viewerScoped = q.library !== undefined && libRole !== null && !atLeastRank(libRole, "member");
+    if (viewerScoped && rows.length) {
+      const pubs = await dbq<{ file_id: string }>(
+        "SELECT DISTINCT file_id FROM versions WHERE file_id = ANY($1) AND published",
+        [rows.map((r) => r.id)],
+      );
+      visibleIds = new Set(pubs.map((p) => p.file_id));
+      rows = rows.filter((r) => r.kind === "folder" || visibleIds!.has(r.id));
+    }
+
+    // custom-column values ride along on library listings
+    let metaByItem: Map<string, Record<string, string | null>> | null = null;
+    const libItemIds = rows.filter((r) => r.library_id).map((r) => r.id);
+    if (libItemIds.length) {
+      const metaRows = await dbq<{ item_id: string; column_id: string; value: string | null }>(
+        "SELECT item_id, column_id, value FROM item_metadata WHERE item_id = ANY($1)",
+        [libItemIds],
+      );
+      metaByItem = new Map();
+      for (const m of metaRows) {
+        const cur = metaByItem.get(m.item_id) ?? {};
+        cur[m.column_id] = m.value === null ? null : (decryptField(m.value) ?? m.value);
+        metaByItem.set(m.item_id, cur);
+      }
+    }
+
     const items = await Promise.all(
-      rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined)),
+      rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined,
+        { metadata: metaByItem?.get(r.id) })),
     );
     // names are encrypted at rest — ciphertext can't sort in SQL, so folder
     // and library browsing re-sort on the decrypted name
@@ -300,8 +347,8 @@ export function driveRoutes(app: FastifyInstance) {
        (req.headers["content-type"] as string) ?? "application/octet-stream", size, mediaForId, libraryId, now(), now()],
     );
     await run(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [randomUUID(), id, 1, "Initial upload", key, size, user.id, now()],
+      "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+      [randomUUID(), id, 1, 1, 0, true, "Initial upload", key, size, user.id, now()],
     );
 
     void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
@@ -315,6 +362,9 @@ export function driveRoutes(app: FastifyInstance) {
     const item = await getItem((req.params as { id: string }).id);
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
+    }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
     }
     const body = patchSchema.parse(req.body);
     // moving = parent change or explicit library root target
@@ -383,6 +433,9 @@ export function driveRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "owner")) {
       return reply.code(403).send({ error: "forbidden", message: "Only the owner can delete" });
     }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
     if ((req.query as { permanent?: string }).permanent === "true") {
       await purgeItem(item.id);
       void logActivity(user.orgId, user.id, item.id, "delete-permanent", itemName(item));
@@ -402,7 +455,154 @@ export function driveRoutes(app: FastifyInstance) {
     await run("UPDATE items SET trashed = false, updated_at = $1 WHERE id = $2", [now(), item.id]);
     return { item: await toDriveItem((await getItem(item.id))!, "owner") };
   });
+
+  // ---- check-in / check-out (library document management) ----
+
+  /** Exclusive editing lock. Owner rank can re-take a stale lock via force. */
+  app.post("/api/drive/:id/checkout", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || item.kind === "folder" || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden", message: "No edit access" });
+    }
+    if (!(await entitled(user.orgId, "docmgmt"))) {
+      return reply.code(402).send({ error: "plan_limit", message: "Check-in/check-out requires a paid plan" });
+    }
+    if (item.checked_out_by && item.checked_out_by !== user.id) {
+      const holder = await one<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [item.checked_out_by]);
+      return reply.code(409).send({
+        error: "checked_out",
+        message: `Checked out by ${holder?.display_name ?? "someone else"}`,
+      });
+    }
+    await run("UPDATE items SET checked_out_by = $1, checked_out_at = $2 WHERE id = $3",
+      [user.id, now(), item.id]);
+    void logActivity(user.orgId, user.id, item.id, "checkout", itemName(item));
+    return { ok: true };
+  });
+
+  /** Release the lock. `publish:true` promotes the head draft to the next
+   *  major version; otherwise the latest draft stays a draft. Blocks when
+   *  required library columns are unset (SharePoint required-field gate). */
+  app.post("/api/drive/:id/checkin", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (!item.checked_out_by) return reply.code(409).send({ error: "conflict", message: "Not checked out" });
+    // only the lock holder — or owner-rank override — can check in
+    if (item.checked_out_by !== user.id && !hasPermission(await permissionFor(user.id, item), "owner")) {
+      return reply.code(403).send({ error: "forbidden", message: "Checked out by someone else" });
+    }
+    const body = z.object({
+      comment: z.string().max(300).optional(),
+      publish: z.boolean().default(false),
+    }).parse(req.body ?? {});
+
+    // required custom columns must be filled before check-in
+    if (item.library_id) {
+      const missing = await dbq<{ name: string }>(
+        `SELECT c.name FROM library_columns c
+         WHERE c.library_id = $1 AND c.required
+           AND NOT EXISTS (SELECT 1 FROM item_metadata m
+             WHERE m.column_id = c.id AND m.item_id = $2 AND m.value IS NOT NULL AND m.value <> '')`,
+        [item.library_id, item.id],
+      );
+      if (missing.length) {
+        return reply.code(409).send({
+          error: "required_metadata",
+          message: `Required: ${missing.map((m) => decryptField(m.name) ?? m.name).join(", ")}`,
+        });
+      }
+    }
+
+    if (body.comment) {
+      await run(
+        "UPDATE versions SET label = $1 WHERE file_id = $2 AND number = (SELECT MAX(number) FROM versions WHERE file_id = $2)",
+        [body.comment, item.id],
+      );
+    }
+    let major: number | null = null;
+    if (body.publish) {
+      const head = await one<{ id: string; published: boolean; major: number | null }>(
+        "SELECT id, published, major FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+      if (head && !head.published) {
+        const lastPub = await one<{ major: number }>(
+          "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
+        major = (lastPub?.major ?? 0) + 1;
+        await run("UPDATE versions SET major = $1, minor = 0, published = true WHERE id = $2", [major, head.id]);
+      }
+    }
+    await run("UPDATE items SET checked_out_by = NULL, checked_out_at = NULL, updated_at = $1 WHERE id = $2",
+      [now(), item.id]);
+    void logActivity(user.orgId, user.id, item.id, "checkin",
+      `${itemName(item)}${major !== null ? ` → v${major}.0` : ""}${body.comment ? ` — ${body.comment}` : ""}`);
+    return { ok: true, published: major !== null };
+  });
+
+  /** Abandon the lock without publishing. Holder or owner-rank. */
+  app.post("/api/drive/:id/checkout/discard", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (!item.checked_out_by) return { ok: true };
+    if (item.checked_out_by !== user.id && !hasPermission(await permissionFor(user.id, item), "owner")) {
+      return reply.code(403).send({ error: "forbidden", message: "Checked out by someone else" });
+    }
+    await run("UPDATE items SET checked_out_by = NULL, checked_out_at = NULL WHERE id = $1", [item.id]);
+    void logActivity(user.orgId, user.id, item.id, "checkout-discard", itemName(item));
+    return { ok: true };
+  });
+
+  /** Set custom-column values on a library item: { values: {columnId: value|null} } */
+  app.patch("/api/drive/:id/metadata", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (!item.library_id) return reply.code(400).send({ error: "bad_request", message: "Not a library item" });
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
+    const { values } = z.object({ values: z.record(z.string(), z.string().nullable()) }).parse(req.body);
+    const cols = await dbq<{ id: string; type: string; choices: unknown }>(
+      "SELECT id, type, choices FROM library_columns WHERE library_id = $1", [item.library_id]);
+    const colById = new Map(cols.map((c) => [c.id, c]));
+    for (const [cid, raw] of Object.entries(values)) {
+      const col = colById.get(cid);
+      if (!col) return reply.code(400).send({ error: "bad_request", message: `Unknown column ${cid}` });
+      if (raw === null || raw === "") {
+        await run("DELETE FROM item_metadata WHERE item_id = $1 AND column_id = $2", [item.id, cid]);
+        continue;
+      }
+      const v = String(raw).slice(0, 500);
+      // light type validation
+      if (col.type === "number" && Number.isNaN(Number(v))) {
+        return reply.code(400).send({ error: "bad_request", message: "Expected a number" });
+      }
+      if (col.type === "yesno" && !["yes", "no"].includes(v.toLowerCase())) {
+        return reply.code(400).send({ error: "bad_request", message: "Expected yes or no" });
+      }
+      if (col.type === "choice" && Array.isArray(col.choices) && !(col.choices as string[]).includes(v)) {
+        return reply.code(400).send({ error: "bad_request", message: "Value is not an allowed choice" });
+      }
+      await run(
+        `INSERT INTO item_metadata (item_id, column_id, value) VALUES ($1,$2,$3)
+         ON CONFLICT (item_id, column_id) DO UPDATE SET value = excluded.value`,
+        [item.id, cid, encryptField(v)],
+      );
+    }
+    await touchItem(item.id);
+    return { ok: true };
+  });
 }
+
+const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
+const atLeastRank = (role: string | null, need: string) => role !== null && (SITE_RANK[role] ?? 0) >= SITE_RANK[need];
 
 /** Site 'member' or 'owner' role required to write into a library. */
 async function canWriteLibrary(user: { id: string; orgId: string; role: string }, libraryId: string): Promise<boolean> {

@@ -4,7 +4,8 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
-import { getItem, touchItem, logActivity, itemName } from "../items.js";
+import { getItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
+import { getLibrary } from "../sites.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -13,6 +14,9 @@ interface VersionRow {
   id: string;
   file_id: string;
   number: number;
+  major: number | null;
+  minor: number;
+  published: boolean;
   label: string | null;
   blob_key: string;
   size: number;
@@ -22,6 +26,42 @@ interface VersionRow {
 
 function headVersion(fileId: string): Promise<VersionRow | undefined> {
   return one<VersionRow>("SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [fileId]);
+}
+
+/** True when the item uses draft (minor) versioning — libraries set to
+ *  'minor' mode, or any item currently checked out. */
+export async function minorVersioning(item: ItemRow): Promise<boolean> {
+  if (item.checked_out_by) return true;
+  if (!item.library_id) return false;
+  const lib = await getLibrary(item.library_id);
+  return lib?.versioning === "minor";
+}
+
+/** Compute the major/minor/published stamp for the next version row.
+ *  Major mode: every save → next major, published (legacy behavior).
+ *  Minor mode: saves stack minor drafts under the current published major;
+ *  drafts before any publish live at major 0 (SharePoint's 0.x). */
+async function versionStamp(item: ItemRow): Promise<{ major: number; minor: number; published: boolean }> {
+  const head = await headVersion(item.id);
+  if (!(await minorVersioning(item))) {
+    return { major: (head?.major ?? head?.number ?? 0) + 1, minor: 0, published: true };
+  }
+  if (head && !head.published) return { major: head.major ?? 0, minor: head.minor + 1, published: false };
+  const lastPub = await one<{ major: number }>(
+    "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
+  return { major: lastPub?.major ?? 0, minor: 1, published: false };
+}
+
+/** Promote the head draft to the next published major — used by publish and
+ *  major check-in. Returns the new {major} or null when nothing to publish. */
+async function publishHead(item: ItemRow): Promise<number | null> {
+  const head = await headVersion(item.id);
+  if (!head || head.published) return null;
+  const lastPub = await one<{ major: number }>(
+    "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
+  const major = (lastPub?.major ?? 0) + 1;
+  await run("UPDATE versions SET major = $1, minor = 0, published = true WHERE id = $2", [major, head.id]);
+  return major;
 }
 
 /** MIME types that must never execute in an origin-bearing context. */
@@ -62,15 +102,19 @@ export function contentRoutes(app: FastifyInstance) {
   app.get("/api/files/:id/content", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
+    // readers see the latest PUBLISHED version — drafts stay invisible to
+    // viewer-level access (SharePoint draft-visibility semantics)
+    const onlyPublished = !hasPermission(perm, "editor") ? "AND v.published" : "";
     // PDF files interleave two version kinds: raw %PDF bytes (uploads + page
     // re-organizations) and {kind:"pdf"} annotation JSON. Head may be either —
     // for pdf items return the latest JSON version (anns), not raw bytes.
     if (item.kind === "pdf") {
       const rows = await q<VersionRow>(
-        "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 25", [item.id]);
+        `SELECT * FROM versions v WHERE file_id = $1 ${onlyPublished} ORDER BY number DESC LIMIT 25`, [item.id]);
       for (const row of rows) {
         const b = getBlob(row.blob_key);
         if (!b || b[0] !== 0x7b) continue;
@@ -81,8 +125,11 @@ export function contentRoutes(app: FastifyInstance) {
       }
     }
 
-    const v = await headVersion(item.id);
-    if (!v) return reply.code(404).send({ error: "not_found", message: "No content" });
+    const v = onlyPublished
+      ? await one<VersionRow>(
+          "SELECT * FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id])
+      : await headVersion(item.id);
+    if (!v) return reply.code(404).send({ error: "not_found", message: "No published content" });
     const blob = getBlob(v.blob_key);
     if (!blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
 
@@ -118,6 +165,9 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
     let buf = Buffer.isBuffer(req.body) ? req.body : null;
     if (!buf) {
       const chunks: Buffer[] = [];
@@ -129,9 +179,10 @@ export function contentRoutes(app: FastifyInstance) {
     const label = (req.query as { label?: string }).label?.slice(0, 120);
     const { key, size } = putBlob(buf);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
+    const stamp = await versionStamp(item);
     await run(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [randomUUID(), item.id, next, label ?? "Edited pages", key, size, user.id, now()],
+      "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+      [randomUUID(), item.id, next, stamp.major, stamp.minor, stamp.published, label ?? "Edited pages", key, size, user.id, now()],
     );
     await run("UPDATE items SET size = $1 WHERE id = $2", [size, item.id]);
     void touchItem(item.id);
@@ -183,6 +234,9 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "reviewer")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else — changes are blocked until they check in" });
+    }
     const body = z
       .object({ content: z.unknown(), label: z.string().max(120).optional() })
       .parse(req.body);
@@ -194,10 +248,11 @@ export function contentRoutes(app: FastifyInstance) {
     const data = Buffer.from(JSON.stringify(body.content));
     const { key, size } = putBlob(data);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
+    const stamp = await versionStamp(item);
 
     await run(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [randomUUID(), item.id, next, body.label ?? null, key, size, user.id, now()],
+      "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+      [randomUUID(), item.id, next, stamp.major, stamp.minor, stamp.published, body.label ?? null, key, size, user.id, now()],
     );
     await run("UPDATE items SET size = $1 WHERE id = $2", [size, item.id]);
     // An uploaded native file (docx/xlsx/pptx) keeps its office mime until the
@@ -214,18 +269,22 @@ export function contentRoutes(app: FastifyInstance) {
   app.get("/api/files/:id/versions", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
+    // drafts (unpublished minors) are only visible to editors+
+    const seeDrafts = hasPermission(perm, "editor");
     const rows = await q<VersionRow & { display_name: string; initials: string }>(
       `SELECT v.*, u.display_name, u.initials FROM versions v JOIN users u ON u.id = v.created_by
-       WHERE v.file_id = $1 ORDER BY v.number DESC`,
+       WHERE v.file_id = $1 ${seeDrafts ? "" : "AND v.published"} ORDER BY v.number DESC`,
       [item.id],
     );
     return {
       versions: rows.map((v) => ({
-        id: v.id, fileId: v.file_id, number: v.number, label: v.label,
-        size: v.size, createdBy: v.display_name, createdAt: v.created_at,
+        id: v.id, fileId: v.file_id, number: v.number,
+        major: v.major ?? v.number, minor: v.minor, published: !!v.published,
+        label: v.label, size: v.size, createdBy: v.display_name, createdAt: v.created_at,
       })),
     };
   });
@@ -253,7 +312,8 @@ export function contentRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const { id, n } = req.params as { id: string; n: string };
     const item = await getItem(id);
-    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found" });
     }
     const vn = Number(n);
@@ -262,6 +322,10 @@ export function contentRoutes(app: FastifyInstance) {
       "SELECT * FROM versions WHERE file_id = $1 AND number = $2",
       [item.id, vn],
     );
+    // viewers may not read draft content
+    if (v && !v.published && !hasPermission(perm, "editor")) {
+      return reply.code(404).send({ error: "not_found" });
+    }
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
     try {
@@ -280,6 +344,9 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden" });
     }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
     const vn = Number(n);
     if (!Number.isInteger(vn) || vn < 1) return reply.code(400).send({ error: "bad_request" });
     const v = await one<VersionRow>(
@@ -290,13 +357,31 @@ export function contentRoutes(app: FastifyInstance) {
     // restored content is canonical — clear live CRDT state so it re-seeds
     await run("DELETE FROM collab_states WHERE file_id = $1", [item.id]);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
+    const stamp = await versionStamp(item);
     await run(
-      "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [randomUUID(), item.id, next, `Restored from v${v.number}`, v.blob_key, v.size, user.id, now()],
+      "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+      [randomUUID(), item.id, next, stamp.major, stamp.minor, stamp.published, `Restored from v${v.number}`, v.blob_key, v.size, user.id, now()],
     );
     void touchItem(item.id);
     void logActivity(user.orgId, user.id, item.id, "restore-version", `v${v.number} → v${next}`);
     return { version: next };
+  });
+
+  /** Publish the head draft as the next major version (minor-versioned
+   *  libraries / checked-out files). Editor+ only. */
+  app.post("/api/files/:id/publish", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (writeLocked(item, user.id)) {
+      return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
+    const major = await publishHead(item);
+    if (major === null) return reply.code(409).send({ error: "conflict", message: "No draft to publish" });
+    void logActivity(user.orgId, user.id, item.id, "publish", `v${major}.0`);
+    return { ok: true, major };
   });
 }
 

@@ -40,6 +40,12 @@ export interface DriveItem {
   label?: string;
   /** Site library this item lives in (null = personal/root Drive) */
   libraryId?: string | null;
+  /** Check-out lock — set while someone holds the exclusive editing lock */
+  checkedOut?: { userId: string; name: string; at: string } | null;
+  /** Custom-column values for library listings: columnId → value */
+  metadata?: Record<string, string | null>;
+  /** Permission was granted by a share on an ancestor folder */
+  inherited?: boolean;
   /** Effective permission of the requesting user on this item */
   permission?: Permission;
   /** Number of collaborators with direct access (for UI avatars) */
@@ -50,6 +56,11 @@ export interface FileVersion {
   id: string;
   fileId: string;
   number: number;
+  /** Display versioning — "3.2" = major 3, minor draft 2 (check-in/out) */
+  major?: number;
+  minor?: number;
+  /** Draft versions are hidden from viewer-level users */
+  published?: boolean;
   label: string | null;
   size: number;
   createdBy: string;
@@ -131,7 +142,43 @@ export interface Library {
   siteId: string;
   name: string;
   kind: "documents" | "media" | "form";
+  /** major = every save publishes; minor = check-in/out produces drafts */
+  versioning?: "major" | "minor";
   itemCount?: number;
+  createdAt: string;
+}
+
+export type ColumnType = "text" | "number" | "date" | "choice" | "person" | "yesno";
+
+export interface LibraryColumn {
+  id: string;
+  libraryId: string;
+  name: string;
+  type: ColumnType;
+  required: boolean;
+  /** Allowed values when type === 'choice' */
+  choices?: string[];
+  position: number;
+  createdAt: string;
+}
+
+export interface ViewConfig {
+  sort?: "name" | "updated" | "size";
+  dir?: "asc" | "desc";
+  kind?: FileKind | "";
+  label?: string;
+  query?: string;
+  /** columnId → required value (equality filter) */
+  columnFilters?: Record<string, string>;
+}
+
+export interface LibraryView {
+  id: string;
+  libraryId: string;
+  name: string;
+  config: ViewConfig;
+  createdBy: string | null;
+  shared: boolean;
   createdAt: string;
 }
 

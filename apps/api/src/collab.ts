@@ -202,8 +202,8 @@ export async function collabRoutes(app: FastifyInstance) {
         const { payload } = await jwtVerify(token, secret);
         if (payload.aud === "kreatix-mfa") throw new Error("mfa-pending token is not a session");
         const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
-        const item = await one<{ id: string; owner_id: string }>(
-          "SELECT id, owner_id FROM items WHERE id = $1 AND trashed = false",
+        const item = await one<{ id: string; owner_id: string; parent_id: string | null; library_id: string | null; checked_out_by: string | null }>(
+          "SELECT id, owner_id, parent_id, library_id, checked_out_by FROM items WHERE id = $1 AND trashed = false",
           [fileId],
         );
         if (!user || !item || user.disabled) throw new Error("unauthorized");
@@ -215,8 +215,10 @@ export async function collabRoutes(app: FastifyInstance) {
         const subLocked = subState === "locked";
         // reviewers+ write freely (suggestions are tracked client-side);
         // commenters may only push updates that change comment anchors;
-        // viewers are read-only (sync step1 handshake only)
-        const canWrite = hasPermission(perm, "reviewer") && !subLocked;
+        // viewers are read-only (sync step1 handshake only).
+        // check-out lock: only the lock holder may push content writes.
+        const lockedOut = !!item.checked_out_by && item.checked_out_by !== user.id;
+        const canWrite = hasPermission(perm, "reviewer") && !subLocked && !lockedOut;
         const canAnchor = hasPermission(perm, "commenter") && !subLocked;
 
         const room = await getRoom(fileId);

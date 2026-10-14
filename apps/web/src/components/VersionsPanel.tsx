@@ -47,7 +47,10 @@ export function VersionsPanel({ item, onClose, onRestore, toast }: {
       <div className="sp-body">
         {versions.map((v) => (
           <div className="version-row" key={v.id}>
-            <div className="v-tag">v{v.number}</div>
+            <div className="v-tag">
+              v{v.minor ? `${v.major ?? v.number}.${v.minor}` : (v.major ?? v.number)}
+              {v.published === false && <span className="draft-badge">draft</span>}
+            </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               {renaming === v.number ? (
                 <div style={{ display: "flex", gap: 6 }}>

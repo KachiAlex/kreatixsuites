@@ -377,11 +377,54 @@ CREATE TABLE IF NOT EXISTS libraries (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_libraries_site ON libraries(site_id);
+
+-- Custom metadata columns on a document library (SharePoint "site columns").
+CREATE TABLE IF NOT EXISTS library_columns (
+  id TEXT PRIMARY KEY,
+  library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'text',          -- text | number | date | choice | person | yesno
+  required BOOLEAN NOT NULL DEFAULT false,
+  choices JSONB,                              -- allowed values for type='choice'
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_library_columns_lib ON library_columns(library_id);
+
+-- Per-item values for custom columns.
+CREATE TABLE IF NOT EXISTS item_metadata (
+  item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  column_id TEXT NOT NULL REFERENCES library_columns(id) ON DELETE CASCADE,
+  value TEXT,
+  PRIMARY KEY (item_id, column_id)
+);
+CREATE INDEX IF NOT EXISTS idx_item_metadata_col ON item_metadata(column_id);
+
+-- Saved views on a library: named filter/sort/group presets.
+CREATE TABLE IF NOT EXISTS library_views (
+  id TEXT PRIMARY KEY,
+  library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  shared BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
 `);
   // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS library_id TEXT REFERENCES libraries(id) ON DELETE SET NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_items_library ON items(library_id)`);
+  // check-in/check-out lock (library docmgmt) — NULL = not checked out
+  await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS versioning TEXT NOT NULL DEFAULT 'major'`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS checked_out_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ`);
+  // major.minor display versioning + draft flag on top of the monotonic `number`
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS major INTEGER`);
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS minor INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS published BOOLEAN NOT NULL DEFAULT true`);
+  await pool.query(`UPDATE versions SET major = number WHERE major IS NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes
@@ -436,13 +479,13 @@ CREATE INDEX IF NOT EXISTS idx_libraries_site ON libraries(site_id);
   await pool.query(`
     INSERT INTO plans (slug, name, price_ngn, member_price_ngn, features, limits, sort) VALUES
     ('free', 'Free', 0, 0,
-      '{"ai":true,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false}',
+      '{"ai":true,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false,"docmgmt":false}',
       '{"ai_daily":20,"ai_per_min":5,"ai_tokens_base":300000,"ai_tokens_per_seat":0,"storage_mb":1024,"max_members":3,"version_days":30,"sites":1}', 0),
     ('pro', 'Pro', 1000, 0,
-      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":true}',
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":true,"docmgmt":true}',
       '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":51200,"max_members":5,"version_days":0,"sites":10}', 1),
     ('business', 'Business', 2000, 500,
-      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true}',
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true,"docmgmt":true}',
       '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0,"sites":0}', 2)
     -- stored values win on shared keys; newly introduced seed keys get added
     ON CONFLICT (slug) DO UPDATE SET features = EXCLUDED.features || plans.features,
