@@ -22,6 +22,7 @@ export interface LibraryRow {
   name: string;
   kind: Library["kind"];
   versioning: "major" | "minor";
+  approval: boolean;
   created_at: string;
 }
 
@@ -118,6 +119,7 @@ export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Li
     name: decryptField(row.name) ?? row.name,
     kind: row.kind,
     versioning: row.versioning === "minor" ? "minor" : "major",
+    approval: !!row.approval,
     itemCount,
     createdAt: row.created_at,
   };

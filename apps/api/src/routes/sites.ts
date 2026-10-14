@@ -39,6 +39,7 @@ const librarySchema = z.object({
 
 const libraryPatchSchema = librarySchema.partial().extend({
   versioning: z.enum(["major", "minor"]).optional(),
+  approval: z.boolean().optional(),
 });
 
 const columnSchema = z.object({
@@ -289,12 +290,15 @@ export function siteRoutes(app: FastifyInstance) {
       if (!site || !lib || lib.site_id !== site.id || !atLeast(role, "member"))
         return reply.code(403).send({ error: "forbidden" });
       const body = libraryPatchSchema.parse(req.body);
-      // versioning is a governance knob — owners only
-      if (body.versioning !== undefined && !atLeast(role, "owner")) {
-        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning" });
+      // versioning + approval are governance knobs — owners only
+      if ((body.versioning !== undefined || body.approval !== undefined) && !atLeast(role, "owner")) {
+        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning or approval" });
       }
-      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning) WHERE id = $1",
-        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null]);
+      if (body.approval !== undefined && !(await entitled(user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Content approval requires a paid plan" });
+      }
+      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning), approval = COALESCE($5, approval) WHERE id = $1",
+        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null, body.approval ?? null]);
       return { library: await toLibrary((await getLibrary(lib.id))!) };
     });
 
@@ -384,6 +388,30 @@ export function siteRoutes(app: FastifyInstance) {
       const { cid } = req.params as { cid: string };
       await run("DELETE FROM library_columns WHERE id = $1 AND library_id = $2", [cid, ctx.lib.id]);
       return { ok: true };
+    });
+
+    /** Items whose head draft is awaiting approval — the approver's queue
+     *  (site owners only; SharePoint "Approve/reject" list). */
+    authed.get("/api/sites/:id/libraries/:lid/pending", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const rows = await q<{ id: string; name: string; updated_at: string; submitted_by: string; display_name: string }>(
+        `SELECT i.id, i.name, i.updated_at, v.created_by AS submitted_by, u.display_name
+         FROM items i
+         JOIN versions v ON v.file_id = i.id AND v.pending
+           AND v.number = (SELECT MAX(number) FROM versions WHERE file_id = i.id)
+         JOIN users u ON u.id = v.created_by
+         WHERE i.library_id = $1 AND NOT i.trashed AND i.kind != 'folder'
+         ORDER BY i.updated_at DESC`,
+        [ctx.lib.id],
+      );
+      return {
+        pending: rows.map((r) => ({
+          id: r.id, name: decryptField(r.name) ?? r.name,
+          updatedAt: r.updated_at, submittedBy: r.display_name,
+        })),
+      };
     });
 
     // ---- saved views ----

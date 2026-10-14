@@ -102,7 +102,9 @@ export function LibraryPage() {
   // ---- saved views ----
   const applyView = (id: string) => {
     setActiveView(id);
-    setFilter(id === "" ? {} : views.find((v) => v.id === id)?.config ?? {});
+    setFilter(id === "" ? {}
+      : id === "__pending" ? { pending: true }
+      : views.find((v) => v.id === id)?.config ?? {});
   };
 
   const saveView = async () => {
@@ -136,9 +138,22 @@ export function LibraryPage() {
     setViewMenu(false);
   };
 
+  const toggleApproval = async () => {
+    if (!lib) return;
+    try {
+      const r = await api.patch<{ library: Library }>(`${libBase}`, { approval: !lib.approval });
+      setLib(r.library);
+      toast(r.library.approval
+        ? "Content approval on — member publishes need an owner"
+        : "Content approval off");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+    setViewMenu(false);
+  };
+
   // ---- client-side view application ----
   const shown = useMemo(() => {
     let out = items;
+    if (filter.pending) out = out.filter((i) => i.pendingApproval);
     if (filter.query) out = out.filter((i) => i.name.toLowerCase().includes(filter.query!.toLowerCase()));
     if (filter.kind) out = out.filter((i) => i.kind === filter.kind);
     if (filter.label) out = out.filter((i) => i.label === filter.label);
@@ -167,6 +182,7 @@ export function LibraryPage() {
       <div className="section-head" style={{ marginTop: 0 }}>
         <h2>{folderId ? folderName ?? "Folder" : lib?.name ?? "Library"}
           {lib?.versioning === "minor" && <span className="perm-badge" style={{ marginLeft: 8 }}>minor versioning</span>}
+          {lib?.approval && <span className="perm-badge" style={{ marginLeft: 8 }}>approval required</span>}
         </h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, position: "relative" }} ref={newRef}>
           <button className="btn-primary btn-sm" disabled={creating} onClick={() => setNewOpen((v) => !v)}>
@@ -189,11 +205,17 @@ export function LibraryPage() {
         <div className="lib-bar">
           <div style={{ position: "relative" }} ref={viewRef}>
             <button className="btn-ghost btn-sm" onClick={() => setViewMenu((v) => !v)}>
-              ▾ {activeView ? views.find((v) => v.id === activeView)?.name ?? "View" : "All documents"}
+              ▾ {activeView === "__pending" ? "Pending approval"
+                : activeView ? views.find((v) => v.id === activeView)?.name ?? "View" : "All documents"}
             </button>
             {viewMenu && (
               <div className="create-menu" style={{ top: "100%", left: 0 }}>
                 <button onClick={() => { applyView(""); setViewMenu(false); }}>All documents</button>
+                {lib?.approval && (
+                  <button onClick={() => { applyView("__pending"); setViewMenu(false); }}>
+                    ⏳ Pending approval
+                  </button>
+                )}
                 {views.map((v) => (
                   <button key={v.id} onClick={() => { applyView(v.id); setViewMenu(false); }}
                     style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
@@ -206,6 +228,11 @@ export function LibraryPage() {
                 {canManage && (
                   <button onClick={() => void toggleVersioning()}>
                     {lib?.versioning === "minor" ? "Switch to major-only versioning" : "Enable minor (draft) versioning"}
+                  </button>
+                )}
+                {canManage && (
+                  <button onClick={() => void toggleApproval()}>
+                    {lib?.approval ? "Turn off content approval" : "Require content approval"}
                   </button>
                 )}
               </div>

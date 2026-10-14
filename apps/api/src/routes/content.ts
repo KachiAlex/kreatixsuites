@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
-import { getLibrary } from "../sites.js";
+import { getSite, getLibrary, siteRoleFor } from "../sites.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -17,6 +17,7 @@ interface VersionRow {
   major: number | null;
   minor: number;
   published: boolean;
+  pending: boolean;
   label: string | null;
   blob_key: string;
   size: number;
@@ -52,16 +53,37 @@ async function versionStamp(item: ItemRow): Promise<{ major: number; minor: numb
   return { major: lastPub?.major ?? 0, minor: 1, published: false };
 }
 
-/** Promote the head draft to the next published major — used by publish and
- *  major check-in. Returns the new {major} or null when nothing to publish. */
-async function publishHead(item: ItemRow): Promise<number | null> {
+/** Promote the head draft to the next published major — used by publish,
+ *  approval, and major check-in. Returns the new {major} or null when
+ *  nothing to publish. */
+export async function publishHead(item: ItemRow): Promise<number | null> {
   const head = await headVersion(item.id);
   if (!head || head.published) return null;
   const lastPub = await one<{ major: number }>(
     "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
   const major = (lastPub?.major ?? 0) + 1;
-  await run("UPDATE versions SET major = $1, minor = 0, published = true WHERE id = $2", [major, head.id]);
+  await run("UPDATE versions SET major = $1, minor = 0, published = true, pending = false WHERE id = $2",
+    [major, head.id]);
   return major;
+}
+
+/** Content approval gate: when the item's library requires approval, anyone
+ *  below site-owner rank (including the file's creator) submits instead of
+ *  publishing — only site owners are approvers (SharePoint "Submit for
+ *  approval"). Returns true when the request was diverted to the queue. */
+export async function submitForApproval(
+  item: ItemRow,
+  user: { id: string; orgId: string; role: string },
+): Promise<boolean> {
+  if (!item.library_id) return false;
+  const lib = await getLibrary(item.library_id);
+  const site = lib?.approval ? await getSite(lib.site_id) : undefined;
+  const role = site ? await siteRoleFor(user, site) : null;
+  if (!role || role === "owner") return false;
+  const head = await headVersion(item.id);
+  if (!head || head.published) return false;
+  await run("UPDATE versions SET pending = true WHERE id = $1", [head.id]);
+  return true;
 }
 
 /** MIME types that must never execute in an origin-bearing context. */
@@ -284,6 +306,7 @@ export function contentRoutes(app: FastifyInstance) {
       versions: rows.map((v) => ({
         id: v.id, fileId: v.file_id, number: v.number,
         major: v.major ?? v.number, minor: v.minor, published: !!v.published,
+        pending: !!v.pending,
         label: v.label, size: v.size, createdBy: v.display_name, createdAt: v.created_at,
       })),
     };
@@ -368,7 +391,8 @@ export function contentRoutes(app: FastifyInstance) {
   });
 
   /** Publish the head draft as the next major version (minor-versioned
-   *  libraries / checked-out files). Editor+ only. */
+   *  libraries / checked-out files). Editor+ only. In approval-enabled
+   *  libraries, member requests are diverted to the owner approval queue. */
   app.post("/api/files/:id/publish", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
@@ -377,6 +401,10 @@ export function contentRoutes(app: FastifyInstance) {
     }
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
+    if (await submitForApproval(item, user)) {
+      void logActivity(user.orgId, user.id, item.id, "submit-approval", itemName(item));
+      return { ok: true, pending: true };
     }
     const major = await publishHead(item);
     if (major === null) return reply.code(409).send({ error: "conflict", message: "No draft to publish" });

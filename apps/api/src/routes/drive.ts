@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { q as dbq, one, run, now } from "../db.js";
+import { q as dbq, one, run, now, tx } from "../db.js";
 import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, visibleLibraryIds } from "../sites.js";
+import { publishHead, submitForApproval } from "./content.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
@@ -105,6 +106,7 @@ export function driveRoutes(app: FastifyInstance) {
 
     let rows: ItemRow[];
     let libRole: string | null = null; // set when browsing a library root
+    let approver = false;              // site-owner rank — approves submissions
     // media_for items are embedded doc assets — never surfaced as Drive files
     const base = `
       SELECT DISTINCT i.* FROM items i
@@ -118,6 +120,7 @@ export function driveRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "not_found", message: "Library not found" });
       }
       libRole = role;
+      approver = role === "owner";
       rows = await dbq<ItemRow>(
         `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.library_id = $2
          AND i.parent_id IS NULL`,
@@ -131,6 +134,11 @@ export function driveRoutes(app: FastifyInstance) {
         const parent = await getItem(parentId);
         if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "viewer")) {
           return reply.code(404).send({ error: "not_found", message: "Folder not found" });
+        }
+        if (parent.library_id) {
+          const plib = await getLibrary(parent.library_id);
+          const psite = plib ? await getSite(plib.site_id) : undefined;
+          approver = (psite ? await siteRoleFor(user, psite) : null) === "owner";
         }
         rows = await dbq<ItemRow>(
           `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.parent_id = $2`,
@@ -213,7 +221,7 @@ export function driveRoutes(app: FastifyInstance) {
 
     const items = await Promise.all(
       rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined,
-        { metadata: metaByItem?.get(r.id) })),
+        { metadata: metaByItem?.get(r.id), approver })),
     );
     // names are encrypted at rest — ciphertext can't sort in SQL, so folder
     // and library browsing re-sort on the decrypted name
@@ -234,7 +242,8 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
     const owner = await dbq<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [item.owner_id]);
-    return { item: { ...(await toDriveItem(item, (await permissionFor(user.id, item)) ?? undefined)), ownerName: owner[0]?.display_name } };
+    return { item: { ...(await toDriveItem(item, (await permissionFor(user.id, item)) ?? undefined,
+      { approver: await canApprove(user, item) })), ownerName: owner[0]?.display_name } };
   });
 
   app.post("/api/drive", async (req, reply) => {
@@ -524,21 +533,19 @@ export function driveRoutes(app: FastifyInstance) {
       );
     }
     let major: number | null = null;
+    let pending = false;
     if (body.publish) {
-      const head = await one<{ id: string; published: boolean; major: number | null }>(
-        "SELECT id, published, major FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
-      if (head && !head.published) {
-        const lastPub = await one<{ major: number }>(
-          "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
-        major = (lastPub?.major ?? 0) + 1;
-        await run("UPDATE versions SET major = $1, minor = 0, published = true WHERE id = $2", [major, head.id]);
+      if (await submitForApproval(item, user)) {
+        pending = true;
+      } else {
+        major = await publishHead(item);
       }
     }
     await run("UPDATE items SET checked_out_by = NULL, checked_out_at = NULL, updated_at = $1 WHERE id = $2",
       [now(), item.id]);
-    void logActivity(user.orgId, user.id, item.id, "checkin",
+    void logActivity(user.orgId, user.id, item.id, pending ? "submit-approval" : "checkin",
       `${itemName(item)}${major !== null ? ` → v${major}.0` : ""}${body.comment ? ` — ${body.comment}` : ""}`);
-    return { ok: true, published: major !== null };
+    return { ok: true, published: major !== null, pending };
   });
 
   /** Abandon the lock without publishing. Holder or owner-rank. */
@@ -599,6 +606,145 @@ export function driveRoutes(app: FastifyInstance) {
     await touchItem(item.id);
     return { ok: true };
   });
+
+  // ---- content approval (SharePoint "Approve/reject") ----
+
+  /** Approve a submitted draft — publishes it as the next major version.
+   *  Approvers are site owners in libraries (not the file's creator). */
+  app.post("/api/drive/:id/approve", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !(await canApprove(user, item))) {
+      return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
+    }
+    const head = await one<{ id: string; pending: boolean; published: boolean }>(
+      "SELECT id, pending, published FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
+    const major = await publishHead(item);
+    void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} → v${major}.0`);
+    return { ok: true, major };
+  });
+
+  /** Reject a submitted draft — clears the pending flag; the draft stays a
+   *  draft for the editor to revise. Owner rank only. */
+  app.post("/api/drive/:id/reject", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !(await canApprove(user, item))) {
+      return reply.code(403).send({ error: "forbidden", message: "Only site owners can reject" });
+    }
+    const { comment } = z.object({ comment: z.string().max(300).optional() }).parse(req.body ?? {});
+    const head = await one<{ id: string; pending: boolean }>(
+      "SELECT id, pending FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
+    await run("UPDATE versions SET pending = false WHERE id = $1", [head.id]);
+    void logActivity(user.orgId, user.id, item.id, "reject",
+      `${itemName(item)}${comment ? ` — ${comment}` : ""}`);
+    return { ok: true };
+  });
+
+  // ---- copy (SharePoint "Copy to") ----
+
+  /**
+   * Deep-copy an item (folders recurse) into a folder, a library root, or the
+   * personal Drive root. Copies reference the same immutable blobs — no data
+   * is duplicated. Fresh version history starts at 1.0, shares/comments/
+   * check-out are not carried (the copy inherits destination permissions).
+   */
+  app.post("/api/drive/:id/copy", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    const srcPerm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(srcPerm, "viewer")) {
+      return reply.code(404).send({ error: "not_found", message: "File not found" });
+    }
+    // viewer-level copiers get the latest PUBLISHED version — unpublished
+    // drafts stay invisible to them even inside a copy they own
+    const headClause = hasPermission(srcPerm, "editor") ? "" : "AND published";
+    if (item.media_for) {
+      return reply.code(400).send({ error: "bad_request", message: "Embedded media can't be copied" });
+    }
+    const body = z.object({
+      parentId: z.string().nullable().optional(),
+      libraryId: z.string().nullable().optional(),
+      name: z.string().min(1).max(255).optional(),
+    }).parse(req.body ?? {});
+
+    // resolve the destination: folder → its library stamps the copy;
+    // library root → member+ required; neither → personal Drive root
+    let targetParent: string | null = null;
+    let targetLibrary: string | null = null;
+    if (body.parentId) {
+      const parent = await getItem(body.parentId);
+      if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
+        return reply.code(403).send({ error: "forbidden", message: "Cannot copy into this folder" });
+      }
+      targetParent = parent.id;
+      targetLibrary = parent.library_id;
+    } else if (body.libraryId) {
+      if (!(await canWriteLibrary(user, body.libraryId))) {
+        return reply.code(403).send({ error: "forbidden", message: "No write access to that library" });
+      }
+      targetLibrary = body.libraryId;
+    }
+
+    const subtree = await dbq<ItemRow>(
+      `WITH RECURSIVE sub AS (
+         SELECT * FROM items WHERE id = $1
+         UNION ALL SELECT i.* FROM items i JOIN sub s ON i.parent_id = s.id)
+       SELECT * FROM sub WHERE media_for IS NULL`,
+      [item.id],
+    );
+    if (subtree.length > 500) {
+      return reply.code(400).send({ error: "bad_request", message: "Folder is too large to copy" });
+    }
+
+    const ids = new Map(subtree.map((r) => [r.id, randomUUID()]));
+    const ts = now();
+    await tx(async (c) => {
+      for (const r of subtree) {
+        const newId = ids.get(r.id)!;
+        const newParent = r.id === item.id ? targetParent : (r.parent_id ? ids.get(r.parent_id) ?? null : null);
+        const head = await c.query<{ id: string; blob_key: string; size: number }>(
+          `SELECT id, blob_key, size FROM versions WHERE file_id = $1 ${headClause} ORDER BY number DESC LIMIT 1`, [r.id]);
+        await c.query(
+          `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, library_id, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [newId, user.orgId, newParent, user.id,
+           // names store encrypted — reuse the ciphertext verbatim unless renamed
+           r.id === item.id && body.name ? encryptField(body.name) : r.name,
+           r.kind, r.mime, head.rows[0]?.size ?? r.size, targetLibrary, ts, ts],
+        );
+        if (head.rows[0]) {
+          await c.query(
+            `INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at)
+             VALUES ($1,$2,1,1,0,true,$3,$4,$5,$6,$7)`,
+            [randomUUID(), newId, `Copied from ${itemName(r)}`, head.rows[0].blob_key, head.rows[0].size, user.id, ts],
+          );
+        }
+        // custom-column values carry over only within the same library —
+        // column ids are per-library, so cross-library copies start clean
+        if (targetLibrary && targetLibrary === r.library_id) {
+          await c.query(
+            `INSERT INTO item_metadata (item_id, column_id, value)
+             SELECT $1, column_id, value FROM item_metadata WHERE item_id = $2`,
+            [newId, r.id],
+          );
+        }
+        // index rows re-key verbatim — same org key, so ciphertext ports;
+        // skipped for viewer copiers since the index may hold draft text
+        if (headClause === "") {
+          await c.query(
+            `INSERT INTO search_index (file_id, body) SELECT $1, body FROM search_index WHERE file_id = $2
+             ON CONFLICT (file_id) DO NOTHING`,
+            [newId, r.id],
+          );
+        }
+      }
+    });
+    void logActivity(user.orgId, user.id, ids.get(item.id)!, "copy", itemName(item));
+    return { item: await toDriveItem((await getItem(ids.get(item.id)!))!, "owner") };
+  });
 }
 
 const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
@@ -610,6 +756,18 @@ async function canWriteLibrary(user: { id: string; orgId: string; role: string }
   const site = lib ? await getSite(lib.site_id) : undefined;
   const role = site ? await siteRoleFor(user, site) : null;
   return role === "owner" || role === "member";
+}
+
+/** Approver rank — in a library that's the SITE owner role (a member who
+ *  created a file can't approve their own submission); outside libraries it
+ *  falls back to item ownership. */
+async function canApprove(user: { id: string; orgId: string; role: string }, item: ItemRow): Promise<boolean> {
+  if (item.library_id) {
+    const lib = await getLibrary(item.library_id);
+    const site = lib ? await getSite(lib.site_id) : undefined;
+    return (site ? await siteRoleFor(user, site) : null) === "owner";
+  }
+  return hasPermission(await permissionFor(user.id, item), "owner");
 }
 
 /** True when `ancestorId` appears in `itemId`'s parent chain (bounded walk). */

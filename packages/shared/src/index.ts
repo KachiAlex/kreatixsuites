@@ -46,6 +46,10 @@ export interface DriveItem {
   metadata?: Record<string, string | null>;
   /** Permission was granted by a share on an ancestor folder */
   inherited?: boolean;
+  /** Head draft is submitted for approval (content-approval libraries) */
+  pendingApproval?: boolean;
+  /** Requesting user may approve/reject submissions (site-owner in libraries) */
+  canApprove?: boolean;
   /** Effective permission of the requesting user on this item */
   permission?: Permission;
   /** Number of collaborators with direct access (for UI avatars) */
@@ -61,6 +65,8 @@ export interface FileVersion {
   minor?: number;
   /** Draft versions are hidden from viewer-level users */
   published?: boolean;
+  /** Submitted for approval (content-approval libraries) */
+  pending?: boolean;
   label: string | null;
   size: number;
   createdBy: string;
@@ -144,6 +150,8 @@ export interface Library {
   kind: "documents" | "media" | "form";
   /** major = every save publishes; minor = check-in/out produces drafts */
   versioning?: "major" | "minor";
+  /** Content approval — member publishes become owner-reviewed submissions */
+  approval?: boolean;
   itemCount?: number;
   createdAt: string;
 }
@@ -170,6 +178,8 @@ export interface ViewConfig {
   query?: string;
   /** columnId → required value (equality filter) */
   columnFilters?: Record<string, string>;
+  /** Show only items whose head draft awaits approval */
+  pending?: boolean;
 }
 
 export interface LibraryView {

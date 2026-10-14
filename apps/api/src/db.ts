@@ -425,6 +425,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS minor INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS published BOOLEAN NOT NULL DEFAULT true`);
   await pool.query(`UPDATE versions SET major = number WHERE major IS NULL`);
+  // content approval (SharePoint "Require content approval") — member publish
+  // requests mark the head draft pending until a site owner approves/rejects
+  await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS approval BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS pending BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

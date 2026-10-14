@@ -4,6 +4,7 @@ import { KIND_META, timeAgo } from "../lib/format";
 import { api } from "../lib/api";
 import { prefetchEditor } from "../pages/editors";
 import { AppIcon } from "./AppIcon";
+import { CopyMoveDialog } from "./CopyMoveDialog";
 
 interface Props {
   items: DriveItem[];
@@ -28,6 +29,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
   const [labelFor, setLabelFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  const [copyMove, setCopyMove] = useState<{ item: DriveItem; mode: "copy" | "move" } | null>(null);
 
   if (!items.length) return <div className="panel"><div className="empty">Nothing here yet.</div></div>;
 
@@ -58,9 +60,21 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
           onRefresh();
         }
       }
+      if (action === "copy" || action === "move") { setCopyMove({ item, mode: action }); return; }
       if (action === "publish") {
-        await api.post(`/api/files/${item.id}/publish`);
-        toast("Published as a major version");
+        const r = await api.post<{ ok: boolean; pending?: boolean }>(`/api/files/${item.id}/publish`);
+        toast(r.pending ? "Submitted for owner approval" : "Published as a major version");
+        onRefresh();
+      }
+      if (action === "approve") {
+        const r = await api.post<{ ok: boolean; major?: number }>(`/api/drive/${item.id}/approve`);
+        toast(`Approved — published as v${r.major ?? ""}.0`);
+        onRefresh();
+      }
+      if (action === "reject") {
+        const comment = prompt("Rejection reason (optional):") ?? "";
+        await api.post(`/api/drive/${item.id}/reject`, { comment: comment.trim() || undefined });
+        toast("Rejected — sent back to draft");
         onRefresh();
       }
       if (action === "trash") { await api.del(`/api/drive/${item.id}`); toast("Moved to recycle bin"); onRefresh(); }
@@ -108,6 +122,9 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                     {it.checkedOut && (
                       <span className="lock-badge" title={`Checked out by ${it.checkedOut.name}`}>🔒</span>
                     )}
+                    {it.pendingApproval && (
+                      <span className="perm-badge" title="Awaiting owner approval">⏳ pending</span>
+                    )}
                     {it.label && it.label !== "internal" && (
                       <span className={`label-badge ${it.label}`}>{it.label}</span>
                     )}
@@ -151,6 +168,8 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                     <button onClick={() => act(it, "rename")}>Rename</button>
                     <button onClick={() => act(it, "star")}>{it.starred ? "Unstar" : "Star"}</button>
                     <button onClick={() => act(it, "label")}>Set label…</button>
+                    <button onClick={() => act(it, "copy")}>Copy to…</button>
+                    <button onClick={() => act(it, "move")}>Move to…</button>
                     <button onClick={() => act(it, "share")}>Share…</button>
                     {it.libraryId && onProperties && <button onClick={() => act(it, "properties")}>Properties…</button>}
                     {it.kind !== "folder" && <button onClick={() => act(it, "versions")}>Version history</button>}
@@ -164,8 +183,14 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                         <button onClick={() => act(it, "checkout")}>Check out</button>
                       )
                     )}
-                    {it.kind !== "folder" && it.libraryId && !it.checkedOut && (
+                    {it.kind !== "folder" && it.libraryId && !it.checkedOut && !it.pendingApproval && (
                       <button onClick={() => act(it, "publish")}>Publish major version</button>
+                    )}
+                    {it.pendingApproval && it.canApprove && (
+                      <>
+                        <button onClick={() => act(it, "approve")}>Approve ✓</button>
+                        <button className="danger" onClick={() => act(it, "reject")}>Reject…</button>
+                      </>
                     )}
                     <button className="danger" onClick={() => act(it, "trash")}>Move to recycle bin</button>
                   </>
@@ -183,6 +208,10 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
           </div>
         );
       })}
+      {copyMove && (
+        <CopyMoveDialog item={copyMove.item} mode={copyMove.mode}
+          onClose={() => setCopyMove(null)} onDone={onRefresh} toast={toast} />
+      )}
     </div>
   );
 }

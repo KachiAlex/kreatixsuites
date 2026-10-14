@@ -18,11 +18,12 @@ export function CheckInDialog({ item, onClose, onDone, toast }: {
   const submit = async () => {
     setBusy(true);
     try {
-      await api.post(`/api/drive/${item.id}/checkin`, {
+      const r = await api.post<{ ok: boolean; pending?: boolean }>(`/api/drive/${item.id}/checkin`, {
         comment: comment.trim() || undefined,
         publish,
       });
-      toast(publish ? "Checked in and published" : "Checked in as draft");
+      toast(r.pending ? "Checked in and submitted for owner approval"
+        : publish ? "Checked in and published" : "Checked in as draft");
       onDone();
       onClose();
     } catch (e) {

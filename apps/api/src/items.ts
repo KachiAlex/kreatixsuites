@@ -35,7 +35,7 @@ export function itemName(row: { name: string }): string {
 export async function toDriveItem(
   row: ItemRow,
   permission?: DriveItem["permission"],
-  opts?: { metadata?: Record<string, string | null>; inherited?: boolean },
+  opts?: { metadata?: Record<string, string | null>; inherited?: boolean; approver?: boolean },
 ): Promise<DriveItem> {
   const collaborators = await q<{ initials: string; display_name: string }>(
     `SELECT u.initials, u.display_name FROM shares s JOIN users u ON u.id = s.user_id
@@ -44,6 +44,11 @@ export async function toDriveItem(
   );
   const lockHolder = row.checked_out_by
     ? await one<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [row.checked_out_by])
+    : undefined;
+  // content-approval badge: library items surface a pending head draft
+  const pendingApproval = row.library_id
+    ? !!(await one<{ pending: boolean }>(
+        "SELECT pending FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [row.id]))?.pending
     : undefined;
   return {
     id: row.id,
@@ -63,6 +68,8 @@ export async function toDriveItem(
     checkedOut: row.checked_out_by
       ? { userId: row.checked_out_by, name: lockHolder?.display_name ?? "Someone", at: row.checked_out_at ?? "" }
       : null,
+    pendingApproval,
+    canApprove: opts?.approver,
     metadata: opts?.metadata,
     inherited: opts?.inherited,
     permission,

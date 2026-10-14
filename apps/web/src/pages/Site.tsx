@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { Library, Site, SiteMember, SiteRole } from "@kreatix/shared";
+import type { DriveItem, Library, Site, SiteMember, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { Modal } from "../components/Modal";
+
+type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
 const TYPE_LABEL: Record<Site["type"], string> = {
   team: "Team site", project: "Project site",
@@ -62,6 +64,8 @@ export function SitePage() {
         </div>
       </div>
 
+      <SiteSearch siteId={site.id} />
+
       <div className="section-head">
         <h2>Document libraries</h2>
         {canWrite && (
@@ -93,6 +97,64 @@ export function SitePage() {
         onDeleted={() => navigate("/sites")} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
+  );
+}
+
+/** Scoped full-text search across the site's libraries (SharePoint
+ *  "search this site"). Results navigate straight into the library. */
+function SiteSearch({ siteId }: { siteId: string }) {
+  const navigate = useNavigate();
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<SearchItem[]>([]);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  useEffect(() => {
+    if (!q.trim()) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.get<{ items: SearchItem[] }>(
+          `/api/search?site=${encodeURIComponent(siteId)}&q=${encodeURIComponent(q)}`);
+        setResults(r.items);
+        setOpen(true);
+      } catch { /* transient */ }
+    }, 220);
+    return () => clearTimeout(t);
+  }, [q, siteId]);
+
+  const go = (it: SearchItem) => {
+    setOpen(false);
+    setQ("");
+    navigate(it.kind === "folder"
+      ? `/sites/${siteId}/library/${it.libraryId}/folder/${it.id}`
+      : `/edit/${it.id}`);
+  };
+
+  return (
+    <div className="search site-search" ref={boxRef} style={{ position: "relative", marginBottom: 16 }}>
+      <span style={{ color: "var(--muted)" }}>⌕</span>
+      <input value={q} placeholder="Search this site…" aria-label="Search this site"
+        onChange={(e) => setQ(e.target.value)} onFocus={() => results.length && setOpen(true)} />
+      {open && results.length > 0 && (
+        <div className="file-menu" style={{ top: "100%", left: 0, right: 0, minWidth: 0 }}>
+          {results.map((it) => (
+            <button key={it.id} onClick={() => go(it)}>
+              <b>{it.name}</b>
+              <small style={{ color: "var(--muted)" }}> · {it.kind}</small>
+              {it.snippet && <span className="srch-snip">{it.snippet.replace(/[«»]/g, "")}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
