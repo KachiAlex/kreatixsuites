@@ -78,7 +78,7 @@ export function siteRoutes(app: FastifyInstance) {
       const libId = randomUUID();
       await run(
         `INSERT INTO sites (id, org_id, name, description, type, visibility, owner_id, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [id, user.orgId, encryptField(body.name), body.description ? encryptField(body.description) : null,
          body.type, body.visibility, user.id, now(), now()],
       );
