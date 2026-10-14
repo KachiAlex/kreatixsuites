@@ -2,6 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { one } from "./db.js";
+import { libraryPermission } from "./sites.js";
 import type { Permission, User, UserRole } from "@kreatix/shared";
 
 const secret = new TextEncoder().encode(
@@ -155,18 +156,26 @@ const PERM_RANK: Record<Permission, number> = {
  *  them (images inside shared docs must load for viewers of that doc). */
 export async function permissionFor(
   userId: string,
-  item: { owner_id: string; id: string; media_for?: string | null },
+  item: { owner_id: string; id: string; media_for?: string | null; library_id?: string | null },
   depth = 0,
 ): Promise<Permission | null> {
   // media_for inheritance is a DAG but can be arbitrarily deep — cap the walk
   // so a hostile upload chain can't stack-overflow the request.
   if (depth > 8) return null;
   if (item.owner_id === userId) return "owner";
+  let best: Permission | null = null;
   const share = await one<{ permission: Permission }>(
     "SELECT permission FROM shares WHERE file_id = $1 AND user_id = $2",
     [item.id, userId],
   );
-  if (share) return share.permission;
+  if (share) best = share.permission;
+  // site membership grants access to every item in its libraries —
+  // most-permissive wins against a narrower direct share
+  if (item.library_id) {
+    const libPerm = await libraryPermission(userId, item.library_id);
+    if (libPerm && (!best || PERM_RANK[libPerm] > PERM_RANK[best])) best = libPerm;
+  }
+  if (best) return best;
   if (item.media_for) {
     const host = await one<{ owner_id: string; id: string }>(
       "SELECT id, owner_id FROM items WHERE id = $1", [item.media_for]);

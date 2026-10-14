@@ -343,9 +343,45 @@ CREATE TABLE IF NOT EXISTS plans (
   active BOOLEAN NOT NULL DEFAULT true,
   sort INTEGER NOT NULL DEFAULT 0
 );
+
+-- Sites (SharePoint-style): a site is a security + navigation boundary inside
+-- an org; it owns document libraries. visibility 'org' = every org member is
+-- an implicit visitor; 'private' = members only (org owner/admin still manage).
+CREATE TABLE IF NOT EXISTS sites (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  type TEXT NOT NULL DEFAULT 'team',          -- team | project | department | communication
+  visibility TEXT NOT NULL DEFAULT 'org',     -- org | private
+  owner_id TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sites_org ON sites(org_id);
+
+CREATE TABLE IF NOT EXISTS site_members (
+  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member',        -- owner | member | visitor
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (site_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_site_members_user ON site_members(user_id);
+
+CREATE TABLE IF NOT EXISTS libraries (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'documents',     -- documents | media | form
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_libraries_site ON libraries(site_id);
 `);
   // additive columns for existing databases (CREATE TABLE IF NOT EXISTS is a no-op there)
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS media_for TEXT REFERENCES items(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS library_id TEXT REFERENCES libraries(id) ON DELETE SET NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_items_library ON items(library_id)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes
@@ -401,13 +437,13 @@ CREATE TABLE IF NOT EXISTS plans (
     INSERT INTO plans (slug, name, price_ngn, member_price_ngn, features, limits, sort) VALUES
     ('free', 'Free', 0, 0,
       '{"ai":true,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false}',
-      '{"ai_daily":20,"ai_per_min":5,"ai_tokens_base":300000,"ai_tokens_per_seat":0,"storage_mb":1024,"max_members":3,"version_days":30}', 0),
+      '{"ai_daily":20,"ai_per_min":5,"ai_tokens_base":300000,"ai_tokens_per_seat":0,"storage_mb":1024,"max_members":3,"version_days":30,"sites":1}', 0),
     ('pro', 'Pro', 1000, 0,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":true}',
-      '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":51200,"max_members":5,"version_days":0}', 1),
+      '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":51200,"max_members":5,"version_days":0,"sites":10}', 1),
     ('business', 'Business', 2000, 500,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true}',
-      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0}', 2)
+      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0,"sites":0}', 2)
     -- stored values win on shared keys; newly introduced seed keys get added
     ON CONFLICT (slug) DO UPDATE SET features = EXCLUDED.features || plans.features,
       limits = EXCLUDED.limits || plans.limits`);

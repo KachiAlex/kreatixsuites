@@ -4,6 +4,7 @@ import { z } from "zod";
 import { q as dbq, run, now } from "../db.js";
 import { getItem, toDriveItem, touchItem, logActivity, itemName, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { getSite, getLibrary, siteRoleFor, visibleLibraryIds } from "../sites.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
@@ -14,12 +15,14 @@ const createSchema = z.object({
   name: z.string().min(1).max(255),
   kind: z.enum(["folder", "writer", "sheets", "present", "pdf", "file"]),
   parentId: z.string().nullable().optional(),
+  libraryId: z.string().nullable().optional(),
 });
 
 const patchSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   starred: z.boolean().optional(),
   parentId: z.string().nullable().optional(),
+  libraryId: z.string().nullable().optional(),
   label: z.enum(["internal", "public", "confidential", "restricted"]).optional(),
 });
 
@@ -89,10 +92,15 @@ const DEFAULT_DOCS: Record<string, unknown> = {
 export function driveRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
 
-  /** List items: ?view=home|recent|starred|shared|trash  or ?parent=<id> for folder browsing */
-  app.get("/api/drive", async (req) => {
+  /** List items: ?view=home|recent|starred|shared|trash, ?parent=<id> for folder
+   *  browsing, or ?library=<id> for a site library root (SharePoint-style:
+   *  every item in a library is visible to site members, not just owned/shared). */
+  app.get("/api/drive", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const q = req.query as { view?: string; parent?: string };
+    const q = req.query as { view?: string; parent?: string; library?: string };
+
+    // libraries the user can reach via site membership / org visibility
+    const libIds = await visibleLibraryIds(user);
 
     let rows: ItemRow[];
     // media_for items are embedded doc assets — never surfaced as Drive files
@@ -100,18 +108,32 @@ export function driveRoutes(app: FastifyInstance) {
       SELECT DISTINCT i.* FROM items i
       LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = $1`;
 
-    if (q.parent !== undefined) {
-      // IS NOT DISTINCT FROM — null-safe equality (parent_id IS NULL at root)
+    if (q.library !== undefined) {
+      const lib = await getLibrary(q.library);
+      const site = lib ? await getSite(lib.site_id) : undefined;
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!lib || !site || !role) {
+        return reply.code(404).send({ error: "not_found", message: "Library not found" });
+      }
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
-         AND i.parent_id IS NOT DISTINCT FROM $2`,
-        [user.id, q.parent === "" ? null : q.parent],
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.library_id = $2
+         AND i.parent_id IS NULL`,
+        [user.id, q.library],
+      );
+    } else if (q.parent !== undefined) {
+      // IS NOT DISTINCT FROM — null-safe equality (parent_id IS NULL at root).
+      // Root browsing excludes library items — those surface via Sites, not Drive.
+      rows = await dbq<ItemRow>(
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($3))
+         AND i.parent_id IS NOT DISTINCT FROM $2 AND (i.library_id IS NULL OR $2 IS NOT NULL)`,
+        [user.id, q.parent === "" ? null : q.parent, libIds],
       );
     } else if (q.view === "starred") {
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.starred AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.starred
+         AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
          ORDER BY i.updated_at DESC`,
-        [user.id],
+        [user.id, libIds],
       );
     } else if (q.view === "shared") {
       rows = await dbq<ItemRow>(
@@ -128,17 +150,18 @@ export function driveRoutes(app: FastifyInstance) {
       // offline-shell sync: complete non-trashed set (folders included, no
       // cap) so the local mirror can purge items deleted on other devices
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
          ORDER BY i.updated_at DESC`,
-        [user.id],
+        [user.id, libIds],
       );
     } else {
-      // home + recent: items I own or that are shared with me
+      // home + recent: items I own, shared with me, or in libraries I can see
       const limit = q.view === "home" ? 8 : 50;
       rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.kind != 'folder' AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
+        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.kind != 'folder'
+         AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
          ORDER BY i.updated_at DESC LIMIT ${limit}`,
-        [user.id],
+        [user.id, libIds],
       );
     }
 
@@ -146,8 +169,8 @@ export function driveRoutes(app: FastifyInstance) {
       rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined)),
     );
     // names are encrypted at rest — ciphertext can't sort in SQL, so folder
-    // browsing re-sorts on the decrypted name
-    if (q.parent !== undefined) {
+    // and library browsing re-sort on the decrypted name
+    if (q.parent !== undefined || q.library !== undefined) {
       items.sort(
         (a, b) =>
           (b.kind === "folder" ? 1 : 0) - (a.kind === "folder" ? 1 : 0) ||
@@ -172,18 +195,26 @@ export function driveRoutes(app: FastifyInstance) {
     const body = createSchema.parse(req.body);
     const id = randomUUID();
 
+    // library derivation: explicit libraryId at a library root, else inherit
+    // the parent folder's library — requires site 'member' (editor) either way
+    let libraryId: string | null = null;
     if (body.parentId) {
       const parent = await getItem(body.parentId);
       if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
         return reply.code(403).send({ error: "forbidden", message: "Cannot create in this folder" });
       }
+      libraryId = parent.library_id;
+    }
+    if (!libraryId && body.libraryId) libraryId = body.libraryId;
+    if (libraryId && !(await canWriteLibrary(user, libraryId))) {
+      return reply.code(403).send({ error: "forbidden", message: "No write access to this library" });
     }
 
     await run(
-      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, library_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [id, user.orgId, body.parentId ?? null, user.id, encryptField(body.name), body.kind,
-       `application/x-kreatix-${body.kind}`, now(), now()],
+       `application/x-kreatix-${body.kind}`, libraryId, now(), now()],
     );
 
     // Seed initial immutable version for suite-native docs (SRS §19)
@@ -204,7 +235,7 @@ export function driveRoutes(app: FastifyInstance) {
   /** Binary upload (PDFs, office files, media): raw body + ?name=&parent= */
   app.post("/api/drive/upload", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    const { name, parent, kind, mediaFor } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string };
+    const { name, parent, kind, mediaFor, library } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string; library?: string };
     // text/* content-types hit Fastify's built-in parser (string body) before
     // the wildcard buffer parser — handle all three shapes.
     const buf = Buffer.isBuffer(req.body)
@@ -238,12 +269,19 @@ export function driveRoutes(app: FastifyInstance) {
       : ext === "pdf" || buf.subarray(0, 5).equals(Buffer.from("%PDF-"))
         ? "pdf"
         : "file";
-    // uploads honor folder permissions the same as item creation
+    // uploads honor folder permissions the same as item creation; a parent
+    // inside a library stamps the upload with that library
+    let libraryId: string | null = null;
     if (parent) {
       const p = await getItem(parent);
       if (!p || p.kind !== "folder" || !hasPermission(await permissionFor(user.id, p), "editor")) {
         return reply.code(403).send({ error: "forbidden", message: "Cannot upload into this folder" });
       }
+      libraryId = p.library_id;
+    }
+    if (!libraryId && library) libraryId = library;
+    if (libraryId && !(await canWriteLibrary(user, libraryId))) {
+      return reply.code(403).send({ error: "forbidden", message: "No write access to this library" });
     }
     const id = randomUUID();
     const { key, size } = putBlob(buf);
@@ -256,10 +294,10 @@ export function driveRoutes(app: FastifyInstance) {
     }
 
     await run(
-      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, media_for, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, media_for, library_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
-       (req.headers["content-type"] as string) ?? "application/octet-stream", size, mediaForId, now(), now()],
+       (req.headers["content-type"] as string) ?? "application/octet-stream", size, mediaForId, libraryId, now(), now()],
     );
     await run(
       "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
@@ -279,17 +317,40 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
     const body = patchSchema.parse(req.body);
-    if (body.parentId) {
-      const parent = await getItem(body.parentId);
-      if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
-        return reply.code(403).send({ error: "forbidden", message: "Cannot move into this folder" });
+    // moving = parent change or explicit library root target
+    const moving = body.parentId !== undefined || body.libraryId !== undefined;
+    let newLibraryId: string | null | undefined; // undefined = unchanged
+    if (moving) {
+      if (body.parentId) {
+        const parent = await getItem(body.parentId);
+        if (!parent || parent.kind !== "folder" || !hasPermission(await permissionFor(user.id, parent), "editor")) {
+          return reply.code(403).send({ error: "forbidden", message: "Cannot move into this folder" });
+        }
+        // a folder must not be moved into itself or its own descendant —
+        // walk the ancestor chain (bounded) and reject if we meet the item
+        if (await isAncestorOf(item.id, body.parentId)) {
+          return reply.code(400).send({ error: "bad_request", message: "Cannot move a folder into its own subtree" });
+        }
+        newLibraryId = parent.library_id;
+      } else if (body.libraryId) {
+        newLibraryId = body.libraryId;
+      } else {
+        newLibraryId = null; // explicit parentId:null → personal Drive root
       }
-      // a folder must not be moved into itself or its own descendant —
-      // walk the ancestor chain (bounded) and reject if we meet the item
-      if (await isAncestorOf(item.id, body.parentId)) {
-        return reply.code(400).send({ error: "bad_request", message: "Cannot move a folder into its own subtree" });
+      if (newLibraryId !== (item.library_id ?? null)) {
+        // leaving a library = removing it from the shared space — owner-level
+        // only (item owner or site owner), not just any editor
+        if (item.library_id && !hasPermission(await permissionFor(user.id, item), "owner")) {
+          return reply.code(403).send({ error: "forbidden", message: "Only the owner can move files out of a library" });
+        }
+        // entering a library requires member+ on its site
+        if (newLibraryId && !(await canWriteLibrary(user, newLibraryId))) {
+          return reply.code(403).send({ error: "forbidden", message: "No write access to that library" });
+        }
       }
     }
+    // a move always rewrites parent_id (library root moves mean parent null)
+    const parentVal = body.parentId ?? null;
     await run(
       `UPDATE items SET name = COALESCE($1, name), starred = COALESCE($2, starred),
        label = COALESCE($3, label),
@@ -298,9 +359,19 @@ export function driveRoutes(app: FastifyInstance) {
         body.name === undefined ? null : encryptField(body.name),
         body.starred === undefined ? null : body.starred,
         body.label ?? null,
-        body.parentId !== undefined, body.parentId ?? null, now(), item.id,
+        moving, parentVal, now(), item.id,
       ],
     );
+    // reparent the whole subtree's library stamp when a folder changes libraries
+    if (moving && newLibraryId !== undefined && newLibraryId !== (item.library_id ?? null)) {
+      await run(
+        `WITH RECURSIVE sub AS (
+           SELECT id FROM items WHERE id = $1
+           UNION ALL SELECT i.id FROM items i JOIN sub s ON i.parent_id = s.id)
+         UPDATE items SET library_id = $2 WHERE id IN (SELECT id FROM sub)`,
+        [item.id, newLibraryId],
+      );
+    }
     if (body.label) void logActivity(user.orgId, user.id, item.id, "label", body.label);
     return { item: await toDriveItem((await getItem(item.id))!, (await permissionFor(user.id, item)) ?? undefined) };
   });
@@ -308,7 +379,8 @@ export function driveRoutes(app: FastifyInstance) {
   app.delete("/api/drive/:id", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || item.owner_id !== user.id) {
+    // owner rank = item owner or site owner (libraries) — shares can't grant it
+    if (!item || !hasPermission(await permissionFor(user.id, item), "owner")) {
       return reply.code(403).send({ error: "forbidden", message: "Only the owner can delete" });
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
@@ -324,12 +396,20 @@ export function driveRoutes(app: FastifyInstance) {
   app.post("/api/drive/:id/restore", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || item.owner_id !== user.id) {
+    if (!item || !hasPermission(await permissionFor(user.id, item), "owner")) {
       return reply.code(403).send({ error: "forbidden" });
     }
     await run("UPDATE items SET trashed = false, updated_at = $1 WHERE id = $2", [now(), item.id]);
     return { item: await toDriveItem((await getItem(item.id))!, "owner") };
   });
+}
+
+/** Site 'member' or 'owner' role required to write into a library. */
+async function canWriteLibrary(user: { id: string; orgId: string; role: string }, libraryId: string): Promise<boolean> {
+  const lib = await getLibrary(libraryId);
+  const site = lib ? await getSite(lib.site_id) : undefined;
+  const role = site ? await siteRoleFor(user, site) : null;
+  return role === "owner" || role === "member";
 }
 
 /** True when `ancestorId` appears in `itemId`'s parent chain (bounded walk). */

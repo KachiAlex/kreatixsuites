@@ -10,7 +10,8 @@ import { FeedbackWidget } from "./FeedbackWidget";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { SecurityDialog } from "./SecurityDialog";
-import { useToast } from "../lib/hooks";
+import { useToast, useSites } from "../lib/hooks";
+import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
@@ -292,6 +293,8 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
   const t = useI18n().t;
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [siteDlg, setSiteDlg] = useState(false);
+  const { sites } = useSites();
   const menuRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -398,6 +401,15 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>
       <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
 
+      <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        {t("nav.sites")}
+        <button className="site-add" title={t("nav.newSite")} aria-label={t("nav.newSite")} onClick={() => setSiteDlg(true)}>＋</button>
+      </div>
+      <NavLink to="/sites" end className={navCls}><span className="dot" />{t("nav.allSites")}</NavLink>
+      {sites.map((s) => (
+        <NavLink key={s.id} to={`/sites/${s.id}`} className={navCls}><span className="dot" />{s.name}</NavLink>
+      ))}
+
       <div className="section-label">{t("nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
       <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>
@@ -410,6 +422,10 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         <h4>{t("nav.aiTagline")}</h4>
         <button onClick={() => void openAi()}>{t("nav.openAi")}</button>
       </div>
+      {siteDlg && (
+        <NewSiteDialog toast={toast} onClose={() => setSiteDlg(false)}
+          onCreated={(s) => { setSiteDlg(false); navigate(`/sites/${s.id}`); }} />
+      )}
     </aside>
   );
 }

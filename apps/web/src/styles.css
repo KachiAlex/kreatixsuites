@@ -603,6 +603,19 @@ footer{text-align:center;color:var(--muted);font-size:10px;margin-top:26px}
 .perm-badge{font-size:9px;font-weight:800;padding:3px 8px;border-radius:999px;background:var(--subtle);color:var(--ink);text-transform:uppercase;letter-spacing:.06em}
 .perm-badge.owner{background:var(--k-orange-soft);color:var(--k-orange-dark)}
 
+/* ---- sites (SharePoint-style site/library UI) ---- */
+.site-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.site-card{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;cursor:pointer;text-align:left;transition:.18s ease;color:var(--ink);font:inherit}
+.site-card:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(52,39,30,.07);border-color:var(--k-orange)}
+.site-card-ico{width:40px;height:40px;border-radius:11px;background:var(--k-orange-soft);display:grid;place-items:center;font-size:17px;flex-shrink:0}
+.site-card-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.site-card-body b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.site-card-body span{font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.site-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:16px 18px;margin-bottom:6px;flex-wrap:wrap}
+.site-head-actions{display:flex;align-items:center;gap:10px}
+.site-add{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:800;padding:0 4px;border-radius:6px;line-height:1}
+.site-add:hover{color:var(--k-orange-dark);background:var(--k-orange-soft)}
+
 .nav-burger{display:none;flex-shrink:0}
 .sidebar-close{display:none;margin-left:auto;width:36px;height:36px}
 /* all mobile overrides consolidated at end of file so they win the cascade */

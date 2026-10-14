@@ -2,22 +2,22 @@
 // importing useToast from a page would drag that page's whole import graph
 // into every chunk that needs it.
 import { useCallback, useEffect, useState } from "react";
-import type { DriveItem } from "@kreatix/shared";
+import type { DriveItem, Site } from "@kreatix/shared";
 import { api } from "./api";
 
-export function useFiles(view: string, parent?: string) {
+export function useFiles(view: string, parent?: string, library?: string) {
   const [items, setItems] = useState<DriveItem[]>([]);
   const [loading, setLoading] = useState(true);
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const qs = parent !== undefined ? `parent=${parent}` : `view=${view}`;
+      const qs = parent !== undefined ? `parent=${parent}` : library ? `library=${library}` : `view=${view}`;
       const r = await api.get<{ items: DriveItem[] }>(`/api/drive?${qs}`);
       setItems(r.items);
     } finally {
       setLoading(false);
     }
-  }, [view, parent]);
+  }, [view, parent, library]);
   useEffect(() => {
     refresh();
     const h = () => refresh();
@@ -25,6 +25,24 @@ export function useFiles(view: string, parent?: string) {
     return () => window.removeEventListener("kreatix:refresh", h);
   }, [refresh]);
   return { items, loading, refresh };
+}
+
+export function useSites() {
+  const [sites, setSites] = useState<Site[]>([]);
+  const refresh = useCallback(async () => {
+    try {
+      const r = await api.get<{ sites: Site[] }>("/api/sites");
+      setSites(r.sites);
+    } catch { /* sidebar degrades silently */ }
+  }, []);
+  useEffect(() => {
+    void refresh();
+    const h = () => void refresh();
+    window.addEventListener("kreatix:refresh", h);
+    window.addEventListener("kreatix:sites", h);
+    return () => { window.removeEventListener("kreatix:refresh", h); window.removeEventListener("kreatix:sites", h); };
+  }, [refresh]);
+  return { sites, refresh };
 }
 
 export function useToast() {

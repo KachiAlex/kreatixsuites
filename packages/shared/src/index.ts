@@ -38,6 +38,8 @@ export interface DriveItem {
   updatedAt: string;
   /** Sensitivity label: internal | public | confidential | restricted */
   label?: string;
+  /** Site library this item lives in (null = personal/root Drive) */
+  libraryId?: string | null;
   /** Effective permission of the requesting user on this item */
   permission?: Permission;
   /** Number of collaborators with direct access (for UI avatars) */
@@ -93,6 +95,43 @@ export interface ActivityEvent {
   fileId: string | null;
   action: string;
   detail: string | null;
+  createdAt: string;
+}
+
+// --- Sites (SharePoint-style site → libraries → items) ---
+
+export type SiteRole = "owner" | "member" | "visitor";
+export type SiteType = "team" | "project" | "department" | "communication";
+
+export interface Site {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string | null;
+  type: SiteType;
+  /** org = all org members are implicit visitors; private = members only */
+  visibility: "org" | "private";
+  ownerId: string;
+  /** Requesting user's effective role on the site */
+  myRole?: SiteRole | null;
+  memberCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SiteMember {
+  userId: string;
+  role: SiteRole;
+  user: { displayName: string; email: string; initials: string };
+  createdAt: string;
+}
+
+export interface Library {
+  id: string;
+  siteId: string;
+  name: string;
+  kind: "documents" | "media" | "form";
+  itemCount?: number;
   createdAt: string;
 }
 

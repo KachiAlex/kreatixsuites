@@ -11,6 +11,7 @@ import { authRoutes } from "./routes/auth.js";
 import { accountRoutes } from "./routes/account.js";
 import { scimRoutes } from "./routes/scim.js";
 import { driveRoutes } from "./routes/drive.js";
+import { siteRoutes } from "./routes/sites.js";
 import { contentRoutes } from "./routes/content.js";
 import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
@@ -223,6 +224,7 @@ async function main() {
   app.register(accountRoutes);
   app.register(scimRoutes);
   app.register(driveRoutes);
+  app.register(siteRoutes);
   app.register(contentRoutes);
   app.register(sharingRoutes);
   app.register(commentRoutes);

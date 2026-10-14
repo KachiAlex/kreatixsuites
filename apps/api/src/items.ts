@@ -16,6 +16,7 @@ export interface ItemRow {
   trashed: boolean;
   label: string;
   media_for: string | null;
+  library_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -49,6 +50,7 @@ export async function toDriveItem(row: ItemRow, permission?: DriveItem["permissi
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     label: row.label ?? "internal",
+    libraryId: row.library_id ?? null,
     permission,
     collaborators: collaborators.map((c) => ({ initials: c.initials, displayName: c.display_name })),
   };
