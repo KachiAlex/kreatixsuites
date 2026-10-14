@@ -200,13 +200,13 @@ export async function permissionFor(
 async function ancestorShare(parentId: string, userId: string): Promise<Permission | null> {
   const rows = await q<{ permission: Permission }>(
     `WITH RECURSIVE anc AS (
-       SELECT parent_id, 1 AS depth FROM items WHERE id = $1
+       SELECT $1::text AS pid, 0 AS depth
        UNION ALL
-       SELECT i.parent_id, anc.depth + 1 FROM anc JOIN items i ON i.id = anc.parent_id
-       WHERE anc.parent_id IS NOT NULL AND anc.depth < 8
+       SELECT i.parent_id, anc.depth + 1 FROM anc JOIN items i ON i.id = anc.pid
+       WHERE anc.pid IS NOT NULL AND anc.depth < 8
      )
-     SELECT s.permission FROM anc JOIN shares s ON s.file_id = anc.parent_id
-     WHERE s.user_id = $2 AND anc.parent_id IS NOT NULL`,
+     SELECT s.permission FROM anc JOIN shares s ON s.file_id = anc.pid
+     WHERE s.user_id = $2 AND anc.pid IS NOT NULL`,
     [parentId, userId],
   );
   let best: Permission | null = null;
