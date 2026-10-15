@@ -152,7 +152,17 @@ export interface Library {
   versioning?: "major" | "minor";
   /** Content approval — member publishes become owner-reviewed submissions */
   approval?: boolean;
+  /** false = unique permissions — only explicit grants reach this library */
+  inheritPermissions?: boolean;
   itemCount?: number;
+  createdAt: string;
+}
+
+/** Explicit per-library grant, used when a library breaks inheritance. */
+export interface LibraryGrant {
+  userId: string;
+  role: SiteRole;
+  user: { displayName: string; email: string; initials: string };
   createdAt: string;
 }
 

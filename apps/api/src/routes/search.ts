@@ -3,7 +3,7 @@ import { q as dbq, one } from "../db.js";
 import { toDriveItem, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { indexBody } from "../indexer.js";
-import { getSite, getLibrary, siteRoleFor, visibleLibraryIds } from "../sites.js";
+import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds } from "../sites.js";
 
 /** Highlight each term occurrence in `text` within `window` chars of `pos`. */
 function snippet(text: string, terms: string[], pos: number): string {
@@ -46,11 +46,10 @@ export function searchRoutes(app: FastifyInstance) {
 
     let rows: ItemRow[];
     if (libId !== undefined) {
-      // library scope — access check first, then everything stamped into it
+      // library scope — grant-aware access check, then everything stamped in
       const lib = await getLibrary(libId);
-      const site = lib ? await getSite(lib.site_id) : undefined;
-      const role = site ? await siteRoleFor(user, site) : null;
-      if (!lib || !site || !role) {
+      const perm = lib ? await libraryPermission(user.id, lib.id) : null;
+      if (!lib || !perm) {
         return reply.code(404).send({ error: "not_found", message: "Library not found" });
       }
       rows = await dbq<ItemRow>(
@@ -63,11 +62,16 @@ export function searchRoutes(app: FastifyInstance) {
       if (!site || !role) {
         return reply.code(404).send({ error: "not_found", message: "Site not found" });
       }
+      // site search trims libraries with broken inheritance the user can't
+      // see — site owners/admins bypass via the $3 flag
       rows = await dbq<ItemRow>(
-        `SELECT * FROM items WHERE trashed = false AND media_for IS NULL
-         AND library_id IN (SELECT id FROM libraries WHERE site_id = $1)
-         ORDER BY updated_at DESC`,
-        [siteId],
+        `SELECT i.* FROM items i JOIN libraries l ON l.id = i.library_id
+         WHERE i.trashed = false AND i.media_for IS NULL AND l.site_id = $1
+           AND (l.inherit_permissions OR $3::boolean
+                OR EXISTS (SELECT 1 FROM library_permissions lp
+                           WHERE lp.library_id = l.id AND lp.user_id = $2))
+         ORDER BY i.updated_at DESC`,
+        [siteId, user.id, role === "owner"],
       );
     } else {
       // global: everything owned, shared, or in a library the user can see

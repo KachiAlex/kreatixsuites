@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { SiteRole } from "@kreatix/shared";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
-  getSite, getLibrary, siteRoleFor, toSite, toLibrary, memberOut,
+  getSite, getLibrary, siteRoleFor, libraryRoleFor, toSite, toLibrary, memberOut,
   type SiteRow, type LibraryRow,
 } from "../sites.js";
 import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
@@ -40,6 +41,7 @@ const librarySchema = z.object({
 const libraryPatchSchema = librarySchema.partial().extend({
   versioning: z.enum(["major", "minor"]).optional(),
   approval: z.boolean().optional(),
+  inherit: z.boolean().optional(),
 });
 
 const columnSchema = z.object({
@@ -136,7 +138,7 @@ export function siteRoutes(app: FastifyInstance) {
       // every site starts with a Documents library — SharePoint's convention
       await run("INSERT INTO libraries (id, site_id, name, kind, created_at) VALUES ($1,$2,$3,'documents',$4)",
         [libId, id, encryptField("Documents"), now()]);
-      void logActivity(user.orgId, user.id, null, "site-create", body.name);
+      void logActivity(user.orgId, user.id, null, "site-create", body.name, id);
       return { site: toSite((await getSite(id))!, "owner", 1) };
     });
 
@@ -145,15 +147,32 @@ export function siteRoutes(app: FastifyInstance) {
       const { user } = req as AuthedRequest;
       const site = await getSite((req.params as { id: string }).id);
       const role = site ? await siteRoleFor(user, site) : null;
-      if (!site || !role) return reply.code(404).send({ error: "not_found", message: "Site not found" });
+      // limited access (SharePoint): a library grantee on a private site can
+      // open it to reach their library, even without site membership
+      let viewRole = role;
+      if (!viewRole && site) {
+        const grant = await one<{ 1: number }>(
+          `SELECT 1 FROM library_permissions lp JOIN libraries l ON l.id = lp.library_id
+           WHERE l.site_id = $1 AND lp.user_id = $2 LIMIT 1`,
+          [site.id, user.id],
+        );
+        if (grant) viewRole = "visitor";
+      }
+      if (!site || !viewRole) return reply.code(404).send({ error: "not_found", message: "Site not found" });
+      // security-trim: owners see every library; members/implicit visitors see
+      // inheriting ones; grant-only users see just their granted libraries
       const libs = await q<LibraryRow & { n: number }>(
         `SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND NOT i.trashed) AS n
-         FROM libraries l WHERE l.site_id = $1 ORDER BY l.created_at`,
-        [site.id],
+         FROM libraries l WHERE l.site_id = $1
+           AND ($3::boolean OR (l.inherit_permissions AND $4::boolean)
+                OR EXISTS (SELECT 1 FROM library_permissions lp
+                           WHERE lp.library_id = l.id AND lp.user_id = $2))
+         ORDER BY l.created_at`,
+        [site.id, user.id, role === "owner", role !== null],
       );
       const mc = await one<{ n: number }>("SELECT COUNT(*) AS n FROM site_members WHERE site_id = $1", [site.id]);
       return {
-        site: toSite(site, role, mc?.n ?? 0),
+        site: toSite(site, viewRole, mc?.n ?? 0),
         libraries: await Promise.all(libs.map((l) => toLibrary(l, l.n))),
       };
     });
@@ -192,7 +211,7 @@ export function siteRoutes(app: FastifyInstance) {
       }
       await run("UPDATE items SET library_id = NULL WHERE library_id IN (SELECT id FROM libraries WHERE site_id = $1)", [site.id]);
       await run("DELETE FROM sites WHERE id = $1", [site.id]);
-      void logActivity(user.orgId, user.id, null, "site-delete", decryptField(site.name) ?? site.name);
+      void logActivity(user.orgId, user.id, null, "site-delete", decryptField(site.name) ?? site.name, site.id);
       return { ok: true };
     });
 
@@ -231,7 +250,7 @@ export function siteRoutes(app: FastifyInstance) {
          ON CONFLICT (site_id, user_id) DO UPDATE SET role = excluded.role`,
         [site.id, target.id, body.role, now()],
       );
-      void logActivity(user.orgId, user.id, null, "site-member-add", `${body.email} → ${body.role} @ ${decryptField(site.name) ?? site.name}`);
+      void logActivity(user.orgId, user.id, null, "site-member-add", `${body.email} → ${body.role} @ ${decryptField(site.name) ?? site.name}`, site.id);
       return { ok: true };
     });
 
@@ -266,6 +285,36 @@ export function siteRoutes(app: FastifyInstance) {
       return { ok: true };
     });
 
+    /** Site activity feed — site-level events (member adds, settings) plus
+     *  file events inside the site's libraries. Any site role can view. */
+    authed.get("/api/sites/:id/activity", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !role) return reply.code(404).send({ error: "not_found" });
+      const rows = await q<{
+        id: string; action: string; detail: string | null; file_id: string | null;
+        created_at: string; display_name: string; initials: string;
+      }>(
+        `SELECT a.id, a.action, a.detail, a.file_id, a.created_at, u.display_name, u.initials
+         FROM activity a JOIN users u ON u.id = a.actor_id
+         WHERE a.org_id = $2 AND (
+           a.site_id = $1
+           OR a.file_id IN (SELECT i.id FROM items i JOIN libraries l ON l.id = i.library_id
+                            WHERE l.site_id = $1))
+         ORDER BY a.created_at DESC LIMIT 50`,
+        [site.id, user.orgId],
+      );
+      return {
+        events: rows.map((r) => ({
+          id: r.id, action: r.action, fileId: r.file_id,
+          detail: r.detail ? decryptField(r.detail) ?? r.detail : null,
+          actor: { displayName: r.display_name, initials: r.initials },
+          createdAt: r.created_at,
+        })),
+      };
+    });
+
     // ---- libraries ----
 
     authed.post("/api/sites/:id/libraries", async (req, reply) => {
@@ -277,7 +326,7 @@ export function siteRoutes(app: FastifyInstance) {
       const id = randomUUID();
       await run("INSERT INTO libraries (id, site_id, name, kind, created_at) VALUES ($1,$2,$3,$4,$5)",
         [id, site.id, encryptField(body.name), body.kind, now()]);
-      void logActivity(user.orgId, user.id, null, "library-create", `${body.name} @ ${decryptField(site.name) ?? site.name}`);
+      void logActivity(user.orgId, user.id, null, "library-create", `${body.name} @ ${decryptField(site.name) ?? site.name}`, site.id);
       return { library: await toLibrary((await getLibrary(id))!) };
     });
 
@@ -290,15 +339,19 @@ export function siteRoutes(app: FastifyInstance) {
       if (!site || !lib || lib.site_id !== site.id || !atLeast(role, "member"))
         return reply.code(403).send({ error: "forbidden" });
       const body = libraryPatchSchema.parse(req.body);
-      // versioning + approval are governance knobs — owners only
-      if ((body.versioning !== undefined || body.approval !== undefined) && !atLeast(role, "owner")) {
-        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning or approval" });
+      // versioning + approval + inheritance are governance knobs — owners only
+      if ((body.versioning !== undefined || body.approval !== undefined || body.inherit !== undefined) && !atLeast(role, "owner")) {
+        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning, approval, or permissions" });
       }
-      if (body.approval !== undefined && !(await entitled(user.orgId, "docmgmt"))) {
-        return reply.code(402).send({ error: "plan_limit", message: "Content approval requires a paid plan" });
+      if ((body.approval !== undefined || body.inherit !== undefined) && !(await entitled(user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "This feature requires a paid plan" });
       }
-      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning), approval = COALESCE($5, approval) WHERE id = $1",
-        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null, body.approval ?? null]);
+      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning), approval = COALESCE($5, approval), inherit_permissions = COALESCE($6, inherit_permissions) WHERE id = $1",
+        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null, body.approval ?? null, body.inherit ?? null]);
+      // restoring inheritance discards unique grants (SharePoint behavior)
+      if (body.inherit === true) {
+        await run("DELETE FROM library_permissions WHERE library_id = $1", [lib.id]);
+      }
       return { library: await toLibrary((await getLibrary(lib.id))!) };
     });
 
@@ -321,13 +374,18 @@ export function siteRoutes(app: FastifyInstance) {
 
     // ---- custom columns (SharePoint site columns) ----
 
-    /** Resolve site+library+role for nested routes; null reply handled by caller. */
+    /** Resolve site+library+role for nested routes; null reply handled by
+     *  caller. Role honors broken inheritance — an explicit library grantee
+     *  reaches lib-scoped routes even without site membership, and a site
+     *  member without a grant can't reach a non-inheriting library. */
     const libCtx = async (req: FastifyRequest, reply: FastifyReply) => {
       const { user } = req as AuthedRequest;
       const { id, lid } = req.params as { id: string; lid: string };
       const site = await getSite(id);
-      const role = site ? await siteRoleFor(user, site) : null;
       const lib = site ? await getLibrary(lid) : undefined;
+      const role = site && lib && lib.site_id === site.id
+        ? await libraryRoleFor(user, site, lib)
+        : null;
       if (!site || !lib || lib.site_id !== site.id || !role) {
         void reply.code(404).send({ error: "not_found", message: "Library not found" });
         return null;
@@ -412,6 +470,60 @@ export function siteRoutes(app: FastifyInstance) {
           updatedAt: r.updated_at, submittedBy: r.display_name,
         })),
       };
+    });
+
+    // ---- unique library permissions (SharePoint "stop inheriting") ----
+
+    /** Inherit flag + explicit grants on a broken-inheritance library. */
+    authed.get("/api/sites/:id/libraries/:lid/permissions", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const rows = await q<{ user_id: string; role: SiteRole; created_at: string; display_name: string; email: string; initials: string }>(
+        `SELECT lp.user_id, lp.role, lp.created_at, u.display_name, u.email, u.initials
+         FROM library_permissions lp JOIN users u ON u.id = lp.user_id
+         WHERE lp.library_id = $1 ORDER BY lp.created_at`,
+        [ctx.lib.id],
+      );
+      return {
+        inherit: !!ctx.lib.inherit_permissions,
+        grants: rows.map((r) => memberOut(r.user_id, r.role, r, r.created_at)),
+      };
+    });
+
+    authed.post("/api/sites/:id/libraries/:lid/permissions", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      if (ctx.lib.inherit_permissions) {
+        return reply.code(409).send({ error: "conflict", message: "Stop inheriting permissions before granting library access" });
+      }
+      const body = z.object({
+        email: z.string().email(),
+        role: z.enum(["owner", "member", "visitor"]).default("member"),
+      }).parse(req.body);
+      const target = await one<{ id: string; org_id: string }>(
+        "SELECT id, org_id FROM users WHERE email = $1", [body.email]);
+      if (!target || target.org_id !== ctx.user.orgId) {
+        return reply.code(404).send({ error: "not_found", message: "No workspace member with that email" });
+      }
+      await run(
+        `INSERT INTO library_permissions (library_id, user_id, role, created_at) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (library_id, user_id) DO UPDATE SET role = excluded.role`,
+        [ctx.lib.id, target.id, body.role, now()],
+      );
+      void logActivity(ctx.user.orgId, ctx.user.id, null, "library-grant",
+        `${body.email} → ${body.role} @ ${decryptField(ctx.lib.name) ?? ctx.lib.name}`, ctx.site.id);
+      return { ok: true };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/permissions/:uid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { uid } = req.params as { uid: string };
+      await run("DELETE FROM library_permissions WHERE library_id = $1 AND user_id = $2", [ctx.lib.id, uid]);
+      return { ok: true };
     });
 
     // ---- saved views ----

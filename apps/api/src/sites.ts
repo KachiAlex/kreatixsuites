@@ -23,6 +23,7 @@ export interface LibraryRow {
   kind: Library["kind"];
   versioning: "major" | "minor";
   approval: boolean;
+  inherit_permissions: boolean;
   created_at: string;
 }
 
@@ -53,44 +54,68 @@ const SITE_PERM: Record<SiteRole, Permission> = {
   visitor: "viewer",
 };
 
-/** Permission a user gains on library items via site membership, or null.
- *  Single join query — used by permissionFor when item.library_id is set. */
+/** Permission a user gains on library items via site membership (or an
+ *  explicit library grant when inheritance is broken), or null. Single join
+ *  query — used by permissionFor when item.library_id is set. */
 export async function libraryPermission(userId: string, libraryId: string): Promise<Permission | null> {
   const row = await one<{
     member_role: SiteRole | null;
+    lib_role: SiteRole | null;
+    inherit: boolean;
     owner_id: string;
     visibility: string;
     site_org: string;
     user_role: string;
     user_org: string;
   }>(
-    `SELECT sm.role AS member_role, st.owner_id, st.visibility, st.org_id AS site_org,
+    `SELECT sm.role AS member_role, lp.role AS lib_role, l.inherit_permissions AS inherit,
+            st.owner_id, st.visibility, st.org_id AS site_org,
             u.role AS user_role, u.org_id AS user_org
      FROM libraries l
      JOIN sites st ON st.id = l.site_id
      JOIN users u ON u.id = $2
      LEFT JOIN site_members sm ON sm.site_id = st.id AND sm.user_id = $2
+     LEFT JOIN library_permissions lp ON lp.library_id = l.id AND lp.user_id = $2
      WHERE l.id = $1`,
     [libraryId, userId],
   );
   if (!row || row.site_org !== row.user_org) return null;
+  // site owner + org admins always reach every library (site-collection admin)
+  if (row.owner_id === userId || row.user_role === "owner" || row.user_role === "admin")
+    return "owner";
+  if (!row.inherit) return row.lib_role ? SITE_PERM[row.lib_role] : null;
   const role: SiteRole | null =
-    row.owner_id === userId ? "owner"
-    : row.member_role ?? (row.user_role === "owner" || row.user_role === "admin" ? "owner"
-    : row.visibility === "org" ? "visitor" : null);
+    row.member_role ?? (row.visibility === "org" ? "visitor" : null);
   return role ? SITE_PERM[role] : null;
 }
 
+/** Effective site-style role on a specific library — handler-level variant of
+ *  libraryPermission that also honors broken inheritance. Used by library-
+ *  scoped routes (columns, views, pending queue) and list browsing. */
+export async function libraryRoleFor(user: Userish, site: SiteRow, lib: LibraryRow): Promise<SiteRole | null> {
+  if (site.org_id !== user.orgId) return null;
+  if (site.owner_id === user.id || user.role === "owner" || user.role === "admin") return "owner";
+  if (!lib.inherit_permissions) {
+    const g = await one<{ role: SiteRole }>(
+      "SELECT role FROM library_permissions WHERE library_id = $1 AND user_id = $2",
+      [lib.id, user.id]);
+    return g?.role ?? null;
+  }
+  return siteRoleFor(user, site);
+}
+
 /** IDs of every library the user can see — member sites, org-visible sites,
- *  and (for org owner/admin) all sites in the org. Used by Drive listings. */
+ *  explicit grants on broken-inheritance libraries, and (for org owner/admin)
+ *  all sites in the org. Used by Drive listings. */
 export async function visibleLibraryIds(user: Userish): Promise<string[]> {
   const rows = await q<{ id: string }>(
-    `SELECT l.id FROM libraries l JOIN sites st ON st.id = l.site_id
+    `SELECT l.id FROM libraries l
+     JOIN sites st ON st.id = l.site_id
+     LEFT JOIN site_members sm ON sm.site_id = st.id AND sm.user_id = $2
+     LEFT JOIN library_permissions lp ON lp.library_id = l.id AND lp.user_id = $2
      WHERE st.org_id = $1 AND (
-       st.visibility = 'org'
-       OR $3::boolean
-       OR EXISTS (SELECT 1 FROM site_members sm WHERE sm.site_id = st.id AND sm.user_id = $2)
-       OR st.owner_id = $2)`,
+       $3::boolean OR st.owner_id = $2 OR lp.user_id IS NOT NULL
+       OR (l.inherit_permissions AND (st.visibility = 'org' OR sm.user_id IS NOT NULL)))`,
     [user.orgId, user.id, user.role === "owner" || user.role === "admin"],
   );
   return rows.map((r) => r.id);
@@ -120,6 +145,7 @@ export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Li
     kind: row.kind,
     versioning: row.versioning === "minor" ? "minor" : "major",
     approval: !!row.approval,
+    inheritPermissions: row.inherit_permissions !== false,
     itemCount,
     createdAt: row.created_at,
   };

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, DriveItem, LibraryColumn } from "@kreatix/shared";
+import type { ColumnType, DriveItem, Library, LibraryColumn, LibraryGrant, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -84,6 +84,111 @@ export function ColumnsDialog({ siteId, libId, columns, onClose, onChange, toast
       </div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-primary btn-sm" disabled={busy || !name.trim()} onClick={() => void add()}>Add column</button>
+        <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Unique-permissions manager — SharePoint's "stop inheriting permissions":
+ *  toggles library inheritance and manages per-library grants. Owners only. */
+export function PermsDialog({ siteId, lib, onClose, onChange, toast }: {
+  siteId: string; lib: Library;
+  onClose: () => void;
+  onChange: (lib: Library) => void;
+  toast: (m: string) => void;
+}) {
+  const base = `/api/sites/${siteId}/libraries/${lib.id}`;
+  const [grants, setGrants] = useState<LibraryGrant[]>([]);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<SiteRole>("member");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const r = await api.get<{ inherit: boolean; grants: LibraryGrant[] }>(`${base}/permissions`);
+    setGrants(r.grants);
+  };
+  useEffect(() => { void load().catch(() => {}); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [base]);
+
+  const setInherit = async (inherit: boolean) => {
+    if (!inherit && !confirm(
+      `Stop inheriting permissions? Only people you grant below — plus site owners — will see "${lib.name}".`)) return;
+    try {
+      const r = await api.patch<{ library: Library }>(base, { inherit });
+      onChange(r.library);
+      toast(inherit ? "Inheriting permissions from the site" : "Unique permissions enabled");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const add = async () => {
+    if (!email.trim() || busy) return;
+    setBusy(true);
+    try {
+      await api.post(`${base}/permissions`, { email: email.trim(), role });
+      setEmail("");
+      await load();
+      toast("Access granted");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+    setBusy(false);
+  };
+
+  const remove = async (g: LibraryGrant) => {
+    try {
+      await api.del(`${base}/permissions/${g.userId}`);
+      setGrants((l) => l.filter((x) => x.userId !== g.userId));
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const updateRole = async (g: LibraryGrant, r: SiteRole) => {
+    try {
+      await api.post(`${base}/permissions`, { email: g.user.email, role: r });
+      setGrants((l) => l.map((x) => (x.userId === g.userId ? { ...x, role: r } : x)));
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  return (
+    <Modal onClose={onClose} label="Library permissions">
+      <h2>Permissions — {lib.name}</h2>
+      <div className="dlg-row">
+        <label style={{ flex: 1 }}>Inherit permissions from the site</label>
+        <input type="checkbox" checked={lib.inheritPermissions !== false}
+          onChange={(e) => void setInherit(e.target.checked)} style={{ flex: "none" }} />
+      </div>
+      {lib.inheritPermissions !== false ? (
+        <p className="d-sub">Everyone's site role applies — owners manage, members edit, visitors view.</p>
+      ) : (
+        <>
+          <p className="d-sub">Unique permissions — only the people below (and site owners) can open this library.</p>
+          <div className="field" style={{ display: "flex", gap: 8 }}>
+            <input style={{ flex: 1 }} value={email} onChange={(e) => setEmail(e.target.value)}
+              placeholder="colleague@company.com" onKeyDown={(e) => e.key === "Enter" && void add()} />
+            <select value={role} onChange={(e) => setRole(e.target.value as SiteRole)} style={{ width: 110 }}>
+              <option value="member">Member</option>
+              <option value="owner">Owner</option>
+              <option value="visitor">Visitor</option>
+            </select>
+            <button className="btn-primary btn-sm" disabled={busy} onClick={() => void add()}>Add</button>
+          </div>
+          {grants.map((g) => (
+            <div className="share-row" key={g.userId}>
+              <div className="c-av">{g.user.initials}</div>
+              <div>
+                <b style={{ fontSize: 12.5 }}>{g.user.displayName}</b>
+                <div style={{ fontSize: 11, color: "var(--muted)" }}>{g.user.email}</div>
+              </div>
+              <select value={g.role} style={{ marginLeft: "auto", width: 100, height: 30, fontSize: 11.5 }}
+                onChange={(e) => void updateRole(g, e.target.value as SiteRole)}>
+                <option value="owner">Owner</option>
+                <option value="member">Member</option>
+                <option value="visitor">Visitor</option>
+              </select>
+              <button className="x" onClick={() => void remove(g)}>✕</button>
+            </div>
+          ))}
+          {!grants.length && <p className="empty" style={{ margin: "8px 0" }}>No grants yet — only site owners can see this library.</p>}
+        </>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
       </div>
     </Modal>

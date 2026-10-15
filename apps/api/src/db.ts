@@ -429,6 +429,22 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // requests mark the head draft pending until a site owner approves/rejects
   await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS approval BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS pending BOOLEAN NOT NULL DEFAULT false`);
+  // unique library permissions (SharePoint "stop inheriting") — when
+  // inherit_permissions is false, only library_permissions grants + site
+  // owner / org admins can reach the library's items
+  await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS inherit_permissions BOOLEAN NOT NULL DEFAULT true`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS library_permissions (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',        -- owner | member | visitor
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (library_id, user_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_library_perms_user ON library_permissions(user_id)`);
+  // site-level activity scoping — site events (member add, settings) carry the
+  // site id; file events inside libraries resolve their site via the item join
+  await pool.query(`ALTER TABLE activity ADD COLUMN IF NOT EXISTS site_id TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

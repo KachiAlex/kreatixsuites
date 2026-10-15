@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
-import { getSite, getLibrary, siteRoleFor } from "../sites.js";
+import { getLibrary, libraryPermission } from "../sites.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -68,18 +68,18 @@ export async function publishHead(item: ItemRow): Promise<number | null> {
 }
 
 /** Content approval gate: when the item's library requires approval, anyone
- *  below site-owner rank (including the file's creator) submits instead of
- *  publishing — only site owners are approvers (SharePoint "Submit for
- *  approval"). Returns true when the request was diverted to the queue. */
+ *  below owner rank on the library (including the file's creator) submits
+ *  instead of publishing — only owner-rank users are approvers (SharePoint
+ *  "Submit for approval"). Returns true when the request went to the queue. */
 export async function submitForApproval(
   item: ItemRow,
   user: { id: string; orgId: string; role: string },
 ): Promise<boolean> {
   if (!item.library_id) return false;
   const lib = await getLibrary(item.library_id);
-  const site = lib?.approval ? await getSite(lib.site_id) : undefined;
-  const role = site ? await siteRoleFor(user, site) : null;
-  if (!role || role === "owner") return false;
+  if (!lib?.approval) return false;
+  const perm = await libraryPermission(user.id, item.library_id);
+  if (!perm || perm === "owner") return false;
   const head = await headVersion(item.id);
   if (!head || head.published) return false;
   await run("UPDATE versions SET pending = true WHERE id = $1", [head.id]);

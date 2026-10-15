@@ -7,7 +7,7 @@ import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
-import { ColumnsDialog, PropertiesDialog } from "../components/LibraryDialogs";
+import { ColumnsDialog, PermsDialog, PropertiesDialog } from "../components/LibraryDialogs";
 import { prefetchEditorsFor } from "./editors";
 import { kindForPath } from "../lib/offline/openLocal";
 
@@ -27,6 +27,7 @@ export function LibraryPage() {
   const [folderName, setFolderName] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
+  const [permsOpen, setPermsOpen] = useState(false);
   const [viewMenu, setViewMenu] = useState(false);
   const [checkin, setCheckin] = useState<DriveItem | null>(null);
   const [propsFor, setPropsFor] = useState<DriveItem | null>(null);
@@ -183,6 +184,7 @@ export function LibraryPage() {
         <h2>{folderId ? folderName ?? "Folder" : lib?.name ?? "Library"}
           {lib?.versioning === "minor" && <span className="perm-badge" style={{ marginLeft: 8 }}>minor versioning</span>}
           {lib?.approval && <span className="perm-badge" style={{ marginLeft: 8 }}>approval required</span>}
+          {lib?.inheritPermissions === false && <span className="perm-badge" style={{ marginLeft: 8 }}>🔒 unique permissions</span>}
         </h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, position: "relative" }} ref={newRef}>
           <button className="btn-primary btn-sm" disabled={creating} onClick={() => setNewOpen((v) => !v)}>
@@ -269,6 +271,9 @@ export function LibraryPage() {
           {canManage && (
             <button className="btn-ghost btn-sm" onClick={() => setColsOpen(true)}>☷ Columns</button>
           )}
+          {canManage && (
+            <button className="btn-ghost btn-sm" onClick={() => setPermsOpen(true)}>🔒 Permissions</button>
+          )}
         </div>
       )}
 
@@ -284,6 +289,8 @@ export function LibraryPage() {
         onClose={() => setPropsFor(null)} onDone={refresh} toast={toast} />}
       {colsOpen && <ColumnsDialog siteId={siteId} libId={libId} columns={columns}
         onClose={() => setColsOpen(false)} onChange={setColumns} toast={toast} />}
+      {permsOpen && lib && <PermsDialog siteId={siteId} lib={lib}
+        onClose={() => setPermsOpen(false)} onChange={setLib} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );

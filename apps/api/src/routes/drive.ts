@@ -5,7 +5,7 @@ import { q as dbq, one, run, now, tx } from "../db.js";
 import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { entitled } from "../billing.js";
-import { getSite, getLibrary, siteRoleFor, visibleLibraryIds } from "../sites.js";
+import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds } from "../sites.js";
 import { publishHead, submitForApproval } from "./content.js";
 import { putBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
@@ -114,13 +114,13 @@ export function driveRoutes(app: FastifyInstance) {
 
     if (q.library !== undefined) {
       const lib = await getLibrary(q.library);
-      const site = lib ? await getSite(lib.site_id) : undefined;
-      const role = site ? await siteRoleFor(user, site) : null;
-      if (!lib || !site || !role) {
+      // grant-aware access: covers site roles AND broken-inheritance grants
+      const perm = lib ? await libraryPermission(user.id, lib.id) : null;
+      if (!lib || !perm) {
         return reply.code(404).send({ error: "not_found", message: "Library not found" });
       }
-      libRole = role;
-      approver = role === "owner";
+      libRole = perm === "owner" ? "owner" : perm === "editor" ? "member" : "visitor";
+      approver = perm === "owner";
       rows = await dbq<ItemRow>(
         `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.library_id = $2
          AND i.parent_id IS NULL`,
@@ -136,9 +136,7 @@ export function driveRoutes(app: FastifyInstance) {
           return reply.code(404).send({ error: "not_found", message: "Folder not found" });
         }
         if (parent.library_id) {
-          const plib = await getLibrary(parent.library_id);
-          const psite = plib ? await getSite(plib.site_id) : undefined;
-          approver = (psite ? await siteRoleFor(user, psite) : null) === "owner";
+          approver = (await libraryPermission(user.id, parent.library_id)) === "owner";
         }
         rows = await dbq<ItemRow>(
           `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.parent_id = $2`,
@@ -167,10 +165,27 @@ export function driveRoutes(app: FastifyInstance) {
         [user.id],
       );
     } else if (q.view === "trash") {
-      rows = await dbq<ItemRow>(
-        "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC",
-        [user.id],
-      );
+      // site-scoped recycle bin (SharePoint): site owners see anything trashed
+      // inside the site's libraries, regardless of who owned the file
+      const siteScope = (req.query as { site?: string }).site;
+      if (siteScope) {
+        const site = await getSite(siteScope);
+        const role = site ? await siteRoleFor(user, site) : null;
+        if (!site || role !== "owner") {
+          return reply.code(403).send({ error: "forbidden", message: "Only site owners can view the site recycle bin" });
+        }
+        rows = await dbq<ItemRow>(
+          `SELECT * FROM items WHERE trashed AND media_for IS NULL
+           AND library_id IN (SELECT id FROM libraries WHERE site_id = $1)
+           ORDER BY updated_at DESC`,
+          [site.id],
+        );
+      } else {
+        rows = await dbq<ItemRow>(
+          "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC",
+          [user.id],
+        );
+      }
     } else if (q.view === "mirror") {
       // offline-shell sync: complete non-trashed set (folders included, no
       // cap) so the local mirror can purge items deleted on other devices
@@ -750,22 +765,19 @@ export function driveRoutes(app: FastifyInstance) {
 const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
 const atLeastRank = (role: string | null, need: string) => role !== null && (SITE_RANK[role] ?? 0) >= SITE_RANK[need];
 
-/** Site 'member' or 'owner' role required to write into a library. */
+/** Library-level editor rank required to write into a library — resolves
+ *  site roles and broken-inheritance grants alike. */
 async function canWriteLibrary(user: { id: string; orgId: string; role: string }, libraryId: string): Promise<boolean> {
-  const lib = await getLibrary(libraryId);
-  const site = lib ? await getSite(lib.site_id) : undefined;
-  const role = site ? await siteRoleFor(user, site) : null;
-  return role === "owner" || role === "member";
+  return hasPermission(await libraryPermission(user.id, libraryId), "editor");
 }
 
-/** Approver rank — in a library that's the SITE owner role (a member who
- *  created a file can't approve their own submission); outside libraries it
+/** Approver rank — in a library that's owner rank on the LIBRARY (site owner
+ *  or an explicit 'owner' grant on a non-inheriting library); a member who
+ *  created a file can't approve their own submission. Outside libraries it
  *  falls back to item ownership. */
 async function canApprove(user: { id: string; orgId: string; role: string }, item: ItemRow): Promise<boolean> {
   if (item.library_id) {
-    const lib = await getLibrary(item.library_id);
-    const site = lib ? await getSite(lib.site_id) : undefined;
-    return (site ? await siteRoleFor(user, site) : null) === "owner";
+    return (await libraryPermission(user.id, item.library_id)) === "owner";
   }
   return hasPermission(await permissionFor(user.id, item), "owner");
 }

@@ -88,9 +88,9 @@ export function touchItem(id: string) {
   return run("UPDATE items SET updated_at = $1 WHERE id = $2", [now(), id]);
 }
 
-export function logActivity(orgId: string, actorId: string, fileId: string | null, action: string, detail?: string) {
+export function logActivity(orgId: string, actorId: string, fileId: string | null, action: string, detail?: string, siteId?: string) {
   return run(
-    "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-    [randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), now()],
+    "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, site_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    [randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), siteId ?? null, now()],
   );
 }

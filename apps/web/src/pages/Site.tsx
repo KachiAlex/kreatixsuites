@@ -3,9 +3,15 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import type { DriveItem, Library, Site, SiteMember, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
+import { KIND_META, timeAgo } from "../lib/format";
 import { Modal } from "../components/Modal";
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
+
+interface SiteEvent {
+  id: string; action: string; detail: string | null; fileId: string | null;
+  actor: { displayName: string; initials: string }; createdAt: string;
+}
 
 const TYPE_LABEL: Record<Site["type"], string> = {
   team: "Team site", project: "Project site",
@@ -23,6 +29,8 @@ export function SitePage() {
   const [libDlg, setLibDlg] = useState(false);
   const [memberDlg, setMemberDlg] = useState(false);
   const [settingsDlg, setSettingsDlg] = useState(false);
+  const [activityDlg, setActivityDlg] = useState(false);
+  const [trashDlg, setTrashDlg] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +68,8 @@ export function SitePage() {
             {members.slice(0, 5).map((m) => <span key={m.userId} title={`${m.user.displayName} — ${m.role}`}>{m.user.initials}</span>)}
           </div>
           <button className="btn-ghost btn-sm" onClick={() => setMemberDlg(true)}>Members</button>
+          <button className="btn-ghost btn-sm" onClick={() => setActivityDlg(true)}>Activity</button>
+          {canManage && <button className="btn-ghost btn-sm" onClick={() => setTrashDlg(true)}>Recycle bin</button>}
           {canManage && <button className="btn-ghost btn-sm" onClick={() => setSettingsDlg(true)}>Settings</button>}
         </div>
       </div>
@@ -78,10 +88,11 @@ export function SitePage() {
       <div className="site-grid">
         {libraries.map((l) => (
           <button key={l.id} className="site-card" onClick={() => navigate(`/sites/${site.id}/library/${l.id}`)}>
-            <span className="site-card-ico">🗂</span>
+            <span className="site-card-ico">{l.inheritPermissions === false ? "🔒" : "🗂"}</span>
             <span className="site-card-body">
               <b>{l.name}</b>
-              <span>{l.itemCount ?? 0} item{(l.itemCount ?? 0) === 1 ? "" : "s"} · {l.kind}</span>
+              <span>{l.itemCount ?? 0} item{(l.itemCount ?? 0) === 1 ? "" : "s"} · {l.kind}
+                {l.inheritPermissions === false ? " · unique permissions" : ""}</span>
             </span>
             <span style={{ color: "var(--muted)" }}>›</span>
           </button>
@@ -95,6 +106,8 @@ export function SitePage() {
       {settingsDlg && <SiteSettingsDialog site={site} toast={toast}
         onClose={() => { setSettingsDlg(false); void load(); }}
         onDeleted={() => navigate("/sites")} />}
+      {activityDlg && <ActivityDialog site={site} onClose={() => setActivityDlg(false)} />}
+      {trashDlg && <TrashDialog site={site} toast={toast} onClose={() => setTrashDlg(false)} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );
@@ -331,6 +344,87 @@ function SiteSettingsDialog({ site, onClose, onDeleted, toast }: {
         <button className="btn-primary" disabled={!name.trim() || busy} onClick={() => void save()}>
           {busy ? "Saving…" : "Save"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Site activity feed — site events + file activity across its libraries. */
+function ActivityDialog({ site, onClose }: { site: Site; onClose: () => void }) {
+  const [events, setEvents] = useState<SiteEvent[] | null>(null);
+  useEffect(() => {
+    void api.get<{ events: SiteEvent[] }>(`/api/sites/${site.id}/activity`)
+      .then((r) => setEvents(r.events)).catch(() => setEvents([]));
+  }, [site.id]);
+  return (
+    <Modal onClose={onClose} label="Site activity">
+      <h2>Activity — {site.name}</h2>
+      {!events && <p className="d-sub">Loading…</p>}
+      {events && !events.length && <p className="empty" style={{ margin: "8px 0" }}>Nothing yet.</p>}
+      {events?.map((e) => (
+        <div className="share-row" key={e.id}>
+          <div className="c-av">{e.actor.initials}</div>
+          <div style={{ flex: 1 }}>
+            <b style={{ fontSize: 12.5 }}>{e.actor.displayName}</b>
+            <span className="perm-badge" style={{ marginLeft: 8 }}>{e.action}</span>
+            <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{e.detail ?? "—"}</div>
+          </div>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>{timeAgo(e.createdAt)}</span>
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Site recycle bin — anything trashed inside the site's libraries, restorable
+ *  by owners regardless of who owned or deleted it (SharePoint site bin). */
+function TrashDialog({ site, toast, onClose }: { site: Site; toast: (m: string) => void; onClose: () => void }) {
+  const [items, setItems] = useState<DriveItem[] | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const r = await api.get<{ items: DriveItem[] }>(`/api/drive?view=trash&site=${site.id}`);
+      setItems(r.items);
+    } catch { setItems([]); }
+  }, [site.id]);
+  useEffect(() => { void load(); }, [load]);
+
+  const restore = async (it: DriveItem) => {
+    try {
+      await api.post(`/api/drive/${it.id}/restore`);
+      toast(`Restored "${it.name}"`);
+      setItems((l) => l?.filter((x) => x.id !== it.id) ?? null);
+    } catch (e) { toast(e instanceof Error ? e.message : "Restore failed"); }
+  };
+  const purge = async (it: DriveItem) => {
+    if (!confirm(`Permanently delete "${it.name}"? This cannot be undone.`)) return;
+    try {
+      await api.del(`/api/drive/${it.id}?permanent=true`);
+      setItems((l) => l?.filter((x) => x.id !== it.id) ?? null);
+    } catch (e) { toast(e instanceof Error ? e.message : "Delete failed"); }
+  };
+
+  return (
+    <Modal onClose={onClose} label="Site recycle bin">
+      <h2>Recycle bin — {site.name}</h2>
+      <p className="d-sub">Files deleted from this site's libraries.</p>
+      {!items && <p className="d-sub">Loading…</p>}
+      {items && !items.length && <p className="empty" style={{ margin: "8px 0" }}>The recycle bin is empty.</p>}
+      {items?.map((it) => (
+        <div className="share-row" key={it.id}>
+          <div className="c-av">{KIND_META[it.kind]?.short ?? "?"}</div>
+          <div style={{ flex: 1 }}>
+            <b style={{ fontSize: 12.5 }}>{it.name}</b>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>Deleted {timeAgo(it.updatedAt)}</div>
+          </div>
+          <button className="btn-ghost btn-sm" onClick={() => void restore(it)}>Restore</button>
+          <button className="x" title="Delete permanently" onClick={() => void purge(it)}>✕</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
       </div>
     </Modal>
   );
