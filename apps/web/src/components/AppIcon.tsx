@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -8,6 +8,7 @@ const TILE: Record<AppKind, string> = {
   sheets: "#1F9D66",
   present: "#7C5CD6",
   pdf: "#D84B57",
+  mail: "#0FA3A3",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -54,6 +55,14 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           fontFamily="Inter, ui-sans-serif, system-ui, sans-serif" fontWeight="800" fontSize="19" letterSpacing="1">
           PDF
         </text>
+      );
+    case "mail":
+      // Envelope
+      return (
+        <g fill="none" stroke="#fff" strokeWidth="3.5" strokeLinejoin="round" strokeLinecap="round">
+          <rect x="13" y="17" width="38" height="30" rx="4" />
+          <path d="M15 21l17 14 17-14" />
+        </g>
       );
     case "folder":
       return <path d="M12 18h16l5 7h19v23a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3Z" fill="#fff" />;

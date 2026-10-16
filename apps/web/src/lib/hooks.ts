@@ -45,6 +45,17 @@ export function useSites() {
   return { sites, refresh };
 }
 
+/** True when the server has Kreatix Mail wired up — gates the Mail nav entry. */
+export function useMailEnabled() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    api.get<{ enabled: boolean }>("/api/mail/status")
+      .then((r) => setEnabled(!!r.enabled))
+      .catch(() => {});
+  }, []);
+  return enabled;
+}
+
 export function useToast() {
   const [msg, setMsg] = useState<string | null>(null);
   const toast = useCallback((m: string) => {
