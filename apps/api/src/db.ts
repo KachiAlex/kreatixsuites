@@ -585,6 +585,24 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backups TEXT`);
   // SCIM externalId correlation (IdP-side user id)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS scim_external_id TEXT`);
+  // Custom mail domains per org — DNS-TXT verified before mailboxes use them
+  await pool.query(`CREATE TABLE IF NOT EXISTS org_domains (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    domain TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    verify_token TEXT NOT NULL,
+    is_primary BOOLEAN NOT NULL DEFAULT false,
+    mx_ok BOOLEAN NOT NULL DEFAULT false,
+    verified_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(org_id, domain)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_org_domains_org ON org_domains(org_id)`);
+  // at most one verified claimant per domain, one primary per org
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_domains_verified ON org_domains(domain) WHERE status = 'verified'`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_domains_primary ON org_domains(org_id) WHERE is_primary`);
+
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);

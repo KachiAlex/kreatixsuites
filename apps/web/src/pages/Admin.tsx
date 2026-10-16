@@ -1,7 +1,7 @@
 // Admin policy center — org members, DLP/retention policies, audit log,
 // workspace billing; plus the platform superadmin surface when user.isSuper.
 // Server enforces owner/admin role; this UI is gated the same way.
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { PUBLIC_ORIGIN } from "../lib/platform";
 import { timeAgo } from "../lib/format";
@@ -52,6 +52,11 @@ interface AuditEntry {
   actor_name: string | null; actor_email: string | null;
   file_name: string | null; file_id: string | null;
 }
+interface DnsRecord { type: string; host: string; value: string; purpose: string; required: boolean; ok: boolean | null }
+interface OrgDomain {
+  id: string; domain: string; status: string; isPrimary: boolean; mxOk: boolean;
+  verifyToken: string | null; verifiedAt: string | null; createdAt: string; dns: DnsRecord[];
+}
 interface Metrics {
   uptimeSec: number;
   requests: { total: number; errors5xx: number; byStatus: Record<string, number> };
@@ -83,6 +88,10 @@ export function Admin() {
   const [filter, setFilter] = useState("");
   const [scimTokens, setScimTokens] = useState<{ id: string; label: string | null; created_at: string }[]>([]);
   const [newScimToken, setNewScimToken] = useState("");
+  const [domains, setDomains] = useState<OrgDomain[]>([]);
+  const [newDomain, setNewDomain] = useState("");
+  const [domainBusy, setDomainBusy] = useState<string | null>(null);
+  const [openDomain, setOpenDomain] = useState<string | null>(null);
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -100,8 +109,9 @@ export function Admin() {
         api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
         api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
         api.get<AiUsage>("/api/billing/ai-usage"),
+        api.get<{ domains: OrgDomain[] }>("/api/admin/domains"),
       ];
-      const [m, p, a, mx, inv, bill, scim, ai] = await Promise.all(reqs) as [
+      const [m, p, a, mx, inv, bill, scim, ai, dom] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[] },
@@ -110,6 +120,7 @@ export function Admin() {
         { subscription: BillingSub; payments: Payment[] },
         { tokens: { id: string; label: string | null; created_at: string }[] },
         AiUsage,
+        { domains: OrgDomain[] },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -120,6 +131,7 @@ export function Admin() {
       setBilling(bill);
       setScimTokens(scim.tokens);
       setAiUsage(ai);
+      setDomains(dom.domains);
     }
   }, [isSuper]);
 
@@ -180,6 +192,57 @@ export function Admin() {
   const revokeScimToken = async (id: string) => {
     await api.del(`/api/admin/scim/tokens/${id}`).catch(() => {});
     setScimTokens((xs) => xs.filter((t) => t.id !== id));
+  };
+
+  const addDomain = async () => {
+    const domain = newDomain.trim().toLowerCase();
+    if (!domain) return;
+    setDomainBusy("add");
+    try {
+      const r = await api.post<{ domain: OrgDomain }>("/api/admin/domains", { domain });
+      setDomains((xs) => [...xs, r.domain]);
+      setNewDomain("");
+      setOpenDomain(r.domain.id);
+      toast(`Added ${r.domain.domain} — publish the TXT record, then verify`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not add domain");
+    }
+    setDomainBusy(null);
+  };
+
+  const verifyDomain = async (d: OrgDomain) => {
+    setDomainBusy(d.id);
+    try {
+      const r = await api.post<{ domain: OrgDomain }>(`/api/admin/domains/${d.id}/verify`, {});
+      setDomains((xs) => xs.map((x) => (x.id === d.id ? r.domain : x)));
+      toast(`${d.domain} verified — set it primary to use it for mailboxes`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Verification failed");
+      void load();
+    }
+    setDomainBusy(null);
+  };
+
+  const setPrimaryDomain = async (d: OrgDomain) => {
+    setDomainBusy(d.id);
+    try {
+      await api.post(`/api/admin/domains/${d.id}/primary`, {});
+      setDomains((xs) => xs.map((x) => ({ ...x, isPrimary: x.id === d.id })));
+      toast(`New mailboxes will use @${d.domain}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    }
+    setDomainBusy(null);
+  };
+
+  const removeDomain = async (d: OrgDomain) => {
+    if (!confirm(`Remove ${d.domain}? Mailboxes already created keep their address.`)) return;
+    await api.del(`/api/admin/domains/${d.id}`).catch((e) => toast((e as Error).message));
+    setDomains((xs) => xs.filter((x) => x.id !== d.id));
+  };
+
+  const copyRec = async (v: string) => {
+    try { await navigator.clipboard.writeText(v); toast("Copied"); } catch { /* denied */ }
   };
 
   const checkout = async (plan: string) => {
@@ -515,6 +578,88 @@ export function Admin() {
             ))}
           </tbody>
         </table></div>
+      </section>
+
+      <section className="admin-card">
+        <h2>Email domains</h2>
+        <p className="d-sub" style={{ marginTop: 0 }}>
+          Verify your company domain and new mailboxes are provisioned as <code>name@yourdomain.com</code>.
+          Without a verified domain, mailboxes use the default <code>@kreatixtech.com</code>.
+        </p>
+        <div className="audit-bar">
+          <input placeholder="acme.com" value={newDomain} style={{ minWidth: 220 }}
+            onChange={(e) => setNewDomain(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void addDomain()} />
+          <button className="btn-primary" disabled={domainBusy === "add" || !newDomain.trim()}
+            onClick={() => void addDomain()}>Add domain</button>
+        </div>
+        {domains.length > 0 && (
+          <div className="tbl-scroll"><table className="admin-table" style={{ marginTop: 10 }}>
+            <thead><tr><th>Domain</th><th>Status</th><th>Mailbox domain</th><th></th></tr></thead>
+            <tbody>
+              {domains.map((d) => (
+                <Fragment key={d.id}>
+                  <tr>
+                    <td>
+                      <button className="btn-ghost" style={{ padding: 0, fontWeight: 600 }}
+                        onClick={() => setOpenDomain(openDomain === d.id ? null : d.id)}>
+                        {openDomain === d.id ? "▾" : "▸"} {d.domain}
+                      </button>
+                    </td>
+                    <td>
+                      <span className={`role-badge ${d.status === "verified" ? "" : "warn"}`}>
+                        {d.status === "verified" ? "✓ verified" : d.status === "failed" ? "✕ failed" : "… pending"}
+                      </span>
+                      {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Kreatix Mail">MX ✓</span>}
+                    </td>
+                    <td>{d.isPrimary ? <b>primary</b> : <span className="d-sub">—</span>}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {d.status !== "verified" && (
+                        <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                          disabled={domainBusy === d.id} onClick={() => void verifyDomain(d)}>
+                          {domainBusy === d.id ? "Checking…" : "Verify"}
+                        </button>
+                      )}
+                      {d.status === "verified" && !d.isPrimary && (
+                        <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                          disabled={domainBusy === d.id} onClick={() => void setPrimaryDomain(d)}>Set primary</button>
+                      )}
+                      <button className="btn-ghost" style={{ padding: "2px 8px", fontSize: 12 }}
+                        onClick={() => void removeDomain(d)}>Remove</button>
+                    </td>
+                  </tr>
+                  {openDomain === d.id && (
+                    <tr><td colSpan={4} style={{ background: "var(--bg, #fafafa)" }}>
+                      <table className="admin-table">
+                        <thead><tr><th>Type</th><th>Host</th><th>Value</th><th>Purpose</th><th></th></tr></thead>
+                        <tbody>
+                          {d.dns.map((r, i) => (
+                            <tr key={i}>
+                              <td><code>{r.type}</code></td>
+                              <td><code>{r.host}</code></td>
+                              <td><code style={{ wordBreak: "break-all" }}>{r.value}</code></td>
+                              <td className="d-sub">
+                                {r.purpose}{r.required && " — required"}
+                                {r.ok === true && " ✓"}
+                              </td>
+                              <td><button className="btn-ghost" style={{ padding: "2px 8px", fontSize: 12 }}
+                                onClick={() => void copyRec(r.value)}>Copy</button></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <p className="d-sub" style={{ margin: "8px 0 0" }}>
+                        Publish these at your DNS provider, wait a few minutes, then click <b>Verify</b>.
+                        MX/SPF/DMARC can be added now too — inbound mail for verified domains is accepted once the MX record is live.
+                      </p>
+                    </td></tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+        {!domains.length && <div className="empty" style={{ padding: 12 }}>No domains yet.</div>}
       </section>
 
       <section className="admin-card">

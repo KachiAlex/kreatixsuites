@@ -5,10 +5,11 @@
 // Set KREATIX_MAIL_BASE + KREATIX_MAIL_JWT_SECRET + KREATIX_MAIL_ADMIN_SECRET
 // to enable; otherwise every route reports {enabled:false}.
 import { createHmac, randomBytes } from "node:crypto";
+import { resolveTxt, resolveMx } from "node:dns/promises";
 import { one, run } from "./db.js";
 
 const MAIL_BASE = () => (process.env.KREATIX_MAIL_BASE ?? "").replace(/\/+$/, "");
-const MAIL_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.com";
+const FALLBACK_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.com";
 
 export const mailEnabled = () =>
   !!(MAIL_BASE() && process.env.KREATIX_MAIL_JWT_SECRET && process.env.KREATIX_MAIL_ADMIN_SECRET);
@@ -38,18 +39,40 @@ const localpart = (email: string, id: string): string => {
 
 interface MailAccount { id: number; email: string }
 
+/** The org's verified primary domain, or the platform default. */
+async function mailDomainForOrg(orgId: string): Promise<string> {
+  const row = await one<{ domain: string }>(
+    "SELECT domain FROM org_domains WHERE org_id = $1 AND is_primary AND status = 'verified'", [orgId]);
+  return row?.domain ?? FALLBACK_DOMAIN();
+}
+
+/** DNS checks for the domain panel: verification TXT + inbound MX. */
+export async function checkDomainDns(domain: string, verifyToken: string) {
+  let txtOk = false, mxOk = false;
+  try {
+    const records = await resolveTxt(domain);
+    txtOk = records.some((chunks) => chunks.join("").trim() === `kreatix-verify=${verifyToken}`);
+  } catch { /* NXDOMAIN / no TXT */ }
+  try {
+    const mx = await resolveMx(domain);
+    mxOk = mx.some((r) => /(^|\.)kreatixtech\.com$/i.test(r.exchange.replace(/\.$/, "")));
+  } catch { /* no MX */ }
+  return { txtOk, mxOk };
+}
+
 /** Lazily create the user's mailbox through the mail admin API and remember
  *  the mapping on the users row. */
-async function ensureMailAccount(user: { id: string; email: string; displayName: string }): Promise<MailAccount> {
+async function ensureMailAccount(user: { id: string; email: string; displayName: string; orgId: string }): Promise<MailAccount> {
   const row = await one<{ mail_user_id: number | null; mail_email: string | null }>(
     "SELECT mail_user_id, mail_email FROM users WHERE id = $1", [user.id]);
   if (row?.mail_user_id && row.mail_email)
     return { id: row.mail_user_id, email: row.mail_email };
 
+  const domain = await mailDomainForOrg(user.orgId);
   const base = localpart(user.email, user.id);
   const password = randomBytes(24).toString("hex"); // SSO bridge — never used for login
   for (let i = 0; i < 8; i++) {
-    const address = i === 0 ? `${base}@${MAIL_DOMAIN()}` : `${base}+${randomBytes(2).toString("hex")}@${MAIL_DOMAIN()}`;
+    const address = i === 0 ? `${base}@${domain}` : `${base}+${randomBytes(2).toString("hex")}@${domain}`;
     const res = await fetch(`${MAIL_BASE()}/api/admin/users`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
@@ -68,7 +91,7 @@ async function ensureMailAccount(user: { id: string; email: string; displayName:
 
 /** Authenticated fetch against the mail service on the user's behalf. */
 export async function mailFetch(
-  user: { id: string; email: string; displayName: string },
+  user: { id: string; email: string; displayName: string; orgId: string },
   path: string, init: { method?: string; body?: Buffer; contentType?: string } = {},
 ): Promise<Response> {
   const acct = await ensureMailAccount(user);
@@ -85,7 +108,7 @@ export async function mailFetch(
   return res;
 }
 
-export async function mailStatus(user: { id: string; email: string; displayName: string }) {
+export async function mailStatus(user: { id: string; email: string; displayName: string; orgId: string }) {
   if (!mailEnabled()) return { enabled: false as const };
   const acct = await ensureMailAccount(user);
   return { enabled: true as const, address: acct.email };

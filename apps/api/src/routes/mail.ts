@@ -1,10 +1,38 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { randomBytes, randomUUID } from "node:crypto";
+import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
-import { mailEnabled, mailFetch, mailStatus } from "../mailBridge.js";
+import { checkDomainDns, mailEnabled, mailFetch, mailStatus } from "../mailBridge.js";
+import { q, one, run } from "../db.js";
 
 /** Paths the suite session may reach on the mail service — everything user-
  *  facing; admin/auth internals are never proxied. */
 const BLOCKED = /^(admin|auth)(\/|$)/;
+
+const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
+
+const domainSchema = z.object({ domain: z.string().trim().toLowerCase().regex(DOMAIN_RE, "Invalid domain") });
+
+interface DomainRow {
+  id: string; org_id: string; domain: string; status: string;
+  verify_token: string; is_primary: boolean; mx_ok: boolean;
+  verified_at: string | null; created_at: string;
+}
+
+const domainOut = (r: DomainRow) => ({
+  id: r.id, domain: r.domain, status: r.status, isPrimary: r.is_primary,
+  mxOk: r.mx_ok, verifyToken: r.status === "verified" ? null : r.verify_token,
+  verifiedAt: r.verified_at, createdAt: r.created_at,
+});
+
+/** DNS records the org admin should publish — verification is the only one
+ *  required now; MX/SPF/DKIM are shown so they can be added in one visit. */
+const dnsChecklist = (r: DomainRow) => [
+  { type: "TXT", host: "@", value: `kreatix-verify=${r.verify_token}`, purpose: "Domain verification", required: true, ok: r.status === "verified" },
+  { type: "MX", host: "@", value: "mail.kreatixtech.com (priority 10)", purpose: "Inbound mail delivery", required: false, ok: r.mx_ok },
+  { type: "TXT", host: "@", value: "v=spf1 include:spf.brevo.com mx ~all", purpose: "SPF — authorizes our sender", required: false, ok: null },
+  { type: "TXT", host: "@", value: "v=DMARC1; p=none; rua=mailto:postmaster@kreatixtech.com", purpose: "DMARC — recommended minimum", required: false, ok: null },
+];
 
 export function mailRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
@@ -17,6 +45,89 @@ export function mailRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
     }
+  });
+
+  // ── Org email domains (owner/admin only) ─────────────────────────────
+  const requireOrgAdmin = (req: AuthedRequest, reply: FastifyReply) => {
+    if (req.user.role !== "owner" && req.user.role !== "admin") {
+      reply.code(403).send({ error: "forbidden", message: "Org owner/admin only" });
+      return false;
+    }
+    return true;
+  };
+
+  app.get("/api/admin/domains", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+    const rows = await q<DomainRow>(
+      "SELECT * FROM org_domains WHERE org_id = $1 ORDER BY created_at", [user.orgId]);
+    return { domains: rows.map((r) => ({ ...domainOut(r), dns: dnsChecklist(r) })) };
+  });
+
+  app.post("/api/admin/domains", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+    const parsed = domainSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Enter a valid domain like acme.com" });
+    const domain = parsed.data.domain;
+
+    // a verified domain is claimed globally — don't let a second org queue behind it
+    const taken = await one<{ org_id: string }>(
+      "SELECT org_id FROM org_domains WHERE domain = $1 AND status = 'verified' AND org_id <> $2",
+      [domain, user.orgId]);
+    if (taken) return reply.code(409).send({ error: "conflict", message: `${domain} is already verified by another workspace` });
+
+    const row = await one<DomainRow>(
+      `INSERT INTO org_domains (id, org_id, domain, verify_token) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (org_id, domain) DO UPDATE SET verify_token = org_domains.verify_token
+       RETURNING *`,
+      [randomUUID(), user.orgId, domain, `kx-${randomBytes(12).toString("hex")}`]);
+    return reply.code(201).send({ domain: { ...domainOut(row!), dns: dnsChecklist(row!) } });
+  });
+
+  app.post("/api/admin/domains/:id/verify", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+    const { id } = req.params as { id: string };
+    const row = await one<DomainRow>("SELECT * FROM org_domains WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!row) return reply.code(404).send({ error: "not_found", message: "Domain not found" });
+
+    const dns = await checkDomainDns(row.domain, row.verify_token);
+    if (!dns.txtOk) {
+      await run("UPDATE org_domains SET mx_ok = $3, status = CASE WHEN status = 'verified' THEN 'failed' ELSE status END WHERE id = $1 AND org_id = $2",
+        [id, user.orgId, dns.mxOk]);
+      return reply.code(400).send({ error: "unverified", message: `Verification record not found at ${row.domain} — DNS changes can take a few minutes to propagate`, mxOk: dns.mxOk });
+    }
+    try {
+      await run(
+        `UPDATE org_domains SET status = 'verified', verified_at = now(), mx_ok = $3 WHERE id = $1 AND org_id = $2`,
+        [id, user.orgId, dns.mxOk]);
+    } catch {
+      return reply.code(409).send({ error: "conflict", message: `${row.domain} was verified by another workspace` });
+    }
+    const fresh = await one<DomainRow>("SELECT * FROM org_domains WHERE id = $1", [id]);
+    return { domain: { ...domainOut(fresh!), dns: dnsChecklist(fresh!) } };
+  });
+
+  app.post("/api/admin/domains/:id/primary", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+    const { id } = req.params as { id: string };
+    const row = await one<DomainRow>("SELECT * FROM org_domains WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!row) return reply.code(404).send({ error: "not_found", message: "Domain not found" });
+    if (row.status !== "verified") return reply.code(400).send({ error: "unverified", message: "Verify the domain first" });
+    await run("UPDATE org_domains SET is_primary = false WHERE org_id = $1", [user.orgId]);
+    await run("UPDATE org_domains SET is_primary = true WHERE id = $1", [id]);
+    return { ok: true };
+  });
+
+  app.delete("/api/admin/domains/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+    const { id } = req.params as { id: string };
+    const n = await run("DELETE FROM org_domains WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!n) return reply.code(404).send({ error: "not_found", message: "Domain not found" });
+    return { ok: true };
   });
 
   // Generic bridge: /api/mail/<path> → <mail>/api/<path> with a minted JWT.
