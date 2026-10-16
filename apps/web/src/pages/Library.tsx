@@ -296,7 +296,8 @@ export function LibraryPage() {
       )}
 
       <FileList items={shown} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions}
-        toast={toast} onCheckin={setCheckin} onProperties={setPropsFor} />
+        toast={toast} onCheckin={setCheckin} onProperties={setPropsFor}
+        ctNames={new Map(contentTypes.map((c) => [c.id, c.name]))} />
 
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTo(f); e.target.value = ""; }} />
@@ -304,12 +305,15 @@ export function LibraryPage() {
       {versions && <VersionsPanel item={versions} onClose={() => setVersions(null)} onRestore={refresh} toast={toast} />}
       {checkin && <CheckInDialog item={checkin} onClose={() => setCheckin(null)} onDone={refresh} toast={toast} />}
       {propsFor && <PropertiesDialog item={propsFor} siteId={siteId} libId={libId} columns={columns}
+        ctColumns={propsFor.contentTypeId
+          ? contentTypes.find((c) => c.id === propsFor.contentTypeId)?.columns
+          : undefined}
         onClose={() => setPropsFor(null)} onDone={refresh} toast={toast} />}
       {colsOpen && <ColumnsDialog siteId={siteId} libId={libId} columns={columns}
         onClose={() => setColsOpen(false)} onChange={setColumns} toast={toast} />}
       {permsOpen && lib && <PermsDialog siteId={siteId} lib={lib}
         onClose={() => setPermsOpen(false)} onChange={setLib} toast={toast} />}
-      {ctOpen && <ContentTypeDialog siteId={siteId} libraryId={libId}
+      {ctOpen && <ContentTypeDialog siteId={siteId} libraryId={libId} columns={columns}
         onClose={() => { setCtOpen(false); void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`).then((r) => setContentTypes(r.contentTypes)); }} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>

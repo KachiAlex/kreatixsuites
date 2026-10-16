@@ -15,6 +15,8 @@ interface Props {
   toast: (msg: string) => void;
   onCheckin?: (item: DriveItem) => void;
   onProperties?: (item: DriveItem) => void;
+  /** contentTypeId → type name (for the schema badge) */
+  ctNames?: Map<string, string>;
 }
 
 const LABELS = [
@@ -24,7 +26,7 @@ const LABELS = [
   { id: "restricted", name: "Restricted" },
 ];
 
-export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast, onCheckin, onProperties }: Props) {
+export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast, onCheckin, onProperties, ctNames }: Props) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [labelFor, setLabelFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -124,6 +126,9 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                     )}
                     {it.pendingApproval && (
                       <span className="perm-badge" title="Awaiting owner approval">⏳ pending</span>
+                    )}
+                    {it.contentTypeId && ctNames?.get(it.contentTypeId) && (
+                      <span className="perm-badge" title="Content type">📋 {ctNames.get(it.contentTypeId)}</span>
                     )}
                     {it.label && it.label !== "internal" && (
                       <span className={`label-badge ${it.label}`}>{it.label}</span>

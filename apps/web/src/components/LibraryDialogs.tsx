@@ -196,9 +196,11 @@ export function PermsDialog({ siteId, lib, onClose, onChange, toast }: {
 }
 
 /** Edit a library item's custom-column values ("Properties" in SharePoint). */
-export function PropertiesDialog({ item, siteId, libId, columns, onClose, onDone, toast }: {
+export function PropertiesDialog({ item, siteId, libId, columns, ctColumns, onClose, onDone, toast }: {
   item: DriveItem; siteId: string; libId: string;
   columns: LibraryColumn[];
+  /** bound columns of the item's content type — merges into required flags */
+  ctColumns?: { columnId: string; required: boolean }[];
   onClose: () => void;
   onDone: () => void;
   toast: (m: string) => void;
@@ -248,12 +250,15 @@ export function PropertiesDialog({ item, siteId, libId, columns, onClose, onDone
   return (
     <Modal onClose={onClose} label="Properties">
       <h2>Properties — {item.name}</h2>
-      {columns.map((c) => (
-        <div className="dlg-row" key={c.id}>
-          <label>{c.name}{c.required ? " *" : ""}</label>
-          {field(c)}
-        </div>
-      ))}
+      {columns.map((c) => {
+        const req = c.required || ctColumns?.some((b) => b.columnId === c.id && b.required);
+        return (
+          <div className="dlg-row" key={c.id}>
+            <label>{c.name}{req ? " *" : ""}</label>
+            {field(c)}
+          </div>
+        );
+      })}
       {!columns.length && <p className="empty" style={{ margin: "8px 0" }}>This library has no custom columns yet.</p>}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
@@ -265,9 +270,12 @@ export function PropertiesDialog({ item, siteId, libId, columns, onClose, onDone
   );
 }
 
-/** Content type manager — reusable document schemas (SharePoint). Owners only. */
-export function ContentTypeDialog({ siteId, libraryId, onClose, toast }: {
+/** Content type manager — reusable document schemas (SharePoint). Owners only.
+ *  In library scope (`libraryId` set) it also manages the type's bound columns. */
+export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }: {
   siteId: string; libraryId?: string;
+  /** library columns — needed to render the binding editor (library scope only) */
+  columns?: LibraryColumn[];
   onClose: () => void;
   toast: (m: string) => void;
 }) {
@@ -280,6 +288,7 @@ export function ContentTypeDialog({ siteId, libraryId, onClose, toast }: {
   const [allowed, setAllowed] = useState<FileKind[]>(["writer", "sheets", "present", "pdf", "file"]);
   const [isDefault, setIsDefault] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editCols, setEditCols] = useState<string | null>(null);   // ct.id being bound
 
   const load = async () => {
     const r = await api.get<{ contentTypes: ContentType[] }>(base);
@@ -310,6 +319,17 @@ export function ContentTypeDialog({ siteId, libraryId, onClose, toast }: {
 
   const toggleKind = (k: FileKind) => {
     setAllowed((a) => a.includes(k) ? a.filter((x) => x !== k) : [...a, k]);
+  };
+
+  /** Persist a type's column bindings (library scope only). */
+  const saveBinds = async (ct: ContentType, binds: { columnId: string; required: boolean }[]) => {
+    try {
+      const r = await api.put<{ columns: { columnId: string; required: boolean; position: number }[] }>(
+        `${base}/${ct.id}/columns`,
+        { columns: binds.map((b, i) => ({ columnId: b.columnId, required: b.required, position: i })) });
+      setTypes((l) => l.map((x) => (x.id === ct.id ? { ...x, columns: r.columns } : x)));
+      toast("Columns bound");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
   };
 
   return (
@@ -344,13 +364,54 @@ export function ContentTypeDialog({ siteId, libraryId, onClose, toast }: {
       </button>
       <div style={{ marginTop: 16 }}>
         {types.map((ct) => (
-          <div className="share-row" key={ct.id}>
-            <b style={{ fontSize: 12.5 }}>{ct.name}</b>
-            <span style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}>
-              {ct.allowedKinds.join(", ")}
-            </span>
-            {ct.isDefault && <span className="perm-badge" style={{ marginLeft: 8 }}>default</span>}
-            <button className="x" style={{ marginLeft: "auto" }} onClick={() => void remove(ct)}>✕</button>
+          <div key={ct.id}>
+            <div className="share-row">
+              <b style={{ fontSize: 12.5 }}>{ct.name}</b>
+              <span style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}>
+                {ct.libraryId === null ? "site · " : ""}{ct.allowedKinds.join(", ")}
+              </span>
+              {ct.isDefault && <span className="perm-badge" style={{ marginLeft: 8 }}>default</span>}
+              {libraryId && columns && (
+                <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+                  onClick={() => setEditCols(editCols === ct.id ? null : ct.id)}>
+                  {ct.columns?.length ? `${ct.columns.length} cols` : "Columns"}
+                </button>
+              )}
+              <button className="x" style={libraryId && columns ? {} : { marginLeft: "auto" }}
+                onClick={() => void remove(ct)}>✕</button>
+            </div>
+            {editCols === ct.id && libraryId && columns && (
+              <div style={{ padding: "8px 0 8px 16px", borderLeft: "2px solid var(--border)" }}>
+                {columns.map((c) => {
+                  const bound = ct.columns?.find((b) => b.columnId === c.id);
+                  return (
+                    <div className="dlg-row" key={c.id} style={{ gap: 6 }}>
+                      <input type="checkbox" checked={!!bound}
+                        onChange={(e) => {
+                          const cur = ct.columns ?? [];
+                          const next = e.target.checked
+                            ? [...cur, { columnId: c.id, required: false }]
+                            : cur.filter((b) => b.columnId !== c.id);
+                          void saveBinds(ct, next);
+                        }} />
+                      <label style={{ flex: 1 }}>{c.name} <span style={{ color: "var(--muted)", fontSize: 11 }}>({c.type})</span></label>
+                      {bound && (
+                        <label style={{ fontSize: 11.5 }}>
+                          required{" "}
+                          <input type="checkbox" checked={bound.required}
+                            onChange={(e) => {
+                              const next = (ct.columns ?? []).map((b) =>
+                                b.columnId === c.id ? { ...b, required: e.target.checked } : b);
+                              void saveBinds(ct, next);
+                            }} />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
+                {!columns.length && <p className="d-sub">Add library columns first to bind them.</p>}
+              </div>
+            )}
           </div>
         ))}
         {!types.length && <p className="empty" style={{ margin: "8px 0" }}>No content types yet.</p>}

@@ -562,14 +562,19 @@ export function driveRoutes(app: FastifyInstance) {
       publish: z.boolean().default(false),
     }).parse(req.body ?? {});
 
-    // required custom columns must be filled before check-in
+    // required custom columns must be filled before check-in — the library's
+    // global required set, plus columns the item's content type marks required
     if (item.library_id) {
       const missing = await dbq<{ name: string }>(
         `SELECT c.name FROM library_columns c
-         WHERE c.library_id = $1 AND c.required
+         WHERE c.library_id = $1 AND (
+           c.required
+           OR EXISTS (SELECT 1 FROM content_type_columns b
+                      WHERE b.column_id = c.id AND b.required AND b.content_type_id = $3)
+         )
            AND NOT EXISTS (SELECT 1 FROM item_metadata m
              WHERE m.column_id = c.id AND m.item_id = $2 AND m.value IS NOT NULL AND m.value <> '')`,
-        [item.library_id, item.id],
+        [item.library_id, item.id, item.content_type_id],
       );
       if (missing.length) {
         return reply.code(409).send({

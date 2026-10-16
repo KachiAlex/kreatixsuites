@@ -179,6 +179,8 @@ export interface ContentType {
   templateBlobKey: string | null;
   allowedKinds: FileKind[];
   isDefault: boolean;
+  /** Bound library columns (library-scoped GET only) */
+  columns?: { columnId: string; required: boolean; position: number }[];
   createdAt: string;
 }
 

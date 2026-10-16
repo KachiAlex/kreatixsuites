@@ -97,6 +97,21 @@ const viewOut = (r: ViewRow) => ({
   shared: !!r.shared, createdAt: r.created_at,
 });
 
+interface CtRow {
+  id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+  template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+}
+
+const ctOut = (r: CtRow, columns?: { columnId: string; required: boolean; position: number }[]) => ({
+  id: r.id, siteId: r.site_id, libraryId: r.library_id,
+  name: decryptField(r.name) ?? r.name,
+  description: r.description ? decryptField(r.description) ?? r.description : null,
+  templateBlobKey: r.template_blob_key,
+  allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+  isDefault: !!r.is_default, createdAt: r.created_at,
+  columns,
+});
+
 const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
 const atLeast = (role: string | null, need: string) => role !== null && SITE_RANK[role] >= SITE_RANK[need];
 
@@ -331,23 +346,11 @@ export function siteRoutes(app: FastifyInstance) {
       const site = await getSite((req.params as { id: string }).id);
       const role = site ? await siteRoleFor(user, site) : null;
       if (!site || !role) return reply.code(404).send({ error: "not_found" });
-      const rows = await q<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>(
+      const rows = await q<CtRow>(
         "SELECT * FROM content_types WHERE site_id = $1 AND library_id IS NULL ORDER BY created_at",
         [site.id],
       );
-      return {
-        contentTypes: rows.map((r) => ({
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        })),
-      };
+      return { contentTypes: rows.map((r) => ctOut(r)) };
     });
 
     authed.post("/api/sites/:id/content-types", async (req, reply) => {
@@ -363,21 +366,9 @@ export function siteRoutes(app: FastifyInstance) {
         [id, site.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
          JSON.stringify(body.allowedKinds), body.isDefault, now()],
       );
-      const r = await one<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>("SELECT * FROM content_types WHERE id = $1", [id]);
+      const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [id]);
       if (!r) return reply.code(404).send({ error: "not_found" });
-      return {
-        contentType: {
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        },
-      };
+      return { contentType: ctOut(r) };
     });
 
     authed.patch("/api/sites/:id/content-types/:ctid", async (req, reply) => {
@@ -396,21 +387,9 @@ export function siteRoutes(app: FastifyInstance) {
          body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
          body.isDefault === undefined ? null : body.isDefault, site.id],
       );
-      const r = await one<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>("SELECT * FROM content_types WHERE id = $1", [ctid]);
+      const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [ctid]);
       if (!r) return reply.code(404).send({ error: "not_found" });
-      return {
-        contentType: {
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        },
-      };
+      return { contentType: ctOut(r) };
     });
 
     authed.delete("/api/sites/:id/content-types/:ctid", async (req, reply) => {
@@ -639,22 +618,20 @@ export function siteRoutes(app: FastifyInstance) {
     authed.get("/api/sites/:id/libraries/:lid/content-types", async (req, reply) => {
       const ctx = await libCtx(req, reply);
       if (!ctx) return;
-      const rows = await q<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>(
-        `SELECT * FROM content_types WHERE site_id = $1 AND library_id = $2 ORDER BY created_at`,
+      // the picker sees library-scoped types AND site-scoped ones (site types
+      // are available in every library — SharePoint site content types)
+      const rows = await q<CtRow>(
+        `SELECT * FROM content_types WHERE site_id = $1 AND (library_id = $2 OR library_id IS NULL) ORDER BY created_at`,
         [ctx.site.id, ctx.lib.id],
       );
+      const binds = rows.length ? await q<{ content_type_id: string; column_id: string; required: boolean; position: number }>(
+        `SELECT * FROM content_type_columns WHERE content_type_id = ANY($1) ORDER BY position`,
+        [rows.map((r) => r.id)],
+      ) : [];
       return {
-        contentTypes: rows.map((r) => ({
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        })),
+        contentTypes: rows.map((r) => ctOut(r,
+          binds.filter((b) => b.content_type_id === r.id)
+            .map((b) => ({ columnId: b.column_id, required: !!b.required, position: b.position })))),
       };
     });
 
@@ -670,21 +647,9 @@ export function siteRoutes(app: FastifyInstance) {
         [id, ctx.site.id, ctx.lib.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
          JSON.stringify(body.allowedKinds), body.isDefault, now()],
       );
-      const r = await one<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>("SELECT * FROM content_types WHERE id = $1", [id]);
+      const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [id]);
       if (!r) return reply.code(404).send({ error: "not_found" });
-      return {
-        contentType: {
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        },
-      };
+      return { contentType: ctOut(r) };
     });
 
     authed.patch("/api/sites/:id/libraries/:lid/content-types/:ctid", async (req, reply) => {
@@ -702,20 +667,46 @@ export function siteRoutes(app: FastifyInstance) {
          body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
          body.isDefault === undefined ? null : body.isDefault, ctx.site.id, ctx.lib.id],
       );
-      const r = await one<{
-        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
-      }>("SELECT * FROM content_types WHERE id = $1", [ctid]);
+      const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [ctid]);
       if (!r) return reply.code(404).send({ error: "not_found" });
+      return { contentType: ctOut(r) };
+    });
+
+    /** Bind library columns to a content type — the schema's field set.
+     *  required here overrides the column's global required flag for items
+     *  of this type. Replaces the binding set wholesale. */
+    authed.put("/api/sites/:id/libraries/:lid/content-types/:ctid/columns", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { ctid } = req.params as { ctid: string };
+      const ct = await one<{ id: string }>(
+        "SELECT id FROM content_types WHERE id = $1 AND site_id = $2", [ctid, ctx.site.id]);
+      if (!ct) return reply.code(404).send({ error: "not_found" });
+      const body = z.object({
+        columns: z.array(z.object({
+          columnId: z.string(),
+          required: z.boolean().default(false),
+          position: z.number().int().min(0).default(0),
+        })).max(100),
+      }).parse(req.body);
+      // all bound columns must belong to this library
+      const valid = await q<{ id: string }>(
+        "SELECT id FROM library_columns WHERE id = ANY($1) AND library_id = $2",
+        [body.columns.map((c) => c.columnId), ctx.lib.id]);
+      const validIds = new Set(valid.map((v) => v.id));
+      await run("DELETE FROM content_type_columns WHERE content_type_id = $1", [ctid]);
+      for (const c of body.columns.filter((x) => validIds.has(x.columnId))) {
+        await run(
+          `INSERT INTO content_type_columns (content_type_id, column_id, required, position)
+           VALUES ($1,$2,$3,$4)`,
+          [ctid, c.columnId, c.required, c.position],
+        );
+      }
+      const binds = await q<{ column_id: string; required: boolean; position: number }>(
+        "SELECT * FROM content_type_columns WHERE content_type_id = $1 ORDER BY position", [ctid]);
       return {
-        contentType: {
-          id: r.id, siteId: r.site_id, libraryId: r.library_id,
-          name: decryptField(r.name) ?? r.name,
-          description: r.description ? decryptField(r.description) ?? r.description : null,
-          templateBlobKey: r.template_blob_key,
-          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-          isDefault: !!r.is_default, createdAt: r.created_at,
-        },
+        columns: binds.map((b) => ({ columnId: b.column_id, required: !!b.required, position: b.position })),
       };
     });
 
