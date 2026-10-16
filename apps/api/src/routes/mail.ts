@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
-import { checkDomainDns, mailEnabled, mailFetch, mailStatus } from "../mailBridge.js";
+import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailStatus } from "../mailBridge.js";
 import { q, one, run } from "../db.js";
 
 /** Paths the suite session may reach on the mail service — everything user-
@@ -15,24 +15,41 @@ const domainSchema = z.object({ domain: z.string().trim().toLowerCase().regex(DO
 
 interface DomainRow {
   id: string; org_id: string; domain: string; status: string;
-  verify_token: string; is_primary: boolean; mx_ok: boolean;
+  verify_token: string; is_primary: boolean; mx_ok: boolean; brevo_ok: boolean;
+  brevo_records: { brevoCode?: { host_name: string; type: string; value: string; status: boolean };
+                   dkim1?: { host_name: string; type: string; value: string; status: boolean };
+                   dkim2?: { host_name: string; type: string; value: string; status: boolean };
+                   dmarc?: { host_name: string; type: string; value: string; status: boolean } } | null;
   verified_at: string | null; created_at: string;
 }
 
 const domainOut = (r: DomainRow) => ({
   id: r.id, domain: r.domain, status: r.status, isPrimary: r.is_primary,
-  mxOk: r.mx_ok, verifyToken: r.status === "verified" ? null : r.verify_token,
+  mxOk: r.mx_ok, brevoOk: r.brevo_ok,
+  verifyToken: r.status === "verified" ? null : r.verify_token,
   verifiedAt: r.verified_at, createdAt: r.created_at,
 });
 
 /** DNS records the org admin should publish — verification is the only one
- *  required now; MX/SPF/DKIM are shown so they can be added in one visit. */
-const dnsChecklist = (r: DomainRow) => [
-  { type: "TXT", host: "@", value: `kreatix-verify=${r.verify_token}`, purpose: "Domain verification", required: true, ok: r.status === "verified" },
-  { type: "MX", host: "@", value: "mail.kreatixtech.com (priority 10)", purpose: "Inbound mail delivery", required: false, ok: r.mx_ok },
-  { type: "TXT", host: "@", value: "v=spf1 include:spf.brevo.com mx ~all", purpose: "SPF — authorizes our sender", required: false, ok: null },
-  { type: "TXT", host: "@", value: "v=DMARC1; p=none; rua=mailto:postmaster@kreatixtech.com", purpose: "DMARC — recommended minimum", required: false, ok: null },
-];
+ *  required now; MX/SPF/DKIM are shown so they can be added in one visit.
+ *  Once the domain is registered with Brevo, its exact records are merged in. */
+const dnsChecklist = (r: DomainRow) => {
+  const rows = [
+    { type: "TXT", host: "@", value: `kreatix-verify=${r.verify_token}`, purpose: "Domain verification", required: true, ok: (r.status === "verified") as boolean | null },
+    { type: "MX", host: "@", value: "mail.kreatixtech.com (priority 10)", purpose: "Inbound mail delivery", required: false, ok: r.mx_ok as boolean | null },
+    { type: "TXT", host: "@", value: "v=spf1 include:spf.brevo.com mx ~all", purpose: "SPF — authorizes our sender", required: false, ok: null as boolean | null },
+  ];
+  const br = r.brevo_records;
+  if (br?.brevoCode) rows.push({ type: br.brevoCode.type, host: br.brevoCode.host_name, value: br.brevoCode.value, purpose: "Brevo domain code", required: false, ok: br.brevoCode.status });
+  if (br?.dkim1) rows.push({ type: br.dkim1.type, host: br.dkim1.host_name, value: br.dkim1.value, purpose: "DKIM 1 — outbound signing", required: false, ok: br.dkim1.status });
+  if (br?.dkim2) rows.push({ type: br.dkim2.type, host: br.dkim2.host_name, value: br.dkim2.value, purpose: "DKIM 2 — outbound signing", required: false, ok: br.dkim2.status });
+  if (br?.dmarc) {
+    rows.push({ type: br.dmarc.type, host: br.dmarc.host_name, value: br.dmarc.value, purpose: "DMARC", required: false, ok: br.dmarc.status });
+  } else {
+    rows.push({ type: "TXT", host: "@", value: "v=DMARC1; p=none; rua=mailto:postmaster@kreatixtech.com", purpose: "DMARC — recommended minimum", required: false, ok: null });
+  }
+  return rows;
+};
 
 export function mailRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
@@ -61,6 +78,19 @@ export function mailRoutes(app: FastifyInstance) {
     if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
     const rows = await q<DomainRow>(
       "SELECT * FROM org_domains WHERE org_id = $1 ORDER BY created_at", [user.orgId]);
+    // domains verified before Brevo integration register lazily on first load
+    for (const r of rows) {
+      if (r.status === "verified" && !r.brevo_records) {
+        try {
+          const b = await brevoRegisterDomain(r.domain);
+          if (b) {
+            r.brevo_records = b.records; r.brevo_ok = b.authenticated;
+            await run("UPDATE org_domains SET brevo_records = $2, brevo_ok = $3 WHERE id = $1",
+              [r.id, JSON.stringify(b.records), b.authenticated]);
+          }
+        } catch { /* Brevo unreachable — checklist still renders */ }
+      }
+    }
     return { domains: rows.map((r) => ({ ...domainOut(r), dns: dnsChecklist(r) })) };
   });
 
@@ -105,6 +135,18 @@ export function mailRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(409).send({ error: "conflict", message: `${row.domain} was verified by another workspace` });
     }
+    // register the domain with the sending Brevo account and pull its
+    // DKIM/DMARC/code records; also refresh authentication status so a
+    // verify re-run doubles as a "recheck all DNS" button.
+    let brevoOk = false;
+    let brevoRecords: DomainRow["brevo_records"] = null;
+    try {
+      const b = await brevoRegisterDomain(row.domain);
+      if (b) brevoRecords = b.records;
+      brevoOk = (await brevoAuthenticateDomain(row.domain)) ?? false;
+      await run("UPDATE org_domains SET brevo_records = $2, brevo_ok = $3 WHERE id = $1",
+        [id, JSON.stringify(brevoRecords), brevoOk]);
+    } catch { /* Brevo down/unconfigured — verification still stands */ }
     const fresh = await one<DomainRow>("SELECT * FROM org_domains WHERE id = $1", [id]);
     return { domain: { ...domainOut(fresh!), dns: dnsChecklist(fresh!) } };
   });

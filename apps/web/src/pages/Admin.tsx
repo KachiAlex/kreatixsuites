@@ -54,7 +54,7 @@ interface AuditEntry {
 }
 interface DnsRecord { type: string; host: string; value: string; purpose: string; required: boolean; ok: boolean | null }
 interface OrgDomain {
-  id: string; domain: string; status: string; isPrimary: boolean; mxOk: boolean;
+  id: string; domain: string; status: string; isPrimary: boolean; mxOk: boolean; brevoOk: boolean;
   verifyToken: string | null; verifiedAt: string | null; createdAt: string; dns: DnsRecord[];
 }
 interface Metrics {
@@ -611,6 +611,7 @@ export function Admin() {
                         {d.status === "verified" ? "✓ verified" : d.status === "failed" ? "✕ failed" : "… pending"}
                       </span>
                       {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Kreatix Mail">MX ✓</span>}
+                      {d.brevoOk && <span className="d-sub" style={{ marginLeft: 6 }} title="DKIM/DMARC authenticated for outbound">signed ✓</span>}
                     </td>
                     <td>{d.isPrimary ? <b>primary</b> : <span className="d-sub">—</span>}</td>
                     <td style={{ whiteSpace: "nowrap" }}>

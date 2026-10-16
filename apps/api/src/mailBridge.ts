@@ -108,6 +108,66 @@ export async function mailFetch(
   return res;
 }
 
+// ── Brevo sender-domain automation ─────────────────────────────────────
+// Outbound mail is sent by the kreatix-mail service's Brevo account, so
+// customer domains must be authenticated THERE. The suite uses a copy of
+// that account's key (KREATIX_MAIL_BREVO_KEY) to register the domain and
+// read back the DNS records to display.
+export interface BrevoRecord { host_name: string; type: string; value: string; status: boolean }
+export interface BrevoDomain {
+  id?: number | string; authenticated: boolean;
+  records: { brevoCode?: BrevoRecord; dkim1?: BrevoRecord; dkim2?: BrevoRecord; dmarc?: BrevoRecord };
+}
+
+const BREVO_KEY = () => process.env.KREATIX_MAIL_BREVO_KEY || "";
+export const brevoEnabled = () => !!BREVO_KEY();
+
+const mapRecords = (j: any): BrevoDomain["records"] => ({
+  brevoCode: j?.dns_records?.brevo_code ?? undefined,
+  dkim1: j?.dns_records?.dkim1Record ?? j?.dns_records?.dkim_record ?? undefined,
+  dkim2: j?.dns_records?.dkim2Record ?? undefined,
+  dmarc: j?.dns_records?.dmarc_record ?? undefined,
+});
+
+async function brevoApi(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`https://api.brevo.com/v3${path}`, {
+    ...init,
+    headers: { "api-key": BREVO_KEY(), "content-type": "application/json", accept: "application/json", ...(init?.headers ?? {}) },
+  });
+}
+
+/** Fetch the current state of a domain in the Brevo account (null if absent). */
+export async function brevoGetDomain(domain: string): Promise<BrevoDomain | null> {
+  if (!brevoEnabled()) return null;
+  const res = await brevoApi(`/senders/domains/${encodeURIComponent(domain)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`brevo get domain ${res.status}`);
+  const j = await res.json() as any;
+  return { id: j.id, authenticated: !!j.authenticated, records: mapRecords(j) };
+}
+
+/** Register the domain with Brevo (idempotent) and return its DNS records. */
+export async function brevoRegisterDomain(domain: string): Promise<BrevoDomain | null> {
+  if (!brevoEnabled()) return null;
+  const res = await brevoApi("/senders/domains", { method: "POST", body: JSON.stringify({ name: domain }) });
+  if (res.ok) {
+    const j = await res.json() as any;
+    return { id: j.id, authenticated: !!j.authenticated, records: mapRecords(j) };
+  }
+  // already registered → just read the records back
+  const j = await res.json().catch(() => ({})) as any;
+  if (res.status === 400 && /already exists/i.test(j?.message ?? "")) return brevoGetDomain(domain);
+  throw new Error(`brevo register domain ${res.status}: ${j?.message ?? ""}`);
+}
+
+/** Ask Brevo to re-validate the domain's DNS; returns authenticated state. */
+export async function brevoAuthenticateDomain(domain: string): Promise<boolean | null> {
+  if (!brevoEnabled()) return null;
+  const res = await brevoApi(`/senders/domains/${encodeURIComponent(domain)}/authenticate`, { method: "PUT" });
+  if (!res.ok) return null;
+  return !!(await res.json() as any)?.authenticated;
+}
+
 export async function mailStatus(user: { id: string; email: string; displayName: string; orgId: string }) {
   if (!mailEnabled()) return { enabled: false as const };
   const acct = await ensureMailAccount(user);
