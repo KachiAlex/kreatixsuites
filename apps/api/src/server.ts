@@ -27,6 +27,7 @@ import { chatRoutes } from "./routes/chat.js";
 import { calendarRoutes } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
+import { runScheduleSweep } from "./rules.js";
 import { formRoutes, formPublicRoutes } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
 import { billingRoutes } from "./routes/billing.js";
@@ -328,6 +329,12 @@ async function main() {
   };
   setTimeout(paySweep, 30_000).unref();
   setInterval(paySweep, 5 * 60 * 1000).unref();
+
+  // automation sweep: schedule.daily digests + task.overdue fires, hourly
+  const ruleSweep = () =>
+    runScheduleSweep(app.log).catch((e) => app.log.warn(e, "automation sweep failed"));
+  setTimeout(ruleSweep, 60_000).unref();
+  setInterval(ruleSweep, 60 * 60 * 1000).unref();
 }
 
 main().catch((err) => {

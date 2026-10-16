@@ -244,6 +244,8 @@ export interface Library {
   approval?: boolean;
   /** false = unique permissions — only explicit grants reach this library */
   inheritPermissions?: boolean;
+  /** Ordered approver user-ids — set = submissions route through each in turn */
+  approvalChain?: string[] | null;
   /** Auto-trash items untouched this many days (null = off) */
   retentionDays?: number | null;
   itemCount?: number;

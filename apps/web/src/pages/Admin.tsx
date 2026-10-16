@@ -815,7 +815,10 @@ export function Admin() {
           <select value={ruleForm.trigger} onChange={(e) => setRuleForm({ ...ruleForm, trigger: e.target.value, matchVal: "" })}>
             {ruleMeta.triggers.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
-          {selTrigger?.matchKey && (
+          {selTrigger?.matchKey === "hour" ? (
+            <input type="number" min={0} max={23} placeholder="UTC hour (default 8)" value={ruleForm.matchVal}
+              onChange={(e) => setRuleForm({ ...ruleForm, matchVal: e.target.value })} style={{ width: 170 }} />
+          ) : selTrigger?.matchKey && (
             <select value={ruleForm.matchVal} onChange={(e) => setRuleForm({ ...ruleForm, matchVal: e.target.value })}>
               <option value="">{selTrigger.matchLabel} — any</option>
               {matchOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}

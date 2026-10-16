@@ -4,9 +4,10 @@
 // Fire-and-forget: rule failures log and never block the source event.
 import { randomUUID } from "node:crypto";
 import { q, run } from "./db.js";
-import { encryptField } from "./crypto.js";
+import { encryptField, decryptField } from "./crypto.js";
 
-export type RuleTrigger = "form.submitted" | "file.created" | "task.status" | "meeting.ended";
+export type RuleTrigger = "form.submitted" | "file.created" | "task.status" | "meeting.ended"
+  | "schedule.daily" | "task.overdue";
 export type RuleAction = "task.create" | "notify";
 
 export interface RuleRow {
@@ -21,6 +22,8 @@ export const TRIGGERS: { id: RuleTrigger; label: string; matchKey?: string; matc
   { id: "file.created", label: "File added to a library", matchKey: "libraryId", matchLabel: "Limit to a library" },
   { id: "task.status", label: "Task moved to a status", matchKey: "status", matchLabel: "Status (todo|doing|done)" },
   { id: "meeting.ended", label: "Meeting ended" },
+  { id: "task.overdue", label: "Task becomes overdue (daily)" },
+  { id: "schedule.daily", label: "Every day at…", matchKey: "hour", matchLabel: "UTC hour (0-23, default 8)" },
 ];
 
 export const ACTIONS: { id: RuleAction; label: string }[] = [
@@ -99,4 +102,66 @@ async function notify(orgId: string, userId: string, message: string, actorId: s
     `INSERT INTO notifications (id, user_id, kind, actor_id, message)
      SELECT $1, $2, 'automation', $3, $4 WHERE EXISTS (SELECT 1 FROM users WHERE id = $2 AND org_id = $5)`,
     [randomUUID(), userId, actorId, encryptField(message) ?? message, orgId]);
+}
+
+/** Dedupe marker — a (rule, key) pair fires once. Returns true the first
+ *  time; subsequent calls no-op. Keys embed a period ("2026-10-17") for
+ *  per-day schedules or a stable id for one-shot triggers. */
+async function claimFire(ruleId: string, key: string): Promise<boolean> {
+  const row = await q<{ x: number }>(
+    `INSERT INTO automation_fires (rule_id, dedupe_key) VALUES ($1,$2)
+     ON CONFLICT DO NOTHING RETURNING 1 AS x`, [ruleId, key]);
+  return row.length > 0;
+}
+
+/** Hourly sweep: fires `task.overdue` for newly-overdue tasks and
+ *  `schedule.daily` digests at each rule's configured UTC hour. Called from
+ *  a server interval — never throws. */
+export async function runScheduleSweep(
+  log?: { warn: (o: unknown, m: string) => void; info?: (o: unknown, m: string) => void },
+): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const hour = new Date().getUTCHours();
+
+    // per-org overdue task list — shared ctx for both scheduled triggers
+    const overdue = await q<{ org_id: string; title: string; id: string; assignee_id: string | null }>(
+      `SELECT org_id, title, id, assignee_id FROM tasks
+       WHERE due_at IS NOT NULL AND due_at < now() AND status != 'done'`, []);
+    const byOrg = new Map<string, typeof overdue>();
+    for (const t of overdue) {
+      const arr = byOrg.get(t.org_id) ?? [];
+      arr.push(t);
+      byOrg.set(t.org_id, arr);
+    }
+
+    // task.overdue: one fire per task per day
+    const odRules = await q<RuleRow>(
+      "SELECT * FROM automation_rules WHERE trigger = 'task.overdue' AND enabled", []);
+    for (const rule of odRules) {
+      for (const t of byOrg.get(rule.org_id) ?? []) {
+        if (!(await claimFire(rule.id, `task:${t.id}:${today}`))) continue;
+        const title = decryptField(t.title) ?? t.title;
+        void execute(rule, { taskId: t.id, name: title, date: today })
+          .catch((e) => log?.warn({ err: String(e), rule: rule.id }, "automation rule failed"));
+      }
+    }
+
+    // schedule.daily: fires in the rule's UTC hour, once per day
+    const daily = await q<RuleRow>(
+      "SELECT * FROM automation_rules WHERE trigger = 'schedule.daily' AND enabled", []);
+    for (const rule of daily) {
+      const want = Math.max(0, Math.min(23, Number(rule.match?.hour ?? 8)));
+      if (hour !== want) continue;
+      if (!(await claimFire(rule.id, `daily:${today}`))) continue;
+      const list = byOrg.get(rule.org_id) ?? [];
+      const names = list.slice(0, 8).map((t) => decryptField(t.title) ?? t.title);
+      void execute(rule, {
+        date: today, overdueCount: String(list.length), overdueNames: names.join(", "),
+        name: `daily digest ${today}`,
+      }).catch((e) => log?.warn({ err: String(e), rule: rule.id }, "automation rule failed"));
+    }
+  } catch (e) {
+    log?.warn({ err: String(e) }, "automation sweep failed");
+  }
 }

@@ -429,6 +429,11 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // requests mark the head draft pending until a site owner approves/rejects
   await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS approval BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS pending BOOLEAN NOT NULL DEFAULT false`);
+  // multi-step approval: libraries can pin an ordered chain of approver user
+  // ids; a pending version snapshots the chain and tracks the current step
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS approval_step INTEGER`);
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS approval_chain JSONB`);
+  await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS approval_chain JSONB`);
   // unique library permissions (SharePoint "stop inheriting") — when
   // inherit_permissions is false, only library_permissions grants + site
   // owner / org admins can reach the library's items
@@ -766,6 +771,13 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_rules_org ON automation_rules(org_id, trigger) WHERE enabled`);
+  // dedupe for scheduled/repeating triggers — (rule, key) fires at most once
+  await pool.query(`CREATE TABLE IF NOT EXISTS automation_fires (
+    rule_id TEXT NOT NULL REFERENCES automation_rules(id) ON DELETE CASCADE,
+    dedupe_key TEXT NOT NULL,
+    fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (rule_id, dedupe_key)
+  )`);
 
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);

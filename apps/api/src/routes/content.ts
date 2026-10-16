@@ -63,7 +63,7 @@ export async function publishHead(item: ItemRow): Promise<number | null> {
   const lastPub = await one<{ major: number }>(
     "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
   const major = (lastPub?.major ?? 0) + 1;
-  await run("UPDATE versions SET major = $1, minor = 0, published = true, pending = false WHERE id = $2",
+  await run("UPDATE versions SET major = $1, minor = 0, published = true, pending = false, approval_step = NULL, approval_chain = NULL WHERE id = $2",
     [major, head.id]);
   return major;
 }
@@ -83,18 +83,23 @@ export async function submitForApproval(
   if (!perm || perm === "owner") return false;
   const head = await headVersion(item.id);
   if (!head || head.published) return false;
-  await run("UPDATE versions SET pending = true WHERE id = $1", [head.id]);
-  void notifyApprovers(item, user);
+  const chain = Array.isArray(lib.approval_chain) ? lib.approval_chain.filter(Boolean) : [];
+  await run(
+    "UPDATE versions SET pending = true, approval_step = $2, approval_chain = $3 WHERE id = $1",
+    [head.id, chain.length ? 0 : null, chain.length ? JSON.stringify(chain) : null]);
+  void notifyApprovers(item, user, chain.length ? chain[0] : null);
   return true;
 }
 
-/** Tell every library owner someone submitted work for their sign-off. */
+/** Tell the approver(s) someone submitted work — with a chain, only the
+ *  current step's designated approver; otherwise all library owners. */
 async function notifyApprovers(
   item: ItemRow,
   actor: { id: string },
+  stepApprover?: string | null,
 ): Promise<void> {
   if (!item.library_id) return;
-  const ids = await approverIds(item.library_id);
+  const ids = stepApprover ? [stepApprover] : await approverIds(item.library_id);
   const msg = encryptField(`"${itemName(item)}" is awaiting approval`);
   for (const uid of ids) {
     if (uid === actor.id) continue;

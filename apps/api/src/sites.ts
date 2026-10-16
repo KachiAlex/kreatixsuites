@@ -27,6 +27,7 @@ export interface LibraryRow {
   approval: boolean;
   inherit_permissions: boolean;
   retention_days: number | null;
+  approval_chain: string[] | null;
   created_at: string;
 }
 
@@ -243,6 +244,7 @@ export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Li
     versioning: row.versioning === "minor" ? "minor" : "major",
     approval: !!row.approval,
     inheritPermissions: row.inherit_permissions !== false,
+    approvalChain: Array.isArray(row.approval_chain) ? row.approval_chain : null,
     retentionDays: row.retention_days ?? null,
     itemCount,
     createdAt: row.created_at,

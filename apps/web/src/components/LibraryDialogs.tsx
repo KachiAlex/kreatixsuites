@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, ContentType, DriveItem, FileKind, GroupGrant, Library, LibraryColumn, LibraryGrant, OrgGroup, SiteRole, TermSet } from "@kreatix/shared";
+import type { ColumnType, ContentType, DriveItem, FileKind, GroupGrant, Library, LibraryColumn, LibraryGrant, OrgGroup, SiteMember, SiteRole, TermSet } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -699,6 +699,82 @@ export function PresetDialog({ siteId, lib, onClose, onChange, toast }: {
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn-primary" disabled={!picked || busy || picked === presetFor(lib)} onClick={() => void apply()}>
           {busy ? "Applying…" : "Apply preset"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Ordered multi-step approval chain — site owners only. An empty chain
+ *  falls back to "any owner can approve". */
+export function ChainDialog({ siteId, lib, onClose, onChange, toast }: {
+  siteId: string; lib: Library;
+  onClose: () => void;
+  onChange: (l: Library) => void;
+  toast: (m: string) => void;
+}) {
+  const [members, setMembers] = useState<SiteMember[]>([]);
+  const [chain, setChain] = useState<string[]>(lib.approvalChain ?? []);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api.get<{ members: SiteMember[] }>(`/api/sites/${siteId}/members`)
+      .then((r) => setMembers(r.members)).catch(() => toast("Could not load members"));
+  }, [siteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nameFor = (id: string) =>
+    members.find((m) => m.userId === id)?.user.displayName ?? id.slice(0, 8);
+  const notIn = members.filter((m) => !chain.includes(m.userId));
+
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= chain.length) return;
+    const next = [...chain];
+    [next[i], next[j]] = [next[j], next[i]];
+    setChain(next);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await api.patch<{ library: Library }>(
+        `/api/sites/${siteId}/libraries/${lib.id}`, { approvalChain: chain });
+      onChange(r.library);
+      onClose();
+      toast(chain.length ? `${chain.length}-step approval chain saved` : "Chain cleared — any owner approves");
+    } catch (e) { toast(e instanceof Error ? e.message : "Save failed"); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} label="Approval chain">
+      <h2>Approval chain</h2>
+      <p className="d-sub">
+        Ordered approvers — each step must sign off before the file publishes.
+        With an empty chain, any site/library owner approves in one step.
+      </p>
+      {chain.map((uid, i) => (
+        <div key={uid} className="dlg-row">
+          <b style={{ flex: 1 }}>{i + 1}. {nameFor(uid)}</b>
+          <button className="btn-ghost btn-sm" onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
+          <button className="btn-ghost btn-sm" onClick={() => move(i, 1)} disabled={i === chain.length - 1}>↓</button>
+          <button className="btn-ghost btn-sm" onClick={() => setChain(chain.filter((x) => x !== uid))}>✕</button>
+        </div>
+      ))}
+      {chain.length === 0 && <p className="d-sub">No steps — falls back to owner approval.</p>}
+      <div className="dlg-row">
+        <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ flex: 1 }}>
+          <option value="">Add an approver…</option>
+          {notIn.map((m) => <option key={m.userId} value={m.userId}>{m.user.displayName} · {m.role}</option>)}
+        </select>
+        <button className="btn-ghost btn-sm" disabled={!pick}
+          onClick={() => { setChain([...chain, pick]); setPick(""); }}>Add step</button>
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-primary" disabled={busy} onClick={() => void save()}>
+          {busy ? "Saving…" : "Save chain"}
         </button>
       </div>
     </Modal>

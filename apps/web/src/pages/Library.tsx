@@ -7,7 +7,7 @@ import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
-import { ColumnsDialog, ContentTypeDialog, PermsDialog, PresetDialog, PropertiesDialog, presetFor } from "../components/LibraryDialogs";
+import { ChainDialog, ColumnsDialog, ContentTypeDialog, PermsDialog, PresetDialog, PropertiesDialog, presetFor } from "../components/LibraryDialogs";
 import { prefetchEditorsFor } from "./editors";
 import { kindForPath } from "../lib/offline/openLocal";
 
@@ -34,6 +34,7 @@ export function LibraryPage() {
   const [permsOpen, setPermsOpen] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
   const [ctOpen, setCtOpen] = useState(false);
+  const [chainOpen, setChainOpen] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
   const [viewMenu, setViewMenu] = useState(false);
@@ -285,6 +286,11 @@ export function LibraryPage() {
                     {lib?.approval ? "Turn off content approval" : "Require content approval"}
                   </button>
                 )}
+                {canManage && lib?.approval && (
+                  <button onClick={() => { setViewMenu(false); setChainOpen(true); }}>
+                    ⛓ Approval chain{lib.approvalChain?.length ? `: ${lib.approvalChain.length} steps` : ""}
+                  </button>
+                )}
                 {canManage && (
                   <button onClick={() => void setRetention()}>
                     {lib?.retentionDays ? `Retention: ${lib.retentionDays} days` : "Set retention…"}
@@ -359,6 +365,8 @@ export function LibraryPage() {
         onClose={() => setPermsOpen(false)} onChange={setLib} toast={toast} />}
       {presetOpen && lib && <PresetDialog siteId={siteId} lib={lib}
         onClose={() => setPresetOpen(false)} onChange={setLib} toast={toast} />}
+      {chainOpen && lib && <ChainDialog siteId={siteId} lib={lib}
+        onClose={() => setChainOpen(false)} onChange={setLib} toast={toast} />}
       {ctOpen && <ContentTypeDialog siteId={siteId} libraryId={libId} columns={columns}
         onClose={() => { setCtOpen(false); void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`).then((r) => setContentTypes(r.contentTypes)); }} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}

@@ -10,7 +10,7 @@ import { TRIGGERS, ACTIONS, type RuleRow } from "../rules.js";
 const ruleSchema = z.object({
   name: z.string().trim().min(1).max(120),
   enabled: z.boolean().optional(),
-  trigger: z.enum(["form.submitted", "file.created", "task.status", "meeting.ended"]),
+  trigger: z.enum(["form.submitted", "file.created", "task.status", "meeting.ended", "schedule.daily", "task.overdue"]),
   match: z.record(z.string(), z.string().max(200)).nullish(),
   action: z.enum(["task.create", "notify"]),
   config: z.record(z.string(), z.string().max(4000).nullable()).default({}),

@@ -57,6 +57,8 @@ const librarySchema = z.object({
 const libraryPatchSchema = librarySchema.partial().extend({
   versioning: z.enum(["major", "minor"]).optional(),
   approval: z.boolean().optional(),
+  /** Ordered approver user-ids for multi-step sign-off (null/empty = any owner) */
+  approvalChain: z.array(z.string().max(64)).max(10).nullable().optional(),
   inherit: z.boolean().optional(),
   /** auto-trash items untouched this many days (null clears) */
   retentionDays: z.number().int().min(0).max(36500).nullable().optional(),
@@ -1003,20 +1005,31 @@ export function siteRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "forbidden" });
       const body = libraryPatchSchema.parse(req.body);
       // versioning + approval + inheritance + retention are governance knobs — owners only
-      if ((body.versioning !== undefined || body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined) && !atLeast(role, "owner")) {
+      if ((body.versioning !== undefined || body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined || body.approvalChain !== undefined) && !atLeast(role, "owner")) {
         return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning, approval, permissions, or retention" });
       }
-      if ((body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined) && !(await entitled(user.orgId, "docmgmt"))) {
+      if ((body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined || body.approvalChain !== undefined) && !(await entitled(user.orgId, "docmgmt"))) {
         return reply.code(402).send({ error: "plan_limit", message: "This feature requires a paid plan" });
+      }
+      // chain members must be real org users
+      if (body.approvalChain?.length) {
+        const ok = await q<{ id: string }>(
+          "SELECT id FROM users WHERE org_id = $1 AND disabled = false AND id = ANY($2)",
+          [user.orgId, body.approvalChain]);
+        if (ok.length !== body.approvalChain.length)
+          return reply.code(400).send({ error: "invalid", message: "Chain contains an unknown user" });
       }
       await run(`UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind),
         versioning = COALESCE($4, versioning), approval = COALESCE($5, approval),
         inherit_permissions = COALESCE($6, inherit_permissions),
-        retention_days = CASE WHEN $8 THEN $7 ELSE retention_days END WHERE id = $1`,
+        retention_days = CASE WHEN $8 THEN $7 ELSE retention_days END,
+        approval_chain = CASE WHEN $10 THEN $9::jsonb ELSE approval_chain END WHERE id = $1`,
         [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null,
          body.versioning ?? null, body.approval ?? null, body.inherit ?? null,
          body.retentionDays !== undefined && body.retentionDays && body.retentionDays > 0 ? body.retentionDays : null,
-         body.retentionDays !== undefined]);
+         body.retentionDays !== undefined,
+         body.approvalChain?.length ? JSON.stringify(body.approvalChain) : null,
+         body.approvalChain !== undefined]);
       // retentionDays: explicit null/0 clears the rule
       // restoring inheritance discards unique grants (SharePoint behavior)
       if (body.inherit === true) {

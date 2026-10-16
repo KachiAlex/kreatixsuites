@@ -210,6 +210,8 @@ export function driveRoutes(app: FastifyInstance) {
              OR (NOT l.inherit_permissions AND EXISTS (SELECT 1 FROM library_group_permissions lgp
                    JOIN group_members gm ON gm.group_id = lgp.group_id AND gm.user_id = $1
                    WHERE lgp.library_id = l.id AND lgp.role = 'owner'))
+             OR (v.approval_chain IS NOT NULL AND v.approval_step IS NOT NULL
+                 AND v.approval_chain ->> v.approval_step = $1)
              OR $3)
          ORDER BY i.updated_at ASC`,
         [user.id, user.orgId, user.role === "owner" || user.role === "admin"],
@@ -858,16 +860,33 @@ export function driveRoutes(app: FastifyInstance) {
   // ---- content approval (SharePoint "Approve/reject") ----
 
   /** Approve a submitted draft — publishes it as the next major version.
-   *  Approvers are site owners in libraries (not the file's creator). */
+   *  With a chain, only the current step's approver advances it (site owners
+   *  can still override); the final step's approval publishes. */
   app.post("/api/drive/:id/approve", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !(await canApprove(user, item))) {
-      return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
-    }
-    const head = await one<{ id: string; pending: boolean; published: boolean; created_by: string }>(
-      "SELECT id, pending, published, created_by FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    if (!item) return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
+    const head = await one<{ id: string; pending: boolean; published: boolean; created_by: string; approval_step: number | null; approval_chain: string[] | null }>(
+      "SELECT id, pending, published, created_by, approval_step, approval_chain FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
+    const chain = Array.isArray(head.approval_chain) ? head.approval_chain : [];
+    const step = head.approval_step ?? 0;
+    const isStepApprover = chain.length > 0 && chain[step] === user.id;
+    if (!isStepApprover && !(await canApprove(user, item))) {
+      return reply.code(403).send({ error: "forbidden", message: "Only the current approver or a site owner can approve" });
+    }
+    // chain: intermediate step — advance and notify the next approver
+    if (chain.length > 0 && step < chain.length - 1) {
+      const next = step + 1;
+      await run("UPDATE versions SET approval_step = $2 WHERE id = $1", [head.id, next]);
+      void run(
+        `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message)
+         VALUES ($1,$2,'approval',$3,$4,$5,$6)`,
+        [randomUUID(), chain[next], item.id, item.library_id, user.id,
+         encryptField(`"${itemName(item)}" is awaiting your approval (step ${next + 1} of ${chain.length})`)]);
+      void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} — step ${step + 1}/${chain.length}`);
+      return { ok: true, pending: true, step: next + 1, of: chain.length };
+    }
     const major = await publishHead(item);
     void notifySubmitter(item, head.created_by, user.id, true);
     void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} → v${major}.0`);
@@ -875,18 +894,21 @@ export function driveRoutes(app: FastifyInstance) {
   });
 
   /** Reject a submitted draft — clears the pending flag; the draft stays a
-   *  draft for the editor to revise. Owner rank only. */
+   *  draft for the editor to revise. Owner rank or the current chain approver. */
   app.post("/api/drive/:id/reject", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !(await canApprove(user, item))) {
-      return reply.code(403).send({ error: "forbidden", message: "Only site owners can reject" });
-    }
+    if (!item) return reply.code(403).send({ error: "forbidden", message: "Only site owners can reject" });
     const { comment } = z.object({ comment: z.string().max(300).optional() }).parse(req.body ?? {});
-    const head = await one<{ id: string; pending: boolean; created_by: string }>(
-      "SELECT id, pending, created_by FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    const head = await one<{ id: string; pending: boolean; created_by: string; approval_step: number | null; approval_chain: string[] | null }>(
+      "SELECT id, pending, created_by, approval_step, approval_chain FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
-    await run("UPDATE versions SET pending = false WHERE id = $1", [head.id]);
+    const chain = Array.isArray(head.approval_chain) ? head.approval_chain : [];
+    const isStepApprover = chain.length > 0 && chain[head.approval_step ?? 0] === user.id;
+    if (!isStepApprover && !(await canApprove(user, item))) {
+      return reply.code(403).send({ error: "forbidden", message: "Only the current approver or a site owner can reject" });
+    }
+    await run("UPDATE versions SET pending = false, approval_step = NULL, approval_chain = NULL WHERE id = $1", [head.id]);
     void notifySubmitter(item, head.created_by, user.id, false, comment);
     void logActivity(user.orgId, user.id, item.id, "reject",
       `${itemName(item)}${comment ? ` — ${comment}` : ""}`);
