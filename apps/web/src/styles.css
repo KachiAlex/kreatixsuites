@@ -3141,3 +3141,38 @@ html[data-theme="dark"]{
   .chat{grid-template-columns:1fr}
   .chat-list.hidden,.chat-pane.hidden{display:none}
 }
+
+/* kreatix calendar */
+.cal{display:grid;grid-template-columns:1fr 300px;gap:12px;min-height:0}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+.cal-dow{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line)}
+.cal-day{min-height:86px;border:0;border-bottom:1px solid var(--line);border-right:1px solid var(--line);background:none;padding:6px 7px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:3px;font-family:inherit;color:var(--ink)}
+.cal-day:nth-child(7n){border-right:0}
+.cal-day:nth-last-child(-n+7){border-bottom:0}
+.cal-day:hover{background:var(--subtle)}
+.cal-day.sel{background:color-mix(in srgb,var(--k-orange) 8%,transparent)}
+.cal-day.dim .cal-daynum{color:var(--muted);opacity:.55}
+.cal-daynum{font-size:12.5px;font-weight:600;align-self:flex-start}
+.cal-day.today .cal-daynum{background:var(--k-orange);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;margin:-2px}
+.cal-chips{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cal-chip{font-size:10.5px;font-weight:600;background:color-mix(in srgb,var(--k-orange) 16%,transparent);color:var(--k-orange-dark);border-radius:5px;padding:1px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cal-chip.meet{background:color-mix(in srgb,#6264A7 18%,transparent);color:#4c4eb4}
+.cal-more{font-size:10px;color:var(--muted)}
+.cal-side{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;max-height:70vh}
+.cal-side-h{font-size:13px;font-weight:700;padding:4px 6px 8px;border-bottom:1px solid var(--line)}
+.cal-ev{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:none;text-align:left;cursor:pointer;color:var(--ink);font-family:inherit}
+.cal-ev:hover{border-color:var(--k-orange)}
+.cal-ev b{font-size:13px}
+.cal-ev-tags{display:flex;gap:6px;margin-top:2px}
+.cal-tag{font-size:9.5px;font-weight:700;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+.cal-tag.meet{color:#4c4eb4;border-color:#c7c8ee}
+.cal-formrow{display:flex;gap:10px;margin-bottom:10px}
+.cal-formrow label{flex:1;font-size:11.5px;font-weight:600;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.cal-formrow input{width:100%}
+.cal-check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);margin-bottom:8px;cursor:pointer}
+.cal-attlist{display:flex;flex-wrap:wrap;gap:6px}
+.cal-att{font-size:11px;border:1px solid;border-radius:999px;padding:2px 9px}
+@media (max-width:900px){
+  .cal{grid-template-columns:1fr}
+  .cal-side{max-height:none}
+}

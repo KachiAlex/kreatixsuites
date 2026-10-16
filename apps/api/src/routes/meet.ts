@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { meetBase, meetEnabled, mintMeetToken } from "../meetBridge.js";
+import { encryptField } from "../crypto.js";
 
 interface MeetingRow {
   id: string; org_id: string; code: string; title: string;
@@ -71,6 +72,14 @@ export function meetRoutes(app: FastifyInstance) {
       [randomUUID(), user.orgId, code,
        title?.trim() || `${user.displayName}'s meeting`,
        user.id, scheduledAt ?? null, startNow ? "live" : "scheduled"]);
+    // scheduled meetings get a calendar event so they show up on the calendar
+    if (scheduledAt && row) {
+      const endsAt = new Date(Date.parse(scheduledAt) + 30 * 60_000).toISOString();
+      await run(
+        `INSERT INTO calendar_events (id, org_id, title, starts_at, ends_at, meeting_id, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [randomUUID(), user.orgId, encryptField(row.title) ?? row.title, scheduledAt, endsAt, row.id, user.id]);
+    }
     return reply.code(201).send({ meeting: { ...meetingOut(row!), createdByName: user.displayName }, join: joinPayload(row!, user, true) });
   });
 

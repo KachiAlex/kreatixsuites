@@ -659,6 +659,31 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at DESC)`);
 
+  // Kreatix Calendar — org events. Visibility = creator + attendees;
+  // meeting_id links to a Kreatix Meet room when the event has a call.
+  await pool.query(`CREATE TABLE IF NOT EXISTS calendar_events (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    location TEXT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL,
+    all_day BOOLEAN NOT NULL DEFAULT false,
+    meeting_id TEXT REFERENCES meetings(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_cal_events_range ON calendar_events(org_id, starts_at, ends_at)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS calendar_attendees (
+      event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending',   -- pending | accepted | declined | tentative
+      PRIMARY KEY (event_id, user_id)
+    )`);
+
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);

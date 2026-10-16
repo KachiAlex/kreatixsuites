@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -11,6 +11,7 @@ const TILE: Record<AppKind, string> = {
   mail: "#0FA3A3",
   meet: "#6264A7",
   chat: "#0E7C61",
+  calendar: "#C2470E",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -82,6 +83,18 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           <circle cx="24" cy="29" r="2.4" fill={color} />
           <circle cx="32" cy="29" r="2.4" fill={color} />
           <circle cx="40" cy="29" r="2.4" fill={color} />
+        </g>
+      );
+    case "calendar":
+      // Calendar page — binder rings + date mark
+      return (
+        <g>
+          <rect x="12" y="14" width="40" height="38" rx="5" fill="#fff" />
+          <rect x="12" y="14" width="40" height="11" rx="5" fill={color} opacity="0.85" />
+          <path d="M22 10v8M42 10v8" stroke="#fff" strokeWidth="4" strokeLinecap="round" />
+          <circle cx="25" cy="35" r="3" fill={color} />
+          <rect x="32" y="32" width="12" height="3.5" rx="1.75" fill={color} opacity="0.55" />
+          <rect x="23" y="42" width="21" height="3.5" rx="1.75" fill={color} opacity="0.3" />
         </g>
       );
     case "folder":

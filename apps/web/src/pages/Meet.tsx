@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
@@ -43,6 +44,17 @@ export function Meet() {
   }, []);
 
   useEffect(() => { load().catch(() => setEnabled(false)); }, [load]);
+
+  // ?join=<meetingId> — deep link from Calendar event Join buttons
+  const [search] = useSearchParams();
+  const joinParam = search.get("join");
+  useEffect(() => {
+    if (!joinParam) return;
+    api.get<{ join: JoinInfo }>(`/api/meet/${joinParam}/join`)
+      .then((r) => setCall(r.join))
+      .catch(() => toast("Could not join that meeting"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinParam]);
 
   // mount the Jitsi iframe when a join is active
   useEffect(() => {

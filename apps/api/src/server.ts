@@ -24,6 +24,7 @@ import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
 import { meetRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
+import { calendarRoutes } from "./routes/calendar.js";
 import { billingRoutes } from "./routes/billing.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
@@ -244,6 +245,7 @@ async function main() {
   app.register(mailRoutes);
   app.register(meetRoutes);
   app.register(chatRoutes);
+  app.register(calendarRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");
