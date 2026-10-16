@@ -11,6 +11,10 @@ export const meetEnabled = () => !!(MEET_BASE() && process.env.KREATIX_MEET_SECR
 
 export const meetBase = () => MEET_BASE();
 
+/** Recording enabled when the Jibri recordings dir is mounted in. */
+export const recDir = () => process.env.KREATIX_MEET_RECORDINGS_DIR ?? "";
+export const recordingEnabled = () => !!recDir();
+
 const b64u = (b: Buffer | string) =>
   Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
@@ -35,7 +39,11 @@ export function mintMeetToken(opts: {
         ...(opts.email ? { email: opts.email } : {}),
         moderator: !!opts.moderator,
       },
-      features: { livestreaming: false, recording: false },
+      features: {
+        livestreaming: false,
+        // moderators get the Jitsi record button when Jibri is wired in
+        recording: !!opts.moderator && recordingEnabled(),
+      },
     },
   }));
   const sig = createHmac("sha256", process.env.KREATIX_MEET_SECRET!)

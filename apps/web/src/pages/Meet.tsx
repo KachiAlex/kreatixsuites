@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, mediaUrl } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 import { Modal } from "../components/Modal";
@@ -12,8 +12,9 @@ import { Modal } from "../components/Modal";
 interface Meeting {
   id: string; code: string; title: string; status: string;
   scheduledAt: string | null; createdBy: string; createdByName: string | null;
-  createdAt: string; endedAt: string | null;
+  createdAt: string; endedAt: string | null; recordings: number;
 }
+interface Rec { id: string; size: number | null; durationSec: number | null; createdAt: string; name: string }
 interface JoinInfo { base: string; room: string; jwt: string; displayName: string }
 
 declare global {
@@ -34,12 +35,16 @@ export function Meet() {
   const [schedAt, setSchedAt] = useState("");
   const [call, setCall] = useState<JoinInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [recOn, setRecOn] = useState(false);
+  const [recFor, setRecFor] = useState<string | null>(null);      // meeting id w/ open list
+  const [recs, setRecs] = useState<Rec[]>([]);
   const frameHost = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{ dispose: () => void; addListener: (m: Record<string, () => void>) => void } | null>(null);
 
   const load = useCallback(async () => {
-    const r = await api.get<{ enabled: boolean; meetings?: Meeting[] }>("/api/meet");
+    const r = await api.get<{ enabled: boolean; recording?: boolean; meetings?: Meeting[] }>("/api/meet");
     setEnabled(r.enabled);
+    setRecOn(!!r.recording);
     setMeetings(r.meetings ?? []);
   }, []);
 
@@ -141,6 +146,14 @@ export function Meet() {
     void load();
   };
 
+  const openRecs = async (m: Meeting) => {
+    if (recFor === m.id) { setRecFor(null); return; }
+    try {
+      const r = await api.get<{ recordings: Rec[] }>(`/api/meet/${m.id}/recordings`);
+      setRecs(r.recordings); setRecFor(m.id);
+    } catch (e) { toast((e as Error).message); }
+  };
+
   if (enabled === null) return <div className="empty">Loading Meet…</div>;
   if (!enabled) return (
     <>
@@ -153,6 +166,7 @@ export function Meet() {
     <div className="meet-call">
       <div className="meet-call-bar">
         <button className="btn-ghost btn-sm" onClick={() => setCall(null)}>← Back to meetings</button>
+        {recOn && <span className="d-sub" style={{ marginLeft: "auto" }}>Moderators: recording is in the Jitsi toolbar (●)</span>}
       </div>
       <div ref={frameHost} className="meet-frame" />
     </div>
@@ -171,7 +185,21 @@ export function Meet() {
           {m.scheduledAt ? fmtWhen(m.scheduledAt) : fmtWhen(m.createdAt)}
           {m.createdByName ? ` · ${m.createdByName}` : ""} · <code>{m.code}</code>
         </span>
+        {recFor === m.id && (
+          <div className="meet-recs">
+            {!recs.length && <span className="d-sub">No recordings yet.</span>}
+            {recs.map((r) => (
+              <div key={r.id} className="meet-rec">
+                <video controls preload="metadata" src={mediaUrl(`/api/meet/recordings/${r.id}/stream`)} />
+                <span className="d-sub">{r.name} · {fmtWhen(r.createdAt)}{r.size ? ` · ${Math.round(r.size / 1048576)} MB` : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+      {m.recordings > 0 && (
+        <button className="btn-ghost btn-sm" onClick={() => void openRecs(m)}>▶ {m.recordings}</button>
+      )}
       {m.status !== "ended" && (
         <>
           <button className="btn-primary btn-sm" disabled={busy} onClick={() => void join(m)}>Join</button>

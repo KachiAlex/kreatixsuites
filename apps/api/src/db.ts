@@ -686,6 +686,20 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // RFC5545 recurrence rule string (FREQ=...;INTERVAL=...) — expanded at read
   await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS rrule TEXT`);
 
+  // Meet recordings — finalized Jibri .mp4s ingested from a host-mounted
+  // recordings dir; path is relative to KREATIX_MEET_RECORDINGS_DIR
+  await pool.query(`CREATE TABLE IF NOT EXISTS meeting_recordings (
+    id TEXT PRIMARY KEY,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    size BIGINT,
+    duration_sec INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (meeting_id, path)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_recordings_org ON meeting_recordings(org_id, created_at DESC)`);
+
   // Kreatix Tasks — Planner-lite kanban; org-shared board
   await pool.query(`CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,

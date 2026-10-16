@@ -22,7 +22,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
-import { meetRoutes } from "./routes/meet.js";
+import { meetRoutes, meetIngestRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
 import { calendarRoutes } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
@@ -245,6 +245,7 @@ async function main() {
   app.register(collabRoutes);
   app.register(mailRoutes);
   app.register(meetRoutes);
+  app.register(meetIngestRoutes);
   app.register(chatRoutes);
   app.register(calendarRoutes);
   app.register(taskRoutes);

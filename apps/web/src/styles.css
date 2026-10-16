@@ -3180,6 +3180,9 @@ html[data-theme="dark"]{
 .mail-ai-row{display:flex;gap:8px;margin-bottom:6px}
 .mail-ai-row input{flex:1}
 
+.meet-recs{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--subtle)}
+.meet-rec video{width:100%;max-width:480px;border-radius:8px;background:#000}
+
 /* kreatix tasks */
 .task-board{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:12px;align-items:start;overflow:auto;padding-bottom:10px}
 .task-col{background:var(--subtle);border:1px solid var(--line);border-radius:12px;padding:8px;min-height:160px;display:flex;flex-direction:column;gap:8px}
