@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryGrant, SiteRole } from "@kreatix/shared";
+import type { ColumnType, ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryGrant, SiteRole, TermSet } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -10,6 +10,7 @@ const COL_TYPES: { id: ColumnType; label: string }[] = [
   { id: "choice", label: "Choice" },
   { id: "person", label: "Person" },
   { id: "yesno", label: "Yes/No" },
+  { id: "managed", label: "Managed metadata" },
 ];
 
 /** Manage a library's custom columns — site owners only. */
@@ -24,21 +25,68 @@ export function ColumnsDialog({ siteId, libId, columns, onClose, onChange, toast
   const [type, setType] = useState<ColumnType>("text");
   const [required, setRequired] = useState(false);
   const [choices, setChoices] = useState("");
+  const [termSets, setTermSets] = useState<TermSet[]>([]);
+  const [termSetId, setTermSetId] = useState("");
+  const [editSet, setEditSet] = useState<string | null>(null); // set being term-edited
+  const [newTerm, setNewTerm] = useState("");
   const [busy, setBusy] = useState(false);
   const base = `/api/sites/${siteId}/libraries/${libId}/columns`;
 
+  const loadTermSets = async () => {
+    const r = await api.get<{ termSets: TermSet[] }>("/api/termsets");
+    setTermSets(r.termSets);
+    if (!termSetId && r.termSets[0]) setTermSetId(r.termSets[0].id);
+  };
+  useEffect(() => { void loadTermSets().catch(() => {}); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
+
   const add = async () => {
     if (!name.trim()) return;
+    if (type === "managed" && !termSetId) { toast("Pick a term set"); return; }
     setBusy(true);
     try {
       const r = await api.post<{ column: LibraryColumn }>(base, {
         name: name.trim(), type, required,
         choices: type === "choice" ? choices.split(",").map((c) => c.trim()).filter(Boolean) : undefined,
+        termSetId: type === "managed" ? termSetId : undefined,
       });
       onChange([...columns, r.column]);
       setName(""); setChoices(""); setRequired(false);
     } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
     setBusy(false);
+  };
+
+  const createTermSet = async () => {
+    const n = prompt("New term set name:", "Departments")?.trim();
+    if (!n) return;
+    try {
+      await api.post("/api/termsets", { name: n });
+      await loadTermSets();
+      toast("Term set created");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const addTerm = async (setId: string) => {
+    if (!newTerm.trim()) return;
+    try {
+      await api.post(`/api/termsets/${setId}/terms`, { name: newTerm.trim() });
+      setNewTerm("");
+      await loadTermSets();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const removeTerm = async (setId: string, termId: string) => {
+    try {
+      await api.del(`/api/termsets/${setId}/terms/${termId}`);
+      await loadTermSets();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const removeTermSet = async (id: string, n: string) => {
+    if (!confirm(`Delete term set "${n}"? Managed columns using it lose validation.`)) return;
+    try {
+      await api.del(`/api/termsets/${id}`);
+      await loadTermSets();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
   };
 
   const remove = async (c: LibraryColumn) => {
@@ -56,7 +104,10 @@ export function ColumnsDialog({ siteId, libId, columns, onClose, onChange, toast
       {columns.map((c) => (
         <div key={c.id} className="dlg-row">
           <b style={{ flex: 1 }}>{c.name}</b>
-          <span className="perm-badge">{c.type}{c.required ? " · required" : ""}</span>
+          <span className="perm-badge">{c.type}
+            {c.type === "managed" && c.termSetId
+              ? ` · ${termSets.find((s) => s.id === c.termSetId)?.name ?? "set"}` : ""}
+            {c.required ? " · required" : ""}</span>
           <button className="btn-ghost btn-sm" onClick={() => void remove(c)}>✕</button>
         </div>
       ))}
@@ -75,6 +126,46 @@ export function ColumnsDialog({ siteId, libId, columns, onClose, onChange, toast
           <label>Choices</label>
           <input value={choices} onChange={(e) => setChoices(e.target.value)} placeholder="Comma-separated" />
         </div>
+      )}
+      {type === "managed" && (
+        <>
+          <div className="dlg-row">
+            <label>Term set</label>
+            <select value={termSetId} onChange={(e) => setTermSetId(e.target.value)} style={{ flex: 1 }}>
+              {!termSets.length && <option value="">— none yet —</option>}
+              {termSets.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <button className="btn-ghost btn-sm" onClick={() => void createTermSet()}>＋</button>
+          </div>
+          {termSets.map((s) => (
+            <div key={s.id} style={{ paddingLeft: 8 }}>
+              <div className="dlg-row" style={{ gap: 6 }}>
+                <b style={{ flex: 1, fontSize: 12.5 }}>{s.name}
+                  <span style={{ color: "var(--muted)", fontWeight: 400 }}> · {s.terms?.length ?? 0} terms</span>
+                </b>
+                <button className="btn-ghost btn-sm" onClick={() => setEditSet(editSet === s.id ? null : s.id)}>
+                  {editSet === s.id ? "Hide" : "Terms"}
+                </button>
+                <button className="btn-ghost btn-sm" onClick={() => void removeTermSet(s.id, s.name)}>✕</button>
+              </div>
+              {editSet === s.id && (
+                <div style={{ padding: "6px 0 6px 14px", borderLeft: "2px solid var(--border)" }}>
+                  {(s.terms ?? []).map((t) => (
+                    <div className="dlg-row" key={t.id} style={{ gap: 6 }}>
+                      <span style={{ flex: 1 }}>{t.name}</span>
+                      <button className="btn-ghost btn-sm" onClick={() => void removeTerm(s.id, t.id)}>✕</button>
+                    </div>
+                  ))}
+                  <div className="dlg-row" style={{ gap: 6 }}>
+                    <input value={newTerm} onChange={(e) => setNewTerm(e.target.value)}
+                      placeholder="New term…" style={{ flex: 1 }} />
+                    <button className="btn-ghost btn-sm" onClick={() => void addTerm(s.id)}>Add</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </>
       )}
       <div className="dlg-row">
         <label>Required</label>
@@ -206,11 +297,16 @@ export function PropertiesDialog({ item, siteId, libId, columns, ctColumns, onCl
   toast: (m: string) => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
+  const [termSets, setTermSets] = useState<TermSet[]>([]);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const init: Record<string, string> = {};
     for (const c of columns) init[c.id] = item.metadata?.[c.id] ?? "";
     setValues(init);
+    if (columns.some((c) => c.type === "managed")) {
+      void api.get<{ termSets: TermSet[] }>("/api/termsets")
+        .then((r) => setTermSets(r.termSets)).catch(() => {});
+    }
   }, [item, columns]);
   void siteId; void libId;
 
@@ -243,6 +339,15 @@ export function PropertiesDialog({ item, siteId, libId, columns, ctColumns, onCl
         {(c.choices ?? []).map((ch) => <option key={ch} value={ch}>{ch}</option>)}
       </select>
     );
+    if (c.type === "managed") {
+      const terms = termSets.find((s) => s.id === c.termSetId)?.terms ?? [];
+      return (
+        <select value={v} onChange={(e) => set(e.target.value)}>
+          <option value="">—</option>
+          {terms.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+        </select>
+      );
+    }
     return <input type={c.type === "number" ? "number" : c.type === "date" ? "date" : "text"}
       value={v} onChange={(e) => set(e.target.value)} />;
   };

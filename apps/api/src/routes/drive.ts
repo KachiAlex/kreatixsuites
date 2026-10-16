@@ -658,8 +658,8 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
     }
     const { values } = z.object({ values: z.record(z.string(), z.string().nullable()) }).parse(req.body);
-    const cols = await dbq<{ id: string; type: string; choices: unknown }>(
-      "SELECT id, type, choices FROM library_columns WHERE library_id = $1", [item.library_id]);
+    const cols = await dbq<{ id: string; type: string; choices: unknown; term_set_id: string | null }>(
+      "SELECT id, type, choices, term_set_id FROM library_columns WHERE library_id = $1", [item.library_id]);
     const colById = new Map(cols.map((c) => [c.id, c]));
     for (const [cid, raw] of Object.entries(values)) {
       const col = colById.get(cid);
@@ -678,6 +678,15 @@ export function driveRoutes(app: FastifyInstance) {
       }
       if (col.type === "choice" && Array.isArray(col.choices) && !(col.choices as string[]).includes(v)) {
         return reply.code(400).send({ error: "bad_request", message: "Value is not an allowed choice" });
+      }
+      // managed metadata: the value must be a term in the bound term set
+      if (col.type === "managed" && col.term_set_id) {
+        const names = (await dbq<{ name: string }>(
+          "SELECT name FROM terms WHERE set_id = $1", [col.term_set_id]))
+          .map((t) => decryptField(t.name) ?? t.name);
+        if (!names.includes(v)) {
+          return reply.code(400).send({ error: "bad_request", message: "Value is not a term in the bound set" });
+        }
       }
       await run(
         `INSERT INTO item_metadata (item_id, column_id, value) VALUES ($1,$2,$3)

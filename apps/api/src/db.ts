@@ -478,6 +478,29 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // per-library retention (SharePoint information management policies) —
   // items untouched for retention_days get auto-trashed by the daily sweep
   await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS retention_days INTEGER`);
+  // term store (SharePoint managed metadata) — org-wide reusable term sets;
+  // a library column of type 'managed' binds to a set and its values must be
+  // terms from that set
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS term_sets (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_term_sets_org ON term_sets(org_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS terms (
+      id TEXT PRIMARY KEY,
+      set_id TEXT NOT NULL REFERENCES term_sets(id) ON DELETE CASCADE,
+      parent_id TEXT REFERENCES terms(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_terms_set ON terms(set_id)`);
+  await pool.query(`ALTER TABLE library_columns ADD COLUMN IF NOT EXISTS term_set_id TEXT REFERENCES term_sets(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

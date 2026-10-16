@@ -60,9 +60,11 @@ const libraryPatchSchema = librarySchema.partial().extend({
 
 const columnSchema = z.object({
   name: z.string().min(1).max(80),
-  type: z.enum(["text", "number", "date", "choice", "person", "yesno"]).default("text"),
+  type: z.enum(["text", "number", "date", "choice", "person", "yesno", "managed"]).default("text"),
   required: z.boolean().default(false),
   choices: z.array(z.string().max(120)).max(50).optional(),
+  /** bound term set when type === 'managed' */
+  termSetId: z.string().nullable().optional(),
   position: z.number().int().min(0).optional(),
 });
 
@@ -81,7 +83,8 @@ const viewSchema = z.object({
 
 interface ColumnRow {
   id: string; library_id: string; name: string; type: string;
-  required: boolean; choices: unknown; position: number; created_at: string;
+  required: boolean; choices: unknown; term_set_id: string | null;
+  position: number; created_at: string;
 }
 
 interface ViewRow {
@@ -93,6 +96,7 @@ const colOut = (r: ColumnRow) => ({
   id: r.id, libraryId: r.library_id, name: decryptField(r.name) ?? r.name,
   type: r.type, required: !!r.required,
   choices: Array.isArray(r.choices) ? (r.choices as string[]) : undefined,
+  termSetId: r.term_set_id ?? undefined,
   position: r.position, createdAt: r.created_at,
 });
 
@@ -345,6 +349,130 @@ export function siteRoutes(app: FastifyInstance) {
       };
     });
 
+    /** Audit export — full site activity as CSV (SharePoint audit log
+     *  reports). Site owners only; capped at 10k rows, newest first. */
+    authed.get("/api/sites/:id/audit.csv", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || role !== "owner") {
+        return reply.code(403).send({ error: "forbidden", message: "Only site owners can export the audit log" });
+      }
+      const rows = await q<{
+        action: string; detail: string | null; created_at: string;
+        actor: string; file_name: string | null;
+      }>(
+        `SELECT a.action, a.detail, a.created_at, u.display_name AS actor, i.name AS file_name
+         FROM activity a JOIN users u ON u.id = a.actor_id
+         LEFT JOIN items i ON i.id = a.file_id
+         WHERE a.org_id = $2 AND (
+           a.site_id = $1
+           OR a.file_id IN (SELECT f.id FROM items f JOIN libraries l ON l.id = f.library_id
+                            WHERE l.site_id = $1))
+         ORDER BY a.created_at DESC LIMIT 10000`,
+        [site.id, user.orgId],
+      );
+      const cell = (v: string | null) => `"${(v ?? "").replaceAll('"', '""')}"`;
+      const csv = "timestamp,actor,action,file,detail\n" + rows.map((r) =>
+        [r.created_at, r.actor, r.action, r.file_name ? decryptField(r.file_name) ?? r.file_name : "",
+         r.detail ? decryptField(r.detail) ?? r.detail : ""].map(cell).join(","),
+      ).join("\n");
+      reply.header("content-disposition", `attachment; filename="site-audit-${site.id.slice(0, 8)}.csv"`);
+      return reply.type("text/csv").send(csv);
+    });
+
+    // ---- term store (SharePoint managed metadata, org-scoped) ----
+
+    const orgAdmin = (role: string) => role === "owner" || role === "admin";
+
+    const termSetOut = (r: { id: string; org_id: string; name: string; description: string | null; created_at: string },
+      terms?: { id: string; set_id: string; parent_id: string | null; name: string; position: number }[]) => ({
+      id: r.id, orgId: r.org_id, name: decryptField(r.name) ?? r.name,
+      description: r.description ? decryptField(r.description) ?? r.description : null,
+      terms: terms?.map((t) => ({
+        id: t.id, setId: t.set_id, parentId: t.parent_id,
+        name: decryptField(t.name) ?? t.name, position: t.position,
+      })),
+      createdAt: r.created_at,
+    });
+
+    /** List the org's term sets with their terms — any org member can read
+     *  (columns and property pickers need the vocabulary). */
+    authed.get("/api/termsets", async (req) => {
+      const { user } = req as AuthedRequest;
+      const sets = await q<{ id: string; org_id: string; name: string; description: string | null; created_at: string }>(
+        "SELECT * FROM term_sets WHERE org_id = $1 ORDER BY created_at", [user.orgId]);
+      const terms = sets.length ? await q<{ id: string; set_id: string; parent_id: string | null; name: string; position: number }>(
+        "SELECT * FROM terms WHERE set_id = ANY($1) ORDER BY position, created_at", [sets.map((s) => s.id)]) : [];
+      return { termSets: sets.map((s) => termSetOut(s, terms.filter((t) => t.set_id === s.id))) };
+    });
+
+    const termSetSchema = z.object({
+      name: z.string().min(1).max(120),
+      description: z.string().max(500).nullable().optional(),
+    });
+
+    authed.post("/api/termsets", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden", message: "Only org admins manage the term store" });
+      if (!(await entitled(user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Managed metadata requires a paid plan" });
+      }
+      const body = termSetSchema.parse(req.body);
+      const id = randomUUID();
+      await run("INSERT INTO term_sets (id, org_id, name, description, created_at) VALUES ($1,$2,$3,$4,$5)",
+        [id, user.orgId, encryptField(body.name), body.description ? encryptField(body.description) : null, now()]);
+      return { termSet: termSetOut((await one<{ id: string; org_id: string; name: string; description: string | null; created_at: string }>(
+        "SELECT * FROM term_sets WHERE id = $1", [id]))!, []) };
+    });
+
+    authed.delete("/api/termsets/:id", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const res = await run("DELETE FROM term_sets WHERE id = $1 AND org_id = $2",
+        [(req.params as { id: string }).id, user.orgId]);
+      if (!res) return reply.code(404).send({ error: "not_found" });
+      return { ok: true };
+    });
+
+    authed.post("/api/termsets/:id/terms", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const set = await one<{ id: string }>(
+        "SELECT id FROM term_sets WHERE id = $1 AND org_id = $2",
+        [(req.params as { id: string }).id, user.orgId]);
+      if (!set) return reply.code(404).send({ error: "not_found" });
+      const body = z.object({
+        name: z.string().min(1).max(120),
+        parentId: z.string().nullable().optional(),
+        position: z.number().int().min(0).optional(),
+      }).parse(req.body);
+      // nested terms must live in the same set
+      if (body.parentId) {
+        const parent = await one("SELECT id FROM terms WHERE id = $1 AND set_id = $2", [body.parentId, set.id]);
+        if (!parent) return reply.code(400).send({ error: "bad_request", message: "Parent term not in this set" });
+      }
+      const id = randomUUID();
+      const pos = body.position ?? (await one<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM terms WHERE set_id = $1", [set.id]))?.n ?? 0;
+      await run("INSERT INTO terms (id, set_id, parent_id, name, position, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+        [id, set.id, body.parentId ?? null, encryptField(body.name), pos, now()]);
+      const t = await one<{ id: string; set_id: string; parent_id: string | null; name: string; position: number }>(
+        "SELECT * FROM terms WHERE id = $1", [id]);
+      return { term: { id: t!.id, setId: t!.set_id, parentId: t!.parent_id, name: decryptField(t!.name) ?? t!.name, position: t!.position } };
+    });
+
+    authed.delete("/api/termsets/:id/terms/:tid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const { id, tid } = req.params as { id: string; tid: string };
+      const res = await run(
+        `DELETE FROM terms WHERE id = $1 AND set_id IN (SELECT id FROM term_sets WHERE id = $2 AND org_id = $3)`,
+        [tid, id, user.orgId]);
+      if (!res) return reply.code(404).send({ error: "not_found" });
+      return { ok: true };
+    });
+
     // ---- content types (site-scoped) ----
 
     authed.get("/api/sites/:id/content-types", async (req, reply) => {
@@ -511,14 +639,23 @@ export function siteRoutes(app: FastifyInstance) {
         return reply.code(402).send({ error: "plan_limit", message: "Custom columns require a paid plan" });
       }
       const body = columnSchema.parse(req.body);
+      // managed columns must bind to a term set owned by this org
+      if (body.type === "managed") {
+        if (!body.termSetId) {
+          return reply.code(400).send({ error: "bad_request", message: "Managed columns need a term set" });
+        }
+        const ts = await one("SELECT id FROM term_sets WHERE id = $1 AND org_id = $2", [body.termSetId, ctx.user.orgId]);
+        if (!ts) return reply.code(400).send({ error: "bad_request", message: "Unknown term set" });
+      }
       const id = randomUUID();
       const pos = body.position ?? (await one<{ n: number }>(
         "SELECT COUNT(*) AS n FROM library_columns WHERE library_id = $1", [ctx.lib.id]))?.n ?? 0;
       await run(
-        `INSERT INTO library_columns (id, library_id, name, type, required, choices, position, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO library_columns (id, library_id, name, type, required, choices, term_set_id, position, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [id, ctx.lib.id, encryptField(body.name), body.type, body.required,
-         body.choices ? JSON.stringify(body.choices) : null, pos, now()],
+         body.choices ? JSON.stringify(body.choices) : null,
+         body.type === "managed" ? body.termSetId : null, pos, now()],
       );
       return { column: colOut((await one<ColumnRow>("SELECT * FROM library_columns WHERE id = $1", [id]))!) };
     });
@@ -529,15 +666,21 @@ export function siteRoutes(app: FastifyInstance) {
       if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
       const { cid } = req.params as { cid: string };
       const body = columnSchema.partial().parse(req.body);
+      // a managed column can be re-pointed at another org-owned term set
+      if (body.termSetId) {
+        const ts = await one("SELECT id FROM term_sets WHERE id = $1 AND org_id = $2", [body.termSetId, ctx.user.orgId]);
+        if (!ts) return reply.code(400).send({ error: "bad_request", message: "Unknown term set" });
+      }
       const res = await run(
         `UPDATE library_columns SET name = COALESCE($2, name), type = COALESCE($3, type),
-         required = COALESCE($4, required), choices = COALESCE($5, choices), position = COALESCE($6, position)
+         required = COALESCE($4, required), choices = COALESCE($5, choices), position = COALESCE($6, position),
+         term_set_id = COALESCE($8, term_set_id)
          WHERE id = $1 AND library_id = $7`,
         [cid, body.name === undefined ? null : encryptField(body.name), body.type ?? null,
          body.required ?? null, body.choices === undefined ? null : JSON.stringify(body.choices),
-         body.position ?? null, ctx.lib.id],
+         body.position ?? null, ctx.lib.id, body.termSetId ?? null],
       );
-      if (!(res as { rowCount?: number }).rowCount) return reply.code(404).send({ error: "not_found" });
+      if (!res) return reply.code(404).send({ error: "not_found" });
       return { column: colOut((await one<ColumnRow>("SELECT * FROM library_columns WHERE id = $1", [cid]))!) };
     });
 

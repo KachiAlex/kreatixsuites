@@ -199,7 +199,26 @@ export interface ContentTypeColumn {
   position: number;
 }
 
-export type ColumnType = "text" | "number" | "date" | "choice" | "person" | "yesno";
+export type ColumnType = "text" | "number" | "date" | "choice" | "person" | "yesno" | "managed";
+
+/** Term store (SharePoint managed metadata): org-wide vocabulary sets that
+ *  managed-type library columns bind to. */
+export interface TermSet {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string | null;
+  terms?: Term[];
+  createdAt: string;
+}
+
+export interface Term {
+  id: string;
+  setId: string;
+  parentId: string | null;
+  name: string;
+  position: number;
+}
 
 export interface LibraryColumn {
   id: string;
@@ -209,6 +228,8 @@ export interface LibraryColumn {
   required: boolean;
   /** Allowed values when type === 'choice' */
   choices?: string[];
+  /** Bound term set when type === 'managed' */
+  termSetId?: string | null;
   position: number;
   createdAt: string;
 }

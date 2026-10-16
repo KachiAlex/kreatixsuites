@@ -360,6 +360,18 @@ function ActivityDialog({ site, onClose }: { site: Site; onClose: () => void }) 
     void api.get<{ events: SiteEvent[] }>(`/api/sites/${site.id}/activity`)
       .then((r) => setEvents(r.events)).catch(() => setEvents([]));
   }, [site.id]);
+
+  // owner-only server-side; failures surface as a no-download
+  const exportCsv = async () => {
+    const blob = await api.get<Blob>(`/api/sites/${site.id}/audit.csv`);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-${site.name.replace(/[^\w-]+/g, "_")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Modal onClose={onClose} label="Site activity">
       <h2>Activity — {site.name}</h2>
@@ -376,7 +388,10 @@ function ActivityDialog({ site, onClose }: { site: Site; onClose: () => void }) 
           <span style={{ fontSize: 11, color: "var(--muted)" }}>{timeAgo(e.createdAt)}</span>
         </div>
       ))}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        {site.myRole === "owner" && (
+          <button className="btn-ghost btn-sm" onClick={() => void exportCsv()}>⭳ Export audit CSV</button>
+        )}
         <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
       </div>
     </Modal>
