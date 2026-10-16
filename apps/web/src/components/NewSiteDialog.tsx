@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Site, SiteType } from "@kreatix/shared";
+import { useEffect, useState } from "react";
+import type { Site, SiteTemplate, SiteType } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -19,7 +19,14 @@ export function NewSiteDialog({ onClose, onCreated, toast }: {
   const [description, setDescription] = useState("");
   const [type, setType] = useState<SiteType>("team");
   const [visibility, setVisibility] = useState<"org" | "private">("org");
+  const [templates, setTemplates] = useState<SiteTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api.get<{ templates: SiteTemplate[] }>("/api/site-templates")
+      .then((r) => setTemplates(r.templates)).catch(() => {});
+  }, []);
 
   const create = async () => {
     if (!name.trim() || busy) return;
@@ -27,6 +34,7 @@ export function NewSiteDialog({ onClose, onCreated, toast }: {
     try {
       const r = await api.post<{ site: Site }>("/api/sites", {
         name: name.trim(), description: description.trim() || null, type, visibility,
+        templateId: templateId || undefined,
       });
       window.dispatchEvent(new Event("kreatix:sites"));
       onCreated(r.site);
@@ -62,6 +70,19 @@ export function NewSiteDialog({ onClose, onCreated, toast }: {
           <option value="private">Private — members only</option>
         </select>
       </div>
+      {templates.length > 0 && (
+        <div className="field">
+          <label>Template</label>
+          <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+            <option value="">Blank site</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.blueprint?.libraries?.length ?? 0} libraries)
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn-primary" disabled={!name.trim() || busy} onClick={() => void create()}>

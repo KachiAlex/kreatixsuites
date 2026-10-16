@@ -29,6 +29,7 @@ export function LibraryPage() {
   const [colsOpen, setColsOpen] = useState(false);
   const [permsOpen, setPermsOpen] = useState(false);
   const [ctOpen, setCtOpen] = useState(false);
+  const [subscribed, setSubscribed] = useState(false);
   const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
   const [viewMenu, setViewMenu] = useState(false);
   const [checkin, setCheckin] = useState<DriveItem | null>(null);
@@ -53,6 +54,8 @@ export function LibraryPage() {
       .then((r) => setViews(r.views)).catch(() => {});
     void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`)
       .then((r) => setContentTypes(r.contentTypes)).catch(() => {});
+    void api.get<{ subscribed: boolean }>(`${libBase}/alert`)
+      .then((r) => setSubscribed(r.subscribed)).catch(() => {});
   }, [libBase]);
 
   useEffect(() => {
@@ -316,6 +319,12 @@ export function LibraryPage() {
           {canManage && (
             <button className="btn-ghost btn-sm" onClick={() => setCtOpen(true)}>📋 Content types</button>
           )}
+          <button className="btn-ghost btn-sm" title="Get notified when files change in this library"
+            onClick={() => void api.put<{ subscribed: boolean }>(`${libBase}/alert`, { on: !subscribed })
+              .then((r) => { setSubscribed(r.subscribed); toast(r.subscribed ? "Alerts on" : "Alerts off"); })
+              .catch((e) => toast(e instanceof Error ? e.message : "Failed"))}>
+            {subscribed ? "🔔 Alerts on" : "🔕 Alert me"}
+          </button>
         </div>
       )}
 

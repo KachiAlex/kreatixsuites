@@ -62,6 +62,7 @@ export function SitePage() {
           <h2 style={{ margin: 0 }}>{site.name}</h2>
           <p className="d-sub" style={{ margin: "4px 0 0" }}>
             {TYPE_LABEL[site.type]} · {site.visibility === "private" ? "Private — members only" : "Organization"} · {site.memberCount ?? members.length} member{(site.memberCount ?? members.length) === 1 ? "" : "s"}
+            {site.hubId && site.hubName && <> · <span className="perm-badge">hub: {site.hubName}</span></>}
           </p>
           {site.description && <p style={{ margin: "6px 0 0", fontSize: 12.5 }}>{site.description}</p>}
         </div>
@@ -101,6 +102,21 @@ export function SitePage() {
           </button>
         ))}
       </div>
+
+      {site.associatedSites && site.associatedSites.length > 0 && (
+        <>
+          <div className="section-head"><h2>Associated sites</h2></div>
+          <div className="site-grid">
+            {site.associatedSites.map((s) => (
+              <button key={s.id} className="site-card" onClick={() => navigate(`/sites/${s.id}`)}>
+                <span className="site-card-ico">🌐</span>
+                <span className="site-card-body"><b>{s.name}</b></span>
+                <span style={{ color: "var(--muted)" }}>›</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {libDlg && <NewLibraryDialog siteId={site.id} toast={toast} onClose={() => setLibDlg(false)}
         onCreated={(l) => { setLibDlg(false); navigate(`/sites/${site.id}/library/${l.id}`); }} />}
@@ -301,17 +317,38 @@ function SiteSettingsDialog({ site, onClose, onDeleted, toast }: {
   const [name, setName] = useState(site.name);
   const [description, setDescription] = useState(site.description ?? "");
   const [visibility, setVisibility] = useState(site.visibility);
+  const [hubId, setHubId] = useState(site.hubId ?? "");
+  const [hubCandidates, setHubCandidates] = useState<Site[]>([]);
   const [busy, setBusy] = useState(false);
+
+  // hub candidates: every site except this one (server enforces one level)
+  useEffect(() => {
+    void api.get<{ sites: Site[] }>("/api/sites")
+      .then((r) => setHubCandidates(r.sites.filter((s) => s.id !== site.id && !s.hubId)))
+      .catch(() => {});
+  }, [site.id]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await api.patch(`/api/sites/${site.id}`, { name: name.trim(), description: description.trim() || null, visibility });
+      await api.patch(`/api/sites/${site.id}`, {
+        name: name.trim(), description: description.trim() || null, visibility,
+        hubId: hubId || null,
+      });
       window.dispatchEvent(new Event("kreatix:sites"));
       toast("Site updated");
       onClose();
     } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
     setBusy(false);
+  };
+
+  const saveTemplate = async () => {
+    const n = prompt("Template name:", `${site.name} template`)?.trim();
+    if (!n) return;
+    try {
+      await api.post(`/api/sites/${site.id}/template`, { name: n });
+      toast("Template saved — it's available when creating new sites");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
   };
 
   const del = async () => {
@@ -341,8 +378,16 @@ function SiteSettingsDialog({ site, onClose, onDeleted, toast }: {
           <option value="private">Private — members only</option>
         </select>
       </div>
+      <div className="field">
+        <label>Hub site</label>
+        <select value={hubId} onChange={(e) => setHubId(e.target.value)}>
+          <option value="">None</option>
+          {hubCandidates.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
         <button className="btn-ghost" style={{ color: "var(--danger)" }} onClick={() => void del()}>Delete site</button>
+        <button className="btn-ghost" onClick={() => void saveTemplate()}>Save as template</button>
         <span style={{ flex: 1 }} />
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn-primary" disabled={!name.trim() || busy} onClick={() => void save()}>

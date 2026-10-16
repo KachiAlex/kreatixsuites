@@ -134,8 +134,57 @@ export interface Site {
   /** Requesting user's effective role on the site */
   myRole?: SiteRole | null;
   memberCount?: number;
+  /** Hub this site is associated with (SharePoint hub sites) */
+  hubId?: string | null;
+  hubName?: string | null;
+  /** Sites associated to this site when it acts as a hub */
+  associatedSites?: { id: string; name: string }[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Saved site blueprint — libraries + columns + content types, provisioned
+ *  on demand via POST /api/sites { templateId }. Column references inside
+ *  content types are by name (ids are per-library). */
+export interface SiteTemplate {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string | null;
+  blueprint: SiteBlueprint;
+  createdAt: string;
+}
+
+export interface SiteBlueprint {
+  libraries: {
+    name: string;
+    kind: Library["kind"];
+    versioning?: "major" | "minor";
+    approval?: boolean;
+    retentionDays?: number | null;
+    columns: {
+      name: string; type: ColumnType; required?: boolean;
+      choices?: string[]; termSetName?: string;
+    }[];
+    contentTypes: {
+      name: string; description?: string | null; allowedKinds: FileKind[];
+      isDefault?: boolean; docSet?: boolean;
+      columns?: { name: string; required?: boolean; shared?: boolean }[];
+    }[];
+  }[];
+}
+
+/** Library alert notification (SharePoint "Alert me"). */
+export interface SiteNotification {
+  id: string;
+  kind: string;
+  fileId: string | null;
+  fileName?: string | null;
+  libraryId: string | null;
+  actor?: { displayName: string; initials: string } | null;
+  message: string | null;
+  read: boolean;
+  createdAt: string;
 }
 
 export interface SiteMember {

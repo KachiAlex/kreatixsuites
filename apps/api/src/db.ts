@@ -501,6 +501,44 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_terms_set ON terms(set_id)`);
   await pool.query(`ALTER TABLE library_columns ADD COLUMN IF NOT EXISTS term_set_id TEXT REFERENCES term_sets(id) ON DELETE SET NULL`);
+  // hub sites (SharePoint hub sites) — sites. hub_id associates a site with
+  // a hub; hubs themselves can't join another hub (single level)
+  await pool.query(`ALTER TABLE sites ADD COLUMN IF NOT EXISTS hub_id TEXT REFERENCES sites(id) ON DELETE SET NULL`);
+  // site templates — a saved blueprint of libraries/columns/content types
+  // that new sites can be provisioned from
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS site_templates (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      blueprint JSONB NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_site_templates_org ON site_templates(org_id)`);
+  // library alerts (SharePoint "Alert me") — subscribers get a notification
+  // row when items are created, uploaded, or trashed in the library
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS library_subscriptions (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (library_id, user_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL DEFAULT 'library',
+      file_id TEXT REFERENCES items(id) ON DELETE CASCADE,
+      library_id TEXT REFERENCES libraries(id) ON DELETE CASCADE,
+      actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      message TEXT,
+      read_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at DESC)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

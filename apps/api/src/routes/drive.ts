@@ -5,7 +5,7 @@ import { q as dbq, one, run, now, tx } from "../db.js";
 import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { entitled } from "../billing.js";
-import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds } from "../sites.js";
+import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds, notifyLibrarySubscribers } from "../sites.js";
 import { publishHead, submitForApproval } from "./content.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
@@ -358,6 +358,7 @@ export function driveRoutes(app: FastifyInstance) {
     if (body.parentId) await propagateSharedColumns(body.parentId, [id]);
 
     await logActivity(user.orgId, user.id, id, "create", body.name);
+    void notifyLibrarySubscribers(libraryId, user.id, "create", id, `added "${body.name}"`);
     return { item: await toDriveItem((await getItem(id))!, "owner") };
   });
 
@@ -434,6 +435,7 @@ export function driveRoutes(app: FastifyInstance) {
     );
 
     void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
+    void notifyLibrarySubscribers(libraryId, user.id, "upload", id, `uploaded "${name ?? "Untitled"}"`);
     // index PDF uploads immediately (body text + later annotation text)
     if (fileKind === "pdf") void indexFile(id, "pdf", null).catch(() => {});
     return { item: await toDriveItem((await getItem(id))!, "owner") };
@@ -529,6 +531,7 @@ export function driveRoutes(app: FastifyInstance) {
     }
     await run("UPDATE items SET trashed = true, updated_at = $1 WHERE id = $2", [now(), item.id]);
     void logActivity(user.orgId, user.id, item.id, "trash", itemName(item));
+    void notifyLibrarySubscribers(item.library_id, user.id, "trash", item.id, `trashed "${itemName(item)}"`);
     return { ok: true };
   });
 

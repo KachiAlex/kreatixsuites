@@ -436,10 +436,17 @@ interface Mention {
   excerpt: string; read: boolean; createdAt: string;
 }
 
+interface Alert {
+  id: string; kind: string; fileId: string | null; fileName?: string | null;
+  libraryId: string | null; actor?: { displayName: string; initials: string } | null;
+  message: string | null; read: boolean; createdAt: string;
+}
+
 function MentionsBell() {
   const navigate = useNavigate();
   const t = useI18n().t;
   const [mentions, setMentions] = useState<Mention[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -448,6 +455,10 @@ function MentionsBell() {
     try {
       const r = await api.get<{ mentions: Mention[]; unread: number }>("/api/mentions");
       setMentions(r.mentions); setUnread(r.unread);
+    } catch { /* ignore */ }
+    try {
+      const n = await api.get<{ notifications: Alert[]; unread: number }>("/api/notifications");
+      setAlerts(n.notifications); setUnread((u) => u + n.unread);
     } catch { /* ignore */ }
   };
   useEffect(() => {
@@ -462,7 +473,10 @@ function MentionsBell() {
 
   const toggle = () => {
     setOpen((v) => !v);
-    if (!open && unread) { void api.post("/api/mentions/read", {}).then(load); }
+    if (!open && unread) {
+      void api.post("/api/mentions/read", {}).catch(() => {});
+      void api.post("/api/notifications/read", {}).then(load).catch(() => {});
+    }
   };
 
   return (
@@ -482,6 +496,18 @@ function MentionsBell() {
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{m.excerpt}</div>
             </button>
           ))}
+          {alerts.length > 0 && (
+            <>
+              <div className="um-head" style={{ marginTop: 6 }}><b>Library alerts</b></div>
+              {alerts.map((n) => (
+                <button key={n.id} style={{ textAlign: "left", opacity: n.read ? 0.65 : 1 }}
+                  onClick={() => { setOpen(false); if (n.fileId) navigate(`/edit/${n.fileId}`); }}>
+                  <b>{n.actor?.displayName ?? "Someone"}</b>{" "}
+                  <span style={{ color: "var(--muted)" }}>{n.message}</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>

@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { SiteRole, FileKind } from "@kreatix/shared";
+import type { SiteRole, FileKind, SiteBlueprint } from "@kreatix/shared";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getSite, getLibrary, siteRoleFor, libraryRoleFor, toSite, toLibrary, memberOut,
-  type SiteRow, type LibraryRow,
+  notifyLibrarySubscribers, type SiteRow, type LibraryRow,
 } from "../sites.js";
 import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -17,6 +17,8 @@ const createSiteSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   type: z.enum(["team", "project", "department", "communication"]).default("team"),
   visibility: z.enum(["org", "private"]).default("org"),
+  /** provision from a saved blueprint (libraries + columns + content types) */
+  templateId: z.string().optional(),
 });
 
 const patchSiteSchema = z.object({
@@ -24,6 +26,8 @@ const patchSiteSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   type: z.enum(["team", "project", "department", "communication"]).optional(),
   visibility: z.enum(["org", "private"]).optional(),
+  /** associate to a hub site; null un-associates */
+  hubId: z.string().nullable().optional(),
 });
 
 const memberSchema = z.object({
@@ -125,6 +129,61 @@ const ctOut = (r: CtRow, columns?: { columnId: string; required: boolean; shared
 const SITE_RANK: Record<string, number> = { visitor: 1, member: 2, owner: 3 };
 const atLeast = (role: string | null, need: string) => role !== null && SITE_RANK[role] >= SITE_RANK[need];
 
+/** Instantiate a saved template: blueprint libraries + columns + content
+ *  types get fresh ids on the new site; content-type column bindings are
+ *  matched by name since column ids are per-library. */
+async function provisionBlueprint(orgId: string, siteId: string, bp: SiteBlueprint): Promise<void> {
+  for (const lib of bp.libraries ?? []) {
+    const libId = randomUUID();
+    await run(
+      `INSERT INTO libraries (id, site_id, name, kind, versioning, approval, retention_days, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [libId, siteId, encryptField(lib.name), lib.kind ?? "documents",
+       lib.versioning ?? "major", lib.approval ?? false, lib.retentionDays ?? null, now()],
+    );
+    // columns — keep a name → new-id map for content-type bindings
+    const colIds = new Map<string, string>();
+    for (const c of lib.columns ?? []) {
+      // managed columns re-bind to the org term set with the same name
+      // (names are field-encrypted — resolve by decrypted match)
+      let termSetId: string | null = null;
+      if (c.termSetName) {
+        const sets = await q<{ id: string; name: string }>(
+          "SELECT id, name FROM term_sets WHERE org_id = $1", [orgId]);
+        termSetId = sets.find((s) => (decryptField(s.name) ?? s.name) === c.termSetName)?.id ?? null;
+      }
+      const colId = randomUUID();
+      await run(
+        `INSERT INTO library_columns (id, library_id, name, type, required, choices, term_set_id, position, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [colId, libId, encryptField(c.name), c.type, c.required ?? false,
+         c.choices ? JSON.stringify(c.choices) : null, termSetId, colIds.size, now()],
+      );
+      colIds.set(c.name, colId);
+    }
+    for (const ct of lib.contentTypes ?? []) {
+      const ctId = randomUUID();
+      await run(
+        `INSERT INTO content_types (id, site_id, library_id, name, description, allowed_kinds, is_default, doc_set, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [ctId, siteId, libId, encryptField(ct.name),
+         ct.description ? encryptField(ct.description) : null,
+         JSON.stringify(ct.allowedKinds ?? ["writer", "sheets", "present", "pdf", "file"]),
+         ct.isDefault ?? false, ct.docSet ?? false, now()],
+      );
+      for (const [i, b] of (ct.columns ?? []).entries()) {
+        const colId = colIds.get(b.name);
+        if (!colId) continue;
+        await run(
+          `INSERT INTO content_type_columns (content_type_id, column_id, required, shared, position)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [ctId, colId, b.required ?? false, b.shared ?? false, i],
+        );
+      }
+    }
+  }
+}
+
 export function siteRoutes(app: FastifyInstance) {
   app.register(async (authed) => {
     authed.addHook("preHandler", requireAuth);
@@ -159,6 +218,16 @@ export function siteRoutes(app: FastifyInstance) {
           return reply.code(402).send({ error: "plan_limit", message: `Your plan allows ${max} site${max === 1 ? "" : "s"} — upgrade for more` });
         }
       }
+      // optional: provision from a saved site template (blueprint is a JSONB
+      // snapshot of libraries + columns + content types)
+      let blueprint: SiteBlueprint | null = null;
+      if (body.templateId) {
+        const tpl = await one<{ blueprint: SiteBlueprint }>(
+          "SELECT blueprint FROM site_templates WHERE id = $1 AND org_id = $2",
+          [body.templateId, user.orgId]);
+        if (!tpl) return reply.code(400).send({ error: "bad_request", message: "Unknown template" });
+        blueprint = tpl.blueprint;
+      }
       const id = randomUUID();
       const libId = randomUUID();
       await run(
@@ -172,6 +241,7 @@ export function siteRoutes(app: FastifyInstance) {
       // every site starts with a Documents library — SharePoint's convention
       await run("INSERT INTO libraries (id, site_id, name, kind, created_at) VALUES ($1,$2,$3,'documents',$4)",
         [libId, id, encryptField("Documents"), now()]);
+      if (blueprint) await provisionBlueprint(user.orgId, id, blueprint);
       void logActivity(user.orgId, user.id, null, "site-create", body.name, id);
       return { site: toSite((await getSite(id))!, "owner", 1) };
     });
@@ -205,8 +275,20 @@ export function siteRoutes(app: FastifyInstance) {
         [site.id, user.id, role === "owner", role !== null],
       );
       const mc = await one<{ n: number }>("SELECT COUNT(*) AS n FROM site_members WHERE site_id = $1", [site.id]);
+      const out = toSite(site, viewRole, mc?.n ?? 0);
+      // hub info: the hub's name for children; associated sites for hubs
+      if (site.hub_id) {
+        const hub = await getSite(site.hub_id);
+        out.hubName = hub ? decryptField(hub.name) ?? hub.name : null;
+      }
+      const children = await q<{ id: string; name: string }>(
+        "SELECT id, name FROM sites WHERE hub_id = $1 AND org_id = $2 ORDER BY created_at",
+        [site.id, site.org_id]);
+      if (children.length) {
+        out.associatedSites = children.map((c) => ({ id: c.id, name: decryptField(c.name) ?? c.name }));
+      }
       return {
-        site: toSite(site, viewRole, mc?.n ?? 0),
+        site: out,
         libraries: await Promise.all(libs.map((l) => toLibrary(l, l.n))),
       };
     });
@@ -217,15 +299,38 @@ export function siteRoutes(app: FastifyInstance) {
       const role = site ? await siteRoleFor(user, site) : null;
       if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
       const body = patchSiteSchema.parse(req.body);
+      // hub association (SharePoint hub sites): single level — a hub can't
+      // join another hub, and a hub with members can't become a child
+      if (body.hubId !== undefined) {
+        if (body.hubId === site.id) {
+          return reply.code(400).send({ error: "bad_request", message: "A site can't be its own hub" });
+        }
+        if (body.hubId) {
+          const hub = await getSite(body.hubId);
+          if (!hub || hub.org_id !== site.org_id) {
+            return reply.code(400).send({ error: "bad_request", message: "Hub must be a site in this workspace" });
+          }
+          if (hub.hub_id) {
+            return reply.code(400).send({ error: "bad_request", message: "A hub can't join another hub" });
+          }
+          const children = await one<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM sites WHERE hub_id = $1", [site.id]);
+          if ((children?.n ?? 0) > 0) {
+            return reply.code(400).send({ error: "bad_request", message: "A hub can't join another hub" });
+          }
+        }
+      }
       await run(
         `UPDATE sites SET name = COALESCE($2, name),
          description = CASE WHEN $7 THEN $3 ELSE description END,
-         type = COALESCE($4, type), visibility = COALESCE($5, visibility), updated_at = $6 WHERE id = $1`,
+         type = COALESCE($4, type), visibility = COALESCE($5, visibility), updated_at = $6,
+         hub_id = CASE WHEN $8 THEN $9 ELSE hub_id END WHERE id = $1`,
         [site.id,
          body.name === undefined ? null : encryptField(body.name),
          body.description === undefined || body.description === null ? null : encryptField(body.description),
          body.type ?? null, body.visibility ?? null, now(),
-         body.description !== undefined],
+         body.description !== undefined,
+         body.hubId !== undefined, body.hubId ?? null],
       );
       // description: explicit null clears
       if (body.description === null) await run("UPDATE sites SET description = NULL WHERE id = $1", [site.id]);
@@ -379,6 +484,161 @@ export function siteRoutes(app: FastifyInstance) {
       ).join("\n");
       reply.header("content-disposition", `attachment; filename="site-audit-${site.id.slice(0, 8)}.csv"`);
       return reply.type("text/csv").send(csv);
+    });
+
+    // ---- site templates (SharePoint "Save site as template") ----
+
+    /** Snapshot this site's libraries/columns/content types into a blueprint. */
+    authed.post("/api/sites/:id/template", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      if (!(await entitled(user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Site templates require a paid plan" });
+      }
+      const body = z.object({
+        name: z.string().min(1).max(120),
+        description: z.string().max(500).nullable().optional(),
+      }).parse(req.body);
+      // snapshot: decrypted values ride into the blueprint (JSONB at rest);
+      // managed columns record the term-set NAME (ids are org-scoped anyway)
+      const libs = await q<LibraryRow>("SELECT * FROM libraries WHERE site_id = $1 ORDER BY created_at", [site.id]);
+      const blueprint: SiteBlueprint = { libraries: [] };
+      for (const lib of libs) {
+        const cols = await q<ColumnRow>(
+          "SELECT * FROM library_columns WHERE library_id = $1 ORDER BY position, created_at", [lib.id]);
+        const cts = await q<CtRow>(
+          "SELECT * FROM content_types WHERE library_id = $1", [lib.id]);
+        const binds = cts.length ? await q<{ content_type_id: string; column_id: string; required: boolean; shared: boolean; position: number }>(
+          "SELECT * FROM content_type_columns WHERE content_type_id = ANY($1)", [cts.map((c) => c.id)]) : [];
+        const termSets = cols.some((c) => c.term_set_id)
+          ? await q<{ id: string; name: string }>("SELECT id, name FROM term_sets WHERE org_id = $1", [user.orgId])
+          : [];
+        const colName = (cid: string) => cols.find((c) => c.id === cid)?.name;
+        blueprint.libraries.push({
+          name: decryptField(lib.name) ?? lib.name,
+          kind: lib.kind,
+          versioning: lib.versioning,
+          approval: lib.approval,
+          retentionDays: lib.retention_days,
+          columns: cols.map((c) => ({
+            name: decryptField(c.name) ?? c.name,
+            type: c.type as SiteBlueprint["libraries"][0]["columns"][0]["type"],
+            required: !!c.required,
+            choices: Array.isArray(c.choices) ? (c.choices as string[]) : undefined,
+            termSetName: c.term_set_id
+              ? (() => { const s = termSets.find((t) => t.id === c.term_set_id); return s ? decryptField(s.name) ?? s.name : undefined; })()
+              : undefined,
+          })),
+          contentTypes: cts.map((ct) => ({
+            name: decryptField(ct.name) ?? ct.name,
+            description: ct.description ? decryptField(ct.description) ?? ct.description : null,
+            allowedKinds: Array.isArray(ct.allowed_kinds) ? (ct.allowed_kinds as FileKind[]) : [],
+            isDefault: !!ct.is_default,
+            docSet: !!ct.doc_set,
+            columns: binds.filter((b) => b.content_type_id === ct.id)
+              .sort((a, b) => a.position - b.position)
+              .map((b) => ({
+                name: colName(b.column_id) ? decryptField(colName(b.column_id)!) ?? colName(b.column_id)! : "",
+                required: !!b.required, shared: !!b.shared,
+              })).filter((b) => b.name),
+          })),
+        });
+      }
+      const id = randomUUID();
+      await run(
+        "INSERT INTO site_templates (id, org_id, name, description, blueprint, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [id, user.orgId, encryptField(body.name), body.description ? encryptField(body.description) : null,
+         JSON.stringify(blueprint), user.id, now()],
+      );
+      return { template: { id, name: body.name, description: body.description ?? null } };
+    });
+
+    /** Org-visible template list — any member can provision from one. */
+    authed.get("/api/site-templates", async (req) => {
+      const { user } = req as AuthedRequest;
+      const rows = await q<{ id: string; org_id: string; name: string; description: string | null; blueprint: unknown; created_at: string }>(
+        "SELECT * FROM site_templates WHERE org_id = $1 ORDER BY created_at DESC", [user.orgId]);
+      return {
+        templates: rows.map((r) => ({
+          id: r.id, orgId: r.org_id, name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          blueprint: r.blueprint, createdAt: r.created_at,
+        })),
+      };
+    });
+
+    authed.delete("/api/site-templates/:id", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const tpl = await one<{ id: string; created_by: string | null }>(
+        "SELECT id, created_by FROM site_templates WHERE id = $1 AND org_id = $2",
+        [(req.params as { id: string }).id, user.orgId]);
+      if (!tpl) return reply.code(404).send({ error: "not_found" });
+      if (tpl.created_by !== user.id && !(user.role === "owner" || user.role === "admin")) {
+        return reply.code(403).send({ error: "forbidden", message: "Only the creator or an org admin can delete" });
+      }
+      await run("DELETE FROM site_templates WHERE id = $1", [tpl.id]);
+      return { ok: true };
+    });
+
+    // ---- library alerts (SharePoint "Alert me") ----
+
+    /** Subscribe/unsubscribe the current user to library file activity. */
+    authed.put("/api/sites/:id/libraries/:lid/alert", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const { on } = z.object({ on: z.boolean() }).parse(req.body);
+      if (on) {
+        await run(
+          "INSERT INTO library_subscriptions (library_id, user_id, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+          [ctx.lib.id, ctx.user.id, now()]);
+      } else {
+        await run("DELETE FROM library_subscriptions WHERE library_id = $1 AND user_id = $2",
+          [ctx.lib.id, ctx.user.id]);
+      }
+      return { subscribed: on };
+    });
+
+    authed.get("/api/sites/:id/libraries/:lid/alert", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const sub = await one("SELECT 1 AS x FROM library_subscriptions WHERE library_id = $1 AND user_id = $2",
+        [ctx.lib.id, ctx.user.id]);
+      return { subscribed: !!sub };
+    });
+
+    /** Notification feed for the bell — library alerts for the current user. */
+    authed.get("/api/notifications", async (req) => {
+      const { user } = req as AuthedRequest;
+      const rows = await q<{
+        id: string; kind: string; file_id: string | null; library_id: string | null;
+        message: string | null; read_at: string | null; created_at: string;
+        actor_name: string | null; actor_initials: string | null; file_name: string | null;
+      }>(
+        `SELECT n.*, u.display_name AS actor_name, u.initials AS actor_initials, i.name AS file_name
+         FROM notifications n
+         LEFT JOIN users u ON u.id = n.actor_id
+         LEFT JOIN items i ON i.id = n.file_id
+         WHERE n.user_id = $1 ORDER BY n.created_at DESC LIMIT 50`,
+        [user.id],
+      );
+      return {
+        notifications: rows.map((r) => ({
+          id: r.id, kind: r.kind, fileId: r.file_id, libraryId: r.library_id,
+          fileName: r.file_name ? decryptField(r.file_name) ?? r.file_name : null,
+          actor: r.actor_name ? { displayName: r.actor_name, initials: r.actor_initials } : null,
+          message: r.message ? decryptField(r.message) ?? r.message : null,
+          read: !!r.read_at, createdAt: r.created_at,
+        })),
+        unread: rows.filter((r) => !r.read_at).length,
+      };
+    });
+
+    authed.post("/api/notifications/read", async (req) => {
+      const { user } = req as AuthedRequest;
+      await run("UPDATE notifications SET read_at = $1 WHERE user_id = $2 AND read_at IS NULL", [now(), user.id]);
+      return { ok: true };
     });
 
     // ---- term store (SharePoint managed metadata, org-scoped) ----

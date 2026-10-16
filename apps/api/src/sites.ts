@@ -1,7 +1,8 @@
 // Site helpers — SharePoint-style site → library → item permission plumbing.
 // Kept free of auth.js imports so auth.ts can use these without a cycle.
-import { one, q } from "./db.js";
-import { decryptField } from "./crypto.js";
+import { randomUUID } from "node:crypto";
+import { one, q, run, now } from "./db.js";
+import { decryptField, encryptField } from "./crypto.js";
 import type { Library, Permission, Site, SiteMember, SiteRole } from "@kreatix/shared";
 
 export interface SiteRow {
@@ -12,6 +13,7 @@ export interface SiteRow {
   type: Site["type"];
   visibility: "org" | "private";
   owner_id: string;
+  hub_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -133,9 +135,35 @@ export function toSite(row: SiteRow, myRole?: SiteRole | null, memberCount?: num
     ownerId: row.owner_id,
     myRole: myRole ?? null,
     memberCount,
+    hubId: row.hub_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/** Library alerts (SharePoint "Alert me") — every subscriber except the
+ *  actor gets a notification row for the file event. */
+export async function notifyLibrarySubscribers(
+  libraryId: string | null,
+  actorId: string,
+  kind: string,
+  fileId: string | null,
+  message: string,
+): Promise<void> {
+  if (!libraryId) return;
+  const subs = await q<{ user_id: string; org_id: string }>(
+    `SELECT s.user_id, u.org_id FROM library_subscriptions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.library_id = $1 AND s.user_id != $2`,
+    [libraryId, actorId],
+  );
+  for (const sub of subs) {
+    await run(
+      `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [randomUUID(), sub.user_id, kind, fileId, libraryId, actorId, encryptField(message), now()],
+    );
+  }
 }
 
 export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Library> {
