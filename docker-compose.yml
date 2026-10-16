@@ -83,6 +83,10 @@ services:
       - KREATIX_MEET_BASE=${KREATIX_MEET_BASE:-}
       - KREATIX_MEET_APP_ID=${KREATIX_MEET_APP_ID:-}
       - KREATIX_MEET_SECRET=${KREATIX_MEET_SECRET:-}
+      # Meet recording ingest — mount Jibri's recordings dir read-only and set
+      # the shared secret the host sync script authenticates with
+      - KREATIX_MEET_RECORDINGS_DIR=${KREATIX_MEET_RECORDINGS_DIR:-}
+      - KREATIX_MEET_INGEST_SECRET=${KREATIX_MEET_INGEST_SECRET:-}
       - KREATIX_OIDC_REDIRECT=${KREATIX_OIDC_REDIRECT:-}
       - KREATIX_OIDC_SCOPE=${KREATIX_OIDC_SCOPE:-}
       - KREATIX_SUPERADMIN_EMAIL=${KREATIX_SUPERADMIN_EMAIL:-}
@@ -97,6 +101,7 @@ services:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3001}:3001"
     volumes:
       - kreatix-data:/data
+      - ${MEET_RECORDINGS_HOST_DIR:-./.empty-recordings}:/recordings:ro
 
   caddy:
     profiles: ["tls"]
