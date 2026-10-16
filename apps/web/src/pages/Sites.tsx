@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { Site } from "@kreatix/shared";
 import { useSites, useToast } from "../lib/hooks";
+import { useAuth } from "../lib/auth";
 import { NewSiteDialog } from "../components/NewSiteDialog";
+import { GroupsDialog } from "../components/GroupsDialog";
 
 const TYPE_LABEL: Record<Site["type"], string> = {
   team: "Team site",
@@ -17,8 +19,11 @@ const TYPE_ICON: Record<Site["type"], string> = {
 
 export function Sites() {
   const { sites, refresh } = useSites();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
   const { msg, toast } = useToast();
   const [creating, setCreating] = useState(false);
+  const [groupsOpen, setGroupsOpen] = useState(false);
   const navigate = useNavigate();
 
   return (
@@ -26,7 +31,12 @@ export function Sites() {
       <div className="crumbs"><Link to="/home">Home</Link> <span>/</span> <b>Sites</b></div>
       <div className="section-head" style={{ marginTop: 0 }}>
         <h2>Sites</h2>
-        <button className="btn-primary btn-sm" style={{ marginLeft: "auto" }} onClick={() => setCreating(true)}>
+        {isAdmin && (
+          <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => setGroupsOpen(true)}>
+            👥 Groups
+          </button>
+        )}
+        <button className="btn-primary btn-sm" style={isAdmin ? {} : { marginLeft: "auto" }} onClick={() => setCreating(true)}>
           ＋ New site
         </button>
       </div>
@@ -53,6 +63,7 @@ export function Sites() {
         <NewSiteDialog toast={toast} onClose={() => setCreating(false)}
           onCreated={(s) => { setCreating(false); void refresh(); navigate(`/sites/${s.id}`); }} />
       )}
+      {groupsOpen && <GroupsDialog onClose={() => setGroupsOpen(false)} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );

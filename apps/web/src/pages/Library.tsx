@@ -7,9 +7,13 @@ import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
-import { ColumnsDialog, ContentTypeDialog, PermsDialog, PropertiesDialog } from "../components/LibraryDialogs";
+import { ColumnsDialog, ContentTypeDialog, PermsDialog, PresetDialog, PropertiesDialog, presetFor } from "../components/LibraryDialogs";
 import { prefetchEditorsFor } from "./editors";
 import { kindForPath } from "../lib/offline/openLocal";
+
+const PRESET_LABEL: Record<string, string> = {
+  collab: "Collaboration", managed: "Managed documents", records: "Records",
+};
 
 /** A document library inside a site — SharePoint-style: every file here is
  *  visible to site members; the toolbar creates/uploads straight into it. */
@@ -28,6 +32,7 @@ export function LibraryPage() {
   const [newOpen, setNewOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
   const [permsOpen, setPermsOpen] = useState(false);
+  const [presetOpen, setPresetOpen] = useState(false);
   const [ctOpen, setCtOpen] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
@@ -264,6 +269,12 @@ export function LibraryPage() {
                 ))}
                 <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "4px 0" }} />
                 <button onClick={() => void saveView()}>＋ Save current view</button>
+                {canManage && lib && (
+                  <button onClick={() => { setViewMenu(false); setPresetOpen(true); }}>
+                    ⚙ Policy preset: {presetFor(lib)
+                      ? PRESET_LABEL[presetFor(lib)!] : "custom"}
+                  </button>
+                )}
                 {canManage && (
                   <button onClick={() => void toggleVersioning()}>
                     {lib?.versioning === "minor" ? "Switch to major-only versioning" : "Enable minor (draft) versioning"}
@@ -346,6 +357,8 @@ export function LibraryPage() {
         onClose={() => setColsOpen(false)} onChange={setColumns} toast={toast} />}
       {permsOpen && lib && <PermsDialog siteId={siteId} lib={lib}
         onClose={() => setPermsOpen(false)} onChange={setLib} toast={toast} />}
+      {presetOpen && lib && <PresetDialog siteId={siteId} lib={lib}
+        onClose={() => setPresetOpen(false)} onChange={setLib} toast={toast} />}
       {ctOpen && <ContentTypeDialog siteId={siteId} libraryId={libId} columns={columns}
         onClose={() => { setCtOpen(false); void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`).then((r) => setContentTypes(r.contentTypes)); }} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}

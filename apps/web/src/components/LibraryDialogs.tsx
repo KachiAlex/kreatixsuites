@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryGrant, SiteRole, TermSet } from "@kreatix/shared";
+import type { ColumnType, ContentType, DriveItem, FileKind, GroupGrant, Library, LibraryColumn, LibraryGrant, OrgGroup, SiteRole, TermSet } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -191,15 +191,24 @@ export function PermsDialog({ siteId, lib, onClose, onChange, toast }: {
 }) {
   const base = `/api/sites/${siteId}/libraries/${lib.id}`;
   const [grants, setGrants] = useState<LibraryGrant[]>([]);
+  const [groupGrants, setGroupGrants] = useState<GroupGrant[]>([]);
+  const [allGroups, setAllGroups] = useState<OrgGroup[]>([]);
+  const [pickGroup, setPickGroup] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<SiteRole>("member");
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    const r = await api.get<{ inherit: boolean; grants: LibraryGrant[] }>(`${base}/permissions`);
+    const r = await api.get<{ inherit: boolean; grants: LibraryGrant[]; groupGrants?: GroupGrant[] }>(`${base}/permissions`);
     setGrants(r.grants);
+    setGroupGrants(r.groupGrants ?? []);
   };
-  useEffect(() => { void load().catch(() => {}); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [base]);
+  useEffect(() => {
+    void load().catch(() => {});
+    void api.get<{ groups: OrgGroup[] }>("/api/groups")
+      .then((r) => setAllGroups(r.groups)).catch(() => {});
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [base]);
 
   const setInherit = async (inherit: boolean) => {
     if (!inherit && !confirm(
@@ -234,6 +243,32 @@ export function PermsDialog({ siteId, lib, onClose, onChange, toast }: {
     try {
       await api.post(`${base}/permissions`, { email: g.user.email, role: r });
       setGrants((l) => l.map((x) => (x.userId === g.userId ? { ...x, role: r } : x)));
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const addGroup = async () => {
+    if (!pickGroup || busy) return;
+    setBusy(true);
+    try {
+      await api.post(`${base}/permissions`, { groupId: pickGroup, role });
+      setPickGroup("");
+      await load();
+      toast("Group granted");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+    setBusy(false);
+  };
+
+  const setGroupRole = async (g: GroupGrant, r: SiteRole) => {
+    try {
+      await api.post(`${base}/permissions`, { groupId: g.groupId, role: r });
+      await load();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const removeGroup = async (g: GroupGrant) => {
+    try {
+      await api.del(`${base}/permissions/groups/${g.groupId}`);
+      setGroupGrants((l) => l.filter((x) => x.groupId !== g.groupId));
     } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
   };
 
@@ -276,7 +311,33 @@ export function PermsDialog({ siteId, lib, onClose, onChange, toast }: {
               <button className="x" onClick={() => void remove(g)}>✕</button>
             </div>
           ))}
-          {!grants.length && <p className="empty" style={{ margin: "8px 0" }}>No grants yet — only site owners can see this library.</p>}
+          {groupGrants.map((g) => (
+            <div className="share-row" key={g.groupId}>
+              <div className="c-av">👥</div>
+              <div>
+                <b style={{ fontSize: 12.5 }}>{g.name}</b>
+                <div style={{ fontSize: 11, color: "var(--muted)" }}>{g.memberCount} member{g.memberCount === 1 ? "" : "s"}</div>
+              </div>
+              <select value={g.role} style={{ marginLeft: "auto", width: 100, height: 30, fontSize: 11.5 }}
+                onChange={(e) => void setGroupRole(g, e.target.value as SiteRole)}>
+                <option value="owner">Owner</option>
+                <option value="member">Member</option>
+                <option value="visitor">Visitor</option>
+              </select>
+              <button className="x" onClick={() => void removeGroup(g)}>✕</button>
+            </div>
+          ))}
+          {allGroups.filter((g) => !groupGrants.some((x) => x.groupId === g.id)).length > 0 && (
+            <div className="field" style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <select style={{ flex: 1 }} value={pickGroup} onChange={(e) => setPickGroup(e.target.value)}>
+                <option value="">Grant a group…</option>
+                {allGroups.filter((g) => !groupGrants.some((x) => x.groupId === g.id))
+                  .map((g) => <option key={g.id} value={g.id}>{g.name} ({g.memberCount ?? 0})</option>)}
+              </select>
+              <button className="btn-ghost btn-sm" disabled={!pickGroup || busy} onClick={() => void addGroup()}>Add group</button>
+            </div>
+          )}
+          {!grants.length && !groupGrants.length && <p className="empty" style={{ margin: "8px 0" }}>No grants yet — only site owners can see this library.</p>}
         </>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
@@ -546,6 +607,99 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- policy presets (one-click governance) ----
+
+interface Preset {
+  id: string;
+  name: string;
+  desc: string;
+  patch: { versioning: "major" | "minor"; approval: boolean; retentionDays: number | null };
+}
+
+const PRESETS: Preset[] = [
+  {
+    id: "collab", name: "Collaboration",
+    desc: "Open editing — major versions only, no approval gate. Default for team work.",
+    patch: { versioning: "major", approval: false, retentionDays: null },
+  },
+  {
+    id: "managed", name: "Managed documents",
+    desc: "Draft → publish workflow: minor versions and owner approval before anything goes live.",
+    patch: { versioning: "minor", approval: true, retentionDays: null },
+  },
+  {
+    id: "records", name: "Records",
+    desc: "Managed + retention: approval required, items untouched for 2 years move to the recycle bin.",
+    patch: { versioning: "minor", approval: true, retentionDays: 730 },
+  },
+];
+
+/** Detect which preset the library currently matches (null = custom). */
+export function presetFor(lib: Library | null): string | null {
+  if (!lib) return null;
+  const hit = PRESETS.find((p) =>
+    p.patch.versioning === (lib.versioning ?? "major")
+    && p.patch.approval === !!lib.approval
+    && (p.patch.retentionDays ?? null) === (lib.retentionDays ?? null));
+  return hit?.id ?? null;
+}
+
+/** One-click governance presets — sets versioning + approval + retention in a
+ *  single PATCH instead of three separate toggles. Site owners only. */
+export function PresetDialog({ siteId, lib, onClose, onChange, toast }: {
+  siteId: string; lib: Library;
+  onClose: () => void;
+  onChange: (lib: Library) => void;
+  toast: (m: string) => void;
+}) {
+  const [picked, setPicked] = useState<string | null>(presetFor(lib));
+  const [busy, setBusy] = useState(false);
+  void siteId;
+
+  const apply = async () => {
+    const p = PRESETS.find((x) => x.id === picked);
+    if (!p || busy) return;
+    setBusy(true);
+    try {
+      const r = await api.patch<{ library: Library }>(
+        `/api/sites/${siteId}/libraries/${lib.id}`, p.patch);
+      onChange(r.library);
+      toast(`"${p.name}" policy applied`);
+      onClose();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onClose} label="Policy presets">
+      <h2>Policy presets — {lib.name}</h2>
+      <p className="d-sub">One click applies a governance profile (versioning, approval, retention). Individual settings stay adjustable afterwards.</p>
+      {PRESETS.map((p) => (
+        <button key={p.id} className="site-card" style={{ width: "100%", textAlign: "left", marginBottom: 6,
+          outline: picked === p.id ? "2px solid var(--k-orange)" : "none" }}
+          onClick={() => setPicked(p.id)}>
+          <span className="site-card-ico">{picked === p.id ? "●" : "○"}</span>
+          <span className="site-card-body">
+            <b>{p.name}</b>
+            <span>{p.desc}</span>
+          </span>
+        </button>
+      ))}
+      {presetFor(lib) === null && picked === null && (
+        <p className="d-sub">This library currently has a custom mix of settings.</p>
+      )}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-primary" disabled={!picked || busy || picked === presetFor(lib)} onClick={() => void apply()}>
+          {busy ? "Applying…" : "Apply preset"}
+        </button>
       </div>
     </Modal>
   );

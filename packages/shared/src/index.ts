@@ -194,6 +194,45 @@ export interface SiteMember {
   createdAt: string;
 }
 
+/** Org-level group (SharePoint group) — a named set of people that can hold
+ *  a site role or library grant as a unit. Admins manage membership. */
+export interface OrgGroup {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string | null;
+  memberCount?: number;
+  members?: {
+    userId: string;
+    user: { displayName: string; email: string; initials: string };
+  }[];
+  createdAt: string;
+}
+
+/** A group's grant on a site or library. */
+export interface GroupGrant {
+  groupId: string;
+  name: string;
+  role: SiteRole;
+  memberCount: number;
+  createdAt: string;
+}
+
+/** Effective access entry (SharePoint "Check permissions" / "Manage access")
+ *  — one principal with its resolved permission and the reason(s) it applies. */
+export interface AccessEntry {
+  kind: "user" | "group";
+  /** userId or groupId */
+  id: string;
+  name: string;
+  email?: string;
+  initials?: string;
+  permission: Permission;
+  /** Human-readable grant sources, e.g. "Site member", "Direct share" */
+  via: string[];
+  memberCount?: number;
+}
+
 export interface Library {
   id: string;
   siteId: string;

@@ -6,7 +6,7 @@ import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getSite, getLibrary, siteRoleFor, libraryRoleFor, toSite, toLibrary, memberOut,
-  notifyLibrarySubscribers, type SiteRow, type LibraryRow,
+  notifyLibrarySubscribers, SITE_ROLE_SQL, type SiteRow, type LibraryRow,
 } from "../sites.js";
 import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -192,10 +192,14 @@ export function siteRoutes(app: FastifyInstance) {
     authed.get("/api/sites", async (req) => {
       const { user } = req as AuthedRequest;
       const rows = await q<SiteRow & { member_role: string | null }>(
-        `SELECT st.*, sm.role AS member_role FROM sites st
-         LEFT JOIN site_members sm ON sm.site_id = st.id AND sm.user_id = $2
+        `SELECT st.*, (${SITE_ROLE_SQL.replaceAll("$1", "st.id")}) AS member_role
+         FROM sites st
          WHERE st.org_id = $1 AND (
-           st.visibility = 'org' OR st.owner_id = $2 OR sm.user_id IS NOT NULL OR $3::boolean)
+           st.visibility = 'org' OR st.owner_id = $2 OR $3::boolean
+           OR EXISTS (SELECT 1 FROM site_members sm WHERE sm.site_id = st.id AND sm.user_id = $2)
+           OR EXISTS (SELECT 1 FROM site_group_members sgm
+                      JOIN group_members gm ON gm.group_id = sgm.group_id
+                      WHERE sgm.site_id = st.id AND gm.user_id = $2))
          ORDER BY st.updated_at DESC`,
         [user.orgId, user.id, user.role === "owner" || user.role === "admin"],
       );
@@ -255,9 +259,15 @@ export function siteRoutes(app: FastifyInstance) {
       // open it to reach their library, even without site membership
       let viewRole = role;
       if (!viewRole && site) {
-        const grant = await one<{ 1: number }>(
-          `SELECT 1 FROM library_permissions lp JOIN libraries l ON l.id = lp.library_id
-           WHERE l.site_id = $1 AND lp.user_id = $2 LIMIT 1`,
+        const grant = await one<{ x: number }>(
+          `SELECT 1 AS x FROM library_permissions lp JOIN libraries l ON l.id = lp.library_id
+           WHERE l.site_id = $1 AND lp.user_id = $2
+           UNION ALL
+           SELECT 1 FROM library_group_permissions lgp
+             JOIN libraries l ON l.id = lgp.library_id
+             JOIN group_members gm ON gm.group_id = lgp.group_id AND gm.user_id = $2
+           WHERE l.site_id = $1
+           LIMIT 1`,
           [site.id, user.id],
         );
         if (grant) viewRole = "visitor";
@@ -270,11 +280,18 @@ export function siteRoutes(app: FastifyInstance) {
          FROM libraries l WHERE l.site_id = $1
            AND ($3::boolean OR (l.inherit_permissions AND $4::boolean)
                 OR EXISTS (SELECT 1 FROM library_permissions lp
-                           WHERE lp.library_id = l.id AND lp.user_id = $2))
+                           WHERE lp.library_id = l.id AND lp.user_id = $2)
+                OR EXISTS (SELECT 1 FROM library_group_permissions lgp
+                           JOIN group_members gm ON gm.group_id = lgp.group_id
+                           WHERE lgp.library_id = l.id AND gm.user_id = $2))
          ORDER BY l.created_at`,
         [site.id, user.id, role === "owner", role !== null],
       );
-      const mc = await one<{ n: number }>("SELECT COUNT(*) AS n FROM site_members WHERE site_id = $1", [site.id]);
+      const mc = await one<{ n: number }>(
+        `SELECT (SELECT COUNT(*) FROM site_members WHERE site_id = $1)
+              + (SELECT COUNT(DISTINCT gm.user_id) FROM site_group_members sgm
+                 JOIN group_members gm ON gm.group_id = sgm.group_id
+                 WHERE sgm.site_id = $1) AS n`, [site.id]);
       const out = toSite(site, viewRole, mc?.n ?? 0);
       // hub info: the hub's name for children; associated sites for hubs
       if (site.hub_id) {
@@ -367,10 +384,57 @@ export function siteRoutes(app: FastifyInstance) {
          WHERE sm.site_id = $1 ORDER BY sm.created_at`,
         [site.id],
       );
+      // group grants ride alongside user members (SharePoint shows groups
+      // in the same members list)
+      const gms = await q<{ group_id: string; role: string; created_at: string; name: string; member_count: number }>(
+        `SELECT sgm.group_id, sgm.role, sgm.created_at, g.name,
+                (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = sgm.group_id) AS member_count
+         FROM site_group_members sgm JOIN groups g ON g.id = sgm.group_id
+         WHERE sgm.site_id = $1 ORDER BY sgm.created_at`,
+        [site.id],
+      );
       return {
         members: rows.map((r) => memberOut(r.user_id, r.role as never, r, r.created_at)),
+        groups: gms.map((g) => ({
+          groupId: g.group_id, name: decryptField(g.name) ?? g.name,
+          role: g.role, memberCount: Number(g.member_count), createdAt: g.created_at,
+        })),
         myRole: role,
       };
+    });
+
+    // ---- group grants on the site (SharePoint "add a group") ----
+
+    authed.post("/api/sites/:id/groups", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const body = z.object({
+        groupId: z.string(),
+        role: z.enum(["owner", "member", "visitor"]).default("member"),
+      }).parse(req.body);
+      const grp = await one<{ id: string; name: string }>(
+        "SELECT id, name FROM groups WHERE id = $1 AND org_id = $2", [body.groupId, user.orgId]);
+      if (!grp) return reply.code(404).send({ error: "not_found", message: "Unknown group" });
+      await run(
+        `INSERT INTO site_group_members (site_id, group_id, role, created_at) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (site_id, group_id) DO UPDATE SET role = excluded.role`,
+        [site.id, grp.id, body.role, now()],
+      );
+      void logActivity(user.orgId, user.id, null, "site-group-add",
+        `${decryptField(grp.name) ?? grp.name} → ${body.role} @ ${decryptField(site.name) ?? site.name}`, site.id);
+      return { ok: true };
+    });
+
+    authed.delete("/api/sites/:id/groups/:gid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { gid } = req.params as { gid: string };
+      await run("DELETE FROM site_group_members WHERE site_id = $1 AND group_id = $2", [site.id, gid]);
+      return { ok: true };
     });
 
     authed.post("/api/sites/:id/members", async (req, reply) => {
@@ -733,6 +797,122 @@ export function siteRoutes(app: FastifyInstance) {
       return { ok: true };
     });
 
+    // ---- groups (SharePoint groups, org-scoped) ----
+    // Admins define and staff groups; site/library owners grant them access
+    // as a unit — membership changes flow to every grant automatically.
+
+    const groupOut = (r: { id: string; org_id: string; name: string; description: string | null; created_at: string }, memberCount?: number) => ({
+      id: r.id, orgId: r.org_id, name: decryptField(r.name) ?? r.name,
+      description: r.description ? decryptField(r.description) ?? r.description : null,
+      memberCount, createdAt: r.created_at,
+    });
+
+    /** Group list — any org member can read (site/library owners need the
+     *  names for grant pickers); membership management is admin-only. */
+    authed.get("/api/groups", async (req) => {
+      const { user } = req as AuthedRequest;
+      const rows = await q<{ id: string; org_id: string; name: string; description: string | null; created_at: string; member_count: number }>(
+        `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count
+         FROM groups g WHERE g.org_id = $1 ORDER BY g.created_at`, [user.orgId]);
+      return { groups: rows.map((r) => groupOut(r, Number(r.member_count))) };
+    });
+
+    const groupSchema = z.object({
+      name: z.string().min(1).max(120),
+      description: z.string().max(500).nullable().optional(),
+    });
+
+    authed.post("/api/groups", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden", message: "Only workspace admins manage groups" });
+      if (!(await entitled(user.orgId, "docmgmt"))) {
+        return reply.code(402).send({ error: "plan_limit", message: "Groups require a paid plan" });
+      }
+      const body = groupSchema.parse(req.body);
+      const id = randomUUID();
+      await run("INSERT INTO groups (id, org_id, name, description, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+        [id, user.orgId, encryptField(body.name),
+         body.description ? encryptField(body.description) : null, user.id, now()]);
+      const g = await one<{ id: string; org_id: string; name: string; description: string | null; created_at: string }>(
+        "SELECT * FROM groups WHERE id = $1", [id]);
+      return { group: groupOut(g!, 0) };
+    });
+
+    authed.patch("/api/groups/:gid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const body = groupSchema.partial().parse(req.body);
+      const res = await run(
+        `UPDATE groups SET name = COALESCE($2, name), description = COALESCE($3, description)
+         WHERE id = $1 AND org_id = $4`,
+        [(req.params as { gid: string }).gid,
+         body.name === undefined ? null : encryptField(body.name),
+         body.description === undefined ? null : (body.description ? encryptField(body.description) : null),
+         user.orgId]);
+      if (!res) return reply.code(404).send({ error: "not_found" });
+      const g = await one<{ id: string; org_id: string; name: string; description: string | null; created_at: string }>(
+        "SELECT * FROM groups WHERE id = $1", [(req.params as { gid: string }).gid]);
+      return { group: groupOut(g!) };
+    });
+
+    authed.delete("/api/groups/:gid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const res = await run("DELETE FROM groups WHERE id = $1 AND org_id = $2",
+        [(req.params as { gid: string }).gid, user.orgId]);
+      if (!res) return reply.code(404).send({ error: "not_found" });
+      return { ok: true };
+    });
+
+    /** Group membership roster — any org member can read (needed to render
+     *  group entries on the access panel). */
+    authed.get("/api/groups/:gid/members", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const grp = await one<{ id: string }>(
+        "SELECT id FROM groups WHERE id = $1 AND org_id = $2",
+        [(req.params as { gid: string }).gid, user.orgId]);
+      if (!grp) return reply.code(404).send({ error: "not_found" });
+      const rows = await q<{ user_id: string; display_name: string; email: string; initials: string }>(
+        `SELECT u.id AS user_id, u.display_name, u.email, u.initials
+         FROM group_members gm JOIN users u ON u.id = gm.user_id
+         WHERE gm.group_id = $1 ORDER BY gm.created_at`, [grp.id]);
+      return {
+        members: rows.map((r) => ({
+          userId: r.user_id,
+          user: { displayName: r.display_name, email: r.email, initials: r.initials },
+        })),
+      };
+    });
+
+    authed.post("/api/groups/:gid/members", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const grp = await one<{ id: string }>(
+        "SELECT id FROM groups WHERE id = $1 AND org_id = $2",
+        [(req.params as { gid: string }).gid, user.orgId]);
+      if (!grp) return reply.code(404).send({ error: "not_found" });
+      const body = z.object({ email: z.string().email() }).parse(req.body);
+      const target = await one<{ id: string; org_id: string }>(
+        "SELECT id, org_id FROM users WHERE email = $1", [body.email]);
+      if (!target || target.org_id !== user.orgId) {
+        return reply.code(404).send({ error: "not_found", message: "No workspace member with that email" });
+      }
+      await run("INSERT INTO group_members (group_id, user_id, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+        [grp.id, target.id, now()]);
+      return { ok: true };
+    });
+
+    authed.delete("/api/groups/:gid/members/:uid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!orgAdmin(user.role)) return reply.code(403).send({ error: "forbidden" });
+      const { gid, uid } = req.params as { gid: string; uid: string };
+      await run(
+        `DELETE FROM group_members WHERE group_id = $1 AND user_id = $2
+         AND group_id IN (SELECT id FROM groups WHERE id = $1 AND org_id = $3)`,
+        [gid, uid, user.orgId]);
+      return { ok: true };
+    });
+
     // ---- content types (site-scoped) ----
 
     authed.get("/api/sites/:id/content-types", async (req, reply) => {
@@ -841,6 +1021,7 @@ export function siteRoutes(app: FastifyInstance) {
       // restoring inheritance discards unique grants (SharePoint behavior)
       if (body.inherit === true) {
         await run("DELETE FROM library_permissions WHERE library_id = $1", [lib.id]);
+        await run("DELETE FROM library_group_permissions WHERE library_id = $1", [lib.id]);
       }
       return { library: await toLibrary((await getLibrary(lib.id))!) };
     });
@@ -990,12 +1171,25 @@ export function siteRoutes(app: FastifyInstance) {
          WHERE lp.library_id = $1 ORDER BY lp.created_at`,
         [ctx.lib.id],
       );
+      const gms = await q<{ group_id: string; role: string; created_at: string; name: string; member_count: number }>(
+        `SELECT lgp.group_id, lgp.role, lgp.created_at, g.name,
+                (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = lgp.group_id) AS member_count
+         FROM library_group_permissions lgp JOIN groups g ON g.id = lgp.group_id
+         WHERE lgp.library_id = $1 ORDER BY lgp.created_at`,
+        [ctx.lib.id],
+      );
       return {
         inherit: !!ctx.lib.inherit_permissions,
         grants: rows.map((r) => memberOut(r.user_id, r.role, r, r.created_at)),
+        groupGrants: gms.map((g) => ({
+          groupId: g.group_id, name: decryptField(g.name) ?? g.name,
+          role: g.role, memberCount: Number(g.member_count), createdAt: g.created_at,
+        })),
       };
     });
 
+    /** Grant a user (by email) or a group (by groupId) a role on a
+     *  non-inheriting library. */
     authed.post("/api/sites/:id/libraries/:lid/permissions", async (req, reply) => {
       const ctx = await libCtx(req, reply);
       if (!ctx) return;
@@ -1004,9 +1198,27 @@ export function siteRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "conflict", message: "Stop inheriting permissions before granting library access" });
       }
       const body = z.object({
-        email: z.string().email(),
+        email: z.string().email().optional(),
+        groupId: z.string().optional(),
         role: z.enum(["owner", "member", "visitor"]).default("member"),
       }).parse(req.body);
+      const libName = decryptField(ctx.lib.name) ?? ctx.lib.name;
+      if (body.groupId) {
+        const grp = await one<{ id: string; name: string }>(
+          "SELECT id, name FROM groups WHERE id = $1 AND org_id = $2", [body.groupId, ctx.user.orgId]);
+        if (!grp) return reply.code(404).send({ error: "not_found", message: "Unknown group" });
+        await run(
+          `INSERT INTO library_group_permissions (library_id, group_id, role, created_at) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (library_id, group_id) DO UPDATE SET role = excluded.role`,
+          [ctx.lib.id, grp.id, body.role, now()],
+        );
+        void logActivity(ctx.user.orgId, ctx.user.id, null, "library-group-grant",
+          `${decryptField(grp.name) ?? grp.name} → ${body.role} @ ${libName}`, ctx.site.id);
+        return { ok: true };
+      }
+      if (!body.email) {
+        return reply.code(400).send({ error: "bad_request", message: "email or groupId required" });
+      }
       const target = await one<{ id: string; org_id: string }>(
         "SELECT id, org_id FROM users WHERE email = $1", [body.email]);
       if (!target || target.org_id !== ctx.user.orgId) {
@@ -1018,7 +1230,7 @@ export function siteRoutes(app: FastifyInstance) {
         [ctx.lib.id, target.id, body.role, now()],
       );
       void logActivity(ctx.user.orgId, ctx.user.id, null, "library-grant",
-        `${body.email} → ${body.role} @ ${decryptField(ctx.lib.name) ?? ctx.lib.name}`, ctx.site.id);
+        `${body.email} → ${body.role} @ ${libName}`, ctx.site.id);
       return { ok: true };
     });
 
@@ -1028,6 +1240,15 @@ export function siteRoutes(app: FastifyInstance) {
       if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
       const { uid } = req.params as { uid: string };
       await run("DELETE FROM library_permissions WHERE library_id = $1 AND user_id = $2", [ctx.lib.id, uid]);
+      return { ok: true };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/permissions/groups/:gid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { gid } = req.params as { gid: string };
+      await run("DELETE FROM library_group_permissions WHERE library_id = $1 AND group_id = $2", [ctx.lib.id, gid]);
       return { ok: true };
     });
 

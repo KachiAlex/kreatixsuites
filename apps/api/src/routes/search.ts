@@ -69,7 +69,10 @@ export function searchRoutes(app: FastifyInstance) {
          WHERE i.trashed = false AND i.media_for IS NULL AND l.site_id = $1
            AND (l.inherit_permissions OR $3::boolean
                 OR EXISTS (SELECT 1 FROM library_permissions lp
-                           WHERE lp.library_id = l.id AND lp.user_id = $2))
+                           WHERE lp.library_id = l.id AND lp.user_id = $2)
+                OR EXISTS (SELECT 1 FROM library_group_permissions lgp
+                           JOIN group_members gm ON gm.group_id = lgp.group_id
+                           WHERE lgp.library_id = l.id AND gm.user_id = $2))
          ORDER BY i.updated_at DESC`,
         [siteId, user.id, role === "owner"],
       );

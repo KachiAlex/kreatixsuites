@@ -35,15 +35,38 @@ export const getLibrary = (id: string) => one<LibraryRow>("SELECT * FROM librari
 
 interface Userish { id: string; orgId: string; role: string }
 
-/** Effective site role for a user: site owner → membership row → org-admin
- *  override → org-wide visibility → null. */
+/** SQL fragment: best site role a user holds via direct membership or group
+ *  membership (site_group_members). Expects $1 = site id (or a correlated
+ *  column like `st.id` after replaceAll), $2 = user id param. */
+export const SITE_ROLE_SQL = `
+  SELECT role FROM (
+    SELECT role FROM site_members WHERE site_id = $1 AND user_id = $2
+    UNION ALL
+    SELECT sgm.role FROM site_group_members sgm
+      JOIN group_members gm ON gm.group_id = sgm.group_id AND gm.user_id = $2
+      WHERE sgm.site_id = $1
+  ) r ORDER BY CASE r.role WHEN 'owner' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC
+  LIMIT 1`;
+
+/** SQL fragment: best role a user holds on a library via direct or group
+ *  grant — same shape as SITE_ROLE_SQL but against library_permissions. */
+export const LIB_ROLE_SQL = `
+  SELECT role FROM (
+    SELECT role FROM library_permissions WHERE library_id = $1 AND user_id = $2
+    UNION ALL
+    SELECT lgp.role FROM library_group_permissions lgp
+      JOIN group_members gm ON gm.group_id = lgp.group_id AND gm.user_id = $2
+      WHERE lgp.library_id = $1
+  ) r ORDER BY CASE r.role WHEN 'owner' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC
+  LIMIT 1`;
+
+/** Effective site role for a user: site owner → membership or group grant →
+ *  org-admin override → org-wide visibility → null. Most-permissive wins when
+ *  several paths apply. */
 export async function siteRoleFor(user: Userish, site: SiteRow): Promise<SiteRole | null> {
   if (site.org_id !== user.orgId) return null;
   if (site.owner_id === user.id) return "owner";
-  const m = await one<{ role: SiteRole }>(
-    "SELECT role FROM site_members WHERE site_id = $1 AND user_id = $2",
-    [site.id, user.id],
-  );
+  const m = await one<{ role: SiteRole }>(SITE_ROLE_SQL, [site.id, user.id]);
   if (m) return m.role;
   // tenant admins can manage every site (SharePoint site-collection admin)
   if (user.role === "owner" || user.role === "admin") return "owner";
@@ -71,14 +94,18 @@ export async function libraryPermission(userId: string, libraryId: string): Prom
     user_role: string;
     user_org: string;
   }>(
-    `SELECT sm.role AS member_role, lp.role AS lib_role, l.inherit_permissions AS inherit,
-            st.owner_id, st.visibility, st.org_id AS site_org,
-            u.role AS user_role, u.org_id AS user_org
+    `SELECT (
+       ${SITE_ROLE_SQL.replaceAll("$1", "st.id").replaceAll("$2", "$2")}
+     ) AS member_role,
+     (
+       ${LIB_ROLE_SQL.replaceAll("$1", "l.id").replaceAll("$2", "$2")}
+     ) AS lib_role,
+     l.inherit_permissions AS inherit,
+     st.owner_id, st.visibility, st.org_id AS site_org,
+     u.role AS user_role, u.org_id AS user_org
      FROM libraries l
      JOIN sites st ON st.id = l.site_id
      JOIN users u ON u.id = $2
-     LEFT JOIN site_members sm ON sm.site_id = st.id AND sm.user_id = $2
-     LEFT JOIN library_permissions lp ON lp.library_id = l.id AND lp.user_id = $2
      WHERE l.id = $1`,
     [libraryId, userId],
   );
@@ -99,9 +126,7 @@ export async function libraryRoleFor(user: Userish, site: SiteRow, lib: LibraryR
   if (site.org_id !== user.orgId) return null;
   if (site.owner_id === user.id || user.role === "owner" || user.role === "admin") return "owner";
   if (!lib.inherit_permissions) {
-    const g = await one<{ role: SiteRole }>(
-      "SELECT role FROM library_permissions WHERE library_id = $1 AND user_id = $2",
-      [lib.id, user.id]);
+    const g = await one<{ role: SiteRole }>(LIB_ROLE_SQL, [lib.id, user.id]);
     return g?.role ?? null;
   }
   return siteRoleFor(user, site);
@@ -118,7 +143,13 @@ export async function visibleLibraryIds(user: Userish): Promise<string[]> {
      LEFT JOIN library_permissions lp ON lp.library_id = l.id AND lp.user_id = $2
      WHERE st.org_id = $1 AND (
        $3::boolean OR st.owner_id = $2 OR lp.user_id IS NOT NULL
-       OR (l.inherit_permissions AND (st.visibility = 'org' OR sm.user_id IS NOT NULL)))`,
+       OR EXISTS (SELECT 1 FROM library_group_permissions lgp
+                  JOIN group_members gm ON gm.group_id = lgp.group_id
+                  WHERE lgp.library_id = l.id AND gm.user_id = $2)
+       OR (l.inherit_permissions AND (st.visibility = 'org' OR sm.user_id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM site_group_members sgm
+                      JOIN group_members gm ON gm.group_id = sgm.group_id
+                      WHERE sgm.site_id = st.id AND gm.user_id = $2))))`,
     [user.orgId, user.id, user.role === "owner" || user.role === "admin"],
   );
   return rows.map((r) => r.id);

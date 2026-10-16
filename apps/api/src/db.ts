@@ -539,6 +539,45 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at DESC)`);
+  // org-level groups (SharePoint groups) — admins define named sets of people;
+  // a group can hold a site role or a library grant as a unit, so membership
+  // changes flow everywhere the group is granted
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_groups_org ON groups(org_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (group_id, user_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS site_group_members (
+      site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',        -- owner | member | visitor
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (site_id, group_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_site_group_members_group ON site_group_members(group_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS library_group_permissions (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',        -- owner | member | visitor
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (library_id, group_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_library_group_perms_group ON library_group_permissions(group_id)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

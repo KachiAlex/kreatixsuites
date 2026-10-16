@@ -8,7 +8,7 @@ import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds, notifyLibrarySubscribers } from "../sites.js";
 import { publishHead, submitForApproval } from "./content.js";
 import { putBlob, getBlob } from "../blobs.js";
-import { FILE_KINDS } from "@kreatix/shared";
+import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
 import { indexFile } from "../indexer.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -268,6 +268,124 @@ export function driveRoutes(app: FastifyInstance) {
     }
     return { item: { ...(await toDriveItem(item, (await permissionFor(user.id, item)) ?? undefined,
       { metadata, approver: await canApprove(user, item) })), ownerName: owner[0]?.display_name } };
+  });
+
+  /** Effective access (SharePoint "Manage access" / "Check permissions") —
+   *  every principal that can reach this item and the reason(s) why: item
+   *  ownership, site membership, group grants, library grants, direct shares,
+   *  and shares inherited from ancestor folders. Requires editor+. */
+  app.get("/api/drive/:id/access", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "editor")) {
+      return reply.code(404).send({ error: "not_found", message: "File not found" });
+    }
+    const SITE_PERM: Record<SiteRole, Permission> = { owner: "owner", member: "editor", visitor: "viewer" };
+    const RANK: Record<Permission, number> = { viewer: 1, commenter: 2, reviewer: 3, editor: 4, owner: 5 };
+    const byKey = new Map<string, AccessEntry>();
+    const merge = (e: AccessEntry, p: Permission, via: string) => {
+      const key = `${e.kind}:${e.id}`;
+      const cur = byKey.get(key) ?? e;
+      if (RANK[p] > RANK[cur.permission]) cur.permission = p;
+      if (!cur.via.includes(via)) cur.via.push(via);
+      byKey.set(key, cur);
+    };
+    const addUser = (u: { id: string; display_name: string; email: string; initials: string }, p: Permission, via: string) =>
+      merge({ kind: "user", id: u.id, name: u.display_name, email: u.email, initials: u.initials, permission: p, via: [] }, p, via);
+    const addGroup = (g: { id: string; name: string; member_count?: number }, p: Permission, via: string) =>
+      merge({ kind: "group", id: g.id, name: decryptField(g.name) ?? g.name,
+              permission: p, via: [], memberCount: g.member_count === undefined ? undefined : Number(g.member_count) }, p, via);
+
+    // item owner always tops the list
+    const owner = await one<{ id: string; display_name: string; email: string; initials: string }>(
+      "SELECT id, display_name, email, initials FROM users WHERE id = $1", [item.owner_id]);
+    if (owner) addUser(owner, "owner", "Item owner");
+
+    const notes: string[] = ["Workspace admins have owner access to all content."];
+
+    if (item.library_id) {
+      const lib = await getLibrary(item.library_id);
+      const site = lib ? await getSite(lib.site_id) : undefined;
+      if (site && lib) {
+        const siteName = decryptField(site.name) ?? site.name;
+        const libName = decryptField(lib.name) ?? lib.name;
+        // org-visible sites make everyone in the workspace a viewer
+        if (site.visibility === "org" && lib.inherit_permissions) {
+          merge({ kind: "group", id: "__org__", name: "Everyone in this workspace",
+                  permission: "viewer", via: [] }, "viewer", `Organization site '${siteName}'`);
+        }
+        const members = await dbq<{ user_id: string; role: SiteRole; display_name: string; email: string; initials: string }>(
+          `SELECT sm.user_id, sm.role, u.display_name, u.email, u.initials
+           FROM site_members sm JOIN users u ON u.id = sm.user_id WHERE sm.site_id = $1`,
+          [site.id]);
+        for (const m of members) {
+          addUser({ id: m.user_id, display_name: m.display_name, email: m.email, initials: m.initials },
+            SITE_PERM[m.role], `Site ${m.role} of '${siteName}'`);
+        }
+        const sgroups = await dbq<{ group_id: string; role: SiteRole; name: string; member_count: number }>(
+          `SELECT sgm.group_id, sgm.role, g.name,
+                  (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = sgm.group_id) AS member_count
+           FROM site_group_members sgm JOIN groups g ON g.id = sgm.group_id WHERE sgm.site_id = $1`,
+          [site.id]);
+        for (const g of sgroups) {
+          addGroup({ id: g.group_id, name: g.name, member_count: g.member_count },
+            SITE_PERM[g.role], `Group is ${g.role} of site '${siteName}'`);
+        }
+        if (!lib.inherit_permissions) {
+          notes.push(`Library '${libName}' has unique permissions — site members below don't apply unless granted here.`);
+          const lgrants = await dbq<{ user_id: string; role: SiteRole; display_name: string; email: string; initials: string }>(
+            `SELECT lp.user_id, lp.role, u.display_name, u.email, u.initials
+             FROM library_permissions lp JOIN users u ON u.id = lp.user_id WHERE lp.library_id = $1`,
+            [lib.id]);
+          for (const g of lgrants) {
+            addUser({ id: g.user_id, display_name: g.display_name, email: g.email, initials: g.initials },
+              SITE_PERM[g.role], `Granted ${g.role} on library '${libName}'`);
+          }
+          const lgms = await dbq<{ group_id: string; role: SiteRole; name: string; member_count: number }>(
+            `SELECT lgp.group_id, lgp.role, g.name,
+                    (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = lgp.group_id) AS member_count
+             FROM library_group_permissions lgp JOIN groups g ON g.id = lgp.group_id WHERE lgp.library_id = $1`,
+            [lib.id]);
+          for (const g of lgms) {
+            addGroup({ id: g.group_id, name: g.name, member_count: g.member_count },
+              SITE_PERM[g.role], `Group granted ${g.role} on library '${libName}'`);
+          }
+        }
+      }
+    }
+
+    // direct shares on the item itself
+    const shares = await dbq<{ user_id: string; permission: Permission; display_name: string; email: string; initials: string }>(
+      `SELECT s.user_id, s.permission, u.display_name, u.email, u.initials
+       FROM shares s JOIN users u ON u.id = s.user_id WHERE s.file_id = $1`,
+      [item.id]);
+    for (const s of shares) {
+      addUser({ id: s.user_id, display_name: s.display_name, email: s.email, initials: s.initials },
+        s.permission, "Direct share");
+    }
+    // shares inherited from ancestor folders
+    let cur = item.parent_id;
+    for (let d = 0; cur && d < 8; d++) {
+      const anc = await getItem(cur);
+      if (!anc) break;
+      const ashares = await dbq<{ user_id: string; permission: Permission; display_name: string; email: string; initials: string }>(
+        `SELECT s.user_id, s.permission, u.display_name, u.email, u.initials
+         FROM shares s JOIN users u ON u.id = s.user_id WHERE s.file_id = $1`,
+        [anc.id]);
+      for (const s of ashares) {
+        addUser({ id: s.user_id, display_name: s.display_name, email: s.email, initials: s.initials },
+          s.permission, `Inherited from folder '${itemName(anc)}'`);
+      }
+      cur = anc.parent_id;
+    }
+    const links = await one<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM share_links WHERE file_id = $1", [item.id]);
+    if ((links?.n ?? 0) > 0) {
+      notes.push(`${links!.n} sharing link${links!.n > 1 ? "s" : ""} grant access to anyone with the link.`);
+    }
+    const access = [...byKey.values()].sort((a, b) => RANK[b.permission] - RANK[a.permission]);
+    return { access, notes };
   });
 
   app.post("/api/drive", async (req, reply) => {

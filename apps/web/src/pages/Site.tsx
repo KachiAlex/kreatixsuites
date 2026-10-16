@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { DriveItem, Library, Site, SiteMember, SiteRole } from "@kreatix/shared";
+import type { DriveItem, GroupGrant, Library, OrgGroup, Site, SiteMember, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { KIND_META, timeAgo } from "../lib/format";
@@ -238,10 +238,45 @@ function MembersDialog({ site, members, canManage, onClose, toast }: {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<SiteRole>("member");
   const [list, setList] = useState(members);
+  const [groupGrants, setGroupGrants] = useState<GroupGrant[]>([]);
+  const [allGroups, setAllGroups] = useState<OrgGroup[]>([]);
+  const [pickGroup, setPickGroup] = useState("");
 
   const reload = async () => {
-    const r = await api.get<{ members: SiteMember[] }>(`/api/sites/${site.id}/members`);
+    const r = await api.get<{ members: SiteMember[]; groups?: GroupGrant[] }>(`/api/sites/${site.id}/members`);
     setList(r.members);
+    setGroupGrants(r.groups ?? []);
+  };
+  useEffect(() => {
+    void reload().catch(() => {});
+    void api.get<{ groups: OrgGroup[] }>("/api/groups")
+      .then((r) => setAllGroups(r.groups)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.id]);
+
+  const addGroup = async () => {
+    if (!pickGroup) return;
+    try {
+      await api.post(`/api/sites/${site.id}/groups`, { groupId: pickGroup, role });
+      setPickGroup("");
+      await reload();
+      toast("Group added to site");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const setGroupRole = async (g: GroupGrant, r: SiteRole) => {
+    try {
+      await api.post(`/api/sites/${site.id}/groups`, { groupId: g.groupId, role: r });
+      await reload();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const removeGroup = async (g: GroupGrant) => {
+    if (!confirm(`Remove group "${g.name}" from this site?`)) return;
+    try {
+      await api.del(`/api/sites/${site.id}/groups/${g.groupId}`);
+      await reload();
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
   };
 
   const add = async () => {
@@ -307,6 +342,42 @@ function MembersDialog({ site, members, canManage, onClose, toast }: {
           )}
         </div>
       ))}
+      {(groupGrants.length > 0 || (canManage && allGroups.length > 0)) && (
+        <div style={{ borderTop: "1px solid var(--line)", margin: "12px 0 8px" }} />
+      )}
+      {groupGrants.length > 0 && <p className="d-sub" style={{ margin: "0 0 4px" }}>Groups with access</p>}
+      {groupGrants.map((g) => (
+        <div className="share-row" key={g.groupId}>
+          <div className="c-av">👥</div>
+          <div>
+            <b style={{ fontSize: 12.5 }}>{g.name}</b>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>{g.memberCount} member{g.memberCount === 1 ? "" : "s"}</div>
+          </div>
+          {canManage ? (
+            <>
+              <select value={g.role} style={{ marginLeft: "auto", width: 100, height: 30, fontSize: 11.5 }}
+                onChange={(e) => void setGroupRole(g, e.target.value as SiteRole)}>
+                <option value="owner">Owner</option>
+                <option value="member">Member</option>
+                <option value="visitor">Visitor</option>
+              </select>
+              <button className="x" onClick={() => void removeGroup(g)}>✕</button>
+            </>
+          ) : (
+            <span className="perm-badge" style={{ marginLeft: "auto" }}>{g.role}</span>
+          )}
+        </div>
+      ))}
+      {canManage && allGroups.filter((g) => !groupGrants.some((x) => x.groupId === g.id)).length > 0 && (
+        <div className="field" style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <select style={{ flex: 1 }} value={pickGroup} onChange={(e) => setPickGroup(e.target.value)}>
+            <option value="">Add a group…</option>
+            {allGroups.filter((g) => !groupGrants.some((x) => x.groupId === g.id))
+              .map((g) => <option key={g.id} value={g.id}>{g.name} ({g.memberCount ?? 0})</option>)}
+          </select>
+          <button className="btn-ghost btn-sm" disabled={!pickGroup} onClick={() => void addGroup()}>Add group</button>
+        </div>
+      )}
     </Modal>
   );
 }

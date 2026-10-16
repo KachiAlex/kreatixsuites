@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { prefetchEditor } from "../pages/editors";
 import { AppIcon } from "./AppIcon";
 import { CopyMoveDialog } from "./CopyMoveDialog";
+import { AccessDialog } from "./AccessDialog";
 
 interface Props {
   items: DriveItem[];
@@ -32,6 +33,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [copyMove, setCopyMove] = useState<{ item: DriveItem; mode: "copy" | "move" } | null>(null);
+  const [accessFor, setAccessFor] = useState<DriveItem | null>(null);
 
   if (!items.length) return <div className="panel"><div className="empty">Nothing here yet.</div></div>;
 
@@ -63,6 +65,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
         }
       }
       if (action === "copy" || action === "move") { setCopyMove({ item, mode: action }); return; }
+      if (action === "access") { setAccessFor(item); return; }
       if (action === "publish") {
         const r = await api.post<{ ok: boolean; pending?: boolean }>(`/api/files/${item.id}/publish`);
         toast(r.pending ? "Submitted for owner approval" : "Published as a major version");
@@ -176,6 +179,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                     <button onClick={() => act(it, "copy")}>Copy to…</button>
                     <button onClick={() => act(it, "move")}>Move to…</button>
                     <button onClick={() => act(it, "share")}>Share…</button>
+                    <button onClick={() => act(it, "access")}>Check access…</button>
                     {it.libraryId && onProperties && <button onClick={() => act(it, "properties")}>Properties…</button>}
                     {it.kind !== "folder" && <button onClick={() => act(it, "versions")}>Version history</button>}
                     {it.kind !== "folder" && it.libraryId && (
@@ -217,6 +221,7 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
         <CopyMoveDialog item={copyMove.item} mode={copyMove.mode}
           onClose={() => setCopyMove(null)} onDone={onRefresh} toast={toast} />
       )}
+      {accessFor && <AccessDialog item={accessFor} onClose={() => setAccessFor(null)} />}
     </div>
   );
 }
