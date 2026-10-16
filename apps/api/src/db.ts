@@ -623,6 +623,42 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_meetings_org ON meetings(org_id, created_at DESC)`);
 
+  // Kreatix Chat — Teams-style channels + DMs per org. 'channel' rows are
+  // org-wide (visible to every member); 'dm'/'group' rows are member-scoped
+  // via chat_members. dm_key is the sorted participant set for 1:1 dedupe.
+  await pool.query(`CREATE TABLE IF NOT EXISTS chat_channels (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'channel',
+    name TEXT,
+    description TEXT,
+    dm_key TEXT,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    last_message_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_channels_org ON chat_channels(org_id)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channels_dmkey ON chat_channels(org_id, dm_key) WHERE dm_key IS NOT NULL`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_members (
+      channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      last_read_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (channel_id, user_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_members(user_id)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    reply_to TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+    edited_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at DESC)`);
+
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);

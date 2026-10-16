@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -10,6 +10,7 @@ const TILE: Record<AppKind, string> = {
   pdf: "#D84B57",
   mail: "#0FA3A3",
   meet: "#6264A7",
+  chat: "#0E7C61",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -71,6 +72,16 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
         <g fill="#fff">
           <rect x="11" y="20" width="26" height="24" rx="4" />
           <path d="M40 27l13-7v24l-13-7z" />
+        </g>
+      );
+    case "chat":
+      // Speech bubble
+      return (
+        <g fill="#fff">
+          <path d="M32 12c-11.6 0-21 7.5-21 16.8 0 5.3 2.8 10 7.2 13.1L16 52l11.4-4.3c1.5.3 3 .5 4.6.5 11.6 0 21-7.5 21-16.8S43.6 12 32 12Z" />
+          <circle cx="24" cy="29" r="2.4" fill={color} />
+          <circle cx="32" cy="29" r="2.4" fill={color} />
+          <circle cx="40" cy="29" r="2.4" fill={color} />
         </g>
       );
     case "folder":
