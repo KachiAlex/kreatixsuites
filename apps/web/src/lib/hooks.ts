@@ -56,6 +56,17 @@ export function useMailEnabled() {
   return enabled;
 }
 
+/** True when the server has Kreatix Meet wired up — gates the Meet nav entry. */
+export function useMeetEnabled() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    api.get<{ enabled: boolean }>("/api/meet/status")
+      .then((r) => setEnabled(!!r.enabled))
+      .catch(() => {});
+  }, []);
+  return enabled;
+}
+
 export function useToast() {
   const [msg, setMsg] = useState<string | null>(null);
   const toast = useCallback((m: string) => {

@@ -22,6 +22,7 @@ import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
+import { meetRoutes } from "./routes/meet.js";
 import { billingRoutes } from "./routes/billing.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
@@ -240,6 +241,7 @@ async function main() {
   app.register(superadminRoutes);
   app.register(collabRoutes);
   app.register(mailRoutes);
+  app.register(meetRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");

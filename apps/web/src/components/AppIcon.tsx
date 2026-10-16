@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -9,6 +9,7 @@ const TILE: Record<AppKind, string> = {
   present: "#7C5CD6",
   pdf: "#D84B57",
   mail: "#0FA3A3",
+  meet: "#6264A7",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -62,6 +63,14 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
         <g fill="none" stroke="#fff" strokeWidth="3.5" strokeLinejoin="round" strokeLinecap="round">
           <rect x="13" y="17" width="38" height="30" rx="4" />
           <path d="M15 21l17 14 17-14" />
+        </g>
+      );
+    case "meet":
+      // Video camera — Teams-style
+      return (
+        <g fill="#fff">
+          <rect x="11" y="20" width="26" height="24" rx="4" />
+          <path d="M40 27l13-7v24l-13-7z" />
         </g>
       );
     case "folder":

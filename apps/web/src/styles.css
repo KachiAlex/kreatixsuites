@@ -3060,6 +3060,24 @@ html[data-theme="dark"]{
   .mail-only-mobile{display:inline-flex}
 }
 
+/* kreatix meet */
+.meet-hero{padding:14px 0 4px}
+.meet-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.meet-joincode{display:flex;gap:6px;align-items:center;margin-left:auto}
+.meet-joincode input{font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg,#fff);color:var(--ink);width:190px}
+.meet-joincode input:focus{outline:none;border-color:var(--k-orange)}
+.meet-row{display:flex;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--line)}
+.meet-row:first-of-type{border-top:0}
+.meet-row-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.meet-row-main b{font-size:14px}
+.meet-status{font-size:11px;min-width:64px;color:var(--muted);text-transform:lowercase}
+.meet-status.live{color:#3a7d44;font-weight:700}
+.meet-call{position:fixed;inset:0;z-index:60;background:#0b0b0d;display:flex;flex-direction:column}
+.meet-call-bar{padding:8px 12px;background:#131316;display:flex}
+.meet-call-bar .btn-ghost{color:#e8e8ea}
+.meet-frame{flex:1}
+.meet-frame iframe{border:0}
+
 /* onboarding wizard */
 .ob-steps{display:flex;gap:8px;margin-bottom:16px}
 .ob-dot{font-size:11px;color:var(--muted);padding:3px 10px;border:1px solid var(--line);border-radius:99px}

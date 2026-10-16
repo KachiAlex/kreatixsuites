@@ -608,6 +608,21 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_domains_verified ON org_domains(domain) WHERE status = 'verified'`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_domains_primary ON org_domains(org_id) WHERE is_primary`);
 
+  // Kreatix Meet — scheduled/instant meetings per org
+  await pool.query(`CREATE TABLE IF NOT EXISTS meetings (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    scheduled_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at TIMESTAMPTZ,
+    UNIQUE(org_id, code)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meetings_org ON meetings(org_id, created_at DESC)`);
+
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);

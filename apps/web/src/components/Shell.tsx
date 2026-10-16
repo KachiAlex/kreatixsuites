@@ -10,7 +10,7 @@ import { FeedbackWidget } from "./FeedbackWidget";
 import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { SecurityDialog } from "./SecurityDialog";
-import { useToast, useSites, useMailEnabled } from "../lib/hooks";
+import { useToast, useSites, useMailEnabled, useMeetEnabled } from "../lib/hooks";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner } from "./Desktop";
@@ -254,10 +254,12 @@ function Rail({ toast }: { toast: (m: string) => void }) {
     try { localStorage.setItem("kx_theme", next); } catch { /* private mode */ }
   };
   const mailOn = useMailEnabled();
+  const meetOn = useMeetEnabled();
   const items = [
     { to: "/", icon: "⌂", title: t("nav.home") },
     { to: "/drive", icon: "▣", title: t("nav.drive") },
     ...(mailOn ? [{ to: "/mail", icon: "✉", title: "Mail" }] : []),
+    ...(meetOn ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
   ];
   return (
     <aside className="rail">
@@ -303,6 +305,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
   const [siteDlg, setSiteDlg] = useState(false);
   const { sites } = useSites();
   const mailOn = useMailEnabled();
+  const meetOn = useMeetEnabled();
   const menuRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -409,6 +412,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>
       <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
       {mailOn && <NavLink to="/mail" className={navCls}><AppIcon kind="mail" size={18} />Kreatix Mail</NavLink>}
+      {meetOn && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
 
       <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         {t("nav.sites")}
