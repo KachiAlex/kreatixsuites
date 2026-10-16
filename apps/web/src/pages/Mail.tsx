@@ -362,6 +362,24 @@ function ComposeModal({ value, onChange, onSaveDraft, onSend, onClose }: {
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
+  const [aiHint, setAiHint] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const { toast } = useToast();
+  const aiDraft = async () => {
+    setAiBusy(true);
+    try {
+      // quoted thread ("> " lines / "wrote:" marker) becomes reply context
+      const quoted = value.body.match(/(\n\n—[\s\S]*)$/)?.[1] ?? "";
+      const r = await api.post<{ text: string }>("/api/ai/compose", {
+        task: value.replyToId ? "mail-reply" : "mail-draft",
+        context: value.replyToId ? quoted.slice(0, 12000) : value.body.slice(0, 8000),
+        instruction: [aiHint.trim(), value.subject ? `Subject: ${value.subject}` : ""].filter(Boolean).join("\n") || undefined,
+      });
+      const own = value.body.replace(/(\n\n—[\s\S]*)$/, "");
+      onChange({ ...value, body: `${own ? `${own}\n\n` : ""}${r.text.trim()}${quoted}` });
+    } catch (e) { toast((e as Error).message); }
+    setAiBusy(false);
+  };
   return (
     <Modal label={value.draftId ? "Edit draft" : "New message"} onClose={onClose} style={{ width: 640, maxWidth: "94vw" }}>
       <div className="mail-compose">
@@ -369,6 +387,13 @@ function ComposeModal({ value, onChange, onSaveDraft, onSend, onClose }: {
         <input placeholder="Cc" value={value.cc} onChange={(e) => onChange({ ...value, cc: e.target.value })} />
         <input placeholder="Bcc" value={value.bcc} onChange={(e) => onChange({ ...value, bcc: e.target.value })} />
         <input placeholder="Subject" value={value.subject} onChange={(e) => onChange({ ...value, subject: e.target.value })} />
+        <div className="mail-ai-row">
+          <input placeholder="Tell AI what to write… (optional)" value={aiHint} onChange={(e) => setAiHint(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void aiDraft()} />
+          <button className="btn-ghost btn-sm" disabled={aiBusy} onClick={() => void aiDraft()}>
+            {aiBusy ? "Drafting…" : "✨ AI draft"}
+          </button>
+        </div>
         <textarea placeholder="Write your message…" rows={12} value={value.body}
           onChange={(e) => onChange({ ...value, body: e.target.value })} />
         <div className="mail-compose-files">

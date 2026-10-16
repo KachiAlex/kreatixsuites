@@ -26,6 +26,7 @@ const Mail = lazy(() => import("./pages/Mail").then((m) => ({ default: m.Mail })
 const Meet = lazy(() => import("./pages/Meet").then((m) => ({ default: m.Meet })));
 const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
 const Calendar = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.Calendar })));
+const Tasks = lazy(() => import("./pages/Tasks").then((m) => ({ default: m.Tasks })));
 const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
 
 const RouteFallback = () => (
@@ -122,6 +123,7 @@ export default function App() {
             <Route path="/meet" element={<Meet />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/calendar" element={<Calendar />} />
+            <Route path="/tasks" element={<Tasks />} />
             <Route path="/sites" element={<Sites />} />
             <Route path="/sites/:siteId" element={<SitePage />} />
             <Route path="/sites/:siteId/library/:libId" element={<LibraryPage />} />

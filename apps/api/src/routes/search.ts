@@ -150,7 +150,7 @@ export function searchRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const { q: query } = req.query as { q?: string };
     const needle = query?.trim().toLowerCase();
-    if (!needle) return { chats: [], events: [], meetings: [], people: [], mails: [] };
+    if (!needle) return { chats: [], events: [], meetings: [], people: [], mails: [], tasks: [] };
     const terms = needle.split(/\s+/);
     const hit = (text: string | null | undefined) =>
       !!text && terms.every((t) => text.toLowerCase().includes(t));
@@ -212,6 +212,15 @@ export function searchRoutes(app: FastifyInstance) {
        LIMIT 8`, [user.orgId, user.id, `%${needle}%`]);
     const people = pplRows.map((p) => ({ id: p.id, displayName: p.display_name, email: p.email, initials: p.initials }));
 
+    // tasks — org board; title/notes match
+    const taskRows = await dbq<{ id: string; title: string; notes: string | null; status: string; due_at: string | null }>(
+      `SELECT id, title, notes, status, due_at FROM tasks WHERE org_id = $1 ORDER BY updated_at DESC LIMIT 400`,
+      [user.orgId]);
+    const tasks = taskRows
+      .filter((t) => hit(decryptField(t.title) ?? t.title) || hit(decryptField(t.notes)))
+      .slice(0, 10)
+      .map((t) => ({ id: t.id, title: decryptField(t.title) ?? t.title, status: t.status, dueAt: t.due_at }));
+
     // mail — through the SSO bridge; skipped silently when unconfigured
     let mails: { id: number; subject: string; from: string; date: string | null }[] = [];
     if (mailEnabled()) {
@@ -226,6 +235,6 @@ export function searchRoutes(app: FastifyInstance) {
       } catch { /* mail service unreachable — other groups still return */ }
     }
 
-    return { chats, events, meetings, people, mails };
+    return { chats, events, meetings, people, mails, tasks };
   });
 }

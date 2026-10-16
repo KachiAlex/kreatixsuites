@@ -12,7 +12,7 @@ import { Modal } from "../components/Modal";
 interface CalEvent {
   id: string; title: string | null; description: string | null; location: string | null;
   startsAt: string; endsAt: string; allDay: boolean; meetingId: string | null;
-  createdBy: string; createdAt: string;
+  createdBy: string; createdAt: string; rrule?: string | null; occurrenceOf?: string;
   attendees: { id: string; displayName: string; initials: string; status: string }[];
 }
 interface Person { id: string; displayName: string; email: string; initials: string }
@@ -51,6 +51,7 @@ export function Calendar() {
   const [fDesc, setFDesc] = useState("");
   const [fMeet, setFMeet] = useState(true);
   const [fAtt, setFAtt] = useState<Set<string>>(new Set());
+  const [fRrule, setFRrule] = useState("");
 
   const range = useMemo(() => {
     const from = new Date(cursor.getFullYear(), cursor.getMonth(), 1 - 14);
@@ -125,7 +126,7 @@ export function Calendar() {
     const s = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 10, 0);
     const e = new Date(s.getTime() + 30 * 60_000);
     setEditing(null);
-    setFTitle(""); setFLoc(""); setFDesc(""); setFMeet(true);
+    setFTitle(""); setFLoc(""); setFDesc(""); setFMeet(true); setFRrule("");
     setFAllDay(false); setFAtt(new Set());
     setFStart(toLocalInput(s.toISOString())); setFEnd(toLocalInput(e.toISOString()));
     setEditOpen(true);
@@ -135,7 +136,7 @@ export function Calendar() {
   const openEdit = (e: CalEvent) => {
     setEditing(e);
     setFTitle(e.title ?? ""); setFLoc(e.location ?? ""); setFDesc(e.description ?? "");
-    setFAllDay(e.allDay); setFMeet(!!e.meetingId);
+    setFAllDay(e.allDay); setFMeet(!!e.meetingId); setFRrule(e.rrule ?? "");
     setFAtt(new Set(e.attendees.map((a) => a.id)));
     setFStart(toLocalInput(e.startsAt)); setFEnd(toLocalInput(e.endsAt));
     setDetail(null); setEditOpen(true);
@@ -150,6 +151,7 @@ export function Calendar() {
         title: fTitle.trim(), description: fDesc.trim() || undefined, location: fLoc.trim() || undefined,
         startsAt: new Date(fStart).toISOString(), endsAt: new Date(fEnd).toISOString(),
         allDay: fAllDay, attendeeIds: [...fAtt], meet: meetOn && fMeet,
+        rrule: fRrule || null,
       };
       if (editing) await api.patch(`/api/calendar/${editing.id}`, body);
       else await api.post("/api/calendar", body);
@@ -171,6 +173,23 @@ export function Calendar() {
   };
 
   const joinMeet = (e: CalEvent) => { if (e.meetingId) navigate(`/meet?join=${e.meetingId}`); };
+  const exportIcs = async (e: CalEvent) => {
+    try {
+      const t = await api.get<Blob>(`/api/calendar/${e.id}/ics`);
+      const url = URL.createObjectURL(t);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${(e.title ?? "event").replace(/[^\w-]+/g, "_")}.ics`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (err) { toast((err as Error).message); }
+  };
+  const importIcs = async (file: File) => {
+    try {
+      const ics = await file.text();
+      const r = await api.post<{ imported: number }>("/api/calendar/import", { ics });
+      toast(`Imported ${r.imported} event${r.imported === 1 ? "" : "s"}`);
+      void load();
+    } catch (err) { toast((err as Error).message); }
+  };
   const delEvent = async (e: CalEvent) => {
     try { await api.del(`/api/calendar/${e.id}`); setDetail(null); void load(); }
     catch (err) { toast((err as Error).message); }
@@ -189,6 +208,11 @@ export function Calendar() {
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date())}>Today</button>
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button>
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button>
+          <label className="btn-ghost btn-sm" style={{ cursor: "pointer" }}>
+            Import .ics
+            <input type="file" accept=".ics,text/calendar" style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void importIcs(f); e.target.value = ""; }} />
+          </label>
           <button className="btn-primary btn-sm" onClick={() => openNew()}>＋ New event</button>
         </div>
       </div>
@@ -206,7 +230,7 @@ export function Calendar() {
                 <span className="cal-daynum">{d.getDate()}</span>
                 <span className="cal-chips">
                   {evs.slice(0, 3).map((e) => (
-                    <span key={e.id} className={`cal-chip${e.meetingId ? " meet" : ""}`}>{e.title}</span>
+                    <span key={e.id + e.startsAt} className={`cal-chip${e.meetingId ? " meet" : ""}`}>{e.title}</span>
                   ))}
                   {evs.length > 3 && <span className="cal-more">+{evs.length - 3}</span>}
                 </span>
@@ -221,7 +245,7 @@ export function Calendar() {
           </div>
           {!selEvents.length && <div className="chat-empty-side">Nothing here — double-click a day or hit New event.</div>}
           {selEvents.map((e) => (
-            <button key={e.id} className="cal-ev" onClick={() => setDetail(e)}>
+            <button key={e.id + e.startsAt} className="cal-ev" onClick={() => setDetail(e)}>
               <b>{e.title}</b>
               <span className="d-sub">{fmtRange(e)}{e.location ? ` · ${e.location}` : ""}</span>
               <span className="cal-ev-tags">
@@ -248,8 +272,10 @@ export function Calendar() {
                 ))}
               </p>
             )}
+            {detail.rrule && <p className="d-sub">🔁 Repeats ({detail.rrule.replace(/^RRULE:/i, "").toLowerCase().replace(/;/g, ", ")})</p>}
             <div className="dlg-actions" style={{ justifyContent: "flex-start" }}>
               {detail.meetingId && <button className="btn-primary btn-sm" onClick={() => joinMeet(detail)}>▶ Join Meet</button>}
+              <button className="btn-ghost btn-sm" onClick={() => void exportIcs(detail)}>Export .ics</button>
               {detail.attendees.some((a) => a.id === user?.id) && (
                 <>
                   <button className="btn-ghost btn-sm" onClick={() => void rsvp(detail, "accepted")}>Accept</button>
@@ -282,6 +308,19 @@ export function Calendar() {
             <textarea placeholder="Description (optional)" value={fDesc} onChange={(e) => setFDesc(e.target.value)}
               rows={2} style={{ width: "100%", marginBottom: 10 }} />
             <label className="cal-check"><input type="checkbox" checked={fAllDay} onChange={(e) => setFAllDay(e.target.checked)} /> All day</label>
+            <div className="cal-formrow">
+              <label>Repeat
+                <select value={fRrule} onChange={(e) => setFRrule(e.target.value)}>
+                  <option value="">Does not repeat</option>
+                  <option value="FREQ=DAILY">Daily</option>
+                  <option value="FREQ=WEEKLY">Weekly</option>
+                  <option value="FREQ=WEEKLY;INTERVAL=2">Every 2 weeks</option>
+                  <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">Every weekday</option>
+                  <option value="FREQ=MONTHLY">Monthly</option>
+                  <option value="FREQ=YEARLY">Yearly</option>
+                </select>
+              </label>
+            </div>
             {meetOn && !editing?.meetingId && (
               <label className="cal-check"><input type="checkbox" checked={fMeet} onChange={(e) => setFMeet(e.target.checked)} /> Add a Kreatix Meet call</label>
             )}

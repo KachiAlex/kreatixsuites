@@ -8,11 +8,13 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { meetEnabled } from "../meetBridge.js";
+import { parseRRule, expandOccurrences, parseIcs, buildIcs } from "../recurrence.js";
 
 interface EventRow {
   id: string; org_id: string; title: string; description: string | null;
   location: string | null; starts_at: string; ends_at: string; all_day: boolean;
   meeting_id: string | null; created_by: string; created_at: string; updated_at: string;
+  rrule: string | null;
 }
 interface AttRow { user_id: string; status: string; display_name: string; initials: string }
 
@@ -25,14 +27,17 @@ const eventSchema = z.object({
   allDay: z.boolean().optional(),
   attendeeIds: z.array(z.string().max(64)).max(50).optional(),
   meet: z.boolean().optional(),
+  rrule: z.string().trim().max(300).nullish(),
 });
 
 const enc = (v: string | null | undefined) => (v ? encryptField(v) ?? v : null);
 const dec = (v: string | null | undefined) => (v ? decryptField(v) ?? v : null);
 
-const eventOut = (r: EventRow, attendees: AttRow[] = []) => ({
+const eventOut = (r: EventRow, attendees: AttRow[] = [], occ?: { startsAt: Date; endsAt: Date }) => ({
   id: r.id, title: dec(r.title), description: dec(r.description), location: dec(r.location),
-  startsAt: r.starts_at, endsAt: r.ends_at, allDay: r.all_day,
+  startsAt: occ ? occ.startsAt.toISOString() : r.starts_at,
+  endsAt: occ ? occ.endsAt.toISOString() : r.ends_at,
+  allDay: r.all_day, rrule: r.rrule, occurrenceOf: occ ? r.starts_at : undefined,
   meetingId: r.meeting_id, createdBy: r.created_by, createdAt: r.created_at,
   attendees: attendees.map((a) => ({ id: a.user_id, displayName: a.display_name, initials: a.initials, status: a.status })),
 });
@@ -66,14 +71,28 @@ export function calendarRoutes(app: FastifyInstance) {
     const hi = to && !isNaN(Date.parse(to)) ? to : new Date(Date.now() + 62 * 864e5).toISOString();
     const rows = await q<EventRow>(
       `SELECT e.* FROM calendar_events e
-       WHERE e.org_id = $1 AND e.starts_at < $3 AND e.ends_at > $2
+       WHERE e.org_id = $1 AND e.starts_at < $3
+         AND (e.ends_at > $2 OR e.rrule IS NOT NULL)
          AND (e.created_by = $4 OR EXISTS (
            SELECT 1 FROM calendar_attendees a WHERE a.event_id = e.id AND a.user_id = $4))
        ORDER BY e.starts_at`, [user.orgId, lo, hi, user.id]);
     const atts = await attendeesOf(rows.map((r) => r.id));
-    return {
-      events: rows.map((r) => eventOut(r, atts.filter((a) => a.event_id === r.id))),
-    };
+    const loD = new Date(lo), hiD = new Date(hi);
+    const events: ReturnType<typeof eventOut>[] = [];
+    for (const r of rows) {
+      const rr = parseRRule(r.rrule);
+      if (!rr) {
+        events.push(eventOut(r, atts.filter((a) => a.event_id === r.id)));
+        continue;
+      }
+      const st = new Date(r.starts_at), en = new Date(r.ends_at);
+      const dur = en.getTime() - st.getTime();
+      for (const occ of expandOccurrences(st, rr, loD, hiD)) {
+        events.push(eventOut(r, atts.filter((a) => a.event_id === r.id),
+          { startsAt: occ, endsAt: new Date(occ.getTime() + dur) }));
+      }
+    }
+    return { events };
   });
 
   app.get("/api/calendar/:id", async (req, reply) => {
@@ -91,6 +110,8 @@ export function calendarRoutes(app: FastifyInstance) {
     const d = parsed.data;
     if (Date.parse(d.endsAt) <= Date.parse(d.startsAt))
       return reply.code(400).send({ error: "invalid", message: "End must be after start" });
+    if (d.rrule && !parseRRule(d.rrule))
+      return reply.code(400).send({ error: "invalid", message: "Unsupported recurrence rule" });
     const attendeeIds = [...new Set((d.attendeeIds ?? []).filter((i) => i !== user.id))];
     if (attendeeIds.length) {
       const okCount = await q<{ id: string }>(
@@ -109,10 +130,10 @@ export function calendarRoutes(app: FastifyInstance) {
     }
     const id = randomUUID();
     const row = await one<EventRow>(
-      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by, rrule)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [id, user.orgId, enc(d.title), enc(d.description), enc(d.location),
-       d.startsAt, d.endsAt, !!d.allDay, meetingId, user.id]);
+       d.startsAt, d.endsAt, !!d.allDay, meetingId, user.id, d.rrule ?? null]);
     for (const uid of attendeeIds) {
       await run("INSERT INTO calendar_attendees (event_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, uid]);
       void run(
@@ -133,15 +154,18 @@ export function calendarRoutes(app: FastifyInstance) {
     const parsed = eventSchema.partial().safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid event" });
     const d = parsed.data;
+    if (d.rrule && !parseRRule(d.rrule))
+      return reply.code(400).send({ error: "invalid", message: "Unsupported recurrence rule" });
     const row = await one<EventRow>(
       `UPDATE calendar_events SET
          title = COALESCE($2, title), description = COALESCE($3, description),
          location = COALESCE($4, location), starts_at = COALESCE($5, starts_at),
-         ends_at = COALESCE($6, ends_at), all_day = COALESCE($7, all_day), updated_at = now()
+         ends_at = COALESCE($6, ends_at), all_day = COALESCE($7, all_day),
+         rrule = CASE WHEN $8::boolean THEN $9 ELSE rrule END, updated_at = now()
        WHERE id = $1 RETURNING *`,
       [e.id, d.title ? enc(d.title) : null, d.description !== undefined ? enc(d.description) : null,
        d.location !== undefined ? enc(d.location) : null, d.startsAt ?? null, d.endsAt ?? null,
-       d.allDay ?? null]);
+       d.allDay ?? null, d.rrule !== undefined, d.rrule ?? null]);
     // attendee edits are wholesale-replace when provided
     if (d.attendeeIds) {
       const keep = [...new Set(d.attendeeIds.filter((i) => i !== user.id))];
@@ -177,5 +201,44 @@ export function calendarRoutes(app: FastifyInstance) {
       [status, e.id, user.id]);
     if (!n) return reply.code(403).send({ error: "forbidden", message: "You are not an attendee" });
     return { ok: true };
+  });
+
+  /** Single-event .ics download (Outlook/Apple importable). */
+  app.get("/api/calendar/:id/ics", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const e = await getEvent((req.params as { id: string }).id, user.orgId);
+    if (!e || !(await canSee(e, user.id))) return notFound(reply);
+    const ics = buildIcs({
+      uid: `${e.id}@kreatix`, summary: dec(e.title) ?? "Event",
+      description: dec(e.description) ?? undefined, location: dec(e.location) ?? undefined,
+      startsAt: new Date(e.starts_at), endsAt: new Date(e.ends_at),
+      allDay: e.all_day, rrule: e.rrule ?? undefined,
+    }, user.email);
+    return reply
+      .header("content-type", "text/calendar; charset=utf-8")
+      .header("content-disposition", `attachment; filename="event-${e.id.slice(0, 8)}.ics"`)
+      .send(ics);
+  });
+
+  /** Bulk .ics import — parses VEVENTs into owned events (max 100/file). */
+  app.post("/api/calendar/import", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { ics } = (req.body ?? {}) as { ics?: string };
+    if (!ics || ics.length > 500_000)
+      return reply.code(400).send({ error: "invalid", message: "Expected { ics } payload" });
+    const parsed = parseIcs(ics);
+    if (!parsed.length) return reply.code(400).send({ error: "invalid", message: "No VEVENTs found" });
+    if (parsed.length > 100) return reply.code(400).send({ error: "invalid", message: "Max 100 events per import" });
+    const created: string[] = [];
+    for (const ev of parsed) {
+      const rr = ev.rrule && parseRRule(ev.rrule) ? ev.rrule.replace(/^RRULE:/i, "") : null;
+      const row = await one<{ id: string }>(
+        `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, created_by, rrule)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [randomUUID(), user.orgId, enc(ev.summary), enc(ev.description), enc(ev.location),
+         ev.startsAt.toISOString(), ev.endsAt.toISOString(), ev.allDay, user.id, rr]);
+      if (row) created.push(row.id);
+    }
+    return reply.code(201).send({ imported: created.length });
   });
 }

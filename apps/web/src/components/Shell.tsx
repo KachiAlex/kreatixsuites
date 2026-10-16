@@ -260,6 +260,7 @@ function Rail({ toast }: { toast: (m: string) => void }) {
     { to: "/drive", icon: "▣", title: t("nav.drive") },
     { to: "/chat", icon: "💬", title: "Chat" },
     { to: "/calendar", icon: "📅", title: "Calendar" },
+    { to: "/tasks", icon: "✓", title: "Tasks" },
     ...(mailOn ? [{ to: "/mail", icon: "✉", title: "Mail" }] : []),
     ...(meetOn ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
   ];
@@ -415,6 +416,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
       <NavLink to="/chat" className={navCls}><AppIcon kind="chat" size={18} />Chat</NavLink>
       <NavLink to="/calendar" className={navCls}><AppIcon kind="calendar" size={18} />Calendar</NavLink>
+      <NavLink to="/tasks" className={navCls}><AppIcon kind="tasks" size={18} />Tasks</NavLink>
       {mailOn && <NavLink to="/mail" className={navCls}><AppIcon kind="mail" size={18} />Kreatix Mail</NavLink>}
       {meetOn && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
 

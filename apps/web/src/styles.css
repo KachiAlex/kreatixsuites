@@ -3176,3 +3176,28 @@ html[data-theme="dark"]{
   .cal{grid-template-columns:1fr}
   .cal-side{max-height:none}
 }
+
+.mail-ai-row{display:flex;gap:8px;margin-bottom:6px}
+.mail-ai-row input{flex:1}
+
+/* kreatix tasks */
+.task-board{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:12px;align-items:start;overflow:auto;padding-bottom:10px}
+.task-col{background:var(--subtle);border:1px solid var(--line);border-radius:12px;padding:8px;min-height:160px;display:flex;flex-direction:column;gap:8px}
+.task-col-h{display:flex;align-items:center;gap:8px;padding:4px 6px 6px;border-bottom:1px solid var(--line)}
+.task-col-h b{font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+.task-count{font-size:10.5px;font-weight:700;color:var(--muted);background:color-mix(in srgb,var(--k-orange) 12%,transparent);border-radius:9px;padding:1px 7px}
+.task-col-h .iconbtn{margin-left:auto;width:22px;height:22px;font-size:14px}
+.task-card{text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:grab;display:flex;flex-direction:column;gap:6px;color:var(--ink);font-family:inherit}
+.task-card:hover{border-color:var(--k-orange);box-shadow:0 2px 8px rgba(0,0,0,.07)}
+.task-card:active{cursor:grabbing}
+.task-card b{font-size:13px;line-height:1.35}
+.task-card.done b{text-decoration:line-through;color:var(--muted)}
+.task-notes{font-size:11.5px;color:var(--muted);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.task-meta{display:flex;align-items:center;gap:8px}
+.task-meta .chat-avatar{width:20px;height:20px;font-size:9px}
+.task-due{font-size:10.5px;color:var(--muted);margin-left:auto}
+.task-due.overdue{color:#d13438;font-weight:700}
+.task-empty{text-align:center;color:var(--muted);font-size:11.5px;padding:18px 0}
+@media (max-width:900px){
+  .task-board{grid-template-columns:1fr}
+}

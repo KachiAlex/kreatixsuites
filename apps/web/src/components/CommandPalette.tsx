@@ -19,6 +19,7 @@ interface AllResults {
   meetings: { id: string; code: string; title: string; status: string; scheduledAt: string | null }[];
   people: { id: string; displayName: string; email: string; initials: string }[];
   mails: { id: number; subject: string; from: string; date: string | null }[];
+  tasks?: { id: string; title: string | null; status: string; dueAt: string | null }[];
 }
 
 interface Row {
@@ -88,6 +89,7 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       nav("/drive/trash", "🗑", "Recycle bin"),
       nav("/chat", "💬", "Chat"),
       nav("/calendar", "📅", "Calendar"),
+      nav("/tasks", "✓", "Tasks"),
       nav("/meet", "▶", "Kreatix Meet"),
       nav("/mail", "✉", "Kreatix Mail"),
       nav("/sites", "◈", "Sites"),
@@ -125,6 +127,11 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       id: `m:${m.id}`, group: "Meetings", iconCls: "meet", icon: "M",
       label: m.title, hint: m.status,
       run: () => { navigate(m.status === "ended" ? "/meet" : `/meet?join=${m.id}`); },
+    })), (all?.tasks ?? []).map((t) => ({
+      id: `t:${t.id}`, group: "Tasks", iconCls: "tasks", icon: "T",
+      label: t.title ?? "Task",
+      hint: t.dueAt ? `due ${new Date(t.dueAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : t.status,
+      run: () => { navigate("/tasks"); },
     })), (all?.mails ?? []).map((m) => ({
       id: `ml:${m.id}`, group: "Mail", iconCls: "mail", icon: "✉",
       label: m.subject, hint: m.from,

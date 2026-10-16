@@ -683,6 +683,24 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
       status TEXT NOT NULL DEFAULT 'pending',   -- pending | accepted | declined | tentative
       PRIMARY KEY (event_id, user_id)
     )`);
+  // RFC5545 recurrence rule string (FREQ=...;INTERVAL=...) — expanded at read
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS rrule TEXT`);
+
+  // Kreatix Tasks — Planner-lite kanban; org-shared board
+  await pool.query(`CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'todo',        -- todo | doing | done
+    assignee_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    due_at TIMESTAMPTZ,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_org ON tasks(org_id, status, position)`);
 
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);

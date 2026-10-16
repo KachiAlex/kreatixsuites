@@ -52,6 +52,8 @@ export function Chat() {
   const [chName, setChName] = useState("");
   const [chDesc, setChDesc] = useState("");
   const [hasMore, setHasMore] = useState(false);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [sumBusy, setSumBusy] = useState(false);
   const msgsRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -170,6 +172,23 @@ export function Chat() {
     }
   };
 
+  const summarize = async () => {
+    if (!active || !messages.length) return;
+    setSumBusy(true);
+    try {
+      const transcript = messages.slice(-60)
+        .map((m) => `${m.author.displayName ?? "Unknown"}: ${m.body}`)
+        .join("\n").slice(-20000);
+      const r = await api.post<{ text: string }>("/api/ai/compose", {
+        task: "chat-summary",
+        context: transcript,
+        instruction: `Conversation: ${active.name ?? "chat"}`,
+      });
+      setSummary(r.text);
+    } catch (e) { toast((e as Error).message); }
+    setSumBusy(false);
+  };
+
   const del = async (m: Message) => {
     try {
       await api.del(`/api/chat/messages/${m.id}`);
@@ -286,6 +305,9 @@ export function Chat() {
               {active.kind === "channel" ? <span className="chat-hash">#</span> : null}
               <b>{active.name}</b>
               {active.description && <span className="d-sub">— {active.description}</span>}
+              <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} disabled={sumBusy || !messages.length}
+                title="Summarize the loaded conversation with Kreatix AI"
+                onClick={() => void summarize()}>{sumBusy ? "Summarizing…" : "✨ Summary"}</button>
             </div>
             <div className="chat-msgs" ref={msgsRef}>
               {hasMore && messages.length > 0 && (
@@ -347,6 +369,12 @@ export function Chat() {
           </>
         )}
       </section>
+
+      {summary && (
+        <Modal label="Conversation summary" onClose={() => setSummary(null)} style={{ width: 480 }}>
+          <div className="ob-body"><p style={{ whiteSpace: "pre-wrap" }}>{summary}</p></div>
+        </Modal>
+      )}
 
       {newChannel && (
         <Modal label="New channel" onClose={() => setNewChannel(false)} style={{ width: 420 }}>

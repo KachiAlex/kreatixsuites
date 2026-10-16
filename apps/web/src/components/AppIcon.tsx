@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -12,6 +12,7 @@ const TILE: Record<AppKind, string> = {
   meet: "#6264A7",
   chat: "#0E7C61",
   calendar: "#C2470E",
+  tasks: "#7B61A3",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -95,6 +96,16 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           <circle cx="25" cy="35" r="3" fill={color} />
           <rect x="32" y="32" width="12" height="3.5" rx="1.75" fill={color} opacity="0.55" />
           <rect x="23" y="42" width="21" height="3.5" rx="1.75" fill={color} opacity="0.3" />
+        </g>
+      );
+    case "tasks":
+      // Checklist — clipboard with tick
+      return (
+        <g>
+          <rect x="16" y="12" width="32" height="42" rx="5" fill="none" stroke="#fff" strokeWidth="3.5" />
+          <rect x="24" y="9" width="16" height="7" rx="3" fill="#fff" />
+          <path d="M22 28l5 5 9-10" stroke="#fff" strokeWidth="3.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M23 43h18" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" opacity="0.6" />
         </g>
       );
     case "folder":
