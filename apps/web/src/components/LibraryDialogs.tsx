@@ -287,6 +287,7 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
   const [desc, setDesc] = useState("");
   const [allowed, setAllowed] = useState<FileKind[]>(["writer", "sheets", "present", "pdf", "file"]);
   const [isDefault, setIsDefault] = useState(false);
+  const [docSet, setDocSet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editCols, setEditCols] = useState<string | null>(null);   // ct.id being bound
 
@@ -300,9 +301,13 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
     if (!name.trim() || busy) return;
     setBusy(true);
     try {
-      await api.post(base, { name: name.trim(), description: desc.trim() || null, allowedKinds: allowed, isDefault });
+      await api.post(base, {
+        name: name.trim(), description: desc.trim() || null,
+        allowedKinds: docSet ? ["folder"] : allowed, isDefault, docSet,
+      });
       setName("");
       setDesc("");
+      setDocSet(false);
       await load();
       toast("Content type created");
     } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
@@ -322,11 +327,11 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
   };
 
   /** Persist a type's column bindings (library scope only). */
-  const saveBinds = async (ct: ContentType, binds: { columnId: string; required: boolean }[]) => {
+  const saveBinds = async (ct: ContentType, binds: { columnId: string; required: boolean; shared?: boolean }[]) => {
     try {
-      const r = await api.put<{ columns: { columnId: string; required: boolean; position: number }[] }>(
+      const r = await api.put<{ columns: { columnId: string; required: boolean; shared: boolean; position: number }[] }>(
         `${base}/${ct.id}/columns`,
-        { columns: binds.map((b, i) => ({ columnId: b.columnId, required: b.required, position: i })) });
+        { columns: binds.map((b, i) => ({ columnId: b.columnId, required: b.required, shared: !!b.shared, position: i })) });
       setTypes((l) => l.map((x) => (x.id === ct.id ? { ...x, columns: r.columns } : x)));
       toast("Columns bound");
     } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
@@ -344,17 +349,23 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
         <label>Description</label>
         <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Optional description" />
       </div>
-      <div className="field">
-        <label>Allowed kinds</label>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(["writer", "sheets", "present", "pdf", "file"] as FileKind[]).map((k) => (
-            <label key={k} style={{ fontSize: 12.5 }}>
-              <input type="checkbox" checked={allowed.includes(k)} onChange={() => toggleKind(k)} />
-              {" "}{k}
-            </label>
-          ))}
-        </div>
+      <div className="dlg-row">
+        <label>Document set (folder container with shared columns)</label>
+        <input type="checkbox" checked={docSet} onChange={(e) => setDocSet(e.target.checked)} />
       </div>
+      {!docSet && (
+        <div className="field">
+          <label>Allowed kinds</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {(["writer", "sheets", "present", "pdf", "file"] as FileKind[]).map((k) => (
+              <label key={k} style={{ fontSize: 12.5 }}>
+                <input type="checkbox" checked={allowed.includes(k)} onChange={() => toggleKind(k)} />
+                {" "}{k}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="dlg-row">
         <label>Default for new items</label>
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
@@ -370,6 +381,7 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
               <span style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}>
                 {ct.libraryId === null ? "site · " : ""}{ct.allowedKinds.join(", ")}
               </span>
+              {ct.docSet && <span className="perm-badge" style={{ marginLeft: 8 }}>🗂 set</span>}
               {ct.isDefault && <span className="perm-badge" style={{ marginLeft: 8 }}>default</span>}
               {libraryId && columns && (
                 <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
@@ -390,7 +402,7 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
                         onChange={(e) => {
                           const cur = ct.columns ?? [];
                           const next = e.target.checked
-                            ? [...cur, { columnId: c.id, required: false }]
+                            ? [...cur, { columnId: c.id, required: false, shared: false }]
                             : cur.filter((b) => b.columnId !== c.id);
                           void saveBinds(ct, next);
                         }} />
@@ -402,6 +414,17 @@ export function ContentTypeDialog({ siteId, libraryId, columns, onClose, toast }
                             onChange={(e) => {
                               const next = (ct.columns ?? []).map((b) =>
                                 b.columnId === c.id ? { ...b, required: e.target.checked } : b);
+                              void saveBinds(ct, next);
+                            }} />
+                        </label>
+                      )}
+                      {bound && ct.docSet && (
+                        <label style={{ fontSize: 11.5 }} title="Children of this document set inherit the set's value">
+                          shared{" "}
+                          <input type="checkbox" checked={!!bound.shared}
+                            onChange={(e) => {
+                              const next = (ct.columns ?? []).map((b) =>
+                                b.columnId === c.id ? { ...b, shared: e.target.checked } : b);
                               void saveBinds(ct, next);
                             }} />
                         </label>

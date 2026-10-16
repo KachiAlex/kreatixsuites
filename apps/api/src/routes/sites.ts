@@ -34,8 +34,11 @@ const memberSchema = z.object({
 const contentTypeSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(500).nullable().optional(),
-  allowedKinds: z.array(z.enum(["writer", "sheets", "present", "pdf", "file"])).default(["writer", "sheets", "present", "pdf", "file"]),
+  // 'folder' is only meaningful on docSet types (the set itself is a folder)
+  allowedKinds: z.array(z.enum(["folder", "writer", "sheets", "present", "pdf", "file"])).default(["writer", "sheets", "present", "pdf", "file"]),
   isDefault: z.boolean().default(false),
+  /** Document-set type — applies to folders; shared columns propagate inside */
+  docSet: z.boolean().default(false),
 });
 
 const contentTypePatchSchema = contentTypeSchema.partial();
@@ -51,6 +54,8 @@ const libraryPatchSchema = librarySchema.partial().extend({
   versioning: z.enum(["major", "minor"]).optional(),
   approval: z.boolean().optional(),
   inherit: z.boolean().optional(),
+  /** auto-trash items untouched this many days (null clears) */
+  retentionDays: z.number().int().min(0).max(36500).nullable().optional(),
 });
 
 const columnSchema = z.object({
@@ -99,16 +104,17 @@ const viewOut = (r: ViewRow) => ({
 
 interface CtRow {
   id: string; site_id: string; library_id: string | null; name: string; description: string | null;
-  template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+  template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; doc_set: boolean;
+  created_at: string;
 }
 
-const ctOut = (r: CtRow, columns?: { columnId: string; required: boolean; position: number }[]) => ({
+const ctOut = (r: CtRow, columns?: { columnId: string; required: boolean; shared: boolean; position: number }[]) => ({
   id: r.id, siteId: r.site_id, libraryId: r.library_id,
   name: decryptField(r.name) ?? r.name,
   description: r.description ? decryptField(r.description) ?? r.description : null,
   templateBlobKey: r.template_blob_key,
   allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
-  isDefault: !!r.is_default, createdAt: r.created_at,
+  isDefault: !!r.is_default, docSet: !!r.doc_set, createdAt: r.created_at,
   columns,
 });
 
@@ -361,10 +367,10 @@ export function siteRoutes(app: FastifyInstance) {
       const body = contentTypeSchema.parse(req.body);
       const id = randomUUID();
       await run(
-        `INSERT INTO content_types (id, site_id, name, description, allowed_kinds, is_default, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO content_types (id, site_id, name, description, allowed_kinds, is_default, doc_set, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [id, site.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
-         JSON.stringify(body.allowedKinds), body.isDefault, now()],
+         JSON.stringify(body.allowedKinds), body.isDefault, body.docSet, now()],
       );
       const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [id]);
       if (!r) return reply.code(404).send({ error: "not_found" });
@@ -380,12 +386,14 @@ export function siteRoutes(app: FastifyInstance) {
       const body = contentTypePatchSchema.parse(req.body);
       await run(
         `UPDATE content_types SET name = COALESCE($2, name), description = COALESCE($3, description),
-         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default)
-         WHERE id = $1 AND site_id = $6`,
+         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default),
+         doc_set = COALESCE($6, doc_set)
+         WHERE id = $1 AND site_id = $7`,
         [ctid, body.name === undefined ? null : encryptField(body.name),
          body.description === undefined ? null : encryptField(body.description),
          body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
-         body.isDefault === undefined ? null : body.isDefault, site.id],
+         body.isDefault === undefined ? null : body.isDefault,
+         body.docSet === undefined ? null : body.docSet, site.id],
       );
       const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [ctid]);
       if (!r) return reply.code(404).send({ error: "not_found" });
@@ -426,15 +434,22 @@ export function siteRoutes(app: FastifyInstance) {
       if (!site || !lib || lib.site_id !== site.id || !atLeast(role, "member"))
         return reply.code(403).send({ error: "forbidden" });
       const body = libraryPatchSchema.parse(req.body);
-      // versioning + approval + inheritance are governance knobs — owners only
-      if ((body.versioning !== undefined || body.approval !== undefined || body.inherit !== undefined) && !atLeast(role, "owner")) {
-        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning, approval, or permissions" });
+      // versioning + approval + inheritance + retention are governance knobs — owners only
+      if ((body.versioning !== undefined || body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined) && !atLeast(role, "owner")) {
+        return reply.code(403).send({ error: "forbidden", message: "Only site owners can change versioning, approval, permissions, or retention" });
       }
-      if ((body.approval !== undefined || body.inherit !== undefined) && !(await entitled(user.orgId, "docmgmt"))) {
+      if ((body.approval !== undefined || body.inherit !== undefined || body.retentionDays !== undefined) && !(await entitled(user.orgId, "docmgmt"))) {
         return reply.code(402).send({ error: "plan_limit", message: "This feature requires a paid plan" });
       }
-      await run("UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind), versioning = COALESCE($4, versioning), approval = COALESCE($5, approval), inherit_permissions = COALESCE($6, inherit_permissions) WHERE id = $1",
-        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null, body.versioning ?? null, body.approval ?? null, body.inherit ?? null]);
+      await run(`UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind),
+        versioning = COALESCE($4, versioning), approval = COALESCE($5, approval),
+        inherit_permissions = COALESCE($6, inherit_permissions),
+        retention_days = CASE WHEN $8 THEN $7 ELSE retention_days END WHERE id = $1`,
+        [lib.id, body.name === undefined ? null : encryptField(body.name), body.kind ?? null,
+         body.versioning ?? null, body.approval ?? null, body.inherit ?? null,
+         body.retentionDays !== undefined && body.retentionDays && body.retentionDays > 0 ? body.retentionDays : null,
+         body.retentionDays !== undefined]);
+      // retentionDays: explicit null/0 clears the rule
       // restoring inheritance discards unique grants (SharePoint behavior)
       if (body.inherit === true) {
         await run("DELETE FROM library_permissions WHERE library_id = $1", [lib.id]);
@@ -624,14 +639,14 @@ export function siteRoutes(app: FastifyInstance) {
         `SELECT * FROM content_types WHERE site_id = $1 AND (library_id = $2 OR library_id IS NULL) ORDER BY created_at`,
         [ctx.site.id, ctx.lib.id],
       );
-      const binds = rows.length ? await q<{ content_type_id: string; column_id: string; required: boolean; position: number }>(
+      const binds = rows.length ? await q<{ content_type_id: string; column_id: string; required: boolean; shared: boolean; position: number }>(
         `SELECT * FROM content_type_columns WHERE content_type_id = ANY($1) ORDER BY position`,
         [rows.map((r) => r.id)],
       ) : [];
       return {
         contentTypes: rows.map((r) => ctOut(r,
           binds.filter((b) => b.content_type_id === r.id)
-            .map((b) => ({ columnId: b.column_id, required: !!b.required, position: b.position })))),
+            .map((b) => ({ columnId: b.column_id, required: !!b.required, shared: !!b.shared, position: b.position })))),
       };
     });
 
@@ -642,10 +657,10 @@ export function siteRoutes(app: FastifyInstance) {
       const body = contentTypeSchema.parse(req.body);
       const id = randomUUID();
       await run(
-        `INSERT INTO content_types (id, site_id, library_id, name, description, allowed_kinds, is_default, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO content_types (id, site_id, library_id, name, description, allowed_kinds, is_default, doc_set, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [id, ctx.site.id, ctx.lib.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
-         JSON.stringify(body.allowedKinds), body.isDefault, now()],
+         JSON.stringify(body.allowedKinds), body.isDefault, body.docSet, now()],
       );
       const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [id]);
       if (!r) return reply.code(404).send({ error: "not_found" });
@@ -660,12 +675,14 @@ export function siteRoutes(app: FastifyInstance) {
       const body = contentTypePatchSchema.parse(req.body);
       await run(
         `UPDATE content_types SET name = COALESCE($2, name), description = COALESCE($3, description),
-         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default)
-         WHERE id = $1 AND site_id = $6 AND library_id = $7`,
+         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default),
+         doc_set = COALESCE($6, doc_set)
+         WHERE id = $1 AND site_id = $7 AND library_id = $8`,
         [ctid, body.name === undefined ? null : encryptField(body.name),
          body.description === undefined ? null : encryptField(body.description),
          body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
-         body.isDefault === undefined ? null : body.isDefault, ctx.site.id, ctx.lib.id],
+         body.isDefault === undefined ? null : body.isDefault,
+         body.docSet === undefined ? null : body.docSet, ctx.site.id, ctx.lib.id],
       );
       const r = await one<CtRow>("SELECT * FROM content_types WHERE id = $1", [ctid]);
       if (!r) return reply.code(404).send({ error: "not_found" });
@@ -687,6 +704,8 @@ export function siteRoutes(app: FastifyInstance) {
         columns: z.array(z.object({
           columnId: z.string(),
           required: z.boolean().default(false),
+          /** doc-set types: value propagates to items placed inside */
+          shared: z.boolean().default(false),
           position: z.number().int().min(0).default(0),
         })).max(100),
       }).parse(req.body);
@@ -698,15 +717,15 @@ export function siteRoutes(app: FastifyInstance) {
       await run("DELETE FROM content_type_columns WHERE content_type_id = $1", [ctid]);
       for (const c of body.columns.filter((x) => validIds.has(x.columnId))) {
         await run(
-          `INSERT INTO content_type_columns (content_type_id, column_id, required, position)
-           VALUES ($1,$2,$3,$4)`,
-          [ctid, c.columnId, c.required, c.position],
+          `INSERT INTO content_type_columns (content_type_id, column_id, required, shared, position)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [ctid, c.columnId, c.required, c.shared, c.position],
         );
       }
-      const binds = await q<{ column_id: string; required: boolean; position: number }>(
+      const binds = await q<{ column_id: string; required: boolean; shared: boolean; position: number }>(
         "SELECT * FROM content_type_columns WHERE content_type_id = $1 ORDER BY position", [ctid]);
       return {
-        columns: binds.map((b) => ({ columnId: b.column_id, required: !!b.required, position: b.position })),
+        columns: binds.map((b) => ({ columnId: b.column_id, required: !!b.required, shared: !!b.shared, position: b.position })),
       };
     });
 

@@ -30,7 +30,7 @@ import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
-import { sweepRetention } from "./policies.js";
+import { sweepRetention, sweepLibraryRetention } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
 
 /** Auth/session tokens must never land in access logs — strip the query
@@ -286,6 +286,9 @@ async function main() {
     sweepRetention()
       .then((purged) => { if (purged) app.log.info({ purged }, "retention sweep purged trashed items"); })
       .catch((e) => app.log.warn(e, "retention sweep failed"));
+    sweepLibraryRetention()
+      .then((trashed) => { if (trashed) app.log.info({ trashed }, "library retention sweep auto-trashed stale items"); })
+      .catch((e) => app.log.warn(e, "library retention sweep failed"));
     billingNotices(app.log)
       .then((n) => { if (n.warned || n.locked) app.log.info(n, "billing notices sent"); })
       .catch((e) => app.log.warn(e, "billing notice sweep failed"));

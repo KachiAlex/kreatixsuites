@@ -3,6 +3,8 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, q, one, run } from "./db.js";
 import { indexBody } from "./indexer.js";
+import { decryptField } from "./crypto.js";
+import { logActivity } from "./items.js";
 
 export const LABELS = ["internal", "public", "confidential", "restricted"] as const;
 export type Label = (typeof LABELS)[number];
@@ -94,6 +96,40 @@ export async function sweepRetention(): Promise<number> {
     purged += doomed.length;
   }
   return purged;
+}
+
+/**
+ * Per-library retention: libraries.retention_days > 0 auto-trashes items
+ * untouched for that many days (SharePoint "Information management policy").
+ * Stale items go to the site recycle bin — permanent purge stays with the
+ * org-level trashRetentionDays sweep above. A trashed folder covers its
+ * whole subtree (trash views already hide trashed ancestors).
+ */
+export async function sweepLibraryRetention(): Promise<number> {
+  const libs = await q<{ id: string; retention_days: number }>(
+    "SELECT id, retention_days FROM libraries WHERE retention_days IS NOT NULL AND retention_days > 0",
+  );
+  let trashed = 0;
+  for (const lib of libs) {
+    const cutoff = new Date(Date.now() - lib.retention_days * 86400_000).toISOString();
+    // only items not already inside a trashed subtree — descendants of a
+    // trashed folder are covered by it, no need to stamp each row
+    const stale = await q<{ id: string; owner_id: string; org_id: string; name: string }>(
+      `WITH RECURSIVE binned AS (
+         SELECT id FROM items WHERE library_id = $1 AND trashed
+         UNION ALL SELECT i.id FROM items i JOIN binned b ON i.parent_id = b.id)
+       SELECT id, owner_id, org_id, name FROM items
+       WHERE library_id = $1 AND NOT trashed AND updated_at < $2
+         AND id NOT IN (SELECT id FROM binned)`,
+      [lib.id, cutoff],
+    );
+    for (const item of stale) {
+      await run("UPDATE items SET trashed = true, updated_at = $1 WHERE id = $2", [new Date().toISOString(), item.id]);
+      void logActivity(item.org_id, item.owner_id, item.id, "trash-retention", decryptField(item.name) ?? undefined);
+      trashed++;
+    }
+  }
+  return trashed;
 }
 
 /** Permanently delete an item: row (cascades), index, collab state, AI log, orphan blobs. */

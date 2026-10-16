@@ -470,6 +470,14 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_type_columns_type ON content_type_columns(content_type_id)`);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS content_type_id TEXT REFERENCES content_types(id) ON DELETE SET NULL`);
+  // document sets — a content type flagged doc_set turns a folder into a
+  // work-product container; bound columns marked 'shared' propagate their
+  // values to items created or moved inside
+  await pool.query(`ALTER TABLE content_types ADD COLUMN IF NOT EXISTS doc_set BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE content_type_columns ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT false`);
+  // per-library retention (SharePoint information management policies) —
+  // items untouched for retention_days get auto-trashed by the daily sweep
+  await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS retention_days INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

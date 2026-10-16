@@ -258,8 +258,16 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
     const owner = await dbq<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [item.owner_id]);
+    // library items carry their custom-column values (same as listings)
+    let metadata: Record<string, string | null> | undefined;
+    if (item.library_id) {
+      const meta = await dbq<{ column_id: string; value: string | null }>(
+        "SELECT column_id, value FROM item_metadata WHERE item_id = $1", [item.id]);
+      metadata = {};
+      for (const m of meta) metadata[m.column_id] = m.value === null ? null : (decryptField(m.value) ?? m.value);
+    }
     return { item: { ...(await toDriveItem(item, (await permissionFor(user.id, item)) ?? undefined,
-      { approver: await canApprove(user, item) })), ownerName: owner[0]?.display_name } };
+      { metadata, approver: await canApprove(user, item) })), ownerName: owner[0]?.display_name } };
   });
 
   app.post("/api/drive", async (req, reply) => {
@@ -287,12 +295,20 @@ export function driveRoutes(app: FastifyInstance) {
     let templateBlobKey: string | null = null;
     if (body.contentTypeId) {
       const ct = await one<{
-        id: string; site_id: string; library_id: string | null; allowed_kinds: unknown; template_blob_key: string | null;
+        id: string; site_id: string; library_id: string | null; allowed_kinds: unknown;
+        template_blob_key: string | null; doc_set: boolean;
       }>("SELECT * FROM content_types WHERE id = $1", [body.contentTypeId]);
       if (!ct) return reply.code(404).send({ error: "not_found", message: "Content type not found" });
-      const allowed = Array.isArray(ct.allowed_kinds) ? (ct.allowed_kinds as string[]) : [];
-      if (allowed.length && !allowed.includes(body.kind)) {
-        return reply.code(400).send({ error: "bad_request", message: `Kind '${body.kind}' not allowed for this content type` });
+      if (ct.doc_set) {
+        // doc-set types stamp folders, not documents
+        if (body.kind !== "folder") {
+          return reply.code(400).send({ error: "bad_request", message: "Document set types apply to folders" });
+        }
+      } else {
+        const allowed = Array.isArray(ct.allowed_kinds) ? (ct.allowed_kinds as string[]) : [];
+        if (allowed.length && !allowed.includes(body.kind)) {
+          return reply.code(400).send({ error: "bad_request", message: `Kind '${body.kind}' not allowed for this content type` });
+        }
       }
       // site-scoped types are available across the site; library-scoped only within their library
       if (ct.library_id !== null && ct.library_id !== libraryId) {
@@ -336,6 +352,10 @@ export function driveRoutes(app: FastifyInstance) {
         await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
       }
     }
+
+    // document-set inheritance: the new item picks up its parent set's
+    // shared column values (SharePoint welcome-page columns)
+    if (body.parentId) await propagateSharedColumns(body.parentId, [id]);
 
     await logActivity(user.orgId, user.id, id, "create", body.name);
     return { item: await toDriveItem((await getItem(id))!, "owner") };
@@ -483,6 +503,10 @@ export function driveRoutes(app: FastifyInstance) {
          UPDATE items SET library_id = $2 WHERE id IN (SELECT id FROM sub)`,
         [item.id, newLibraryId],
       );
+    }
+    // moved into a document set → the moved subtree inherits its shared values
+    if (moving && body.parentId) {
+      await propagateSharedColumns(body.parentId, [item.id, ...(await subtreeIds(item.id))]);
     }
     if (body.label) void logActivity(user.orgId, user.id, item.id, "label", body.label);
     return { item: await toDriveItem((await getItem(item.id))!, (await permissionFor(user.id, item)) ?? undefined) };
@@ -661,6 +685,10 @@ export function driveRoutes(app: FastifyInstance) {
         [item.id, cid, encryptField(v)],
       );
     }
+    // editing a document set pushes its shared columns down to the contents
+    if (item.kind === "folder" && item.content_type_id) {
+      await propagateSharedColumns(item.id, await subtreeIds(item.id));
+    }
     await touchItem(item.id);
     return { ok: true };
   });
@@ -815,6 +843,47 @@ const atLeastRank = (role: string | null, need: string) => role !== null && (SIT
  *  site roles and broken-inheritance grants alike. */
 async function canWriteLibrary(user: { id: string; orgId: string; role: string }, libraryId: string): Promise<boolean> {
   return hasPermission(await libraryPermission(user.id, libraryId), "editor");
+}
+
+/** Document-set shared columns: copy the set's values for its type's 'shared'
+ *  bound columns into each child item (SharePoint shared columns). Values are
+ *  stored field-encrypted, so ciphertext ports verbatim within the org. */
+async function propagateSharedColumns(setItemId: string, childIds: string[]): Promise<void> {
+  if (!childIds.length) return;
+  const set = await getItem(setItemId);
+  if (!set?.content_type_id) return;
+  const sharedCols = await dbq<{ column_id: string }>(
+    "SELECT column_id FROM content_type_columns WHERE content_type_id = $1 AND shared",
+    [set.content_type_id],
+  );
+  if (!sharedCols.length) return;
+  const vals = await dbq<{ column_id: string; value: string }>(
+    `SELECT column_id, value FROM item_metadata
+     WHERE item_id = $1 AND column_id = ANY($2) AND value IS NOT NULL`,
+    [setItemId, sharedCols.map((c) => c.column_id)],
+  );
+  if (!vals.length) return;
+  for (const cid of childIds) {
+    for (const v of vals) {
+      await run(
+        `INSERT INTO item_metadata (item_id, column_id, value) VALUES ($1,$2,$3)
+         ON CONFLICT (item_id, column_id) DO UPDATE SET value = excluded.value`,
+        [cid, v.column_id, v.value],
+      );
+    }
+  }
+}
+
+/** All item ids in a doc set's subtree (descendants only). */
+async function subtreeIds(rootId: string): Promise<string[]> {
+  const rows = await dbq<{ id: string }>(
+    `WITH RECURSIVE sub AS (
+       SELECT id FROM items WHERE parent_id = $1
+       UNION ALL SELECT i.id FROM items i JOIN sub s ON i.parent_id = s.id)
+     SELECT id FROM sub`,
+    [rootId],
+  );
+  return rows.map((r) => r.id);
 }
 
 /** Approver rank — in a library that's owner rank on the LIBRARY (site owner

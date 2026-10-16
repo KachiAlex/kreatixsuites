@@ -156,6 +156,8 @@ export interface Library {
   approval?: boolean;
   /** false = unique permissions — only explicit grants reach this library */
   inheritPermissions?: boolean;
+  /** Auto-trash items untouched this many days (null = off) */
+  retentionDays?: number | null;
   itemCount?: number;
   createdAt: string;
 }
@@ -179,8 +181,11 @@ export interface ContentType {
   templateBlobKey: string | null;
   allowedKinds: FileKind[];
   isDefault: boolean;
+  /** Document-set type — stamps folders as work-product containers whose
+   *  'shared' bound columns propagate to items placed inside */
+  docSet?: boolean;
   /** Bound library columns (library-scoped GET only) */
-  columns?: { columnId: string; required: boolean; position: number }[];
+  columns?: { columnId: string; required: boolean; shared: boolean; position: number }[];
   createdAt: string;
 }
 
@@ -189,6 +194,8 @@ export interface ContentTypeColumn {
   contentTypeId: string;
   columnId: string;
   required: boolean;
+  /** doc-set shared column — value propagates from the set folder to children */
+  shared?: boolean;
   position: number;
 }
 

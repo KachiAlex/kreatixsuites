@@ -156,6 +156,23 @@ export function LibraryPage() {
     setViewMenu(false);
   };
 
+  const setRetention = async () => {
+    if (!lib) return;
+    const cur = lib.retentionDays ?? 0;
+    const raw = prompt(
+      "Auto-trash items untouched for this many days (0 = off):",
+      cur ? String(cur) : "365");
+    if (raw === null) return;
+    const days = parseInt(raw, 10);
+    if (!Number.isFinite(days) || days < 0 || days > 36500) { toast("Enter 0–36500 days"); return; }
+    try {
+      const r = await api.patch<{ library: Library }>(`${libBase}`, { retentionDays: days });
+      setLib(r.library);
+      toast(days > 0 ? `Auto-trash after ${days} days of inactivity` : "Retention off");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+    setViewMenu(false);
+  };
+
   // ---- client-side view application ----
   const shown = useMemo(() => {
     let out = items;
@@ -190,6 +207,7 @@ export function LibraryPage() {
           {lib?.versioning === "minor" && <span className="perm-badge" style={{ marginLeft: 8 }}>minor versioning</span>}
           {lib?.approval && <span className="perm-badge" style={{ marginLeft: 8 }}>approval required</span>}
           {lib?.inheritPermissions === false && <span className="perm-badge" style={{ marginLeft: 8 }}>🔒 unique permissions</span>}
+          {lib?.retentionDays ? <span className="perm-badge" style={{ marginLeft: 8 }}>🗑 {lib.retentionDays}d retention</span> : null}
         </h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, position: "relative" }} ref={newRef}>
           <button className="btn-primary btn-sm" disabled={creating} onClick={() => setNewOpen((v) => !v)}>
@@ -206,8 +224,9 @@ export function LibraryPage() {
                 <>
                   <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
                   {contentTypes.map((ct) => (
-                    <button key={ct.id} onClick={() => void createIn(ct.allowedKinds[0] ?? "writer", ct.id)}>
-                      📋 {ct.name}
+                    <button key={ct.id}
+                      onClick={() => void createIn(ct.docSet ? "folder" : ct.allowedKinds[0] ?? "writer", ct.id)}>
+                      {ct.docSet ? "🗂" : "📋"} {ct.name}{ct.docSet ? " (set)" : ""}
                     </button>
                   ))}
                 </>
@@ -250,6 +269,11 @@ export function LibraryPage() {
                 {canManage && (
                   <button onClick={() => void toggleApproval()}>
                     {lib?.approval ? "Turn off content approval" : "Require content approval"}
+                  </button>
+                )}
+                {canManage && (
+                  <button onClick={() => void setRetention()}>
+                    {lib?.retentionDays ? `Retention: ${lib.retentionDays} days` : "Set retention…"}
                   </button>
                 )}
               </div>
