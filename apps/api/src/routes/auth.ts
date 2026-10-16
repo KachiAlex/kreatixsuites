@@ -161,8 +161,11 @@ export function authRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const sub = await ensureSubscription(user.orgId);
     const plan = await effectivePlan(sub);
+    const org = await one<{ name: string; onboarded_at: string | null }>(
+      "SELECT name, onboarded_at FROM orgs WHERE id = $1", [user.orgId]);
     return {
       user,
+      org: { name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null },
       plan: { slug: plan.slug, name: plan.name, features: plan.features ?? {}, limits: plan.limits ?? {}, state: effectiveState(sub).state },
     };
   });

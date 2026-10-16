@@ -3059,3 +3059,14 @@ html[data-theme="dark"]{
   .mail-reader.show{display:block}
   .mail-only-mobile{display:inline-flex}
 }
+
+/* onboarding wizard */
+.ob-steps{display:flex;gap:8px;margin-bottom:16px}
+.ob-dot{font-size:11px;color:var(--muted);padding:3px 10px;border:1px solid var(--line);border-radius:99px}
+.ob-dot.on{border-color:var(--k-orange);color:var(--k-orange);font-weight:600}
+.ob-dot.done{border-color:var(--ok,#3a7d44);color:var(--ok,#3a7d44)}
+.ob-body h3{margin:0 0 8px;font-size:17px}
+.ob-body p{margin:0 0 12px}
+.ob-body .dlg-actions{margin-top:16px}
+.ob-body input,.ob-body textarea{font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg,#fff);color:var(--ink)}
+.ob-body input:focus,.ob-body textarea:focus{outline:none;border-color:var(--k-orange)}

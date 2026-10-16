@@ -585,6 +585,9 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backups TEXT`);
   // SCIM externalId correlation (IdP-side user id)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS scim_external_id TEXT`);
+  // onboarding wizard — null until an owner/admin finishes or skips setup
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ`);
+
   // Custom mail domains per org — DNS-TXT verified before mailboxes use them
   await pool.query(`CREATE TABLE IF NOT EXISTS org_domains (
     id TEXT PRIMARY KEY,

@@ -13,9 +13,15 @@ export interface SessionPlan {
   state: string;
 }
 
+/** Org snapshot from /api/auth/me — onboardedAt drives the setup wizard. */
+export interface SessionOrg { name: string; onboardedAt: string | null }
+
 interface AuthState {
   user: User | null;
+  org: SessionOrg | null;
   plan: SessionPlan | null;
+  /** Stamp the org onboarded locally (server is told by the wizard). */
+  markOnboarded: () => void;
   /** Feature gate — signed-in users resolve via their plan; anonymous/local
    *  sessions aren't gated (local processing costs nothing, server-side
    *  entitlements stay authoritative for anything that hits the API). */
@@ -37,6 +43,7 @@ const Ctx = createContext<AuthState>(null as never);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [org, setOrg] = useState<SessionOrg | null>(null);
   const [plan, setPlan] = useState<SessionPlan | null>(null);
   const [loading, setLoading] = useState(!!getToken() || isAnonymous());
 
@@ -49,8 +56,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (!getToken()) return;
-    api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me")
-      .then((r) => { setUser(r.user); setPlan(r.plan ?? null); })
+    api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me")
+      .then((r) => { setUser(r.user); setOrg(r.org ?? null); setPlan(r.plan ?? null); })
       .catch(() => setToken(null))
       .finally(() => setLoading(false));
   }, []);
@@ -106,8 +113,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = async (token: string) => {
     const wasAnon = localStorage.getItem("kx.anon") === "1";
     setToken(token);
-    const r = await api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me");
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me");
     setUser(r.user);
+    setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
     void convertAnonymous(wasAnon);
   };
@@ -120,14 +128,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshUser = async () => {
-    const r = await api.get<{ user: User; plan?: SessionPlan }>("/api/auth/me");
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me");
     setUser(r.user);
+    setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
+    setOrg(null);
     setPlan(null);
     // clear the anonymous-tier flag too — otherwise the next load resurrects
     // the local pseudo-user and the user appears signed in again
@@ -136,7 +146,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const hasFeature = (key: string) => (plan ? plan.features?.[key] === true : true);
-  return <Ctx.Provider value={{ user, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, enterAnonymous, logout }}>{children}</Ctx.Provider>;
+  const markOnboarded = () => setOrg((o) => (o ? { ...o, onboardedAt: new Date().toISOString() } : o));
+  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

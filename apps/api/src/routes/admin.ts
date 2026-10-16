@@ -36,6 +36,13 @@ export function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireOrgAdmin);
 
   /** Org members (role management lives here) */
+  /** Mark the org's onboarding wizard complete — any step or the finish button. */
+  app.post("/api/admin/onboarding", async (req) => {
+    const { user } = req as AuthedRequest;
+    await run("UPDATE orgs SET onboarded_at = COALESCE(onboarded_at, now()) WHERE id = $1", [user.orgId]);
+    return { ok: true };
+  });
+
   app.get("/api/admin/members", async (req) => {
     const { user } = req as AuthedRequest;
     const rows = await dbq<UserRow>(

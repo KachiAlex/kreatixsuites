@@ -11,6 +11,7 @@ import { AppIcon, BrandLockup } from "./AppIcon";
 import { TemplatesDialog } from "./TemplatesDialog";
 import { SecurityDialog } from "./SecurityDialog";
 import { useToast, useSites, useMailEnabled } from "../lib/hooks";
+import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
@@ -26,7 +27,10 @@ export function Shell() {
   const isMobile = useIsMobile();
   const { msg, toast } = useToast();
   const t = useI18n().t;
-  const { user } = useAuth();
+  const { user, org } = useAuth();
+  const [obDismissed, setObDismissed] = useState(() => sessionStorage.getItem("kx.ob.dismiss") === "1");
+  const isAdminRole = user?.role === "owner" || user?.role === "admin";
+  const showOnboarding = !!user && !user.isSuper && isAdminRole && !!org && !org.onboardedAt && !obDismissed;
 
   // close the nav drawer on navigation + lock body scroll while it's open
   useEffect(() => { setNavOpen(false); }, [pathname]);
@@ -80,6 +84,7 @@ export function Shell() {
         onUpload={() => { setPalette(false); fileInput.current?.click(); }}
         toast={toast} />
       {templates && <TemplatesDialog onClose={() => setTemplates(false)} toast={toast} />}
+      {showOnboarding && <OnboardingWizard onClose={() => setObDismissed(true)} />}
       <FeedbackWidget />
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />

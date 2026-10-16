@@ -1,0 +1,169 @@
+import { useState } from "react";
+import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { useToast } from "../lib/hooks";
+import { Modal } from "./Modal";
+
+// First-run setup for a new workspace — shown once to owner/admins until the
+// org is onboarded. Steps mirror the Microsoft-style flow: domain → people →
+// done. Every step is skippable; "Set up later" only dismisses for the session.
+
+interface AddedDomain {
+  id: string; domain: string;
+  dns: { type: string; host: string; value: string; purpose: string }[];
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function OnboardingWizard({ onClose }: { onClose: () => void }) {
+  const { org, markOnboarded } = useAuth();
+  const { msg, toast } = useToast();
+  const [step, setStep] = useState(0);
+  const [domainInput, setDomainInput] = useState("");
+  const [added, setAdded] = useState<AddedDomain | null>(null);
+  const [emails, setEmails] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [invited, setInvited] = useState(0);
+
+  const finish = async () => {
+    await api.post("/api/admin/onboarding", {}).catch(() => {});
+    markOnboarded();
+    onClose();
+  };
+
+  const addDomain = async () => {
+    const domain = domainInput.trim().toLowerCase();
+    if (!domain) return;
+    setBusy(true);
+    try {
+      const r = await api.post<{ domain: AddedDomain }>("/api/admin/domains", { domain });
+      setAdded(r.domain);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not add domain");
+    }
+    setBusy(false);
+  };
+
+  const sendInvites = async () => {
+    const list = emails.split(/[\s,;]+/).filter((e) => EMAIL_RE.test(e));
+    if (!list.length) { setStep(3); return; }
+    setBusy(true);
+    let sent = 0;
+    for (const email of list) {
+      try {
+        const r = await api.post<{ emailed?: boolean }>("/api/admin/invites", { email });
+        sent++;
+        void r;
+      } catch { /* invite failed for that address — keep going */ }
+    }
+    setInvited(sent);
+    setBusy(false);
+    setStep(3);
+  };
+
+  const steps = ["Welcome", "Email domain", "Your team", "Done"];
+
+  return (
+    <Modal label="Set up your workspace" onClose={() => { sessionStorage.setItem("kx.ob.dismiss", "1"); onClose(); }}
+      style={{ width: 560, maxWidth: "94vw" }}>
+      <div className="ob-steps">
+        {steps.map((s, i) => (
+          <span key={s} className={`ob-dot ${i === step ? "on" : ""} ${i < step ? "done" : ""}`}>{s}</span>
+        ))}
+      </div>
+
+      {step === 0 && (
+        <div className="ob-body">
+          <h3>Welcome to {org?.name || "your workspace"}</h3>
+          <p className="d-sub">
+            A couple of quick steps to get your company set up — connect your email domain
+            and bring your team in. Everything here can also be done later from <b>Admin</b>.
+          </p>
+          <div className="dlg-actions">
+            <button className="btn-ghost" onClick={() => { sessionStorage.setItem("kx.ob.dismiss", "1"); onClose(); }}>Set up later</button>
+            <button className="btn-primary" onClick={() => setStep(1)}>Get started</button>
+          </div>
+        </div>
+      )}
+
+      {step === 1 && (
+        <div className="ob-body">
+          <h3>Your email domain</h3>
+          {!added ? (
+            <>
+              <p className="d-sub">
+                Use your company domain for mail — e.g. <code>you@acme.com</code>. You'll prove
+                ownership with a DNS record. Or skip and everyone gets <code>@kreatixtech.com</code> addresses.
+              </p>
+              <div className="audit-bar">
+                <input placeholder="acme.com" value={domainInput} style={{ flex: 1 }}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void addDomain()} />
+                <button className="btn-primary" disabled={busy || !domainInput.trim()} onClick={() => void addDomain()}>
+                  {busy ? "Adding…" : "Add domain"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="d-sub">
+                <b>{added.domain}</b> added. Publish this record at your DNS provider, then verify
+                it from <b>Admin → Email domains</b> — mailboxes will use this domain once verified.
+              </p>
+              <table className="admin-table" style={{ marginTop: 6 }}>
+                <tbody>
+                  {added.dns.slice(0, 2).map((r, i) => (
+                    <tr key={i}>
+                      <td><code>{r.type}</code></td>
+                      <td><code>{r.host}</code></td>
+                      <td><code style={{ wordBreak: "break-all" }}>{r.value}</code></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+          <div className="dlg-actions">
+            <button className="btn-ghost" onClick={() => setStep(2)}>
+              {added ? "Continue" : "Skip — use @kreatixtech.com"}
+            </button>
+            {added && <button className="btn-primary" onClick={() => setStep(2)}>Continue</button>}
+          </div>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="ob-body">
+          <h3>Bring your team in</h3>
+          <p className="d-sub">Email addresses, separated by commas or new lines — each person gets an invite.</p>
+          <textarea rows={4} placeholder="jane@acme.com, kwame@acme.com" value={emails}
+            onChange={(e) => setEmails(e.target.value)} style={{ width: "100%" }} />
+          <div className="dlg-actions">
+            <button className="btn-ghost" onClick={() => setStep(3)}>Skip for now</button>
+            <button className="btn-primary" disabled={busy} onClick={() => void sendInvites()}>
+              {busy ? "Sending…" : "Send invites"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="ob-body">
+          <h3>You're all set</h3>
+          <ul className="d-sub" style={{ lineHeight: 1.9 }}>
+            <li>{added ? <>Domain <b>{added.domain}</b> — finish DNS verification in <b>Admin → Email domains</b>.</>
+                       : <>Mailboxes will use <code>@kreatixtech.com</code> — add a custom domain anytime in <b>Admin → Email domains</b>.</>}</li>
+            <li>{invited > 0 ? <>{invited} invite{invited > 1 ? "s" : ""} sent — teammates join from their email.</>
+                             : <>Invite teammates anytime from <b>Admin → Members</b>.</>}</li>
+            <li>Mail is in the left rail — the first visit creates your mailbox automatically.</li>
+          </ul>
+          <div className="dlg-actions">
+            <button className="btn-primary" onClick={() => void finish()}>Done</button>
+          </div>
+        </div>
+      )}
+
+      {msg && <div className="toast" role="status">{msg}</div>}
+    </Modal>
+  );
+}
