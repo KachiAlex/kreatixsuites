@@ -40,6 +40,8 @@ export interface DriveItem {
   label?: string;
   /** Site library this item lives in (null = personal/root Drive) */
   libraryId?: string | null;
+  /** Content type schema for this item (SharePoint reusable schema) */
+  contentTypeId?: string | null;
   /** Check-out lock — set while someone holds the exclusive editing lock */
   checkedOut?: { userId: string; name: string; at: string } | null;
   /** Custom-column values for library listings: columnId → value */
@@ -164,6 +166,28 @@ export interface LibraryGrant {
   role: SiteRole;
   user: { displayName: string; email: string; initials: string };
   createdAt: string;
+}
+
+/** Content type (SharePoint reusable document schema). Site-scoped types are
+ *  available across all libraries in a site; library-scoped types are local. */
+export interface ContentType {
+  id: string;
+  siteId: string | null;
+  libraryId: string | null;
+  name: string;
+  description: string | null;
+  templateBlobKey: string | null;
+  allowedKinds: FileKind[];
+  isDefault: boolean;
+  createdAt: string;
+}
+
+/** Column binding on a content type, with per-type required/position overrides. */
+export interface ContentTypeColumn {
+  contentTypeId: string;
+  columnId: string;
+  required: boolean;
+  position: number;
 }
 
 export type ColumnType = "text" | "number" | "date" | "choice" | "person" | "yesno";

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, DriveItem, Library, LibraryColumn, LibraryGrant, SiteRole } from "@kreatix/shared";
+import type { ColumnType, ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryGrant, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -260,6 +260,103 @@ export function PropertiesDialog({ item, siteId, libId, columns, onClose, onDone
         <button className="btn-primary" disabled={busy} onClick={() => void save()}>
           {busy ? "Saving…" : "Save"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Content type manager — reusable document schemas (SharePoint). Owners only. */
+export function ContentTypeDialog({ siteId, libraryId, onClose, toast }: {
+  siteId: string; libraryId?: string;
+  onClose: () => void;
+  toast: (m: string) => void;
+}) {
+  const base = libraryId
+    ? `/api/sites/${siteId}/libraries/${libraryId}/content-types`
+    : `/api/sites/${siteId}/content-types`;
+  const [types, setTypes] = useState<ContentType[]>([]);
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [allowed, setAllowed] = useState<FileKind[]>(["writer", "sheets", "present", "pdf", "file"]);
+  const [isDefault, setIsDefault] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const r = await api.get<{ contentTypes: ContentType[] }>(base);
+    setTypes(r.contentTypes);
+  };
+  useEffect(() => { void load().catch(() => {}); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [base]);
+
+  const add = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    try {
+      await api.post(base, { name: name.trim(), description: desc.trim() || null, allowedKinds: allowed, isDefault });
+      setName("");
+      setDesc("");
+      await load();
+      toast("Content type created");
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+    setBusy(false);
+  };
+
+  const remove = async (ct: ContentType) => {
+    if (!confirm(`Delete "${ct.name}"?`)) return;
+    try {
+      await api.del(`${base}/${ct.id}`);
+      setTypes((l) => l.filter((x) => x.id !== ct.id));
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+  };
+
+  const toggleKind = (k: FileKind) => {
+    setAllowed((a) => a.includes(k) ? a.filter((x) => x !== k) : [...a, k]);
+  };
+
+  return (
+    <Modal onClose={onClose} label="Content types">
+      <h2>Content types</h2>
+      <p className="d-sub">Reusable document schemas with allowed file kinds.</p>
+      <div className="field">
+        <label>Name</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Contract, Invoice" />
+      </div>
+      <div className="field">
+        <label>Description</label>
+        <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Optional description" />
+      </div>
+      <div className="field">
+        <label>Allowed kinds</label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {(["writer", "sheets", "present", "pdf", "file"] as FileKind[]).map((k) => (
+            <label key={k} style={{ fontSize: 12.5 }}>
+              <input type="checkbox" checked={allowed.includes(k)} onChange={() => toggleKind(k)} />
+              {" "}{k}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="dlg-row">
+        <label>Default for new items</label>
+        <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
+      </div>
+      <button className="btn-primary btn-sm" disabled={busy || !name.trim()} onClick={() => void add()}>
+        {busy ? "Creating…" : "Create"}
+      </button>
+      <div style={{ marginTop: 16 }}>
+        {types.map((ct) => (
+          <div className="share-row" key={ct.id}>
+            <b style={{ fontSize: 12.5 }}>{ct.name}</b>
+            <span style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}>
+              {ct.allowedKinds.join(", ")}
+            </span>
+            {ct.isDefault && <span className="perm-badge" style={{ marginLeft: 8 }}>default</span>}
+            <button className="x" style={{ marginLeft: "auto" }} onClick={() => void remove(ct)}>✕</button>
+          </div>
+        ))}
+        {!types.length && <p className="empty" style={{ margin: "8px 0" }}>No content types yet.</p>}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
       </div>
     </Modal>
   );

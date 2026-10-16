@@ -17,6 +17,7 @@ export interface ItemRow {
   label: string;
   media_for: string | null;
   library_id: string | null;
+  content_type_id: string | null;
   checked_out_by: string | null;
   checked_out_at: string | null;
   created_at: string;
@@ -65,6 +66,7 @@ export async function toDriveItem(
     updatedAt: row.updated_at,
     label: row.label ?? "internal",
     libraryId: row.library_id ?? null,
+    contentTypeId: row.content_type_id ?? null,
     checkedOut: row.checked_out_by
       ? { userId: row.checked_out_by, name: lockHolder?.display_name ?? "Someone", at: row.checked_out_at ?? "" }
       : null,

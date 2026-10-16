@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { DriveItem, FileKind, Library, LibraryColumn, LibraryView, Site, ViewConfig } from "@kreatix/shared";
+import type { ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryView, Site, ViewConfig } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
-import { ColumnsDialog, PermsDialog, PropertiesDialog } from "../components/LibraryDialogs";
+import { ColumnsDialog, ContentTypeDialog, PermsDialog, PropertiesDialog } from "../components/LibraryDialogs";
 import { prefetchEditorsFor } from "./editors";
 import { kindForPath } from "../lib/offline/openLocal";
 
@@ -28,6 +28,8 @@ export function LibraryPage() {
   const [newOpen, setNewOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
   const [permsOpen, setPermsOpen] = useState(false);
+  const [ctOpen, setCtOpen] = useState(false);
+  const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
   const [viewMenu, setViewMenu] = useState(false);
   const [checkin, setCheckin] = useState<DriveItem | null>(null);
   const [propsFor, setPropsFor] = useState<DriveItem | null>(null);
@@ -49,6 +51,8 @@ export function LibraryPage() {
       .then((r) => setColumns(r.columns)).catch(() => {});
     void api.get<{ views: LibraryView[] }>(`${libBase}/views`)
       .then((r) => setViews(r.views)).catch(() => {});
+    void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`)
+      .then((r) => setContentTypes(r.contentTypes)).catch(() => {});
   }, [libBase]);
 
   useEffect(() => {
@@ -72,7 +76,7 @@ export function LibraryPage() {
   const open = (it: DriveItem) =>
     navigate(it.kind === "folder" ? `/sites/${siteId}/library/${libId}/folder/${it.id}` : `/edit/${it.id}`);
 
-  const createIn = async (kind: FileKind) => {
+  const createIn = async (kind: FileKind, contentTypeId?: string) => {
     setNewOpen(false);
     setCreating(true);
     const names: Record<string, string> = {
@@ -83,6 +87,7 @@ export function LibraryPage() {
       const r = await api.post<{ item: DriveItem }>("/api/drive", {
         name: names[kind] ?? "Untitled", kind,
         parentId: folderId ?? null, libraryId: folderId ? undefined : libId,
+        contentTypeId,
       });
       if (kind === "folder") refresh();
       else navigate(`/edit/${r.item.id}`);
@@ -197,6 +202,16 @@ export function LibraryPage() {
               <button onClick={() => void createIn("writer")}>📄 Writer document</button>
               <button onClick={() => void createIn("sheets")}>📊 Sheets workbook</button>
               <button onClick={() => void createIn("present")}>📽 Present deck</button>
+              {contentTypes.length > 0 && (
+                <>
+                  <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
+                  {contentTypes.map((ct) => (
+                    <button key={ct.id} onClick={() => void createIn(ct.allowedKinds[0] ?? "writer", ct.id)}>
+                      📋 {ct.name}
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -274,6 +289,9 @@ export function LibraryPage() {
           {canManage && (
             <button className="btn-ghost btn-sm" onClick={() => setPermsOpen(true)}>🔒 Permissions</button>
           )}
+          {canManage && (
+            <button className="btn-ghost btn-sm" onClick={() => setCtOpen(true)}>📋 Content types</button>
+          )}
         </div>
       )}
 
@@ -291,6 +309,8 @@ export function LibraryPage() {
         onClose={() => setColsOpen(false)} onChange={setColumns} toast={toast} />}
       {permsOpen && lib && <PermsDialog siteId={siteId} lib={lib}
         onClose={() => setPermsOpen(false)} onChange={setLib} toast={toast} />}
+      {ctOpen && <ContentTypeDialog siteId={siteId} libraryId={libId}
+        onClose={() => { setCtOpen(false); void api.get<{ contentTypes: ContentType[] }>(`${libBase}/content-types`).then((r) => setContentTypes(r.contentTypes)); }} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );

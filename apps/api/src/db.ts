@@ -445,6 +445,31 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // site-level activity scoping — site events (member add, settings) carry the
   // site id; file events inside libraries resolve their site via the item join
   await pool.query(`ALTER TABLE activity ADD COLUMN IF NOT EXISTS site_id TEXT`);
+  // content types (SharePoint reusable document schemas)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS content_types (
+      id TEXT PRIMARY KEY,
+      site_id TEXT REFERENCES sites(id) ON DELETE CASCADE,
+      library_id TEXT REFERENCES libraries(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      template_blob_key TEXT,
+      allowed_kinds JSONB NOT NULL DEFAULT '["writer","sheets","present","pdf","file"]'::jsonb,
+      is_default BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_types_site ON content_types(site_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_types_library ON content_types(library_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS content_type_columns (
+      content_type_id TEXT NOT NULL REFERENCES content_types(id) ON DELETE CASCADE,
+      column_id TEXT NOT NULL REFERENCES library_columns(id) ON DELETE CASCADE,
+      required BOOLEAN NOT NULL DEFAULT false,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (content_type_id, column_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_type_columns_type ON content_type_columns(content_type_id)`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS content_type_id TEXT REFERENCES content_types(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

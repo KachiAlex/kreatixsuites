@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { SiteRole } from "@kreatix/shared";
+import type { SiteRole, FileKind } from "@kreatix/shared";
 import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
@@ -30,6 +30,15 @@ const memberSchema = z.object({
   email: z.string().email(),
   role: z.enum(["owner", "member", "visitor"]).default("member"),
 });
+
+const contentTypeSchema = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().max(500).nullable().optional(),
+  allowedKinds: z.array(z.enum(["writer", "sheets", "present", "pdf", "file"])).default(["writer", "sheets", "present", "pdf", "file"]),
+  isDefault: z.boolean().default(false),
+});
+
+const contentTypePatchSchema = contentTypeSchema.partial();
 
 const roleSchema = z.object({ role: z.enum(["owner", "member", "visitor"]) });
 
@@ -315,6 +324,105 @@ export function siteRoutes(app: FastifyInstance) {
       };
     });
 
+    // ---- content types (site-scoped) ----
+
+    authed.get("/api/sites/:id/content-types", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !role) return reply.code(404).send({ error: "not_found" });
+      const rows = await q<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>(
+        "SELECT * FROM content_types WHERE site_id = $1 AND library_id IS NULL ORDER BY created_at",
+        [site.id],
+      );
+      return {
+        contentTypes: rows.map((r) => ({
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        })),
+      };
+    });
+
+    authed.post("/api/sites/:id/content-types", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const body = contentTypeSchema.parse(req.body);
+      const id = randomUUID();
+      await run(
+        `INSERT INTO content_types (id, site_id, name, description, allowed_kinds, is_default, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, site.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
+         JSON.stringify(body.allowedKinds), body.isDefault, now()],
+      );
+      const r = await one<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>("SELECT * FROM content_types WHERE id = $1", [id]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return {
+        contentType: {
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        },
+      };
+    });
+
+    authed.patch("/api/sites/:id/content-types/:ctid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { ctid } = req.params as { ctid: string };
+      const body = contentTypePatchSchema.parse(req.body);
+      await run(
+        `UPDATE content_types SET name = COALESCE($2, name), description = COALESCE($3, description),
+         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default)
+         WHERE id = $1 AND site_id = $6`,
+        [ctid, body.name === undefined ? null : encryptField(body.name),
+         body.description === undefined ? null : encryptField(body.description),
+         body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
+         body.isDefault === undefined ? null : body.isDefault, site.id],
+      );
+      const r = await one<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>("SELECT * FROM content_types WHERE id = $1", [ctid]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return {
+        contentType: {
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        },
+      };
+    });
+
+    authed.delete("/api/sites/:id/content-types/:ctid", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !atLeast(role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { ctid } = req.params as { ctid: string };
+      await run("DELETE FROM content_types WHERE id = $1 AND site_id = $2", [ctid, site.id]);
+      return { ok: true };
+    });
+
     // ---- libraries ----
 
     authed.post("/api/sites/:id/libraries", async (req, reply) => {
@@ -523,6 +631,100 @@ export function siteRoutes(app: FastifyInstance) {
       if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
       const { uid } = req.params as { uid: string };
       await run("DELETE FROM library_permissions WHERE library_id = $1 AND user_id = $2", [ctx.lib.id, uid]);
+      return { ok: true };
+    });
+
+    // ---- content types (library-scoped) ----
+
+    authed.get("/api/sites/:id/libraries/:lid/content-types", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      const rows = await q<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>(
+        `SELECT * FROM content_types WHERE site_id = $1 AND library_id = $2 ORDER BY created_at`,
+        [ctx.site.id, ctx.lib.id],
+      );
+      return {
+        contentTypes: rows.map((r) => ({
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        })),
+      };
+    });
+
+    authed.post("/api/sites/:id/libraries/:lid/content-types", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const body = contentTypeSchema.parse(req.body);
+      const id = randomUUID();
+      await run(
+        `INSERT INTO content_types (id, site_id, library_id, name, description, allowed_kinds, is_default, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, ctx.site.id, ctx.lib.id, encryptField(body.name), body.description ? encryptField(body.description) : null,
+         JSON.stringify(body.allowedKinds), body.isDefault, now()],
+      );
+      const r = await one<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>("SELECT * FROM content_types WHERE id = $1", [id]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return {
+        contentType: {
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        },
+      };
+    });
+
+    authed.patch("/api/sites/:id/libraries/:lid/content-types/:ctid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { ctid } = req.params as { ctid: string };
+      const body = contentTypePatchSchema.parse(req.body);
+      await run(
+        `UPDATE content_types SET name = COALESCE($2, name), description = COALESCE($3, description),
+         allowed_kinds = COALESCE($4, allowed_kinds), is_default = COALESCE($5, is_default)
+         WHERE id = $1 AND site_id = $6 AND library_id = $7`,
+        [ctid, body.name === undefined ? null : encryptField(body.name),
+         body.description === undefined ? null : encryptField(body.description),
+         body.allowedKinds === undefined ? null : JSON.stringify(body.allowedKinds),
+         body.isDefault === undefined ? null : body.isDefault, ctx.site.id, ctx.lib.id],
+      );
+      const r = await one<{
+        id: string; site_id: string; library_id: string | null; name: string; description: string | null;
+        template_blob_key: string | null; allowed_kinds: unknown; is_default: boolean; created_at: string;
+      }>("SELECT * FROM content_types WHERE id = $1", [ctid]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return {
+        contentType: {
+          id: r.id, siteId: r.site_id, libraryId: r.library_id,
+          name: decryptField(r.name) ?? r.name,
+          description: r.description ? decryptField(r.description) ?? r.description : null,
+          templateBlobKey: r.template_blob_key,
+          allowedKinds: Array.isArray(r.allowed_kinds) ? (r.allowed_kinds as FileKind[]) : [],
+          isDefault: !!r.is_default, createdAt: r.created_at,
+        },
+      };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/content-types/:ctid", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "owner")) return reply.code(403).send({ error: "forbidden" });
+      const { ctid } = req.params as { ctid: string };
+      await run("DELETE FROM content_types WHERE id = $1 AND site_id = $2 AND library_id = $3", [ctid, ctx.site.id, ctx.lib.id]);
       return { ok: true };
     });
 

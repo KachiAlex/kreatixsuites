@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { KIND_META, timeAgo } from "../lib/format";
 import { Modal } from "../components/Modal";
+import { ContentTypeDialog } from "../components/LibraryDialogs";
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
@@ -31,6 +32,7 @@ export function SitePage() {
   const [settingsDlg, setSettingsDlg] = useState(false);
   const [activityDlg, setActivityDlg] = useState(false);
   const [trashDlg, setTrashDlg] = useState(false);
+  const [ctDlg, setCtDlg] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -70,6 +72,7 @@ export function SitePage() {
           <button className="btn-ghost btn-sm" onClick={() => setMemberDlg(true)}>Members</button>
           <button className="btn-ghost btn-sm" onClick={() => setActivityDlg(true)}>Activity</button>
           {canManage && <button className="btn-ghost btn-sm" onClick={() => setTrashDlg(true)}>Recycle bin</button>}
+          {canManage && <button className="btn-ghost btn-sm" onClick={() => setCtDlg(true)}>Content types</button>}
           {canManage && <button className="btn-ghost btn-sm" onClick={() => setSettingsDlg(true)}>Settings</button>}
         </div>
       </div>
@@ -108,6 +111,7 @@ export function SitePage() {
         onDeleted={() => navigate("/sites")} />}
       {activityDlg && <ActivityDialog site={site} onClose={() => setActivityDlg(false)} />}
       {trashDlg && <TrashDialog site={site} toast={toast} onClose={() => setTrashDlg(false)} />}
+      {ctDlg && <ContentTypeDialog siteId={site.id} onClose={() => setCtDlg(false)} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );

@@ -7,7 +7,7 @@ import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from ".
 import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds } from "../sites.js";
 import { publishHead, submitForApproval } from "./content.js";
-import { putBlob } from "../blobs.js";
+import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
 import { indexFile } from "../indexer.js";
@@ -18,6 +18,7 @@ const createSchema = z.object({
   kind: z.enum(["folder", "writer", "sheets", "present", "pdf", "file"]),
   parentId: z.string().nullable().optional(),
   libraryId: z.string().nullable().optional(),
+  contentTypeId: z.string().nullable().optional(),
 });
 
 const patchSchema = z.object({
@@ -281,11 +282,36 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "No write access to this library" });
     }
 
+    // content type validation (SharePoint schema enforcement)
+    let contentTypeId: string | null = null;
+    let templateBlobKey: string | null = null;
+    if (body.contentTypeId) {
+      const ct = await one<{
+        id: string; site_id: string; library_id: string | null; allowed_kinds: unknown; template_blob_key: string | null;
+      }>("SELECT * FROM content_types WHERE id = $1", [body.contentTypeId]);
+      if (!ct) return reply.code(404).send({ error: "not_found", message: "Content type not found" });
+      const allowed = Array.isArray(ct.allowed_kinds) ? (ct.allowed_kinds as string[]) : [];
+      if (allowed.length && !allowed.includes(body.kind)) {
+        return reply.code(400).send({ error: "bad_request", message: `Kind '${body.kind}' not allowed for this content type` });
+      }
+      // site-scoped types are available across the site; library-scoped only within their library
+      if (ct.library_id !== null && ct.library_id !== libraryId) {
+        return reply.code(403).send({ error: "forbidden", message: "This content type is not available in this library" });
+      }
+      if (ct.site_id !== null) {
+        const site = await getSite(ct.site_id);
+        const role = site ? await siteRoleFor(user, site) : null;
+        if (!role) return reply.code(403).send({ error: "forbidden", message: "Content type site not accessible" });
+      }
+      contentTypeId = ct.id;
+      templateBlobKey = ct.template_blob_key;
+    }
+
     await run(
-      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, library_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, library_id, content_type_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [id, user.orgId, body.parentId ?? null, user.id, encryptField(body.name), body.kind,
-       `application/x-kreatix-${body.kind}`, libraryId, now(), now()],
+       `application/x-kreatix-${body.kind}`, libraryId, contentTypeId, now(), now()],
     );
 
     // Seed initial immutable version for suite-native docs (SRS §19)
@@ -297,6 +323,18 @@ export function driveRoutes(app: FastifyInstance) {
         [randomUUID(), id, 1, "Initial version", key, size, user.id, now()],
       );
       await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
+    }
+    // content type template overrides the default doc
+    if (templateBlobKey) {
+      const buf = await getBlob(templateBlobKey);
+      if (buf) {
+        const size = buf.length;
+        await run(
+          "UPDATE versions SET blob_key = $1, size = $2 WHERE file_id = $3 AND number = 1",
+          [templateBlobKey, size, id],
+        );
+        await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
+      }
     }
 
     await logActivity(user.orgId, user.id, id, "create", body.name);
@@ -723,12 +761,15 @@ export function driveRoutes(app: FastifyInstance) {
         const head = await c.query<{ id: string; blob_key: string; size: number }>(
           `SELECT id, blob_key, size FROM versions WHERE file_id = $1 ${headClause} ORDER BY number DESC LIMIT 1`, [r.id]);
         await c.query(
-          `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, library_id, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, library_id, content_type_id, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [newId, user.orgId, newParent, user.id,
            // names store encrypted — reuse the ciphertext verbatim unless renamed
            r.id === item.id && body.name ? encryptField(body.name) : r.name,
-           r.kind, r.mime, head.rows[0]?.size ?? r.size, targetLibrary, ts, ts],
+           r.kind, r.mime, head.rows[0]?.size ?? r.size, targetLibrary,
+           // content type copies within the same library; cross-library copies reset to null
+           targetLibrary && targetLibrary === r.library_id ? r.content_type_id : null,
+           ts, ts],
         );
         if (head.rows[0]) {
           await c.query(
