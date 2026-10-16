@@ -21,6 +21,7 @@ interface Mail {
   subject: string;
   html: string;
   text?: string;
+  attachment?: { name: string; content: string /* base64 */ }[];
 }
 
 export async function sendMail(m: Mail): Promise<{ ok: boolean; messageId?: string }> {
@@ -36,6 +37,7 @@ export async function sendMail(m: Mail): Promise<{ ok: boolean; messageId?: stri
       subject: m.subject,
       htmlContent: m.html,
       ...(m.text ? { textContent: m.text } : {}),
+      ...(m.attachment?.length ? { attachment: m.attachment } : {}),
     }),
   });
   if (!res.ok) throw new Error(`Brevo ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -160,6 +162,22 @@ ${btn(`${publicUrl()}/admin`, "View usage")}`),
 <p>${esc(reply)}</p>
 ${btn(publicUrl(), "Open Kreatix Suites")}
 <p style="color:#8a8a90;font-size:12px;margin-top:22px">Reply anytime from the feedback bubble in the app — this thread stays open.</p>`),
+    };
+  },
+
+  /** Calendar invite/cancel — accompanies a text/calendar .ics attachment. */
+  meetingInvite(organizer: string, title: string, when: string, location: string | null, meet: boolean, cancelled: boolean): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `${cancelled ? "Cancelled: " : "Invitation: "}${title}`,
+      html: shell(cancelled ? "Meeting cancelled" : "You're invited", `
+<p><b>${esc(organizer)}</b> ${cancelled ? "cancelled" : "invited you to"} <b>${esc(title)}</b>.</p>
+<table style="font-size:14px;border-collapse:collapse;margin:8px 0">
+<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">When</td><td><b>${esc(when)}</b></td></tr>
+${location ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Where</td><td><b>${esc(location)}</b></td></tr>` : ""}
+${meet ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Call</td><td><b>Kreatix Meet</b> — join from the event</td></tr>` : ""}
+</table>
+${cancelled ? `<p>This event has been removed from your calendar. Open the attached file to clear it in external calendars.</p>` : `<p>The attached <code>.ics</code> file adds this to Outlook/Apple/Google calendars — your Kreatix calendar already has it.</p>`}
+${btn(`${publicUrl()}/calendar`, "Open Calendar")}`),
     };
   },
 

@@ -409,6 +409,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <NavLink to="/drive/starred" className={navCls}><span className="dot" />{t("nav.starred")}</NavLink>
       <NavLink to="/drive/all" className={navCls}><span className="dot" />{t("nav.drive")}</NavLink>
       <NavLink to="/drive/shared" className={navCls}><span className="dot" />{t("nav.shared")}</NavLink>
+      <NavLink to="/drive/approvals" className={navCls}><span className="dot" />Approvals</NavLink>
       <NavLink to="/drive/trash" className={navCls}><span className="dot" />{t("nav.trash")}</NavLink>
 
       <div className="section-label">{t("nav.applications")}</div>

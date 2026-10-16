@@ -26,6 +26,7 @@ import { meetRoutes, meetIngestRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
 import { calendarRoutes } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
+import { rulesRoutes } from "./routes/rules.js";
 import { formRoutes, formPublicRoutes } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
 import { billingRoutes } from "./routes/billing.js";
@@ -251,6 +252,7 @@ async function main() {
   app.register(chatRoutes);
   app.register(calendarRoutes);
   app.register(taskRoutes);
+  app.register(rulesRoutes);
   app.register(formRoutes);
   app.register(formPublicRoutes);
   app.register(noteRoutes);

@@ -3133,6 +3133,11 @@ html[data-theme="dark"]{
 .chat-compose{display:flex;gap:8px;align-items:flex-end;padding:10px 16px;border-top:1px solid var(--line)}
 .chat-compose textarea{flex:1;resize:none;font:inherit;font-size:13.5px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);max-height:120px;min-height:38px}
 .chat-compose textarea:focus{outline:none;border-color:var(--k-orange)}
+.chat-compose{position:relative;flex-wrap:wrap}
+.chat-compose .iconbtn{align-self:flex-end}
+.chat-file{display:inline-flex;align-items:center;gap:6px;margin-top:4px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);font-size:12.5px;color:var(--ink);cursor:pointer;max-width:100%;text-align:left}
+.chat-file:hover{border-color:var(--k-orange)}
+.chat-mentions{position:absolute;left:44px;bottom:calc(100% + 4px);min-width:240px;background:var(--panel,#fff);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:30;overflow:hidden}
 .chat-people{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .chat-person{display:flex;align-items:center;gap:10px;padding:8px 10px;border:0;border-radius:8px;background:none;color:var(--ink);cursor:pointer;font-family:inherit;text-align:left;width:100%}
 .chat-person:hover{background:var(--subtle)}

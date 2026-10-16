@@ -181,13 +181,16 @@ export function adminRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Audit log: org-scoped activity, filterable by action prefix, user, file.
-   * ?action=share&user=<id>&file=<id>&limit=200 (max 500)
+   * Audit log: org-scoped activity, filterable by action prefix, user, file,
+   * and date range. ?action=share&user=<id>&file=<id>&from=<iso>&to=<iso>
+   * &limit=200 (max 500)
    */
   app.get("/api/admin/audit", async (req) => {
     const { user } = req as AuthedRequest;
-    const q = req.query as { action?: string; user?: string; file?: string; limit?: string };
+    const q = req.query as { action?: string; user?: string; file?: string; from?: string; to?: string; limit?: string };
     const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 500);
+    const from = q.from && !isNaN(Date.parse(q.from)) ? new Date(q.from).toISOString() : null;
+    const to = q.to && !isNaN(Date.parse(q.to)) ? new Date(q.to).toISOString() : null;
     const rows = await dbq<{ detail: string | null; file_name: string | null }>(
       `SELECT a.id, a.action, a.detail, a.created_at,
               u.display_name AS actor_name, u.email AS actor_email,
@@ -199,8 +202,10 @@ export function adminRoutes(app: FastifyInstance) {
          AND ($2::text IS NULL OR a.action LIKE $2 || '%')
          AND ($3::text IS NULL OR a.actor_id = $3)
          AND ($4::text IS NULL OR a.file_id = $4)
-       ORDER BY a.created_at DESC LIMIT $5`,
-      [user.orgId, q.action || null, q.user || null, q.file || null, limit],
+         AND ($5::timestamptz IS NULL OR a.created_at >= $5)
+         AND ($6::timestamptz IS NULL OR a.created_at <= $6)
+       ORDER BY a.created_at DESC LIMIT $7`,
+      [user.orgId, q.action || null, q.user || null, q.file || null, from, to, limit],
     );
     return {
       entries: rows.map((r) => ({
@@ -209,6 +214,47 @@ export function adminRoutes(app: FastifyInstance) {
         file_name: decryptField(r.file_name),
       })),
     };
+  });
+
+  /** Distinct action verbs — populates the audit filter dropdown. */
+  app.get("/api/admin/audit/actions", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await dbq<{ action: string }>(
+      "SELECT DISTINCT action FROM activity WHERE org_id = $1 ORDER BY action",
+      [user.orgId]);
+    return { actions: rows.map((r) => r.action) };
+  });
+
+  /** Org-wide audit export as CSV — same filters as GET /api/admin/audit,
+   *  capped at 10k rows newest-first (SharePoint audit-log report). */
+  app.get("/api/admin/audit.csv", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const q = req.query as { action?: string; user?: string; file?: string; from?: string; to?: string };
+    const from = q.from && !isNaN(Date.parse(q.from)) ? new Date(q.from).toISOString() : null;
+    const to = q.to && !isNaN(Date.parse(q.to)) ? new Date(q.to).toISOString() : null;
+    const rows = await dbq<{ action: string; detail: string | null; created_at: string; actor: string | null; actor_email: string | null; file_name: string | null }>(
+      `SELECT a.action, a.detail, a.created_at,
+              u.display_name AS actor, u.email AS actor_email, i.name AS file_name
+       FROM activity a
+       LEFT JOIN users u ON u.id = a.actor_id
+       LEFT JOIN items i ON i.id = a.file_id
+       WHERE a.org_id = $1
+         AND ($2::text IS NULL OR a.action LIKE $2 || '%')
+         AND ($3::text IS NULL OR a.actor_id = $3)
+         AND ($4::text IS NULL OR a.file_id = $4)
+         AND ($5::timestamptz IS NULL OR a.created_at >= $5)
+         AND ($6::timestamptz IS NULL OR a.created_at <= $6)
+       ORDER BY a.created_at DESC LIMIT 10000`,
+      [user.orgId, q.action || null, q.user || null, q.file || null, from, to],
+    );
+    const cell = (v: string | null) => `"${(v ?? "").replaceAll('"', '""')}"`;
+    const csv = "timestamp,actor,email,action,file,detail\n" + rows.map((r) =>
+      [r.created_at, r.actor, r.actor_email, r.action,
+       r.file_name ? decryptField(r.file_name) ?? r.file_name : "",
+       r.detail ? decryptField(r.detail) ?? r.detail : ""].map(cell).join(","),
+    ).join("\n");
+    reply.header("content-disposition", `attachment; filename="kreatix-audit-${Date.now()}.csv"`);
+    return reply.type("text/csv").send(csv);
   });
 
   /** Observability: process + data + request stats. Table counts are scoped

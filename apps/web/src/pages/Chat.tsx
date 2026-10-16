@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, getToken } from "../lib/api";
 import { API_BASE } from "../lib/platform";
 import { useToast } from "../lib/hooks";
@@ -21,8 +21,14 @@ interface Message {
   id: string; channelId: string;
   author: { id: string; displayName: string | null; initials: string | null };
   body: string; replyTo: string | null; editedAt: string | null; createdAt: string;
+  file: { id: string; name: string; kind: string } | null;
 }
 interface Person { id: string; displayName: string; email: string; initials: string }
+
+/** handle a mention resolves to: first word of the display name or the
+ *  email localpart (mirrors the server's mentionedUsers matching). */
+const handle = (p: Person) =>
+  (p.displayName.split(/\s+/)[0] || p.email.split("@")[0]).toLowerCase();
 
 const fmtTime = (iso: string) =>
   new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -54,6 +60,11 @@ export function Chat() {
   const [hasMore, setHasMore] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [sumBusy, setSumBusy] = useState(false);
+  const [attach, setAttach] = useState<{ id: string; name: string } | null>(null);
+  const [mentionQ, setMentionQ] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const navigate = useNavigate();
   const msgsRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -152,8 +163,9 @@ export function Chat() {
   const send = async () => {
     if (!active) return;
     const text = draft.trim();
-    if (!text) return;
-    setDraft("");
+    if (!text && !attach) return;
+    const file = attach;
+    setDraft(""); setAttach(null); setMentionQ(null);
     try {
       if (editing) {
         await api.patch(`/api/chat/messages/${editing.id}`, { body: text });
@@ -161,15 +173,52 @@ export function Chat() {
         setEditing(null);
       } else {
         const r = await api.post<{ message: Message }>(`/api/chat/${active.id}/messages`,
-          { body: text, replyTo: replyTo?.id ?? null });
+          { body: text, replyTo: replyTo?.id ?? null, fileId: file?.id ?? null });
         setMessages((m) => (m.some((x) => x.id === r.message.id) ? m : [...m, r.message]));
         setReplyTo(null);
       }
       void loadChannels();
     } catch (e) {
-      setDraft(text);
+      setDraft(text); setAttach(file);
       toast((e as Error).message);
     }
+  };
+
+  /** Attach from this computer: upload straight into Drive, then post the
+   *  returned item id on the message. */
+  const attachFile = async (f: File) => {
+    try {
+      const r = await api.upload<{ item: { id: string; name: string } }>(
+        `/api/drive/upload?name=${encodeURIComponent(f.name)}`, f);
+      setAttach({ id: r.item.id, name: r.item.name });
+      draftRef.current?.focus();
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  /** @-autocomplete: while the caret trails `@word`, offer org people.
+   *  Picking inserts `@handle ` which the server resolves to a bell ping. */
+  const mentionMatches = mentionQ !== null
+    ? people.filter((p) => handle(p).startsWith(mentionQ)
+        || p.displayName.toLowerCase().includes(mentionQ)).slice(0, 6)
+    : [];
+
+  const onDraft = (v: string) => {
+    setDraft(v);
+    const caret = draftRef.current?.selectionStart ?? v.length;
+    const before = v.slice(0, caret);
+    const m = before.match(/@([a-zA-Z0-9._-]*)$/);
+    if (m) {
+      if (!people.length) void loadPeople();
+      setMentionQ(m[1].toLowerCase());
+    } else setMentionQ(null);
+  };
+
+  const pickMention = (p: Person) => {
+    const caret = draftRef.current?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret).replace(/@[a-zA-Z0-9._-]*$/, `@${handle(p)} `);
+    setDraft(before + draft.slice(caret));
+    setMentionQ(null);
+    draftRef.current?.focus();
   };
 
   const summarize = async () => {
@@ -334,6 +383,12 @@ export function Chat() {
                         {m.body}
                         {m.editedAt && <span className="chat-edited">(edited)</span>}
                       </div>
+                      {m.file && (
+                        <button className="chat-file" title="Open in Drive"
+                          onClick={() => navigate(m.file!.kind === "folder" ? `/drive/folder/${m.file!.id}` : `/edit/${m.file!.id}`)}>
+                          📄 {m.file.name}
+                        </button>
+                      )}
                       <div className="chat-msg-actions">
                         <button title="Reply" onClick={() => { setReplyTo(m); setEditing(null); }}>↩</button>
                         {mine && <button title="Edit" onClick={() => { setEditing(m); setDraft(m.body); setReplyTo(null); }}>✎</button>}
@@ -347,22 +402,41 @@ export function Chat() {
               })}
               {!messages.length && <div className="empty" style={{ padding: 24 }}>No messages yet — say hello.</div>}
             </div>
-            {(replyTo || editing) && (
+            {(replyTo || editing || attach) && (
               <div className="chat-context">
-                {editing ? `Editing message` : `Replying to ${replySource?.author.displayName ?? "message"}`}
-                <button className="iconbtn" onClick={() => { setReplyTo(null); setEditing(null); setDraft(""); }}>✕</button>
+                {attach
+                  ? <>📎 {attach.name}<button className="iconbtn" onClick={() => setAttach(null)}>✕</button></>
+                  : <>{editing ? "Editing message" : `Replying to ${replySource?.author.displayName ?? "message"}`}
+                    <button className="iconbtn" onClick={() => { setReplyTo(null); setEditing(null); setDraft(""); }}>✕</button></>}
               </div>
             )}
             <div className="chat-compose">
+              {mentionMatches.length > 0 && (
+                <div className="chat-mentions">
+                  {mentionMatches.map((p) => (
+                    <button key={p.id} className="chat-person" onMouseDown={(e) => { e.preventDefault(); pickMention(p); }}>
+                      <span className="chat-avatar">{p.initials}</span>
+                      <span className="chat-item-main"><b>{p.displayName}</b><span className="d-sub">@{handle(p)}</span></span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <input ref={fileRef} type="file" hidden
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void attachFile(f); e.target.value = ""; }} />
+              <button className="iconbtn" title="Attach file" onClick={() => fileRef.current?.click()}>📎</button>
               <textarea
+                ref={draftRef}
                 value={draft} rows={1}
                 placeholder={editing ? "Edit message…" : `Message ${active.kind === "channel" ? "#" : ""}${active.name ?? ""}`}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) => onDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
-                  if (e.key === "Escape") { setReplyTo(null); setEditing(null); setDraft(""); }
+                  if (e.key === "Enter" && !e.shiftKey && !mentionMatches.length) { e.preventDefault(); void send(); }
+                  if (e.key === "Escape") {
+                    if (mentionQ !== null) setMentionQ(null);
+                    else { setReplyTo(null); setEditing(null); setDraft(""); }
+                  }
                 }} />
-              <button className="btn-primary btn-sm" disabled={!draft.trim()} onClick={() => void send()}>
+              <button className="btn-primary btn-sm" disabled={!draft.trim() && !attach} onClick={() => void send()}>
                 {editing ? "Save" : "Send"}
               </button>
             </div>

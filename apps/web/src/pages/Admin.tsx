@@ -57,6 +57,11 @@ interface OrgDomain {
   id: string; domain: string; status: string; isPrimary: boolean; mxOk: boolean; brevoOk: boolean;
   verifyToken: string | null; verifiedAt: string | null; createdAt: string; dns: DnsRecord[];
 }
+interface Rule {
+  id: string; name: string; enabled: boolean; trigger: string;
+  match: Record<string, string> | null; action: string;
+  config: Record<string, string | null>; createdBy: string; createdAt: string;
+}
 interface Metrics {
   uptimeSec: number;
   requests: { total: number; errors5xx: number; byStatus: Record<string, number> };
@@ -84,6 +89,11 @@ export function Admin() {
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [encryption, setEncryption] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [auditActions, setAuditActions] = useState<string[]>([]);
+  const [auditAction, setAuditAction] = useState("");
+  const [auditUser, setAuditUser] = useState("");
+  const [auditFrom, setAuditFrom] = useState("");
+  const [auditTo, setAuditTo] = useState("");
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [filter, setFilter] = useState("");
   const [scimTokens, setScimTokens] = useState<{ id: string; label: string | null; created_at: string }[]>([]);
@@ -92,6 +102,14 @@ export function Admin() {
   const [newDomain, setNewDomain] = useState("");
   const [domainBusy, setDomainBusy] = useState<string | null>(null);
   const [openDomain, setOpenDomain] = useState<string | null>(null);
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [ruleMeta, setRuleMeta] = useState<{ triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] }>({ triggers: [], actions: [] });
+  const [forms, setForms] = useState<{ id: string; title: string }[]>([]);
+  const [libs, setLibs] = useState<{ id: string; name: string }[]>([]);
+  const [ruleForm, setRuleForm] = useState<{ name: string; trigger: string; matchVal: string; action: string; cfgTitle: string; cfgMsg: string; cfgAssignee: string; cfgUser: string; cfgDueDays: string }>({
+    name: "", trigger: "form.submitted", matchVal: "", action: "task.create",
+    cfgTitle: "", cfgMsg: "", cfgAssignee: "", cfgUser: "", cfgDueDays: "",
+  });
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -104,34 +122,47 @@ export function Admin() {
         api.get<{ members: Member[] }>("/api/admin/members"),
         api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
         api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
+        api.get<{ actions: string[] }>("/api/admin/audit/actions"),
         api.get<Metrics>("/api/admin/metrics"),
         api.get<{ invites: Invite[] }>("/api/admin/invites"),
         api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
         api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
         api.get<AiUsage>("/api/billing/ai-usage"),
         api.get<{ domains: OrgDomain[] }>("/api/admin/domains"),
+        api.get<{ rules: Rule[]; triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] }>("/api/rules"),
+        api.get<{ forms: { id: string; title: string }[] }>("/api/forms"),
+        api.get<{ sites: { libraries?: { id: string; name: string }[] }[] }>("/api/sites"),
       ];
-      const [m, p, a, mx, inv, bill, scim, ai, dom] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[] },
+        { actions: string[] },
         Metrics,
         { invites: Invite[] },
         { subscription: BillingSub; payments: Payment[] },
         { tokens: { id: string; label: string | null; created_at: string }[] },
         AiUsage,
         { domains: OrgDomain[] },
+        { rules: Rule[]; triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] },
+        { forms: { id: string; title: string }[] },
+        { sites: { libraries?: { id: string; name: string }[] }[] },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
       setEncryption(p.encryptionAtRest);
       setAudit(a.entries);
+      setAuditActions(acts.actions);
       setMetrics(mx);
       setInvites(inv.invites);
       setBilling(bill);
       setScimTokens(scim.tokens);
       setAiUsage(ai);
       setDomains(dom.domains);
+      setRules(rl.rules);
+      setRuleMeta({ triggers: rl.triggers, actions: rl.actions });
+      setForms(fm.forms);
+      setLibs((st.sites ?? []).flatMap((s) => s.libraries ?? []));
     }
   }, [isSuper]);
 
@@ -268,6 +299,87 @@ export function Admin() {
     } catch (e) {
       toast(e instanceof Error ? e.message : "Policy update failed");
     }
+  };
+
+  const auditQuery = () => {
+    const p = new URLSearchParams({ limit: "500" });
+    if (auditAction) p.set("action", auditAction);
+    if (auditUser) p.set("user", auditUser);
+    if (auditFrom) p.set("from", new Date(auditFrom).toISOString());
+    if (auditTo) p.set("to", new Date(new Date(auditTo).getTime() + 86400000 - 1).toISOString());
+    return p.toString();
+  };
+  const reloadAudit = async () => {
+    try {
+      const r = await api.get<{ entries: AuditEntry[] }>(`/api/admin/audit?${auditQuery()}`);
+      setAudit(r.entries);
+    } catch (e) { toast((e as Error).message); }
+  };
+  const exportAudit = async () => {
+    try {
+      const blob = await api.get<Blob>(`/api/admin/audit.csv?${auditQuery()}`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `kreatix-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const selTrigger = ruleMeta.triggers.find((t) => t.id === ruleForm.trigger);
+  const matchOptions: { id: string; label: string }[] =
+    ruleForm.trigger === "form.submitted" ? forms.map((f) => ({ id: f.id, label: f.title }))
+    : ruleForm.trigger === "file.created" ? libs.map((l) => ({ id: l.id, label: l.name }))
+    : ruleForm.trigger === "task.status" ? ["todo", "doing", "done"].map((s) => ({ id: s, label: s }))
+    : [];
+
+  const createRule = async () => {
+    try {
+      const cfg: Record<string, string | null> = {};
+      if (ruleForm.action === "task.create") {
+        cfg.title = ruleForm.cfgTitle || null;
+        cfg.assigneeId = ruleForm.cfgAssignee || null;
+        cfg.dueInDays = ruleForm.cfgDueDays || null;
+      } else {
+        cfg.message = ruleForm.cfgMsg || null;
+        cfg.userId = ruleForm.cfgUser || null;
+      }
+      const match = ruleForm.matchVal && selTrigger?.matchKey
+        ? { [selTrigger.matchKey]: ruleForm.matchVal } : null;
+      await api.post("/api/rules", {
+        name: ruleForm.name.trim() || `${selTrigger?.label ?? "Rule"} → ${ruleForm.action}`,
+        trigger: ruleForm.trigger, match, action: ruleForm.action, config: cfg,
+      });
+      setRuleForm({ ...ruleForm, name: "", cfgTitle: "", cfgMsg: "" });
+      const r = await api.get<{ rules: Rule[] }>("/api/rules");
+      setRules(r.rules);
+      toast("Automation created");
+    } catch (e) { toast((e as Error).message); }
+  };
+  const toggleRule = async (r: Rule) => {
+    try {
+      await api.patch(`/api/rules/${r.id}`, { enabled: !r.enabled });
+      setRules((rs) => rs.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)));
+    } catch (e) { toast((e as Error).message); }
+  };
+  const delRule = async (r: Rule) => {
+    if (!confirm(`Delete automation "${r.name}"?`)) return;
+    try {
+      await api.del(`/api/rules/${r.id}`);
+      setRules((rs) => rs.filter((x) => x.id !== r.id));
+    } catch (e) { toast((e as Error).message); }
+  };
+  const ruleDesc = (r: Rule) => {
+    const t = ruleMeta.triggers.find((x) => x.id === r.trigger)?.label ?? r.trigger;
+    const scope = r.match && Object.values(r.match)[0]
+      ? ` (${matchLabelFor(r)})` : "";
+    const a = ruleMeta.actions.find((x) => x.id === r.action)?.label ?? r.action;
+    return `${t}${scope} → ${a}`;
+  };
+  const matchLabelFor = (r: Rule) => {
+    const v = Object.values(r.match ?? {})[0];
+    if (r.trigger === "form.submitted") return forms.find((f) => f.id === v)?.title ?? v;
+    if (r.trigger === "file.created") return libs.find((l) => l.id === v)?.name ?? v;
+    return v;
   };
 
   const filtered = filter
@@ -695,14 +807,91 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
+        <h2>Automations</h2>
+        <p className="d-sub" style={{ marginTop: -6 }}>When something happens in one app, do something in another. <code>{"{{name}}"}</code> and other context fields interpolate into titles and messages.</p>
+        <div className="audit-bar" style={{ flexWrap: "wrap", marginBottom: 8 }}>
+          <input placeholder="Rule name" value={ruleForm.name}
+            onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })} style={{ minWidth: 180 }} />
+          <select value={ruleForm.trigger} onChange={(e) => setRuleForm({ ...ruleForm, trigger: e.target.value, matchVal: "" })}>
+            {ruleMeta.triggers.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          {selTrigger?.matchKey && (
+            <select value={ruleForm.matchVal} onChange={(e) => setRuleForm({ ...ruleForm, matchVal: e.target.value })}>
+              <option value="">{selTrigger.matchLabel} — any</option>
+              {matchOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+          )}
+          <span style={{ color: "var(--muted)" }}>→</span>
+          <select value={ruleForm.action} onChange={(e) => setRuleForm({ ...ruleForm, action: e.target.value })}>
+            {ruleMeta.actions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+        </div>
+        <div className="audit-bar" style={{ flexWrap: "wrap", marginBottom: 12 }}>
+          {ruleForm.action === "task.create" ? (
+            <>
+              <input placeholder={`Task title — e.g. Review {{name}}`} value={ruleForm.cfgTitle}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfgTitle: e.target.value })} style={{ minWidth: 220 }} />
+              <select value={ruleForm.cfgAssignee} onChange={(e) => setRuleForm({ ...ruleForm, cfgAssignee: e.target.value })}>
+                <option value="">Assignee — none</option>
+                {members.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+              </select>
+              <input placeholder="Due in days" type="number" min={0} max={365} value={ruleForm.cfgDueDays}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfgDueDays: e.target.value })} style={{ width: 100 }} />
+            </>
+          ) : (
+            <>
+              <input placeholder={`Message — e.g. {{name}} needs attention`} value={ruleForm.cfgMsg}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfgMsg: e.target.value })} style={{ minWidth: 220 }} />
+              <select value={ruleForm.cfgUser} onChange={(e) => setRuleForm({ ...ruleForm, cfgUser: e.target.value })}>
+                <option value="">Notify — all admins</option>
+                {members.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+              </select>
+            </>
+          )}
+          <button className="btn-primary btn-sm" onClick={() => void createRule()}>Add rule</button>
+        </div>
+        <div className="tbl-scroll"><table className="admin-table">
+          <thead><tr><th>Rule</th><th>Flow</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {rules.map((r) => (
+              <tr key={r.id}>
+                <td><b>{r.name}</b></td>
+                <td style={{ color: "var(--sub)" }}>{ruleDesc(r)}</td>
+                <td>
+                  <button className="btn-ghost btn-sm" onClick={() => void toggleRule(r)}>
+                    {r.enabled ? "● on" : "○ off"}
+                  </button>
+                </td>
+                <td><button className="btn-ghost btn-sm danger" onClick={() => void delRule(r)}>Delete</button></td>
+              </tr>
+            ))}
+            {!rules.length && (
+              <tr><td colSpan={4} style={{ color: "var(--sub)", textAlign: "center" }}>No automations yet — e.g. "Form response → create task".</td></tr>
+            )}
+          </tbody>
+        </table></div>
+      </section>
+
+      <section className="admin-card">
         <h2>Audit log</h2>
-        <div className="audit-bar">
+        <div className="audit-bar" style={{ flexWrap: "wrap" }}>
+          <select value={auditAction} onChange={(e) => setAuditAction(e.target.value)} title="Action">
+            <option value="">All actions</option>
+            {auditActions.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={auditUser} onChange={(e) => setAuditUser(e.target.value)} title="Actor">
+            <option value="">All users</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+          </select>
+          <input type="date" value={auditFrom} onChange={(e) => setAuditFrom(e.target.value)} title="From" />
+          <input type="date" value={auditTo} onChange={(e) => setAuditTo(e.target.value)} title="To" />
+          <button className="btn-secondary" onClick={() => void reloadAudit()}>Apply</button>
+          <button className="btn-ghost" onClick={() => void exportAudit()}>Export CSV</button>
           <input
-            placeholder="Filter by action, actor, or file…"
+            placeholder="Search results…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          <button className="btn-secondary" onClick={() => void load()}>Refresh</button>
         </div>
         <div className="tbl-scroll"><table className="admin-table">
           <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>File</th><th>Detail</th></tr></thead>

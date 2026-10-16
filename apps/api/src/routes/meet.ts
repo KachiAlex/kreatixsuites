@@ -7,6 +7,7 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { meetBase, meetEnabled, mintMeetToken, recDir, recordingEnabled } from "../meetBridge.js";
 import { encryptField } from "../crypto.js";
+import { fireTrigger } from "../rules.js";
 
 interface MeetingRow {
   id: string; org_id: string; code: string; title: string;
@@ -132,6 +133,8 @@ export function meetRoutes(app: FastifyInstance) {
     if (m.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
       return reply.code(403).send({ error: "forbidden", message: "Only the host can end a meeting" });
     await run("UPDATE meetings SET status = 'ended', ended_at = now() WHERE id = $1", [m.id]);
+    void fireTrigger(user.orgId, "meeting.ended",
+      { meetingId: m.id, name: m.title ?? "Meeting" }, app.log);
     return { ok: true };
   });
 

@@ -13,6 +13,7 @@ const TITLES: Record<string, string> = {
   starred: "Starred",
   all: "Kreatix Drive",
   shared: "Shared with me",
+  approvals: "Pending approvals",
   trash: "Recycle bin",
 };
 

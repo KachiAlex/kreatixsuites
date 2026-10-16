@@ -658,6 +658,7 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at DESC)`);
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS file_id TEXT REFERENCES items(id) ON DELETE SET NULL`);
 
   // Kreatix Calendar — org events. Visibility = creator + attendees;
   // meeting_id links to a Kreatix Meet room when the event has a call.
@@ -750,6 +751,21 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_org ON tasks(org_id, status, position)`);
+
+  // Automation rules — trigger → action wiring between apps
+  await pool.query(`CREATE TABLE IF NOT EXISTS automation_rules (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    trigger TEXT NOT NULL,                 -- form.submitted | file.created | task.status | meeting.ended
+    match JSONB,                           -- optional {key: value} ctx filter
+    action TEXT NOT NULL,                  -- task.create | notify
+    config JSONB NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_rules_org ON automation_rules(org_id, trigger) WHERE enabled`);
 
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);

@@ -101,7 +101,7 @@ const unescIcs = (s: string) => s.replace(/\\n/gi, "\n").replace(/\\,/g, ",").re
 
 export interface IcsEvent {
   uid: string; summary: string; description?: string; location?: string;
-  startsAt: Date; endsAt: Date; allDay: boolean; rrule?: string;
+  startsAt: Date; endsAt: Date; allDay: boolean; rrule?: string; sequence?: number;
 }
 
 /** Parse the VEVENTs out of an .ics payload. Unfolds continuation lines first. */
@@ -139,18 +139,21 @@ export function parseIcs(ics: string): IcsEvent[] {
   return events;
 }
 
-export function buildIcs(ev: IcsEvent, organizer?: string): string {
+export function buildIcs(ev: IcsEvent, organizer?: string, method?: "REQUEST" | "CANCEL"): string {
   const allDay = ev.allDay;
   const lines = [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kreatix//Calendar//EN", "CALSCALE:GREGORIAN",
+    ...(method ? [`METHOD:${method}`] : []),
     "BEGIN:VEVENT",
     `UID:${ev.uid}`,
     `DTSTAMP:${toICalDate(new Date())}`,
+    `SEQUENCE:${ev.sequence ?? 0}`,
     allDay ? `DTSTART;VALUE=DATE:${toICalDate(ev.startsAt, true)}` : `DTSTART:${toICalDate(ev.startsAt)}`,
     allDay
       ? `DTEND;VALUE=DATE:${toICalDate(new Date(ev.endsAt.getTime() + 864e5), true)}`
       : `DTEND:${toICalDate(ev.endsAt)}`,
     `SUMMARY:${escIcs(ev.summary)}`,
+    ...(method === "CANCEL" ? ["STATUS:CANCELLED"] : []),
   ];
   if (ev.location) lines.push(`LOCATION:${escIcs(ev.location)}`);
   if (ev.description) lines.push(`DESCRIPTION:${escIcs(ev.description)}`);

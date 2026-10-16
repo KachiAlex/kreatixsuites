@@ -5,7 +5,8 @@ import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
-import { getLibrary, libraryPermission } from "../sites.js";
+import { getLibrary, libraryPermission, approverIds } from "../sites.js";
+import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -83,7 +84,46 @@ export async function submitForApproval(
   const head = await headVersion(item.id);
   if (!head || head.published) return false;
   await run("UPDATE versions SET pending = true WHERE id = $1", [head.id]);
+  void notifyApprovers(item, user);
   return true;
+}
+
+/** Tell every library owner someone submitted work for their sign-off. */
+async function notifyApprovers(
+  item: ItemRow,
+  actor: { id: string },
+): Promise<void> {
+  if (!item.library_id) return;
+  const ids = await approverIds(item.library_id);
+  const msg = encryptField(`"${itemName(item)}" is awaiting approval`);
+  for (const uid of ids) {
+    if (uid === actor.id) continue;
+    await run(
+      `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [randomUUID(), uid, "approval", item.id, item.library_id, actor.id, msg, now()],
+    );
+  }
+}
+
+/** Tell the draft author their submission was decided (approve/reject). */
+export async function notifySubmitter(
+  item: ItemRow,
+  submitterId: string,
+  actorId: string,
+  approved: boolean,
+  comment?: string,
+): Promise<void> {
+  if (submitterId === actorId) return;
+  const msg = encryptField(
+    `"${itemName(item)}" was ${approved ? "approved and published" : "rejected"}` +
+    (comment ? ` — ${comment}` : ""),
+  );
+  await run(
+    `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [randomUUID(), submitterId, "approval", item.id, item.library_id, actorId, msg, now()],
+  );
 }
 
 /** MIME types that must never execute in an origin-bearing context. */

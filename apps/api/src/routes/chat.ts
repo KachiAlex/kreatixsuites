@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { jwtVerify } from "jose";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
+import { requireAuth, permissionFor, hasPermission, type AuthedRequest, type UserRow } from "../auth.js";
+import { getItem } from "../items.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 
@@ -18,7 +19,9 @@ interface ChannelRow {
 interface MessageRow {
   id: string; channel_id: string; user_id: string; body: string;
   reply_to: string | null; edited_at: string | null; created_at: string;
+  file_id: string | null;
   author_name?: string | null; author_initials?: string | null;
+  file_name?: string | null; file_kind?: string | null;
 }
 
 const secret = new TextEncoder().encode(
@@ -51,16 +54,21 @@ const body = (r: MessageRow): MessageOut => ({
   author: { id: r.user_id, displayName: r.author_name ?? null, initials: r.author_initials ?? null },
   body: decryptField(r.body) ?? r.body,
   replyTo: r.reply_to, editedAt: r.edited_at, createdAt: r.created_at,
+  file: r.file_id
+    ? { id: r.file_id, name: r.file_name ? (decryptField(r.file_name) ?? r.file_name) : "File", kind: r.file_kind ?? "file" }
+    : null,
 });
 interface MessageOut {
   id: string; channelId: string;
   author: { id: string; displayName: string | null; initials: string | null };
   body: string; replyTo: string | null; editedAt: string | null; createdAt: string;
+  file: { id: string; name: string; kind: string } | null;
 }
 
 const postSchema = z.object({
-  body: z.string().trim().min(1).max(8000),
+  body: z.string().trim().max(8000).default(""),
   replyTo: z.string().max(64).nullish(),
+  fileId: z.string().max(64).nullish(),
 });
 
 export function chatRoutes(app: FastifyInstance) {
@@ -244,8 +252,10 @@ export function chatRoutes(app: FastifyInstance) {
       const { before, limit: lim } = req.query as { before?: string; limit?: string };
       const limit = Math.min(Number(lim) || 50, 100);
       const rows = await q<MessageRow>(
-        `SELECT m.*, u.display_name AS author_name, u.initials AS author_initials
+        `SELECT m.*, u.display_name AS author_name, u.initials AS author_initials,
+                i.name AS file_name, i.kind AS file_kind
          FROM chat_messages m JOIN users u ON u.id = m.user_id
+         LEFT JOIN items i ON i.id = m.file_id
          WHERE m.channel_id = $1 ${before ? "AND m.created_at < $3" : ""}
          ORDER BY m.created_at DESC LIMIT $2`,
         before ? [c.id, limit, before] : [c.id, limit]);
@@ -258,19 +268,33 @@ export function chatRoutes(app: FastifyInstance) {
       if (!c) return notFound(reply);
       if (!(await canSee(c, user.id))) return forbidden(reply);
       const parsed = postSchema.safeParse(req.body ?? {});
-      if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Empty message" });
+      if (!parsed.success || (!parsed.data.body && !parsed.data.fileId))
+        return reply.code(400).send({ error: "invalid", message: "Empty message" });
+      // attachments reference a Drive item the sender can see — recipients
+      // still need their own permission when they open it (link share model)
+      let file: { id: string; name: string; kind: string } | null = null;
+      if (parsed.data.fileId) {
+        const it = await getItem(parsed.data.fileId);
+        if (!it || it.org_id !== user.orgId || it.trashed
+            || !hasPermission(await permissionFor(user.id, it), "viewer"))
+          return reply.code(400).send({ error: "invalid", message: "File not found" });
+        file = { id: it.id, name: decryptField(it.name) ?? it.name, kind: it.kind };
+      }
       const row = await one<MessageRow>(
-        `INSERT INTO chat_messages (id, channel_id, user_id, body, reply_to)
-         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        `INSERT INTO chat_messages (id, channel_id, user_id, body, reply_to, file_id)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [randomUUID(), c.id, user.id, encryptField(parsed.data.body) ?? parsed.data.body,
-         parsed.data.replyTo ?? null]);
+         parsed.data.replyTo ?? null, file?.id ?? null]);
       await run("UPDATE chat_channels SET last_message_at = now() WHERE id = $1", [c.id]);
       // posting counts as reading — keep the author's unread at zero
       await run(
         `INSERT INTO chat_members (channel_id, user_id, last_read_at) VALUES ($1,$2,now())
          ON CONFLICT (channel_id, user_id) DO UPDATE SET last_read_at = now()`,
         [c.id, user.id]);
-      const msg = body({ ...row!, author_name: user.displayName, author_initials: user.initials });
+      const msg = body({
+        ...row!, author_name: user.displayName, author_initials: user.initials,
+        file_name: file?.name ?? null, file_kind: file?.kind ?? null,
+      });
       const targets = c.kind === "channel" ? null : await memberIds(c.id);
       broadcast(user.orgId, targets, { t: "message", channelId: c.id, message: msg });
       // bell notifications: dm/group recipients + @mentions in channels

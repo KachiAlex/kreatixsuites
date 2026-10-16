@@ -6,10 +6,11 @@ import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, ty
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds, notifyLibrarySubscribers } from "../sites.js";
-import { publishHead, submitForApproval } from "./content.js";
+import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
+import { fireTrigger } from "../rules.js";
 import { indexFile } from "../indexer.js";
 import { encryptField, decryptField } from "../crypto.js";
 
@@ -187,6 +188,33 @@ export function driveRoutes(app: FastifyInstance) {
           [user.id],
         );
       }
+    } else if (q.view === "approvals") {
+      // approval queue: every item whose head draft awaits owner sign-off in
+      // a library where I hold owner rank (site owner / explicit lib grant /
+      // group grant / tenant admin — same audience as canApprove)
+      rows = await dbq<ItemRow>(
+        `SELECT i.* FROM items i
+         JOIN versions v ON v.file_id = i.id AND v.pending
+         JOIN libraries l ON l.id = i.library_id
+         JOIN sites st ON st.id = l.site_id
+         WHERE i.trashed = false AND i.media_for IS NULL AND st.org_id = $2
+           AND v.number = (SELECT MAX(number) FROM versions v2 WHERE v2.file_id = i.id)
+           AND (st.owner_id = $1
+             OR (l.inherit_permissions AND EXISTS (SELECT 1 FROM site_members sm
+                   WHERE sm.site_id = st.id AND sm.user_id = $1 AND sm.role = 'owner'))
+             OR (l.inherit_permissions AND EXISTS (SELECT 1 FROM site_group_members sgm
+                   JOIN group_members gm ON gm.group_id = sgm.group_id AND gm.user_id = $1
+                   WHERE sgm.site_id = st.id AND sgm.role = 'owner'))
+             OR (NOT l.inherit_permissions AND EXISTS (SELECT 1 FROM library_permissions lp
+                   WHERE lp.library_id = l.id AND lp.user_id = $1 AND lp.role = 'owner'))
+             OR (NOT l.inherit_permissions AND EXISTS (SELECT 1 FROM library_group_permissions lgp
+                   JOIN group_members gm ON gm.group_id = lgp.group_id AND gm.user_id = $1
+                   WHERE lgp.library_id = l.id AND lgp.role = 'owner'))
+             OR $3)
+         ORDER BY i.updated_at ASC`,
+        [user.id, user.orgId, user.role === "owner" || user.role === "admin"],
+      );
+      approver = true;
     } else if (q.view === "mirror") {
       // offline-shell sync: complete non-trashed set (folders included, no
       // cap) so the local mirror can purge items deleted on other devices
@@ -477,6 +505,8 @@ export function driveRoutes(app: FastifyInstance) {
 
     await logActivity(user.orgId, user.id, id, "create", body.name);
     void notifyLibrarySubscribers(libraryId, user.id, "create", id, `added "${body.name}"`);
+    if (libraryId)
+      void fireTrigger(user.orgId, "file.created", { fileId: id, libraryId, name: body.name }, app.log);
     return { item: await toDriveItem((await getItem(id))!, "owner") };
   });
 
@@ -554,6 +584,8 @@ export function driveRoutes(app: FastifyInstance) {
 
     void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
     void notifyLibrarySubscribers(libraryId, user.id, "upload", id, `uploaded "${name ?? "Untitled"}"`);
+    if (libraryId)
+      void fireTrigger(user.orgId, "file.created", { fileId: id, libraryId, name: name ?? "Untitled" }, app.log);
     // index PDF uploads immediately (body text + later annotation text)
     if (fileKind === "pdf") void indexFile(id, "pdf", null).catch(() => {});
     return { item: await toDriveItem((await getItem(id))!, "owner") };
@@ -833,10 +865,11 @@ export function driveRoutes(app: FastifyInstance) {
     if (!item || !(await canApprove(user, item))) {
       return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
     }
-    const head = await one<{ id: string; pending: boolean; published: boolean }>(
-      "SELECT id, pending, published FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    const head = await one<{ id: string; pending: boolean; published: boolean; created_by: string }>(
+      "SELECT id, pending, published, created_by FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
     const major = await publishHead(item);
+    void notifySubmitter(item, head.created_by, user.id, true);
     void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} → v${major}.0`);
     return { ok: true, major };
   });
@@ -850,10 +883,11 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Only site owners can reject" });
     }
     const { comment } = z.object({ comment: z.string().max(300).optional() }).parse(req.body ?? {});
-    const head = await one<{ id: string; pending: boolean }>(
-      "SELECT id, pending FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    const head = await one<{ id: string; pending: boolean; created_by: string }>(
+      "SELECT id, pending, created_by FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
     await run("UPDATE versions SET pending = false WHERE id = $1", [head.id]);
+    void notifySubmitter(item, head.created_by, user.id, false, comment);
     void logActivity(user.orgId, user.id, item.id, "reject",
       `${itemName(item)}${comment ? ` — ${comment}` : ""}`);
     return { ok: true };

@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
+import { fireTrigger } from "../rules.js";
 
 const FIELD_TYPES = ["text", "textarea", "email", "number", "date", "choice", "checkbox", "rating"] as const;
 const fieldSchema = z.object({
@@ -199,6 +200,9 @@ export function formPublicRoutes(app: FastifyInstance) {
        VALUES ($1,$2,'form',$3,$4)`,
       [randomUUID(), f.created_by, f.created_by,
        encryptField(`New response: ${dec(f.title) ?? "form"}`)]);
+    void fireTrigger(f.org_id, "form.submitted",
+      { formId: f.id, name: dec(f.title) ?? "form", respondent: respondent ? String(respondent).slice(0, 120) : "" },
+      app.log);
     return reply.code(201).send({ ok: true });
   });
 }

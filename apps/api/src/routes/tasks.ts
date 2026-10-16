@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
+import { fireTrigger } from "../rules.js";
 
 interface TaskRow {
   id: string; org_id: string; title: string; notes: string | null; status: string;
@@ -109,6 +110,11 @@ export function taskRoutes(app: FastifyInstance) {
         `INSERT INTO notifications (id, user_id, kind, actor_id, message)
          VALUES ($1,$2,'task',$3,$4)`,
         [randomUUID(), d.assigneeId, user.id, encryptField(`${user.displayName} assigned you: ${d.title ?? decryptField(t.title) ?? t.title}`)]);
+    }
+    if (d.status && d.status !== t.status) {
+      void fireTrigger(user.orgId, "task.status",
+        { status: d.status, name: d.title ?? decryptField(t.title) ?? t.title, taskId: t.id },
+        app.log);
     }
     const full = await getTask(t.id, user.orgId);
     return { task: taskOut(full ?? row!) };

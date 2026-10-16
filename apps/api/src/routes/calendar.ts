@@ -9,6 +9,7 @@ import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { meetEnabled } from "../meetBridge.js";
 import { parseRRule, expandOccurrences, parseIcs, buildIcs } from "../recurrence.js";
+import { sendMailSafe, tpl } from "../email.js";
 
 interface EventRow {
   id: string; org_id: string; title: string; description: string | null;
@@ -62,6 +63,36 @@ export function calendarRoutes(app: FastifyInstance) {
 
   const notFound = (reply: FastifyReply) =>
     reply.code(404).send({ error: "not_found", message: "Event not found" });
+
+  /** Email each attendee a text/calendar invite (REQUEST) or cancel notice
+   *  (CANCEL) with a .ics attachment — Outlook/Apple/Google pick it up
+   *  directly; fire-and-forget so a mail outage never blocks the event. */
+  const mailInvite = (e: EventRow, attendeeIds: string[], organizer: { id: string; email: string; displayName: string }, cancelled: boolean) => {
+    if (!attendeeIds.length) return;
+    const when = e.all_day
+      ? new Date(e.starts_at).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) + " (all day)"
+      : `${new Date(e.starts_at).toLocaleString()} – ${new Date(e.ends_at).toLocaleTimeString()}`;
+    const ics = buildIcs({
+      uid: `${e.id}@kreatix`, summary: dec(e.title) ?? "Event",
+      description: dec(e.description) ?? undefined, location: dec(e.location) ?? undefined,
+      startsAt: new Date(e.starts_at), endsAt: new Date(e.ends_at),
+      allDay: e.all_day, rrule: e.rrule ?? undefined,
+      sequence: Math.floor(new Date(e.updated_at).getTime() / 1000),
+    }, organizer.email, cancelled ? "CANCEL" : "REQUEST");
+    const t = tpl.meetingInvite(organizer.displayName, dec(e.title) ?? "Event",
+      when, dec(e.location), !!e.meeting_id, cancelled);
+    void q<{ email: string; display_name: string }>(
+      "SELECT email, display_name FROM users WHERE id = ANY($1) AND NOT disabled", [attendeeIds])
+      .then((recips) => {
+        for (const r of recips) {
+          sendMailSafe(app.log, {
+            to: r.email, toName: r.display_name, ...t,
+            attachment: [{ name: "invite.ics", content: Buffer.from(ics).toString("base64") }],
+          });
+        }
+      })
+      .catch((err) => app.log.warn({ err: String(err) }, "invite recipient lookup failed"));
+  };
 
   /** Events overlapping [from,to] that I created or attend. */
   app.get("/api/calendar", async (req) => {
@@ -143,6 +174,7 @@ export function calendarRoutes(app: FastifyInstance) {
          enc(`${user.displayName} invited you: ${d.title}`)]);
     }
     const atts = await attendeesOf([id]);
+    mailInvite(row!, attendeeIds, { id: user.id, email: user.email, displayName: user.displayName }, false);
     return reply.code(201).send({ event: eventOut(row!, atts) });
   });
 
@@ -174,6 +206,9 @@ export function calendarRoutes(app: FastifyInstance) {
         await run("INSERT INTO calendar_attendees (event_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [e.id, uid]);
     }
     const atts = await attendeesOf([e.id]);
+    // re-invite everyone when the schedule/details changed
+    if (d.title || d.startsAt || d.endsAt || d.location !== undefined || d.allDay !== undefined)
+      mailInvite(row!, atts.map((a) => a.user_id), { id: user.id, email: user.email, displayName: user.displayName }, false);
     return { event: eventOut(row!, atts) };
   });
 
@@ -184,6 +219,8 @@ export function calendarRoutes(app: FastifyInstance) {
     if (e.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
       return reply.code(403).send({ error: "forbidden", message: "Only the organizer can delete" });
     if (e.meeting_id) await run("UPDATE meetings SET status = 'ended', ended_at = now() WHERE id = $1", [e.meeting_id]);
+    const atts = await attendeesOf([e.id]);
+    mailInvite(e, atts.map((a) => a.user_id), { id: user.id, email: user.email, displayName: user.displayName }, true);
     await run("DELETE FROM calendar_events WHERE id = $1", [e.id]);
     return { ok: true };
   });

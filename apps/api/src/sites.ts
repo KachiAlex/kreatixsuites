@@ -172,6 +172,43 @@ export function toSite(row: SiteRow, myRole?: SiteRole | null, memberCount?: num
   };
 }
 
+/** IDs of users who hold owner rank on this library — the approval audience:
+ *  site owner, owner site members/groups (when inheriting), explicit library
+ *  owner grants (when broken), and tenant admins. Mirrors canApprove. */
+export async function approverIds(libraryId: string): Promise<string[]> {
+  const rows = await q<{ id: string }>(
+    `SELECT DISTINCT uid AS id FROM (
+       SELECT st.owner_id AS uid FROM sites st
+         JOIN libraries l ON l.site_id = st.id WHERE l.id = $1
+       UNION
+       SELECT sm.user_id FROM site_members sm
+         JOIN libraries l ON l.site_id = sm.site_id
+         WHERE l.id = $1 AND l.inherit_permissions AND sm.role = 'owner'
+       UNION
+       SELECT gm.user_id FROM site_group_members sgm
+         JOIN libraries l ON l.site_id = sgm.site_id
+         JOIN group_members gm ON gm.group_id = sgm.group_id
+         WHERE l.id = $1 AND l.inherit_permissions AND sgm.role = 'owner'
+       UNION
+       SELECT lp.user_id FROM library_permissions lp
+         JOIN libraries l ON l.id = lp.library_id
+         WHERE lp.library_id = $1 AND NOT l.inherit_permissions AND lp.role = 'owner'
+       UNION
+       SELECT gm.user_id FROM library_group_permissions lgp
+         JOIN libraries l ON l.id = lgp.library_id
+         JOIN group_members gm ON gm.group_id = lgp.group_id
+         WHERE lgp.library_id = $1 AND NOT l.inherit_permissions AND lgp.role = 'owner'
+       UNION
+       SELECT u.id FROM users u
+         JOIN libraries l ON true
+         JOIN sites st ON st.id = l.site_id
+         WHERE l.id = $1 AND u.org_id = st.org_id AND u.role IN ('owner','admin')
+     ) r`,
+    [libraryId],
+  );
+  return rows.map((r) => r.id);
+}
+
 /** Library alerts (SharePoint "Alert me") — every subscriber except the
  *  actor gets a notification row for the file event. */
 export async function notifyLibrarySubscribers(
