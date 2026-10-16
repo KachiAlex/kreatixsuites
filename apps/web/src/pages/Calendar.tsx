@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useToast, useMeetEnabled } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
@@ -67,6 +67,26 @@ export function Calendar() {
   }, [range, toast]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // deep link — /calendar?e=<eventId> selects the day + opens the detail
+  const [search, setSearch] = useSearchParams();
+  useEffect(() => {
+    const eid = search.get("e");
+    if (!eid) return;
+    (async () => {
+      // not necessarily in the loaded range — fetch it directly
+      const hit = events.find((e) => e.id === eid)
+        ?? (await api.get<{ event: CalEvent }>(`/api/calendar/${eid}`).then((r) => r.event).catch(() => null));
+      if (hit) {
+        const d = new Date(hit.startsAt);
+        setCursor(new Date(d.getFullYear(), d.getMonth(), 1));
+        setSelected(dayKey(d));
+        setDetail(hit);
+      }
+      setSearch({}, { replace: true });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   // weeks: Mon-first grid covering the cursor month
   const weeks = useMemo(() => {

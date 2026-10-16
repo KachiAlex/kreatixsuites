@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, getToken } from "../lib/api";
 import { API_BASE } from "../lib/platform";
 import { useToast } from "../lib/hooks";
@@ -204,6 +205,29 @@ export function Chat() {
       setPeople(r.people);
     } catch (e) { toast((e as Error).message); }
   };
+
+  // deep links — /chat?c=<channelId> (search result) or /chat?dm=<userId> (person)
+  const [search, setSearch] = useSearchParams();
+  useEffect(() => {
+    const cid = search.get("c"), dm = search.get("dm");
+    if (!cid && !dm) return;
+    const go = async () => {
+      try {
+        let target = cid;
+        if (dm) {
+          const r = await api.post<{ channel: { id: string } }>("/api/chat/dm", { userIds: [dm] });
+          target = r.channel.id;
+        }
+        const r = await api.get<{ channels: Channel[] }>("/api/chat");
+        setChannels(r.channels);
+        const ch = r.channels.find((c) => c.id === target);
+        if (ch) void open(ch);
+      } catch { /* conversation may not exist yet */ }
+      setSearch({}, { replace: true });
+    };
+    void go();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   const chanList = channels.filter((c) => c.kind === "channel");
   const dmList = channels.filter((c) => c.kind !== "channel");

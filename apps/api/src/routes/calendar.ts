@@ -76,6 +76,14 @@ export function calendarRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get("/api/calendar/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const e = await getEvent((req.params as { id: string }).id, user.orgId);
+    if (!e || !(await canSee(e, user.id))) return notFound(reply);
+    const atts = await attendeesOf([e.id]);
+    return { event: eventOut(e, atts) };
+  });
+
   app.post("/api/calendar", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const parsed = eventSchema.safeParse(req.body ?? {});

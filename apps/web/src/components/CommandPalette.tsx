@@ -13,6 +13,13 @@ const iconKind = (cls?: string) =>
 const isKindIcon = (cls?: string) => KIND_ICON.has(iconKind(cls));
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
+interface AllResults {
+  chats: { id: string; channelId: string; channel: string; author: string | null; snippet: string; createdAt: string }[];
+  events: { id: string; title: string | null; startsAt: string; meetingId: string | null }[];
+  meetings: { id: string; code: string; title: string; status: string; scheduledAt: string | null }[];
+  people: { id: string; displayName: string; email: string; initials: string }[];
+  mails: { id: number; subject: string; from: string; date: string | null }[];
+}
 
 interface Row {
   id: string;
@@ -34,21 +41,26 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<SearchItem[]>([]);
+  const [all, setAll] = useState<AllResults | null>(null);
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) { setQ(""); setHits([]); setIdx(0); setTimeout(() => inputRef.current?.focus(), 0); }
+    if (open) { setQ(""); setHits([]); setAll(null); setIdx(0); setTimeout(() => inputRef.current?.focus(), 0); }
   }, [open]);
 
   useEffect(() => {
-    if (!open || !q.trim()) { setHits([]); return; }
+    if (!open || !q.trim()) { setHits([]); setAll(null); return; }
     const t = setTimeout(async () => {
       try {
-        const r = await api.get<{ items: SearchItem[] }>(`/api/search?q=${encodeURIComponent(q)}`);
-        setHits(r.items);
-      } catch { setHits([]); }
+        const [files, rest] = await Promise.all([
+          api.get<{ items: SearchItem[] }>(`/api/search?q=${encodeURIComponent(q)}`),
+          api.get<AllResults>(`/api/search/all?q=${encodeURIComponent(q)}`).catch(() => null),
+        ]);
+        setHits(files.items);
+        setAll(rest);
+      } catch { setHits([]); setAll(null); }
     }, 180);
     return () => clearTimeout(t);
   }, [q, open]);
@@ -74,6 +86,12 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       nav("/drive/all", "▣", "Kreatix Drive"),
       nav("/drive/shared", "⤴", "Shared with me"),
       nav("/drive/trash", "🗑", "Recycle bin"),
+      nav("/chat", "💬", "Chat"),
+      nav("/calendar", "📅", "Calendar"),
+      nav("/meet", "▶", "Kreatix Meet"),
+      nav("/mail", "✉", "Kreatix Mail"),
+      nav("/sites", "◈", "Sites"),
+      nav("/admin", "⚙", "Admin"),
     ];
   }, [navigate, onTemplates, onUpload, toast]);
 
@@ -89,8 +107,31 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       hint: h.match === "content" ? "content match" : undefined,
       run: () => { navigate(h.kind === "folder" ? `/drive/folder/${h.id}` : `/edit/${h.id}`); },
     }));
-    return [...acts, ...files];
-  }, [actions, hits, q, navigate]);
+    const rest: Row[] = (all?.people ?? []).map((p) => ({
+      id: `p:${p.id}`, group: "People", icon: p.initials || "?", label: p.displayName,
+      hint: p.email,
+      run: () => { navigate(`/chat?dm=${p.id}`); },
+    })).concat((all?.chats ?? []).map((m) => ({
+      id: `c:${m.id}`, group: "Messages", iconCls: "chat", icon: "C",
+      label: `${m.author ?? "?"} — ${m.channel}`,
+      hint: "chat",
+      run: () => { navigate(`/chat?c=${m.channelId}`); },
+    })), (all?.events ?? []).map((e) => ({
+      id: `e:${e.id}`, group: "Events", iconCls: "calendar", icon: "E",
+      label: e.title ?? "Event",
+      hint: new Date(e.startsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+      run: () => { navigate(`/calendar?e=${e.id}`); },
+    })), (all?.meetings ?? []).map((m) => ({
+      id: `m:${m.id}`, group: "Meetings", iconCls: "meet", icon: "M",
+      label: m.title, hint: m.status,
+      run: () => { navigate(m.status === "ended" ? "/meet" : `/meet?join=${m.id}`); },
+    })), (all?.mails ?? []).map((m) => ({
+      id: `ml:${m.id}`, group: "Mail", iconCls: "mail", icon: "✉",
+      label: m.subject, hint: m.from,
+      run: () => { navigate("/mail"); },
+    })));
+    return [...acts, ...files, ...rest];
+  }, [actions, hits, all, q, navigate]);
 
   const activeIdx = Math.min(idx, Math.max(0, rows.length - 1));
 

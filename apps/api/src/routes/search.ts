@@ -4,6 +4,8 @@ import { toDriveItem, type ItemRow } from "../items.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { indexBody } from "../indexer.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds } from "../sites.js";
+import { decryptField } from "../crypto.js";
+import { mailEnabled, mailFetch } from "../mailBridge.js";
 
 /** Highlight each term occurrence in `text` within `window` chars of `pos`. */
 function snippet(text: string, terms: string[], pos: number): string {
@@ -131,5 +133,99 @@ export function searchRoutes(app: FastifyInstance) {
       });
     }
     return { items };
+  });
+
+  /**
+   * Unified cross-app search — the suite-wide counterpart to /api/search
+   * (which stays files-only for the Drive/palette callers). Groups:
+   *   chats    — messages in channels + DMs the user can see
+   *   events   — calendar events they created or attend
+   *   meetings — Meet rooms (title/code match)
+   *   people   — org members (for "chat with" jumps)
+   *   mails    — proxied through the mail bridge when Mail is wired
+   * Bodies/titles are field-encrypted so matching runs JS-side on bounded
+   * recent sets — same model as the file index.
+   */
+  app.get("/api/search/all", async (req) => {
+    const { user } = req as AuthedRequest;
+    const { q: query } = req.query as { q?: string };
+    const needle = query?.trim().toLowerCase();
+    if (!needle) return { chats: [], events: [], meetings: [], people: [], mails: [] };
+    const terms = needle.split(/\s+/);
+    const hit = (text: string | null | undefined) =>
+      !!text && terms.every((t) => text.toLowerCase().includes(t));
+
+    // chats — recent messages in conversations the user can see
+    const chatRows = await dbq<{
+      id: string; channel_id: string; body: string; created_at: string;
+      ch_name: string | null; ch_kind: string; author: string | null;
+    }>(
+      `SELECT m.id, m.channel_id, m.body, m.created_at, c.name AS ch_name, c.kind AS ch_kind,
+              u.display_name AS author
+       FROM chat_messages m
+       JOIN chat_channels c ON c.id = m.channel_id
+       JOIN users u ON u.id = m.user_id
+       WHERE c.org_id = $1 AND (c.kind = 'channel'
+         OR EXISTS (SELECT 1 FROM chat_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))
+       ORDER BY m.created_at DESC LIMIT 1500`,
+      [user.orgId, user.id]);
+    const chats = chatRows
+      .filter((m) => hit(decryptField(m.body) ?? m.body))
+      .slice(0, 10)
+      .map((m) => {
+        const text = decryptField(m.body) ?? m.body;
+        const pos = Math.max(0, text.toLowerCase().indexOf(terms[0]));
+        return { id: m.id, channelId: m.channel_id, channel: m.ch_name ?? "Chat",
+          author: m.author, snippet: snippet(text, terms, pos), createdAt: m.created_at };
+      });
+
+    // calendar — events I created or attend
+    const evRows = await dbq<{
+      id: string; title: string; description: string | null; location: string | null;
+      starts_at: string; ends_at: string; meeting_id: string | null;
+    }>(
+      `SELECT e.* FROM calendar_events e
+       WHERE e.org_id = $1 AND (e.created_by = $2
+         OR EXISTS (SELECT 1 FROM calendar_attendees a WHERE a.event_id = e.id AND a.user_id = $2))
+       ORDER BY e.starts_at DESC LIMIT 400`,
+      [user.orgId, user.id]);
+    const events = evRows
+      .filter((e) => hit(decryptField(e.title) ?? e.title) || hit(decryptField(e.description)) || hit(decryptField(e.location)))
+      .slice(0, 10)
+      .map((e) => ({ id: e.id, title: decryptField(e.title) ?? e.title,
+        startsAt: e.starts_at, endsAt: e.ends_at, meetingId: e.meeting_id }));
+
+    // meetings — title or join code
+    const mtRows = await dbq<{ id: string; code: string; title: string; status: string; scheduled_at: string | null }>(
+      `SELECT id, code, title, status, scheduled_at FROM meetings
+       WHERE org_id = $1 ORDER BY created_at DESC LIMIT 300`, [user.orgId]);
+    const meetings = mtRows
+      .filter((m) => hit(m.title) || hit(m.code))
+      .slice(0, 10)
+      .map((m) => ({ id: m.id, code: m.code, title: m.title, status: m.status, scheduledAt: m.scheduled_at }));
+
+    // people — org members for "message" jumps
+    const pplRows = await dbq<{ id: string; display_name: string; email: string; initials: string }>(
+      `SELECT id, display_name, email, initials FROM users
+       WHERE org_id = $1 AND disabled = false AND id != $2
+         AND (lower(display_name) LIKE $3 OR lower(email) LIKE $3)
+       LIMIT 8`, [user.orgId, user.id, `%${needle}%`]);
+    const people = pplRows.map((p) => ({ id: p.id, displayName: p.display_name, email: p.email, initials: p.initials }));
+
+    // mail — through the SSO bridge; skipped silently when unconfigured
+    let mails: { id: number; subject: string; from: string; date: string | null }[] = [];
+    if (mailEnabled()) {
+      try {
+        const res = await mailFetch(user, `/emails?search=${encodeURIComponent(needle)}&limit=10`);
+        if (res.ok) {
+          const j = await res.json() as { emails?: { id: number; subject?: string; from_address?: string; from_name?: string; created_at?: string }[] };
+          mails = (j.emails ?? []).slice(0, 10).map((e) => ({
+            id: e.id, subject: e.subject ?? "(no subject)",
+            from: e.from_name || e.from_address || "", date: e.created_at ?? null }));
+        }
+      } catch { /* mail service unreachable — other groups still return */ }
+    }
+
+    return { chats, events, meetings, people, mails };
   });
 }
