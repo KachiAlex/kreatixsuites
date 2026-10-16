@@ -150,7 +150,7 @@ export function searchRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const { q: query } = req.query as { q?: string };
     const needle = query?.trim().toLowerCase();
-    if (!needle) return { chats: [], events: [], meetings: [], people: [], mails: [], tasks: [] };
+    if (!needle) return { chats: [], events: [], meetings: [], people: [], mails: [], tasks: [], forms: [], notes: [] };
     const terms = needle.split(/\s+/);
     const hit = (text: string | null | undefined) =>
       !!text && terms.every((t) => text.toLowerCase().includes(t));
@@ -221,6 +221,27 @@ export function searchRoutes(app: FastifyInstance) {
       .slice(0, 10)
       .map((t) => ({ id: t.id, title: decryptField(t.title) ?? t.title, status: t.status, dueAt: t.due_at }));
 
+    // forms + wiki pages — title/description/body match
+    const formRows = await dbq<{ id: string; title: string; description: string | null }>(
+      "SELECT id, title, description FROM forms WHERE org_id = $1 ORDER BY updated_at DESC LIMIT 200",
+      [user.orgId]);
+    const forms = formRows
+      .filter((f) => hit(decryptField(f.title) ?? f.title) || hit(decryptField(f.description)))
+      .slice(0, 8)
+      .map((f) => ({ id: f.id, title: decryptField(f.title) ?? f.title }));
+    const pageRows = await dbq<{ id: string; title: string; body: string | null }>(
+      "SELECT id, title, body FROM wiki_pages WHERE org_id = $1 ORDER BY updated_at DESC LIMIT 400",
+      [user.orgId]);
+    const notes = pageRows
+      .filter((p) => hit(decryptField(p.title) ?? p.title) || hit(decryptField(p.body)))
+      .slice(0, 8)
+      .map((p) => {
+        const body = decryptField(p.body) ?? "";
+        const pos = Math.max(0, body.toLowerCase().indexOf(terms[0]));
+        return { id: p.id, title: decryptField(p.title) ?? p.title,
+          snippet: body ? snippet(body, terms, pos) : undefined };
+      });
+
     // mail — through the SSO bridge; skipped silently when unconfigured
     let mails: { id: number; subject: string; from: string; date: string | null }[] = [];
     if (mailEnabled()) {
@@ -235,6 +256,6 @@ export function searchRoutes(app: FastifyInstance) {
       } catch { /* mail service unreachable — other groups still return */ }
     }
 
-    return { chats, events, meetings, people, mails, tasks };
+    return { chats, events, meetings, people, mails, tasks, forms, notes };
   });
 }

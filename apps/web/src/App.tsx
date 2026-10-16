@@ -27,6 +27,9 @@ const Meet = lazy(() => import("./pages/Meet").then((m) => ({ default: m.Meet })
 const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
 const Calendar = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.Calendar })));
 const Tasks = lazy(() => import("./pages/Tasks").then((m) => ({ default: m.Tasks })));
+const Forms = lazy(() => import("./pages/Forms").then((m) => ({ default: m.Forms })));
+const FormFill = lazy(() => import("./pages/FormFill").then((m) => ({ default: m.FormFill })));
+const Notes = lazy(() => import("./pages/Notes").then((m) => ({ default: m.Notes })));
 const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
 
 const RouteFallback = () => (
@@ -112,6 +115,7 @@ export default function App() {
           <Route path="/register" element={<Login mode="register" />} />
           <Route path="/download" element={<Download />} />
           <Route path="/shared/:token" element={<SharedLink />} />
+          <Route path="/f/:token" element={<FormFill />} />
           <Route path="/edit/:id" element={<Protected><Editor /></Protected>} />
           <Route element={<Protected><Shell /></Protected>}>
             <Route path="/home" element={<Home />} />
@@ -124,6 +128,8 @@ export default function App() {
             <Route path="/chat" element={<Chat />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/tasks" element={<Tasks />} />
+            <Route path="/forms" element={<Forms />} />
+            <Route path="/notes" element={<Notes />} />
             <Route path="/sites" element={<Sites />} />
             <Route path="/sites/:siteId" element={<SitePage />} />
             <Route path="/sites/:siteId/library/:libId" element={<LibraryPage />} />

@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "forms" | "notes" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -13,6 +13,8 @@ const TILE: Record<AppKind, string> = {
   chat: "#0E7C61",
   calendar: "#C2470E",
   tasks: "#7B61A3",
+  forms: "#0F7B6C",
+  notes: "#7C3A8C",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -106,6 +108,27 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           <rect x="24" y="9" width="16" height="7" rx="3" fill="#fff" />
           <path d="M22 28l5 5 9-10" stroke="#fff" strokeWidth="3.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           <path d="M23 43h18" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" opacity="0.6" />
+        </g>
+      );
+    case "forms":
+      // Form card — fields + radio rows
+      return (
+        <g>
+          <rect x="14" y="10" width="36" height="44" rx="5" fill="none" stroke="#fff" strokeWidth="3.5" />
+          <path d="M21 20h22" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" />
+          <circle cx="24" cy="31" r="3.2" fill="none" stroke="#fff" strokeWidth="3" />
+          <path d="M32 31h11" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" />
+          <circle cx="24" cy="42" r="3.2" fill="#fff" />
+          <path d="M32 42h11" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" />
+        </g>
+      );
+    case "notes":
+      // Sticky note with folded corner
+      return (
+        <g>
+          <path d="M16 10h32v32l-10 12H16z" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinejoin="round" />
+          <path d="M48 42l-10 12v-12z" fill="#fff" />
+          <path d="M22 22h18M22 30h14" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
         </g>
       );
     case "folder":

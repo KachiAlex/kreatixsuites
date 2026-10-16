@@ -20,6 +20,8 @@ interface AllResults {
   people: { id: string; displayName: string; email: string; initials: string }[];
   mails: { id: number; subject: string; from: string; date: string | null }[];
   tasks?: { id: string; title: string | null; status: string; dueAt: string | null }[];
+  forms?: { id: string; title: string | null }[];
+  notes?: { id: string; title: string | null; snippet?: string }[];
 }
 
 interface Row {
@@ -90,6 +92,8 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       nav("/chat", "💬", "Chat"),
       nav("/calendar", "📅", "Calendar"),
       nav("/tasks", "✓", "Tasks"),
+      nav("/notes", "📝", "Notes"),
+      nav("/forms", "▤", "Forms"),
       nav("/meet", "▶", "Kreatix Meet"),
       nav("/mail", "✉", "Kreatix Mail"),
       nav("/sites", "◈", "Sites"),
@@ -132,6 +136,14 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       label: t.title ?? "Task",
       hint: t.dueAt ? `due ${new Date(t.dueAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : t.status,
       run: () => { navigate("/tasks"); },
+    })), (all?.forms ?? []).map((f) => ({
+      id: `fm:${f.id}`, group: "Forms", iconCls: "forms", icon: "F",
+      label: f.title ?? "Form", hint: "form",
+      run: () => { navigate("/forms"); },
+    })), (all?.notes ?? []).map((n) => ({
+      id: `n:${n.id}`, group: "Notes", iconCls: "notes", icon: "N",
+      label: n.title ?? "Page", hint: n.snippet ?? "note",
+      run: () => { navigate("/notes"); },
     })), (all?.mails ?? []).map((m) => ({
       id: `ml:${m.id}`, group: "Mail", iconCls: "mail", icon: "✉",
       label: m.subject, hint: m.from,

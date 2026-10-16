@@ -700,6 +700,41 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_recordings_org ON meeting_recordings(org_id, created_at DESC)`);
 
+  // Kreatix Forms — surveys/forms with a public share-token submit endpoint
+  await pool.query(`CREATE TABLE IF NOT EXISTS forms (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    schema TEXT NOT NULL,                  -- JSON [{id,label,type,required,options}]
+    open BOOLEAN NOT NULL DEFAULT true,
+    token TEXT NOT NULL UNIQUE,            -- public share slug
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS form_responses (
+    id TEXT PRIMARY KEY,
+    form_id TEXT NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+    answers TEXT NOT NULL,                 -- JSON {fieldId: value}
+    respondent TEXT,                       -- optional free-text name/email
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_responses_form ON form_responses(form_id)`);
+
+  // Kreatix Notes — org wiki pages (OneNote-lite; markdown-ish body)
+  await pool.query(`CREATE TABLE IF NOT EXISTS wiki_pages (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_wiki_org ON wiki_pages(org_id, updated_at DESC)`);
+
   // Kreatix Tasks — Planner-lite kanban; org-shared board
   await pool.query(`CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
