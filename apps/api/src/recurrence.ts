@@ -102,6 +102,7 @@ const unescIcs = (s: string) => s.replace(/\\n/gi, "\n").replace(/\\,/g, ",").re
 export interface IcsEvent {
   uid: string; summary: string; description?: string; location?: string;
   startsAt: Date; endsAt: Date; allDay: boolean; rrule?: string; sequence?: number;
+  exdates?: Date[];        // cancelled occurrences of a recurring series
 }
 
 /** Parse the VEVENTs out of an .ics payload. Unfolds continuation lines first. */
@@ -139,11 +140,9 @@ export function parseIcs(ics: string): IcsEvent[] {
   return events;
 }
 
-export function buildIcs(ev: IcsEvent, organizer?: string, method?: "REQUEST" | "CANCEL"): string {
+const buildVevent = (ev: IcsEvent, organizer?: string, method?: "REQUEST" | "CANCEL"): string => {
   const allDay = ev.allDay;
   const lines = [
-    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kreatix//Calendar//EN", "CALSCALE:GREGORIAN",
-    ...(method ? [`METHOD:${method}`] : []),
     "BEGIN:VEVENT",
     `UID:${ev.uid}`,
     `DTSTAMP:${toICalDate(new Date())}`,
@@ -159,6 +158,29 @@ export function buildIcs(ev: IcsEvent, organizer?: string, method?: "REQUEST" | 
   if (ev.description) lines.push(`DESCRIPTION:${escIcs(ev.description)}`);
   if (organizer) lines.push(`ORGANIZER:mailto:${organizer}`);
   if (ev.rrule) lines.push(`RRULE:${ev.rrule.replace(/^RRULE:/i, "")}`);
-  lines.push("END:VEVENT", "END:VCALENDAR");
+  if (ev.exdates?.length)
+    lines.push(`EXDATE:${ev.exdates.map((d) => toICalDate(d, allDay)).join(",")}`);
+  lines.push("END:VEVENT");
   return lines.join("\r\n");
+};
+
+export function buildIcs(ev: IcsEvent, organizer?: string, method?: "REQUEST" | "CANCEL"): string {
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kreatix//Calendar//EN", "CALSCALE:GREGORIAN",
+    ...(method ? [`METHOD:${method}`] : []),
+    buildVevent(ev, organizer, method),
+    "END:VCALENDAR",
+  ].join("\r\n") + "\r\n";
+}
+
+/** Multi-event calendar feed (webcal subscription). Cancelled occurrences go
+ *  out as EXDATE; moved exceptions fall back to series time (fidelity gap —
+ *  RECURRENCE-ID instances are a future refinement). */
+export function buildIcsFeed(events: IcsEvent[], organizer?: string, calName = "Kreatix Calendar"): string {
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kreatix//Calendar//EN", "CALSCALE:GREGORIAN",
+    `X-WR-CALNAME:${escIcs(calName)}`,
+    ...events.map((e) => buildVevent(e, organizer)),
+    "END:VCALENDAR",
+  ].join("\r\n") + "\r\n";
 }

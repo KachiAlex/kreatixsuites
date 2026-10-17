@@ -24,7 +24,7 @@ import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
 import { meetRoutes, meetIngestRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
-import { calendarRoutes } from "./routes/calendar.js";
+import { calendarRoutes, sweepCalendarReminders } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
 import { runScheduleSweep } from "./rules.js";
@@ -395,6 +395,14 @@ async function main() {
       .catch((e) => app.log.warn(e, "webhook sweep failed"));
   setTimeout(hookSweep, 45_000).unref();
   setInterval(hookSweep, 2 * 60 * 1000).unref();
+
+  // calendar reminders — every 60s; fires bell notifications at reminder_mins
+  const calSweep = () =>
+    runSweep("calendar.reminders", 717009, () => sweepCalendarReminders())
+      .then((n) => { if (n) app.log.info({ sent: n }, "calendar reminders sent"); })
+      .catch((e) => app.log.warn(e, "calendar reminder sweep failed"));
+  setTimeout(calSweep, 20_000).unref();
+  setInterval(calSweep, 60_000).unref();
 
   // ops sweep — health checks/alerts hourly + daily backup when due
   const opsSweep = () => {

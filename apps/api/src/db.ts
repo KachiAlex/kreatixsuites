@@ -792,6 +792,17 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS ical_uid TEXT`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_ical_uid
     ON calendar_events(org_id, ical_uid) WHERE ical_uid IS NOT NULL`);
+
+  // Event reminders — minutes-before-start set by the organizer; the 60s sweep
+  // fans out bell notifications. The log dedups per (event, occurrence) so
+  // recurring series fire once per instance.
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS reminder_mins INT`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS calendar_reminder_log (
+    event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+    occurrence_start TIMESTAMPTZ NOT NULL,
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (event_id, occurrence_start)
+  )`);
   // Governance depth — legal hold flag blocks all delete paths; DLP flag is
   // stamped by the save-time scanner (policies.dlpPatterns).
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN NOT NULL DEFAULT false`);

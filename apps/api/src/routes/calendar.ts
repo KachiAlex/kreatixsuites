@@ -8,14 +8,14 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { meetEnabled } from "../meetBridge.js";
-import { parseRRule, expandOccurrences, parseIcs, buildIcs, type RRule } from "../recurrence.js";
+import { parseRRule, expandOccurrences, parseIcs, buildIcs, buildIcsFeed, type RRule } from "../recurrence.js";
 import { sendMailSafe, tpl, publicUrl } from "../email.js";
 
 interface EventRow {
   id: string; org_id: string; title: string; description: string | null;
   location: string | null; starts_at: string; ends_at: string; all_day: boolean;
   meeting_id: string | null; created_by: string; created_at: string; updated_at: string;
-  rrule: string | null; resource_id: string | null;
+  rrule: string | null; resource_id: string | null; reminder_mins: number | null;
 }
 interface ExceptionRow {
   event_id: string; occurrence_start: string; cancelled: boolean;
@@ -35,6 +35,7 @@ const eventSchema = z.object({
   meet: z.boolean().optional(),
   rrule: z.string().trim().max(300).nullish(),
   resourceId: z.string().max(64).nullish(),
+  reminderMins: z.number().int().min(0).max(40320).nullish(),
 });
 
 const enc = (v: string | null | undefined) => (v ? encryptField(v) ?? v : null);
@@ -60,6 +61,21 @@ const verifyRsvpToken = (token: string): { eventId: string; userId: string } | n
   return { eventId: hexToUuid(e), userId: hexToUuid(u) };
 };
 
+/** Personal calendar-feed tokens — <uidhex>.<sig>, domain-separated from
+ *  RSVP tokens so an invite link can't be recycled as a feed URL. Rotating
+ *  JWT_SECRET revokes all outstanding feed subscriptions. */
+const feedToken = (userId: string) => {
+  const payload = userId.replace(/-/g, "");
+  const sig = createHmac("sha256", rsvpKey()).update(`feed:${payload}`).digest("base64url").slice(0, 22);
+  return `${payload}.${sig}`;
+};
+const verifyFeedToken = (token: string): string | null => {
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig || !/^[0-9a-f]{32}$/i.test(payload)) return null;
+  const want = createHmac("sha256", rsvpKey()).update(`feed:${payload}`).digest("base64url").slice(0, 22);
+  return sig === want ? hexToUuid(payload) : null;
+};
+
 const eventOut = (r: EventRow, attendees: AttRow[] = [],
   occ?: { startsAt: Date; endsAt: Date; key?: Date }) => ({
   id: r.id, title: dec(r.title), description: dec(r.description), location: dec(r.location),
@@ -69,7 +85,7 @@ const eventOut = (r: EventRow, attendees: AttRow[] = [],
   occurrenceOf: occ && r.rrule ? r.starts_at : undefined,
   occurrenceKey: occ && r.rrule ? (occ.key ?? occ.startsAt).toISOString() : undefined,
   meetingId: r.meeting_id, createdBy: r.created_by, createdAt: r.created_at,
-  resourceId: r.resource_id ?? null,
+  resourceId: r.resource_id ?? null, reminderMins: r.reminder_mins ?? null,
   attendees: attendees.map((a) => ({ id: a.user_id, displayName: a.display_name, initials: a.initials, status: a.status })),
 });
 
@@ -133,6 +149,45 @@ export function calendarRoutes(app: FastifyInstance) {
     return reply.header("content-type", "text/html; charset=utf-8")
       .send(rsvpPage("Response recorded",
         `<h2>Response recorded</h2><p>You ${s} this event. You can close this tab.</p>`));
+  });
+
+  /** Personal .ics feed — subscribe from Outlook/Apple/Google. Token-bound:
+   *  serves everything that user can see (owns or attends). */
+  app.get("/api/calendar/feed/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const userId = verifyFeedToken(token);
+    if (!userId) return reply.code(403).send({ error: "forbidden", message: "Bad feed link" });
+    const u = await one<{ org_id: string; email: string }>(
+      "SELECT org_id, email FROM users WHERE id = $1 AND NOT disabled", [userId]);
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    const rows = await q<EventRow>(
+      `SELECT e.* FROM calendar_events e
+       WHERE e.org_id = $1 AND (e.created_by = $2 OR EXISTS (
+         SELECT 1 FROM calendar_attendees a WHERE a.event_id = e.id AND a.user_id = $2))
+       ORDER BY e.starts_at LIMIT 2000`, [u.org_id, userId]);
+    const recIds = rows.filter((r) => r.rrule).map((r) => r.id);
+    const excRows = recIds.length
+      ? await q<ExceptionRow>(
+          "SELECT * FROM calendar_exceptions WHERE event_id = ANY($1) AND cancelled",
+          [recIds])
+      : [];
+    const exBy = new Map<string, Date[]>();
+    for (const x of excRows) {
+      const arr = exBy.get(x.event_id) ?? [];
+      arr.push(new Date(x.occurrence_start)); exBy.set(x.event_id, arr);
+    }
+    const ics = buildIcsFeed(rows.map((r) => ({
+      uid: `${r.id}@kreatix`, summary: dec(r.title) ?? "Event",
+      description: dec(r.description) ?? undefined, location: dec(r.location) ?? undefined,
+      startsAt: new Date(r.starts_at), endsAt: new Date(r.ends_at),
+      allDay: r.all_day, rrule: r.rrule ?? undefined,
+      sequence: Math.floor(new Date(r.updated_at).getTime() / 1000),
+      exdates: exBy.get(r.id),
+    })), u.email);
+    return reply
+      .header("content-type", "text/calendar; charset=utf-8")
+      .header("cache-control", "no-cache")
+      .send(ics);
   });
 
   app.register(async (app) => {
@@ -395,10 +450,11 @@ export function calendarRoutes(app: FastifyInstance) {
     }
     const id = randomUUID();
     const row = await one<EventRow>(
-      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by, rrule, resource_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by, rrule, resource_id, reminder_mins)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [id, user.orgId, enc(d.title), enc(d.description), enc(d.location),
-       d.startsAt, d.endsAt, !!d.allDay, meetingId, act.id, d.rrule ?? null, d.resourceId ?? null]);
+       d.startsAt, d.endsAt, !!d.allDay, meetingId, act.id, d.rrule ?? null,
+       d.resourceId ?? null, d.reminderMins ?? null]);
     for (const uid of attendeeIds) {
       await run("INSERT INTO calendar_attendees (event_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, uid]);
       void run(
@@ -441,12 +497,14 @@ export function calendarRoutes(app: FastifyInstance) {
          ends_at = COALESCE($6, ends_at), all_day = COALESCE($7, all_day),
          rrule = CASE WHEN $8::boolean THEN $9 ELSE rrule END,
          resource_id = CASE WHEN $10::boolean THEN $11 ELSE resource_id END,
+         reminder_mins = CASE WHEN $12::boolean THEN $13 ELSE reminder_mins END,
          updated_at = now()
        WHERE id = $1 RETURNING *`,
       [e.id, d.title ? enc(d.title) : null, d.description !== undefined ? enc(d.description) : null,
        d.location !== undefined ? enc(d.location) : null, d.startsAt ?? null, d.endsAt ?? null,
        d.allDay ?? null, d.rrule !== undefined, d.rrule ?? null,
-       d.resourceId !== undefined, d.resourceId ?? null]);
+       d.resourceId !== undefined, d.resourceId ?? null,
+       d.reminderMins !== undefined, d.reminderMins ?? null]);
     // attendee edits are wholesale-replace when provided
     if (d.attendeeIds) {
       const keep = [...new Set(d.attendeeIds.filter((i) => i !== user.id))];
@@ -669,6 +727,12 @@ export function calendarRoutes(app: FastifyInstance) {
     return { token: rsvpToken(e.id, att.user_id) };
   });
 
+  /** Reveal the caller's personal feed URL (webcal subscription link). */
+  app.get("/api/calendar/feed-url", async (req) => {
+    const { user } = req as AuthedRequest;
+    return { url: `${publicUrl()}/api/calendar/feed/${feedToken(user.id)}` };
+  });
+
   /** Single-event .ics download (Outlook/Apple importable). */
   app.get("/api/calendar/:id/ics", async (req, reply) => {
     const { user } = req as AuthedRequest;
@@ -716,4 +780,77 @@ export function calendarRoutes(app: FastifyInstance) {
     return reply.code(201).send({ imported: created.length, skipped });
   });
   });
+}
+
+/* ── Reminder sweep — called every 60s from server.ts via runSweep ── */
+
+const fmtLead = (mins: number) => !mins ? "now"
+  : mins < 60 ? `in ${mins} min`
+  : mins % 1440 === 0 ? `in ${mins / 1440} day${mins > 1440 ? "s" : ""}`
+  : `in ${Math.round(mins / 6) / 10} hr`;
+
+/** Bell notifications for occurrences whose reminder time has arrived.
+ *  Recurring events expand ~25h ahead; the log dedups per (event, occurrence)
+ *  so each instance notifies once. A reschedule re-fires naturally — the log
+ *  key is the new starts_at. Cancelled exceptions stay silent. */
+export async function sweepCalendarReminders(): Promise<number> {
+  const now = Date.now();
+  const horizon = new Date(now + 25 * 3600_000);
+  const rows = await q<EventRow>(
+    `SELECT * FROM calendar_events WHERE reminder_mins IS NOT NULL
+       AND (starts_at <= $1 OR rrule IS NOT NULL) LIMIT 500`,
+    [horizon.toISOString()]);
+  if (!rows.length) return 0;
+  const recIds = rows.filter((r) => r.rrule).map((r) => r.id);
+  const excRows = recIds.length
+    ? await q<ExceptionRow>(
+        `SELECT * FROM calendar_exceptions
+         WHERE event_id = ANY($1) AND occurrence_start >= $2 AND occurrence_start <= $3`,
+        [recIds, new Date(now - 864e5).toISOString(), horizon.toISOString()])
+    : [];
+  const excBy = new Map<string, Map<string, ExceptionRow>>();
+  for (const x of excRows) {
+    if (!excBy.has(x.event_id)) excBy.set(x.event_id, new Map());
+    excBy.get(x.event_id)!.set(new Date(x.occurrence_start).toISOString(), x);
+  }
+  const fired = new Set(
+    (await q<{ event_id: string; occurrence_start: string }>(
+      "SELECT event_id, occurrence_start FROM calendar_reminder_log WHERE event_id = ANY($1)",
+      [rows.map((r) => r.id)]))
+      .map((a) => `${a.event_id}|${new Date(a.occurrence_start).toISOString()}`));
+  let sent = 0;
+  for (const e of rows) {
+    const dur = Date.parse(e.ends_at) - Date.parse(e.starts_at);
+    const rr = e.rrule ? parseRRule(e.rrule) : null;
+    const exc = excBy.get(e.id);
+    const occStarts = rr
+      ? expandOccurrences(new Date(e.starts_at), rr, new Date(now - 864e5), horizon)
+      : [new Date(e.starts_at)];
+    for (const o of occStarts) {
+      const key = o.toISOString();
+      if (fired.has(`${e.id}|${key}`)) continue;
+      const x = exc?.get(key);
+      if (x?.cancelled) continue;
+      const start = x?.starts_at ? Date.parse(x.starts_at) : o.getTime();
+      const end = x?.ends_at ? Date.parse(x.ends_at) : start + dur;
+      const trigger = start - (e.reminder_mins ?? 0) * 60_000;
+      if (now < trigger || now >= end) continue;   // not due yet / already over
+      const recips = await q<{ user_id: string }>(
+        "SELECT user_id FROM calendar_attendees WHERE event_id = $1 AND status <> 'declined'",
+        [e.id]);
+      const ids = [...new Set([e.created_by, ...recips.map((r) => r.user_id)])];
+      const title = dec(e.title) ?? "Event";
+      for (const uid of ids)
+        await run(
+          `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+           VALUES ($1,$2,'calendar',$3,$4)`,
+          [randomUUID(), uid, e.created_by,
+           enc(`Reminder: ${title} starts ${fmtLead(e.reminder_mins ?? 0)}`)]);
+      await run(
+        "INSERT INTO calendar_reminder_log (event_id, occurrence_start) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [e.id, key]);
+      sent += ids.length;
+    }
+  }
+  return sent;
 }

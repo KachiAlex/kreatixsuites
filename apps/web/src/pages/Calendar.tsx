@@ -13,7 +13,7 @@ interface CalEvent {
   id: string; title: string | null; description: string | null; location: string | null;
   startsAt: string; endsAt: string; allDay: boolean; meetingId: string | null;
   createdBy: string; createdAt: string; rrule?: string | null; occurrenceOf?: string;
-  occurrenceKey?: string; resourceId?: string | null;
+  occurrenceKey?: string; resourceId?: string | null; reminderMins?: number | null;
   attendees: { id: string; displayName: string; initials: string; status: string }[];
 }
 interface Person { id: string; displayName: string; email: string; initials: string }
@@ -55,7 +55,9 @@ export function Calendar() {
   const [fMeet, setFMeet] = useState(true);
   const [fAtt, setFAtt] = useState<Set<string>>(new Set());
   const [fRrule, setFRrule] = useState("");
+  const [fReminder, setFReminder] = useState("15");
   const [fResource, setFResource] = useState("");
+  const [view, setView] = useState<"month" | "week">("month");
   const [fScope, setFScope] = useState<"series" | "occurrence">("series");
   const [resources, setResources] = useState<Resource[]>([]);
   const [freebusy, setFreebusy] = useState<Record<string, { startsAt: string; endsAt: string }[]>>({});
@@ -166,13 +168,28 @@ export function Calendar() {
   const selEvents = eventsOn(selDay);
   const todayKey = dayKey(new Date());
 
+  // week view: the Mon–Sun span containing the selected day
+  const weekDays = useMemo(() => {
+    const mon = new Date(selDay);
+    mon.setDate(selDay.getDate() - ((selDay.getDay() + 6) % 7));
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(mon); d.setDate(mon.getDate() + i); return d;
+    });
+  }, [selDay]);
+
+  const navWeek = (dir: number) => {
+    const d = new Date(selDay); d.setDate(d.getDate() + dir * 7);
+    setSelected(dayKey(d));
+    setCursor(new Date(d.getFullYear(), d.getMonth(), 1));
+  };
+
   const openNew = (day?: Date) => {
     const base = day ?? selDay;
     const s = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 10, 0);
     const e = new Date(s.getTime() + 30 * 60_000);
     setEditing(null);
     setFTitle(""); setFLoc(""); setFDesc(""); setFMeet(true); setFRrule("");
-    setFAllDay(false); setFAtt(new Set()); setFResource(""); setFScope("series");
+    setFAllDay(false); setFAtt(new Set()); setFResource(""); setFScope("series"); setFReminder("15");
     setFStart(toLocalInput(s.toISOString())); setFEnd(toLocalInput(e.toISOString()));
     setEditOpen(true);
     if (!people.length) void api.get<{ people: Person[] }>("/api/chat/people").then((r) => setPeople(r.people)).catch(() => {});
@@ -184,6 +201,7 @@ export function Calendar() {
     setFAllDay(e.allDay); setFMeet(!!e.meetingId); setFRrule(e.rrule ?? "");
     setFAtt(new Set(e.attendees.map((a) => a.id)));
     setFResource(e.resourceId ?? ""); setFScope("series");
+    setFReminder(e.reminderMins != null ? String(e.reminderMins) : "");
     setFStart(toLocalInput(e.startsAt)); setFEnd(toLocalInput(e.endsAt));
     setDetail(null); setEditOpen(true);
     if (!people.length) void api.get<{ people: Person[] }>("/api/chat/people").then((r) => setPeople(r.people)).catch(() => {});
@@ -198,6 +216,7 @@ export function Calendar() {
         startsAt: new Date(fStart).toISOString(), endsAt: new Date(fEnd).toISOString(),
         allDay: fAllDay, attendeeIds: [...fAtt], meet: meetOn && fMeet,
         rrule: fRrule || null, resourceId: fResource || null,
+        reminderMins: fReminder === "" ? null : Number(fReminder),
       };
       if (editing && editing.occurrenceOf && fScope === "occurrence") {
         // edit just this occurrence — series keeps its pattern
@@ -227,6 +246,15 @@ export function Calendar() {
   };
 
   const joinMeet = (e: CalEvent) => { if (e.meetingId) navigate(`/meet?join=${e.meetingId}`); };
+  const copyFeed = async () => {
+    try {
+      const r = await api.get<{ url: string }>("/api/calendar/feed-url");
+      try {
+        await navigator.clipboard.writeText(r.url);
+        toast("Feed link copied — add it in Outlook/Google as “subscribe from web”");
+      } catch { window.prompt("Copy your calendar feed link:", r.url); }
+    } catch (err) { toast((err as Error).message); }
+  };
   const exportIcs = async (e: CalEvent) => {
     try {
       const t = await api.get<Blob>(`/api/calendar/${e.id}/ics`);
@@ -306,11 +334,14 @@ export function Calendar() {
               ))}
             </select>
           )}
+          <button className={`btn-sm ${view === "month" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("month")}>Month</button>
+          <button className={`btn-sm ${view === "week" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("week")}>Week</button>
           <button className="btn-ghost btn-sm" onClick={() => setShareOpen(true)}>Share</button>
           <button className="btn-ghost btn-sm" onClick={() => setResOpen(true)}>Rooms</button>
-          <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date())}>Today</button>
-          <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button>
-          <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button>
+          <button className="btn-ghost btn-sm" onClick={() => void copyFeed()}>Feed</button>
+          <button className="btn-ghost btn-sm" onClick={() => { const d = new Date(); setSelected(dayKey(d)); setCursor(new Date(d.getFullYear(), d.getMonth(), 1)); }}>Today</button>
+          <button className="btn-ghost btn-sm" onClick={() => view === "week" ? navWeek(-1) : setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button>
+          <button className="btn-ghost btn-sm" onClick={() => view === "week" ? navWeek(1) : setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button>
           <label className="btn-ghost btn-sm" style={{ cursor: "pointer" }}>
             Import .ics
             <input type="file" accept=".ics,text/calendar" style={{ display: "none" }}
@@ -321,6 +352,7 @@ export function Calendar() {
       </div>
 
       <div className="cal">
+        {view === "month" ? (
         <div className="cal-grid">
           {DOW.map((d) => <div key={d} className="cal-dow">{d}</div>)}
           {weeks.flat().map((d, i) => {
@@ -341,6 +373,28 @@ export function Calendar() {
             );
           })}
         </div>
+        ) : (
+        <div className="cal-week">
+          {weekDays.map((d) => {
+            const evs = eventsOn(d).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+            const k = dayKey(d);
+            return (
+              <div key={k} className={`cal-wday${k === todayKey ? " today" : ""}${k === selected ? " sel" : ""}`}
+                onClick={() => setSelected(k)} onDoubleClick={() => openNew(d)}>
+                <div className="cal-wday-h">{d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
+                {evs.map((e) => (
+                  <button key={e.id + e.startsAt} className={`cal-chip${e.meetingId ? " meet" : ""}`}
+                    onClick={(ev) => { ev.stopPropagation(); setDetail(e); }}>
+                    <b>{e.title}</b>
+                    {!e.allDay && <span>{fmtTime(e.startsAt)} – {fmtTime(e.endsAt)}</span>}
+                  </button>
+                ))}
+                {!evs.length && <span className="cal-wday-none">—</span>}
+              </div>
+            );
+          })}
+        </div>
+        )}
 
         <aside className="cal-side">
           <div className="cal-side-h">
@@ -451,6 +505,17 @@ export function Calendar() {
                   <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">Every weekday</option>
                   <option value="FREQ=MONTHLY">Monthly</option>
                   <option value="FREQ=YEARLY">Yearly</option>
+                </select>
+              </label>
+              <label>Reminder
+                <select value={fReminder} onChange={(e) => setFReminder(e.target.value)}>
+                  <option value="">None</option>
+                  <option value="0">At start time</option>
+                  <option value="5">5 minutes before</option>
+                  <option value="15">15 minutes before</option>
+                  <option value="30">30 minutes before</option>
+                  <option value="60">1 hour before</option>
+                  <option value="1440">1 day before</option>
                 </select>
               </label>
             </div>
