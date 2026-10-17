@@ -3308,3 +3308,61 @@ html[data-theme="dark"]{
 .fx-ai{padding:4px 12px;font-size:12px;background:var(--k-orange-soft,#fdf0e6);border-bottom:1px solid var(--line);cursor:pointer}
 .mail-pri{font-size:9px;margin-right:4px}
 .mail-pri.high{color:#c0392b}.mail-pri.low{color:#7f8c8d}
+
+/* ---- mobile pass: overlays + stacking for app panes ---- */
+@media (max-width:760px){
+  /* chat thread panel overlays the message pane instead of stacking under it */
+  .chat{position:relative}
+  .chat-thread{position:absolute;inset:0;width:auto;border-left:0;z-index:12}
+  .chat-topic-edit{width:100%}
+  .chat-topic-edit input{width:auto;flex:1;min-width:0}
+  .chat-emoji-pop{flex-wrap:wrap}
+  .chat-pane-h{flex-wrap:wrap}
+
+  /* meet: in-call chat becomes a bottom sheet; rows + join code wrap */
+  .meet-call-body{flex-direction:column}
+  .meet-chat{width:100%;border-left:0;border-top:1px solid #232327;flex:0 0 auto;max-height:42%;min-height:140px}
+  .meet-row{flex-wrap:wrap;gap:8px}
+  .meet-joincode{margin-left:0;width:100%}
+  .meet-joincode input{flex:1;width:auto;min-width:0}
+  .meet-rec video{max-width:100%}
+
+  /* forms builder + response rows stack */
+  .form-field-row{grid-template-columns:1fr auto}
+  .form-resp-row{grid-template-columns:1fr}
+
+  /* calendar: form rows stack, day cells compress */
+  .cal-formrow{flex-direction:column;gap:6px}
+  .cal-day{min-height:54px;padding:4px 5px}
+  .cal-dow{padding:5px 4px;font-size:9.5px}
+  .cal-chip{font-size:9.5px;padding:1px 4px}
+
+  /* mail: reader actions wrap; settings tabs scroll */
+  .mail-set-tabs{overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap}
+  .mail-mbox{max-width:100%}
+
+  /* shared bits */
+  .diff-view{overflow-x:auto}
+}
+
+@media (max-width:860px){
+  /* super-admin portal: side nav stacks above content, split grids flatten */
+  .sap-body{grid-template-columns:1fr}
+  .sap-side{position:static}
+  .sap-sidenav{flex-direction:row;overflow-x:auto;scrollbar-width:none;padding-bottom:6px}
+  .sap-sidenav a{white-space:nowrap;flex-shrink:0}
+  .sap-split{grid-template-columns:1fr}
+  .sap-settings{grid-template-columns:1fr}
+  .sap-details{grid-template-columns:1fr 1fr}
+  .sap-planfeats{grid-template-columns:1fr}
+  .sap-limgrid{grid-template-columns:1fr}
+  .sap-aisum{flex-wrap:wrap;gap:10px}
+
+  /* two-col dialog + option grids flatten */
+  .dlg-grid2{grid-template-columns:1fr}
+  .fb-opts{grid-template-columns:1fr}
+}
+@media (max-width:480px){
+  .sap-details{grid-template-columns:1fr}
+  .auth-card{padding:22px 18px}
+}
