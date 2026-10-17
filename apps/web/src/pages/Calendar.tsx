@@ -217,6 +217,8 @@ export function Calendar() {
         allDay: fAllDay, attendeeIds: [...fAtt], meet: meetOn && fMeet,
         rrule: fRrule || null, resourceId: fResource || null,
         reminderMins: fReminder === "" ? null : Number(fReminder),
+        // browser tz — stored so recurrence expands in wall-clock (DST-safe)
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
       };
       if (editing && editing.occurrenceOf && fScope === "occurrence") {
         // edit just this occurrence — series keeps its pattern

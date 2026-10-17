@@ -797,6 +797,8 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // fans out bell notifications. The log dedups per (event, occurrence) so
   // recurring series fire once per instance.
   await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS reminder_mins INT`);
+  // creator's IANA tz — recurrence expands in wall-clock so local time survives DST
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS tz TEXT`);
   await pool.query(`CREATE TABLE IF NOT EXISTS calendar_reminder_log (
     event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
     occurrence_start TIMESTAMPTZ NOT NULL,

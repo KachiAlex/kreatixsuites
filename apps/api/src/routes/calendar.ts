@@ -8,7 +8,7 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { meetEnabled } from "../meetBridge.js";
-import { parseRRule, expandOccurrences, parseIcs, buildIcs, buildIcsFeed, type RRule } from "../recurrence.js";
+import { parseRRule, expandOccurrences, parseIcs, buildIcs, buildIcsFeed, validTz, type RRule } from "../recurrence.js";
 import { sendMailSafe, tpl, publicUrl } from "../email.js";
 
 interface EventRow {
@@ -16,6 +16,7 @@ interface EventRow {
   location: string | null; starts_at: string; ends_at: string; all_day: boolean;
   meeting_id: string | null; created_by: string; created_at: string; updated_at: string;
   rrule: string | null; resource_id: string | null; reminder_mins: number | null;
+  tz: string | null;
 }
 interface ExceptionRow {
   event_id: string; occurrence_start: string; cancelled: boolean;
@@ -36,6 +37,7 @@ const eventSchema = z.object({
   rrule: z.string().trim().max(300).nullish(),
   resourceId: z.string().max(64).nullish(),
   reminderMins: z.number().int().min(0).max(40320).nullish(),
+  tz: z.string().trim().max(64).nullish(),
 });
 
 const enc = (v: string | null | undefined) => (v ? encryptField(v) ?? v : null);
@@ -86,6 +88,7 @@ const eventOut = (r: EventRow, attendees: AttRow[] = [],
   occurrenceKey: occ && r.rrule ? (occ.key ?? occ.startsAt).toISOString() : undefined,
   meetingId: r.meeting_id, createdBy: r.created_by, createdAt: r.created_at,
   resourceId: r.resource_id ?? null, reminderMins: r.reminder_mins ?? null,
+  tz: r.tz,
   attendees: attendees.map((a) => ({ id: a.user_id, displayName: a.display_name, initials: a.initials, status: a.status })),
 });
 
@@ -168,22 +171,42 @@ export function calendarRoutes(app: FastifyInstance) {
     const recIds = rows.filter((r) => r.rrule).map((r) => r.id);
     const excRows = recIds.length
       ? await q<ExceptionRow>(
-          "SELECT * FROM calendar_exceptions WHERE event_id = ANY($1) AND cancelled",
+          "SELECT * FROM calendar_exceptions WHERE event_id = ANY($1)",
           [recIds])
       : [];
-    const exBy = new Map<string, Date[]>();
+    const exBy = new Map<string, Date[]>();   // cancelled → EXDATE
+    const ovBy = new Map<string, ExceptionRow[]>(); // moved/retitled → RECURRENCE-ID vevents
     for (const x of excRows) {
-      const arr = exBy.get(x.event_id) ?? [];
-      arr.push(new Date(x.occurrence_start)); exBy.set(x.event_id, arr);
+      if (x.cancelled) {
+        const arr = exBy.get(x.event_id) ?? [];
+        arr.push(new Date(x.occurrence_start)); exBy.set(x.event_id, arr);
+      } else {
+        const arr = ovBy.get(x.event_id) ?? [];
+        arr.push(x); ovBy.set(x.event_id, arr);
+      }
     }
-    const ics = buildIcsFeed(rows.map((r) => ({
-      uid: `${r.id}@kreatix`, summary: dec(r.title) ?? "Event",
-      description: dec(r.description) ?? undefined, location: dec(r.location) ?? undefined,
-      startsAt: new Date(r.starts_at), endsAt: new Date(r.ends_at),
-      allDay: r.all_day, rrule: r.rrule ?? undefined,
-      sequence: Math.floor(new Date(r.updated_at).getTime() / 1000),
-      exdates: exBy.get(r.id),
-    })), u.email);
+    const seq = (r: EventRow) => Math.floor(new Date(r.updated_at).getTime() / 1000);
+    const ics = buildIcsFeed(rows.flatMap((r) => {
+      const base = {
+        uid: `${r.id}@kreatix`, summary: dec(r.title) ?? "Event",
+        description: dec(r.description) ?? undefined, location: dec(r.location) ?? undefined,
+        startsAt: new Date(r.starts_at), endsAt: new Date(r.ends_at),
+        allDay: r.all_day, rrule: r.rrule ?? undefined,
+        sequence: seq(r), exdates: exBy.get(r.id),
+        tz: r.tz ?? undefined,
+      };
+      const dur = new Date(r.ends_at).getTime() - new Date(r.starts_at).getTime();
+      const overrides = (ovBy.get(r.id) ?? []).map((x) => ({
+        ...base,
+        summary: dec(x.title) ?? base.summary,
+        location: x.location ? dec(x.location) ?? undefined : base.location,
+        startsAt: x.starts_at ? new Date(x.starts_at) : new Date(x.occurrence_start),
+        endsAt: x.ends_at ? new Date(x.ends_at) : new Date(new Date(x.occurrence_start).getTime() + dur),
+        rrule: undefined, exdates: undefined,
+        recurrenceId: new Date(x.occurrence_start),
+      }));
+      return [base, ...overrides];
+    }), u.email);
     return reply
       .header("content-type", "text/calendar; charset=utf-8")
       .header("cache-control", "no-cache")
@@ -223,7 +246,7 @@ export function calendarRoutes(app: FastifyInstance) {
    *  occurrence overlaps an existing booking's span. */
   const resourceConflict = async (
     orgId: string, resourceId: string, startsAt: string, endsAt: string,
-    rrule: string | null, excludeEventId: string | null,
+    rrule: string | null, excludeEventId: string | null, tz: string | null,
   ): Promise<{ title: string } | "missing" | null> => {
     const res = await one<{ id: string; name: string }>(
       "SELECT id, name FROM calendar_resources WHERE id = $1 AND org_id = $2", [resourceId, orgId]);
@@ -233,16 +256,17 @@ export function calendarRoutes(app: FastifyInstance) {
     const loD = new Date(Date.parse(startsAt) - 24 * 3600_000);
     const hiD = new Date(Date.parse(endsAt) + (rrule ? 370 : 1) * 864e5);
     const dur = Date.parse(endsAt) - Date.parse(startsAt);
-    const expand = (st: string, rule: RRule | null, d: number) =>
+    const expand = (st: string, rule: RRule | null, d: number, z: string | null) =>
       rule
-        ? expandOccurrences(new Date(st), rule, loD, hiD).map((o) => ({ s: o.getTime(), e: o.getTime() + d }))
+        ? expandOccurrences(new Date(st), rule, loD, hiD, 400, z ?? "UTC")
+            .map((o) => ({ s: o.getTime(), e: o.getTime() + d }))
         : [{ s: Date.parse(st), e: Date.parse(st) + d }];
-    let want = expand(startsAt, rrule ? parseRRule(rrule) : null, dur);
+    let want = expand(startsAt, rrule ? parseRRule(rrule) : null, dur, tz);
     if (!want.length) want = [{ s: Date.parse(startsAt), e: Date.parse(endsAt) }];
     const maxE = new Date(Math.max(...want.map((w) => w.e))).toISOString();
     const minS = new Date(Math.min(...want.map((w) => w.s))).toISOString();
-    const have = await q<{ id: string; starts_at: string; ends_at: string; rrule: string | null; title: string }>(
-      `SELECT id, starts_at, ends_at, rrule, title FROM calendar_events
+    const have = await q<{ id: string; starts_at: string; ends_at: string; rrule: string | null; title: string; tz: string | null }>(
+      `SELECT id, starts_at, ends_at, rrule, title, tz FROM calendar_events
        WHERE org_id = $1 AND resource_id = $2 ${excludeEventId ? "AND id <> $5" : ""}
          AND (rrule IS NOT NULL OR (starts_at < $3::timestamptz AND ends_at > $4::timestamptz))`,
       excludeEventId ? [orgId, resourceId, maxE, minS, excludeEventId] : [orgId, resourceId, maxE, minS]);
@@ -273,7 +297,7 @@ export function calendarRoutes(app: FastifyInstance) {
     want = applyExc(excludeEventId ?? "", want);
     for (const h of have) {
       const hdur = Date.parse(h.ends_at) - Date.parse(h.starts_at);
-      const spans = applyExc(h.id, expand(h.starts_at, h.rrule ? parseRRule(h.rrule) : null, hdur));
+      const spans = applyExc(h.id, expand(h.starts_at, h.rrule ? parseRRule(h.rrule) : null, hdur, h.tz));
       for (const w of want)
         for (const sp of spans)
           if (w.s < sp.e && w.e > sp.s) return { title: dec(h.title) ?? "Another event" };
@@ -295,6 +319,7 @@ export function calendarRoutes(app: FastifyInstance) {
       startsAt: new Date(e.starts_at), endsAt: new Date(e.ends_at),
       allDay: e.all_day, rrule: e.rrule ?? undefined,
       sequence: Math.floor(new Date(e.updated_at).getTime() / 1000),
+      tz: e.tz ?? undefined,
     }, organizer.email, cancelled ? "CANCEL" : "REQUEST");
     void q<{ id: string; email: string; display_name: string }>(
       "SELECT id, email, display_name FROM users WHERE id = ANY($1) AND NOT disabled", [attendeeIds])
@@ -339,7 +364,8 @@ export function calendarRoutes(app: FastifyInstance) {
     if (!rr) return [{ startsAt: new Date(r.starts_at), endsAt: new Date(r.ends_at), key: new Date(r.starts_at) }];
     const st = new Date(r.starts_at), en = new Date(r.ends_at);
     const dur = en.getTime() - st.getTime();
-    const occs = expandOccurrences(st, rr, loD, hiD).map((o) => ({ startsAt: o, endsAt: new Date(o.getTime() + dur) }));
+    const occs = expandOccurrences(st, rr, loD, hiD, 400, r.tz ?? "UTC")
+      .map((o) => ({ startsAt: o, endsAt: new Date(o.getTime() + dur) }));
     const byStart = new Map(exc.map((x) => [new Date(x.occurrence_start).toISOString(), x]));
     const out: { startsAt: Date; endsAt: Date; key: Date; exc?: ExceptionRow }[] = [];
     for (const o of occs) {
@@ -421,6 +447,8 @@ export function calendarRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "invalid", message: "End must be after start" });
     if (d.rrule && !parseRRule(d.rrule))
       return reply.code(400).send({ error: "invalid", message: "Unsupported recurrence rule" });
+    if (d.tz && !validTz(d.tz))
+      return reply.code(400).send({ error: "invalid", message: "Unknown timezone" });
     const act = await actingAs(req);
     if (act.owner && !act.canEdit)
       return reply.code(403).send({ error: "forbidden", message: "View-only delegate" });
@@ -434,7 +462,7 @@ export function calendarRoutes(app: FastifyInstance) {
     }
     // resource booking — the room must exist in this org and be free
     if (d.resourceId) {
-      const conflict = await resourceConflict(user.orgId, d.resourceId, d.startsAt, d.endsAt, d.rrule ?? null, null);
+      const conflict = await resourceConflict(user.orgId, d.resourceId, d.startsAt, d.endsAt, d.rrule ?? null, null, d.tz ?? null);
       if (conflict === "missing")
         return reply.code(400).send({ error: "invalid", message: "Unknown resource" });
       if (conflict)
@@ -450,11 +478,11 @@ export function calendarRoutes(app: FastifyInstance) {
     }
     const id = randomUUID();
     const row = await one<EventRow>(
-      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by, rrule, resource_id, reminder_mins)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, meeting_id, created_by, rrule, resource_id, reminder_mins, tz)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
       [id, user.orgId, enc(d.title), enc(d.description), enc(d.location),
        d.startsAt, d.endsAt, !!d.allDay, meetingId, act.id, d.rrule ?? null,
-       d.resourceId ?? null, d.reminderMins ?? null]);
+       d.resourceId ?? null, d.reminderMins ?? null, d.tz ?? null]);
     for (const uid of attendeeIds) {
       await run("INSERT INTO calendar_attendees (event_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, uid]);
       void run(
@@ -478,13 +506,16 @@ export function calendarRoutes(app: FastifyInstance) {
     const d = parsed.data;
     if (d.rrule && !parseRRule(d.rrule))
       return reply.code(400).send({ error: "invalid", message: "Unsupported recurrence rule" });
+    if (d.tz && !validTz(d.tz))
+      return reply.code(400).send({ error: "invalid", message: "Unknown timezone" });
     if (Date.parse(d.endsAt ?? e.ends_at) <= Date.parse(d.startsAt ?? e.starts_at))
       return reply.code(400).send({ error: "invalid", message: "End must be after start" });
     const nextRes = d.resourceId !== undefined ? d.resourceId : e.resource_id;
     if (nextRes) {
       const conflict = await resourceConflict(user.orgId, nextRes,
         d.startsAt ?? e.starts_at, d.endsAt ?? e.ends_at,
-        d.rrule !== undefined ? d.rrule : e.rrule, e.id);
+        d.rrule !== undefined ? d.rrule : e.rrule, e.id,
+        d.tz !== undefined ? d.tz : e.tz);
       if (conflict === "missing")
         return reply.code(400).send({ error: "invalid", message: "Unknown resource" });
       if (conflict)
@@ -498,13 +529,15 @@ export function calendarRoutes(app: FastifyInstance) {
          rrule = CASE WHEN $8::boolean THEN $9 ELSE rrule END,
          resource_id = CASE WHEN $10::boolean THEN $11 ELSE resource_id END,
          reminder_mins = CASE WHEN $12::boolean THEN $13 ELSE reminder_mins END,
+         tz = CASE WHEN $14::boolean THEN $15 ELSE tz END,
          updated_at = now()
        WHERE id = $1 RETURNING *`,
       [e.id, d.title ? enc(d.title) : null, d.description !== undefined ? enc(d.description) : null,
        d.location !== undefined ? enc(d.location) : null, d.startsAt ?? null, d.endsAt ?? null,
        d.allDay ?? null, d.rrule !== undefined, d.rrule ?? null,
        d.resourceId !== undefined, d.resourceId ?? null,
-       d.reminderMins !== undefined, d.reminderMins ?? null]);
+       d.reminderMins !== undefined, d.reminderMins ?? null,
+       d.tz !== undefined, d.tz ?? null]);
     // attendee edits are wholesale-replace when provided
     if (d.attendeeIds) {
       const keep = [...new Set(d.attendeeIds.filter((i) => i !== user.id))];
@@ -743,6 +776,7 @@ export function calendarRoutes(app: FastifyInstance) {
       description: dec(e.description) ?? undefined, location: dec(e.location) ?? undefined,
       startsAt: new Date(e.starts_at), endsAt: new Date(e.ends_at),
       allDay: e.all_day, rrule: e.rrule ?? undefined,
+      tz: e.tz ?? undefined,
     }, user.email);
     return reply
       .header("content-type", "text/calendar; charset=utf-8")
@@ -771,10 +805,10 @@ export function calendarRoutes(app: FastifyInstance) {
       seen.add(ev.uid);
       const rr = ev.rrule && parseRRule(ev.rrule) ? ev.rrule.replace(/^RRULE:/i, "") : null;
       const row = await one<{ id: string }>(
-        `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, created_by, rrule, ical_uid)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, created_by, rrule, ical_uid, tz)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
         [randomUUID(), user.orgId, enc(ev.summary), enc(ev.description), enc(ev.location),
-         ev.startsAt.toISOString(), ev.endsAt.toISOString(), ev.allDay, user.id, rr, ev.uid]);
+         ev.startsAt.toISOString(), ev.endsAt.toISOString(), ev.allDay, user.id, rr, ev.uid, ev.tz ?? null]);
       if (row) created.push(row.id);
     }
     return reply.code(201).send({ imported: created.length, skipped });
@@ -824,7 +858,7 @@ export async function sweepCalendarReminders(): Promise<number> {
     const rr = e.rrule ? parseRRule(e.rrule) : null;
     const exc = excBy.get(e.id);
     const occStarts = rr
-      ? expandOccurrences(new Date(e.starts_at), rr, new Date(now - 864e5), horizon)
+      ? expandOccurrences(new Date(e.starts_at), rr, new Date(now - 864e5), horizon, 400, e.tz ?? "UTC")
       : [new Date(e.starts_at)];
     for (const o of occStarts) {
       const key = o.toISOString();

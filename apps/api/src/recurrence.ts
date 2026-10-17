@@ -13,6 +13,50 @@ export interface RRule {
 }
 
 const DAYS: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// ── timezone math (Intl-backed; no tz lib dependency) ──
+const fmtCache = new Map<string, Intl.DateTimeFormat>();
+const tzFmt = (tz: string) => {
+  let f = fmtCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
+      day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      weekday: "short",
+    });
+    fmtCache.set(tz, f);
+  }
+  return f;
+};
+
+/** Wall-clock fields of an instant in tz. */
+const wallFields = (tz: string, d: Date) => {
+  const p = tzFmt(tz).formatToParts(d);
+  const num = (t: string) => Number(p.find((x) => x.type === t)!.value);
+  const h = num("hour") === 24 ? 0 : num("hour");
+  return {
+    y: num("year"), m: num("month"), d: num("day"), h, min: num("minute"), s: num("second"),
+    dow: DOW_SHORT.indexOf(p.find((x) => x.type === "weekday")!.value),
+  };
+};
+
+/** ms offset of tz at a UTC instant. */
+const tzOffsetMs = (tz: string, utcMs: number) => {
+  const w = wallFields(tz, new Date(utcMs));
+  return Date.UTC(w.y, w.m - 1, w.d, w.h, w.min, w.s) - Math.floor(utcMs / 1000) * 1000;
+};
+
+/** Wall-clock (y,m,d,h,min,s) in tz → UTC instant. Two-pass offset correction
+ *  covers transitions that flip mid-conversion; ambiguous times take the
+ *  first occurrence, nonexistent times slide forward (RFC 5545 behavior). */
+export function wallToUtc(tz: string, y: number, m: number, d: number, h: number, min: number, s: number): Date {
+  const guess = Date.UTC(y, m - 1, d, h, min, s);
+  return new Date(guess - tzOffsetMs(tz, guess - tzOffsetMs(tz, guess)));
+}
+
+const validTz = (tz: string) => { try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; } };
+export { validTz };
 
 export function parseRRule(s: string | null | undefined): RRule | null {
   if (!s) return null;
@@ -34,8 +78,10 @@ export function parseRRule(s: string | null | undefined): RRule | null {
   return rr;
 }
 
-/** Expand occurrences of (start,duration,rrule) into [lo,hi]. Returns start Dates. */
-export function expandOccurrences(start: Date, rrule: RRule, lo: Date, hi: Date, cap = 400): Date[] {
+/** Expand occurrences of (start,duration,rrule) into [lo,hi]. Returns start
+ *  Dates. Stepping is wall-clock in `tz` — a daily 9:00 meeting stays 9:00
+ *  across DST transitions (the UTC instant shifts, the local time doesn't). */
+export function expandOccurrences(start: Date, rrule: RRule, lo: Date, hi: Date, cap = 400, tz = "UTC"): Date[] {
   const out: Date[] = [];
   const push = (d: Date) => {
     if (rrule.until && d > rrule.until) return false;
@@ -46,35 +92,39 @@ export function expandOccurrences(start: Date, rrule: RRule, lo: Date, hi: Date,
   let n = 0;
   const hitCap = () => ++n > (rrule.count ?? cap) || out.length >= cap;
 
+  const ws = wallFields(tz, start);   // wall-clock anchor (time + weekday)
+  const mk = (y: number, m: number, d: number) => wallToUtc(tz, y, m, d, ws.h, ws.min, ws.s);
+
   if (rrule.freq === "DAILY") {
-    const step = rrule.interval * 864e5;
-    for (let t = start.getTime(); t < hi.getTime() + 864e5; t += step) {
-      if (hitCap() || !push(new Date(t))) break;
+    // calendar-day stepping — NOT fixed-ms (that drifts ±1h across DST)
+    for (let i = 0; ; i += rrule.interval) {
+      const cand = new Date(Date.UTC(ws.y, ws.m - 1, ws.d + i));
+      const t = mk(cand.getUTCFullYear(), cand.getUTCMonth() + 1, cand.getUTCDate());
+      if (hitCap() || !push(t) || t > hi) break;
     }
   } else if (rrule.freq === "WEEKLY") {
-    const weekMs = rrule.interval * 7 * 864e5;
-    const days = (rrule.byDay?.length ? rrule.byDay : [Object.keys(DAYS).find((k) => DAYS[k] === start.getUTCDay())!])
-      .map((d) => DAYS[d]);
-    // anchor to the Monday of the start week (UTC)
-    const anchor = start.getTime() - ((start.getUTCDay() + 6) % 7) * 864e5;
-    for (let wk = anchor; wk < hi.getTime() + 7 * 864e5; wk += weekMs) {
+    const days = (rrule.byDay?.length ? rrule.byDay : [Object.keys(DAYS).find((k) => DAYS[k] === ws.dow)!])
+      .map((d) => DAYS[d])
+      .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));   // Mon..Sun — chronological within each week
+    // anchor to the Monday of the start week in wall-clock days
+    const anchor = Date.UTC(ws.y, ws.m - 1, ws.d) - ((ws.dow + 6) % 7) * 864e5;
+    for (let wk = anchor; wk < hi.getTime() + 31 * 864e5; wk += rrule.interval * 7 * 864e5) {
       for (const dow of days) {
-        const t = wk + ((dow + 6) % 7) * 864e5 + (start.getTime() % 864e5);
-        if (t < start.getTime() - 1000) continue; // before series start
-        if (hitCap() || !push(new Date(t))) return out;
+        const cand = new Date(wk + ((dow + 6) % 7) * 864e5);
+        const t = mk(cand.getUTCFullYear(), cand.getUTCMonth() + 1, cand.getUTCDate());
+        if (t < start) continue;              // before series start
+        if (hitCap() || !push(t) || t > hi) return out;
       }
     }
   } else {
     const stepMonths = rrule.freq === "MONTHLY" ? rrule.interval : rrule.interval * 12;
-    const dom = rrule.byMonthDay ?? start.getUTCDate();
+    const dom = rrule.byMonthDay ?? ws.d;
     for (let i = 0; i < 500; i++) {
-      const d = new Date(Date.UTC(
-        start.getUTCFullYear(), start.getUTCMonth() + i * stepMonths, dom,
-        start.getUTCHours(), start.getUTCMinutes(), start.getUTCSeconds()));
-      if (d.getUTCDate() !== dom) { continue; } // skipped month (e.g. Feb 30)
-      if (d < start) continue;
-      if (hitCap() || !push(d)) break;
-      if (d > hi) break;
+      const probe = new Date(Date.UTC(ws.y, ws.m - 1 + i * stepMonths, dom));
+      if (probe.getUTCDate() !== dom) continue;   // skipped month (e.g. Feb 30)
+      const t = mk(probe.getUTCFullYear(), probe.getUTCMonth() + 1, dom);
+      if (t < start) continue;
+      if (hitCap() || !push(t) || t > hi) break;
     }
   }
   return out;
@@ -82,11 +132,14 @@ export function expandOccurrences(start: Date, rrule: RRule, lo: Date, hi: Date,
 
 // ── iCalendar ──
 
-export function parseICalDate(v: string): Date | null {
-  const m = v.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?/);
+export function parseICalDate(v: string, tz?: string): Date | null {
+  const m = v.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/);
   if (!m) return null;
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0)));
-  return isNaN(d.getTime()) ? null : d;
+  const [_, y, mo, d, h, mi, s] = m;
+  if (tz && !m[7] && validTz(tz))
+    return wallToUtc(tz, +y, +mo, +d, +(h ?? 0), +(mi ?? 0), +(s ?? 0));
+  const dt = new Date(Date.UTC(+y, +mo - 1, +d, +(h ?? 0), +(mi ?? 0), +(s ?? 0)));
+  return isNaN(dt.getTime()) ? null : dt;
 }
 
 export function toICalDate(d: Date | string, allDay = false): string {
@@ -103,6 +156,8 @@ export interface IcsEvent {
   uid: string; summary: string; description?: string; location?: string;
   startsAt: Date; endsAt: Date; allDay: boolean; rrule?: string; sequence?: number;
   exdates?: Date[];        // cancelled occurrences of a recurring series
+  tz?: string;             // IANA zone — emitted as TZID on DT*/EXDATE for wall-clock recurrence
+  recurrenceId?: Date;     // set on exception-override instances
 }
 
 /** Parse the VEVENTs out of an .ics payload. Unfolds continuation lines first. */
@@ -114,9 +169,10 @@ export function parseIcs(ics: string): IcsEvent[] {
     const line = raw.trim();
     if (line === "BEGIN:VEVENT") { cur = {}; continue; }
     if (line === "END:VEVENT" && cur) {
-      const st = parseICalDate(cur.DTSTART ?? "");
+      const stz = cur["DTSTART@TZID"];
+      const st = parseICalDate(cur.DTSTART ?? "", stz);
       if (st) {
-        const en = parseICalDate(cur.DTEND ?? "") ?? new Date(st.getTime() + 3600e3);
+        const en = parseICalDate(cur.DTEND ?? "", cur["DTEND@TZID"] ?? stz) ?? new Date(st.getTime() + 3600e3);
         const allDay = !(cur.DTSTART ?? "").includes("T");
         events.push({
           uid: cur.UID ?? `imp-${st.getTime()}`,
@@ -125,6 +181,7 @@ export function parseIcs(ics: string): IcsEvent[] {
           location: cur.LOCATION ? unescIcs(cur.LOCATION) : undefined,
           startsAt: st, endsAt: en > st ? en : new Date(st.getTime() + 3600e3),
           allDay, rrule: cur.RRULE || undefined,
+          tz: !allDay && stz && validTz(stz) ? stz : undefined,
         });
       }
       cur = null; continue;
@@ -132,34 +189,56 @@ export function parseIcs(ics: string): IcsEvent[] {
     if (cur) {
       const i = line.indexOf(":");
       if (i > 0) {
-        const key = line.slice(0, i).split(";")[0].toUpperCase();
-        cur[key] = line.slice(i + 1);
+        // keep params as KEY@PARAM entries (TZID, VALUE, ...) — DTSTART;TZID=X:...
+        const lhs = line.slice(0, i);
+        const [key, ...params] = lhs.split(";");
+        const k = key.toUpperCase();
+        cur[k] = line.slice(i + 1);
+        for (const p of params) {
+          const eq = p.indexOf("=");
+          if (eq > 0) cur[`${k}@${p.slice(0, eq).toUpperCase()}`] = p.slice(eq + 1);
+        }
       }
     }
   }
   return events;
 }
 
+/** Wall-clock ical datetime of an instant as seen in tz (no trailing Z —
+ *  paired with ;TZID=). */
+const toICalWall = (d: Date, tz: string) => {
+  const w = wallFields(tz, d);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${w.y}${p(w.m)}${p(w.d)}T${p(w.h)}${p(w.min)}${p(w.s)}`;
+};
+
 const buildVevent = (ev: IcsEvent, organizer?: string, method?: "REQUEST" | "CANCEL"): string => {
   const allDay = ev.allDay;
+  // recurring series carry TZID so subscribers expand in wall-clock;
+  // instants without a rule are absolute UTC either way
+  const tzid = ev.tz && !allDay ? ev.tz : null;
+  const dtv = (d: Date) => tzid ? toICalWall(d, tzid) : toICalDate(d, allDay);
   const lines = [
     "BEGIN:VEVENT",
     `UID:${ev.uid}`,
     `DTSTAMP:${toICalDate(new Date())}`,
     `SEQUENCE:${ev.sequence ?? 0}`,
-    allDay ? `DTSTART;VALUE=DATE:${toICalDate(ev.startsAt, true)}` : `DTSTART:${toICalDate(ev.startsAt)}`,
+    allDay ? `DTSTART;VALUE=DATE:${toICalDate(ev.startsAt, true)}`
+      : `DTSTART${tzid ? `;TZID=${tzid}` : ""}:${dtv(ev.startsAt)}`,
     allDay
       ? `DTEND;VALUE=DATE:${toICalDate(new Date(ev.endsAt.getTime() + 864e5), true)}`
-      : `DTEND:${toICalDate(ev.endsAt)}`,
+      : `DTEND${tzid ? `;TZID=${tzid}` : ""}:${dtv(ev.endsAt)}`,
     `SUMMARY:${escIcs(ev.summary)}`,
     ...(method === "CANCEL" ? ["STATUS:CANCELLED"] : []),
   ];
+  if (ev.recurrenceId)
+    lines.push(`RECURRENCE-ID${tzid ? `;TZID=${tzid}` : ""}:${dtv(ev.recurrenceId)}`);
   if (ev.location) lines.push(`LOCATION:${escIcs(ev.location)}`);
   if (ev.description) lines.push(`DESCRIPTION:${escIcs(ev.description)}`);
   if (organizer) lines.push(`ORGANIZER:mailto:${organizer}`);
   if (ev.rrule) lines.push(`RRULE:${ev.rrule.replace(/^RRULE:/i, "")}`);
   if (ev.exdates?.length)
-    lines.push(`EXDATE:${ev.exdates.map((d) => toICalDate(d, allDay)).join(",")}`);
+    lines.push(`EXDATE${tzid ? `;TZID=${tzid}` : ""}:${ev.exdates.map((d) => dtv(d)).join(",")}`);
   lines.push("END:VEVENT");
   return lines.join("\r\n");
 };
