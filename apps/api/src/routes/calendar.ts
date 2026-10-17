@@ -8,7 +8,7 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { meetEnabled } from "../meetBridge.js";
-import { parseRRule, expandOccurrences, parseIcs, buildIcs } from "../recurrence.js";
+import { parseRRule, expandOccurrences, parseIcs, buildIcs, type RRule } from "../recurrence.js";
 import { sendMailSafe, tpl, publicUrl } from "../email.js";
 
 interface EventRow {
@@ -74,6 +74,68 @@ const eventOut = (r: EventRow, attendees: AttRow[] = [],
 });
 
 export function calendarRoutes(app: FastifyInstance) {
+
+  /* ── Public RSVP links — the HMAC token is the credential; no session
+   *  needed (recipients click from email, often logged out). GET only renders
+   *  a confirm button — mail scanners prefetch GETs and must not record a
+   *  response; the POST does. ── */
+  const rsvpPage = (title: string, body: string) =>
+    `<!doctype html><html><head><meta name="robots" content="noindex"><title>${title}</title></head>` +
+    `<body style="font-family:sans-serif;text-align:center;padding:4rem;max-width:420px;margin:auto">${body}</body></html>`;
+  const escHtml = (s: string) => s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  const RSVP_LABEL: Record<string, string> = { accepted: "Accept", tentative: "Maybe", declined: "Decline" };
+
+  app.get("/api/calendar/rsvp-link/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const { s } = req.query as { s?: string };
+    const payload = verifyRsvpToken(token);
+    if (!payload || !["accepted", "declined", "tentative"].includes(s ?? ""))
+      return reply.code(400).header("content-type", "text/html; charset=utf-8")
+        .send(rsvpPage("Invalid link", "<h2>Invalid or expired link</h2>"));
+    const ev = await one<{ title: string }>(
+      "SELECT title FROM calendar_events WHERE id = $1", [payload.eventId]);
+    const title = escHtml(ev ? (dec(ev.title) ?? "Event") : "Event");
+    return reply.header("content-type", "text/html; charset=utf-8").send(rsvpPage("RSVP",
+      `<h2>${title}</h2>
+       <form method="post" action="/api/calendar/rsvp-link/${encodeURIComponent(token)}?s=${encodeURIComponent(s!)}">
+         <button type="submit" style="font-size:1.1rem;padding:.7rem 2.2rem;border-radius:8px;border:0;background:#F2782E;color:#fff;cursor:pointer">${RSVP_LABEL[s!]}</button>
+       </form>`));
+  });
+
+  app.post("/api/calendar/rsvp-link/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const { s } = req.query as { s?: string };
+    if (!["accepted", "declined", "tentative"].includes(s ?? ""))
+      return reply.code(400).header("content-type", "text/html; charset=utf-8")
+        .send(rsvpPage("Invalid link", "<h2>Invalid link</h2>"));
+    const payload = verifyRsvpToken(token);
+    if (!payload)
+      return reply.code(403).header("content-type", "text/html; charset=utf-8")
+        .send(rsvpPage("Invalid link", "<h2>Invalid or expired link</h2>"));
+    const n = await run(
+      "UPDATE calendar_attendees SET status = $1 WHERE event_id = $2 AND user_id = $3",
+      [s, payload.eventId, payload.userId]);
+    if (!n)
+      return reply.code(404).header("content-type", "text/html; charset=utf-8")
+        .send(rsvpPage("Not found", "<h2>Invitation not found</h2>"));
+    // ping the organizer — responses shouldn't be invisible
+    const ev = await one<EventRow>("SELECT * FROM calendar_events WHERE id = $1", [payload.eventId]);
+    if (ev && ev.created_by !== payload.userId) {
+      const who = await one<{ display_name: string }>(
+        "SELECT display_name FROM users WHERE id = $1", [payload.userId]);
+      void run(
+        `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+         VALUES ($1,$2,'calendar',$3,$4)`,
+        [randomUUID(), ev.created_by, payload.userId,
+         enc(`${who?.display_name ?? "An attendee"} ${s}: ${dec(ev.title) ?? "event"}`)]);
+    }
+    return reply.header("content-type", "text/html; charset=utf-8")
+      .send(rsvpPage("Response recorded",
+        `<h2>Response recorded</h2><p>You ${s} this event. You can close this tab.</p>`));
+  });
+
+  app.register(async (app) => {
   app.addHook("preHandler", requireAuth);
 
   const attendeesOf = async (eventIds: string[]) =>
@@ -111,29 +173,52 @@ export function calendarRoutes(app: FastifyInstance) {
     const res = await one<{ id: string; name: string }>(
       "SELECT id, name FROM calendar_resources WHERE id = $1 AND org_id = $2", [resourceId, orgId]);
     if (!res) return "missing";
+    // recurring bookings conflict over the series horizon (~1y), not just the
+    // first days — otherwise next week's occurrence double-books the room
     const loD = new Date(Date.parse(startsAt) - 24 * 3600_000);
-    const hiD = new Date(Date.parse(endsAt) + 24 * 3600_000);
+    const hiD = new Date(Date.parse(endsAt) + (rrule ? 370 : 1) * 864e5);
     const dur = Date.parse(endsAt) - Date.parse(startsAt);
-    const want: { s: number; e: number }[] = [];
-    const rr = rrule ? parseRRule(rrule) : null;
-    if (rr) {
-      for (const o of expandOccurrences(new Date(startsAt), rr, loD, hiD))
-        want.push({ s: o.getTime(), e: o.getTime() + dur });
-      if (!want.length) want.push({ s: Date.parse(startsAt), e: Date.parse(endsAt) });
-    } else want.push({ s: Date.parse(startsAt), e: Date.parse(endsAt) });
+    const expand = (st: string, rule: RRule | null, d: number) =>
+      rule
+        ? expandOccurrences(new Date(st), rule, loD, hiD).map((o) => ({ s: o.getTime(), e: o.getTime() + d }))
+        : [{ s: Date.parse(st), e: Date.parse(st) + d }];
+    let want = expand(startsAt, rrule ? parseRRule(rrule) : null, dur);
+    if (!want.length) want = [{ s: Date.parse(startsAt), e: Date.parse(endsAt) }];
     const maxE = new Date(Math.max(...want.map((w) => w.e))).toISOString();
     const minS = new Date(Math.min(...want.map((w) => w.s))).toISOString();
-    const have = await q<{ starts_at: string; ends_at: string; rrule: string | null; title: string }>(
-      `SELECT starts_at, ends_at, rrule, title FROM calendar_events
+    const have = await q<{ id: string; starts_at: string; ends_at: string; rrule: string | null; title: string }>(
+      `SELECT id, starts_at, ends_at, rrule, title FROM calendar_events
        WHERE org_id = $1 AND resource_id = $2 ${excludeEventId ? "AND id <> $5" : ""}
          AND (rrule IS NOT NULL OR (starts_at < $3::timestamptz AND ends_at > $4::timestamptz))`,
       excludeEventId ? [orgId, resourceId, maxE, minS, excludeEventId] : [orgId, resourceId, maxE, minS]);
+    // exception rows cancel/re-time occurrences — a cancelled slot frees the room
+    const excIds = [...new Set([...have.map((h) => h.id), ...(excludeEventId ? [excludeEventId] : [])])];
+    const excRows = excIds.length
+      ? await q<ExceptionRow>(
+          "SELECT * FROM calendar_exceptions WHERE event_id = ANY($1) AND occurrence_start >= $2 AND occurrence_start <= $3",
+          [excIds, loD.toISOString(), hiD.toISOString()])
+      : [];
+    const excBy = new Map<string, Map<string, ExceptionRow>>();
+    for (const x of excRows) {
+      if (!excBy.has(x.event_id)) excBy.set(x.event_id, new Map());
+      excBy.get(x.event_id)!.set(new Date(x.occurrence_start).toISOString(), x);
+    }
+    const applyExc = (eventId: string, spans: { s: number; e: number }[]) => {
+      const m = excBy.get(eventId);
+      if (!m) return spans;
+      const out: { s: number; e: number }[] = [];
+      for (const sp of spans) {
+        const x = m.get(new Date(sp.s).toISOString());
+        if (x?.cancelled) continue;
+        out.push(x?.starts_at && x?.ends_at
+          ? { s: Date.parse(x.starts_at), e: Date.parse(x.ends_at) } : sp);
+      }
+      return out;
+    };
+    want = applyExc(excludeEventId ?? "", want);
     for (const h of have) {
       const hdur = Date.parse(h.ends_at) - Date.parse(h.starts_at);
-      const hrr = h.rrule ? parseRRule(h.rrule) : null;
-      const spans: { s: number; e: number }[] = hrr
-        ? expandOccurrences(new Date(h.starts_at), hrr, loD, hiD).map((o) => ({ s: o.getTime(), e: o.getTime() + hdur }))
-        : [{ s: Date.parse(h.starts_at), e: Date.parse(h.ends_at) }];
+      const spans = applyExc(h.id, expand(h.starts_at, h.rrule ? parseRRule(h.rrule) : null, hdur));
       for (const w of want)
         for (const sp of spans)
           if (w.s < sp.e && w.e > sp.s) return { title: dec(h.title) ?? "Another event" };
@@ -191,17 +276,15 @@ export function calendarRoutes(app: FastifyInstance) {
   };
 
   /** Expand a recurring event into occurrences inside [lo,hi], merged with
-   *  its exception rows (cancel = drop; field overrides = patch). */
-  const expandWithExceptions = async (r: EventRow, loD: Date, hiD: Date):
-    Promise<{ startsAt: Date; endsAt: Date; key: Date; exc?: ExceptionRow }[]> => {
+   *  its exception rows (cancel = drop; field overrides = patch). Sync —
+   *  callers batch-fetch exceptions across all recurring rows once. */
+  const expandWithExceptions = (r: EventRow, loD: Date, hiD: Date, exc: ExceptionRow[]):
+    { startsAt: Date; endsAt: Date; key: Date; exc?: ExceptionRow }[] => {
     const rr = parseRRule(r.rrule);
     if (!rr) return [{ startsAt: new Date(r.starts_at), endsAt: new Date(r.ends_at), key: new Date(r.starts_at) }];
     const st = new Date(r.starts_at), en = new Date(r.ends_at);
     const dur = en.getTime() - st.getTime();
     const occs = expandOccurrences(st, rr, loD, hiD).map((o) => ({ startsAt: o, endsAt: new Date(o.getTime() + dur) }));
-    const exc = await q<ExceptionRow>(
-      "SELECT * FROM calendar_exceptions WHERE event_id = $1 AND occurrence_start >= $2 AND occurrence_start <= $3",
-      [r.id, loD.toISOString(), hiD.toISOString()]);
     const byStart = new Map(exc.map((x) => [new Date(x.occurrence_start).toISOString(), x]));
     const out: { startsAt: Date; endsAt: Date; key: Date; exc?: ExceptionRow }[] = [];
     for (const o of occs) {
@@ -217,6 +300,23 @@ export function calendarRoutes(app: FastifyInstance) {
       } else out.push({ ...o, key: o.startsAt });
     }
     return out;
+  };
+
+  /** Exception rows for a set of recurring events in one query — returns a
+   *  per-event map for expandWithExceptions. */
+  const exceptionsFor = async (eventIds: string[], loD: Date, hiD: Date) => {
+    const rows = eventIds.length
+      ? await q<ExceptionRow>(
+          `SELECT * FROM calendar_exceptions
+           WHERE event_id = ANY($1) AND occurrence_start >= $2 AND occurrence_start <= $3`,
+          [eventIds, loD.toISOString(), hiD.toISOString()])
+      : [];
+    const byEvent = new Map<string, ExceptionRow[]>();
+    for (const x of rows) {
+      const arr = byEvent.get(x.event_id) ?? [];
+      arr.push(x); byEvent.set(x.event_id, arr);
+    }
+    return byEvent;
   };
 
   /** Events overlapping [from,to] that I created or attend. */
@@ -235,10 +335,11 @@ export function calendarRoutes(app: FastifyInstance) {
        ORDER BY e.starts_at`, [user.orgId, lo, hi, act.id]);
     const atts = await attendeesOf(rows.map((r) => r.id));
     const loD = new Date(lo), hiD = new Date(hi);
+    const excByEvent = await exceptionsFor(rows.filter((r) => r.rrule).map((r) => r.id), loD, hiD);
     const events: ReturnType<typeof eventOut>[] = [];
     for (const r of rows) {
       const ra = atts.filter((a) => a.event_id === r.id);
-      for (const occ of await expandWithExceptions(r, loD, hiD)) {
+      for (const occ of expandWithExceptions(r, loD, hiD, excByEvent.get(r.id) ?? [])) {
         const out = eventOut(r, ra, occ);
         if (occ.exc?.title) out.title = dec(occ.exc.title);
         if (occ.exc?.location) out.location = dec(occ.exc.location);
@@ -321,6 +422,8 @@ export function calendarRoutes(app: FastifyInstance) {
     const d = parsed.data;
     if (d.rrule && !parseRRule(d.rrule))
       return reply.code(400).send({ error: "invalid", message: "Unsupported recurrence rule" });
+    if (Date.parse(d.endsAt ?? e.ends_at) <= Date.parse(d.startsAt ?? e.starts_at))
+      return reply.code(400).send({ error: "invalid", message: "End must be after start" });
     const nextRes = d.resourceId !== undefined ? d.resourceId : e.resource_id;
     if (nextRes) {
       const conflict = await resourceConflict(user.orgId, nextRes,
@@ -347,9 +450,14 @@ export function calendarRoutes(app: FastifyInstance) {
     // attendee edits are wholesale-replace when provided
     if (d.attendeeIds) {
       const keep = [...new Set(d.attendeeIds.filter((i) => i !== user.id))];
+      const before = await attendeesOf([e.id]);
       await run("DELETE FROM calendar_attendees WHERE event_id = $1 AND NOT (user_id = ANY($2))", [e.id, keep]);
       for (const uid of keep)
         await run("INSERT INTO calendar_attendees (event_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [e.id, uid]);
+      // removed attendees get a CANCEL notice — otherwise the event just vanishes
+      const removed = before.filter((a) => !keep.includes(a.user_id)).map((a) => a.user_id);
+      if (removed.length)
+        mailInvite(e, removed, { id: user.id, email: user.email, displayName: user.displayName }, true);
     }
     const atts = await attendeesOf([e.id]);
     // re-invite everyone when the schedule/details changed
@@ -383,6 +491,12 @@ export function calendarRoutes(app: FastifyInstance) {
       "UPDATE calendar_attendees SET status = $1 WHERE event_id = $2 AND user_id = $3",
       [status, e.id, user.id]);
     if (!n) return reply.code(403).send({ error: "forbidden", message: "You are not an attendee" });
+    if (e.created_by !== user.id)
+      void run(
+        `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+         VALUES ($1,$2,'calendar',$3,$4)`,
+        [randomUUID(), e.created_by, user.id,
+         enc(`${user.displayName} ${status}: ${dec(e.title) ?? "event"}`)]);
     return { ok: true };
   });
 
@@ -408,8 +522,9 @@ export function calendarRoutes(app: FastifyInstance) {
        WHERE e.org_id = $1 AND e.created_by = ANY($2) AND e.starts_at < $4
          AND (e.ends_at > $3 OR e.rrule IS NOT NULL)`,
       [user.orgId, okIds, lo.toISOString(), hi.toISOString()]);
+    const excByEvent = await exceptionsFor(rows.filter((r) => r.rrule).map((r) => r.id), lo, hi);
     for (const r of rows)
-      for (const occ of await expandWithExceptions(r, lo, hi))
+      for (const occ of expandWithExceptions(r, lo, hi, excByEvent.get(r.id) ?? []))
         busy[r.att].push({ startsAt: occ.startsAt.toISOString(), endsAt: occ.endsAt.toISOString() });
     return { busy };
   });
@@ -537,26 +652,6 @@ export function calendarRoutes(app: FastifyInstance) {
 
   /* ── RSVP links ────────────────────────────────────────── */
 
-  /** One-click RSVP — signed links inside invite emails. Still requires an
-   *  authenticated session (recipients are suite users); the token binds the
-   *  link to a specific event+attendee so it can't be replayed for others. */
-  app.get("/api/calendar/rsvp-link/:token", async (req, reply) => {
-    const { token } = req.params as { token: string };
-    const { s } = req.query as { s?: string };
-    if (!["accepted", "declined", "tentative"].includes(s ?? ""))
-      return reply.code(400).send({ error: "invalid", message: "Bad status" });
-    const payload = verifyRsvpToken(token);
-    if (!payload) return reply.code(403).send({ error: "forbidden", message: "Bad or expired link" });
-    const n = await run(
-      "UPDATE calendar_attendees SET status = $1 WHERE event_id = $2 AND user_id = $3",
-      [s, payload.eventId, payload.userId]);
-    if (!n) return reply.code(404).send({ error: "not_found", message: "Invitation not found" });
-    return reply
-      .header("content-type", "text/html; charset=utf-8")
-      .send(`<!doctype html><title>RSVP recorded</title><body style="font-family:sans-serif;text-align:center;padding:4rem">
-        <h2>Response recorded</h2><p>You ${s} this event. You can close this tab.</p></body>`);
-  });
-
   /** Organizer mints an RSVP token for one of the event's attendees
    *  (the mail template embeds these per-recipient). */
   app.get("/api/calendar/:id/rsvp-link", async (req, reply) => {
@@ -600,16 +695,25 @@ export function calendarRoutes(app: FastifyInstance) {
     const parsed = parseIcs(ics);
     if (!parsed.length) return reply.code(400).send({ error: "invalid", message: "No VEVENTs found" });
     if (parsed.length > 100) return reply.code(400).send({ error: "invalid", message: "Max 100 events per import" });
+    // UID dedup — re-importing the same file skips events already brought in
+    const existing = await q<{ ical_uid: string }>(
+      "SELECT ical_uid FROM calendar_events WHERE org_id = $1 AND ical_uid = ANY($2)",
+      [user.orgId, parsed.map((p) => p.uid)]);
+    const seen = new Set(existing.map((r) => r.ical_uid));
+    let skipped = 0;
     const created: string[] = [];
     for (const ev of parsed) {
+      if (seen.has(ev.uid)) { skipped++; continue; }
+      seen.add(ev.uid);
       const rr = ev.rrule && parseRRule(ev.rrule) ? ev.rrule.replace(/^RRULE:/i, "") : null;
       const row = await one<{ id: string }>(
-        `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, created_by, rrule)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        `INSERT INTO calendar_events (id, org_id, title, description, location, starts_at, ends_at, all_day, created_by, rrule, ical_uid)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
         [randomUUID(), user.orgId, enc(ev.summary), enc(ev.description), enc(ev.location),
-         ev.startsAt.toISOString(), ev.endsAt.toISOString(), ev.allDay, user.id, rr]);
+         ev.startsAt.toISOString(), ev.endsAt.toISOString(), ev.allDay, user.id, rr, ev.uid]);
       if (row) created.push(row.id);
     }
-    return reply.code(201).send({ imported: created.length });
+    return reply.code(201).send({ imported: created.length, skipped });
+  });
   });
 }

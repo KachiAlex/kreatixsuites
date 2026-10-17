@@ -788,6 +788,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (owner_id, delegate_id)
   )`);
+  // iCal UID for dedup on re-import (partial unique — suite-made events have none)
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS ical_uid TEXT`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_ical_uid
+    ON calendar_events(org_id, ical_uid) WHERE ical_uid IS NOT NULL`);
   // Governance depth — legal hold flag blocks all delete paths; DLP flag is
   // stamped by the save-time scanner (policies.dlpPatterns).
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN NOT NULL DEFAULT false`);
