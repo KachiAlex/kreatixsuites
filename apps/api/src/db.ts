@@ -776,8 +776,20 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     rule_id TEXT NOT NULL REFERENCES automation_rules(id) ON DELETE CASCADE,
     dedupe_key TEXT NOT NULL,
     fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    detail JSONB,
+    ok BOOLEAN,
     PRIMARY KEY (rule_id, dedupe_key)
   )`);
+  await pool.query(`ALTER TABLE automation_fires ADD COLUMN IF NOT EXISTS detail JSONB`);
+  await pool.query(`ALTER TABLE automation_fires ADD COLUMN IF NOT EXISTS ok BOOLEAN`);
+
+  // multi-step approval extras: when the draft went pending, which entries
+  // of an "all"-mode step have already signed off
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS pending_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS approval_done JSONB`);
+  // approval delegation — an active delegate may act on your chain steps
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_id TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_until TIMESTAMPTZ`);
 
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);

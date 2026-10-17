@@ -10,9 +10,11 @@ import { TRIGGERS, ACTIONS, type RuleRow } from "../rules.js";
 const ruleSchema = z.object({
   name: z.string().trim().min(1).max(120),
   enabled: z.boolean().optional(),
-  trigger: z.enum(["form.submitted", "file.created", "task.status", "meeting.ended", "schedule.daily", "task.overdue"]),
+  trigger: z.enum(["form.submitted", "file.created", "task.status", "meeting.ended",
+    "schedule.daily", "schedule.weekly", "task.overdue", "approval.overdue"]),
   match: z.record(z.string(), z.string().max(200)).nullish(),
-  action: z.enum(["task.create", "notify"]),
+  action: z.enum(["task.create", "notify", "approval.request", "doc.generate",
+    "file.move", "file.setColumn", "task.transition", "note.publish"]),
   config: z.record(z.string(), z.string().max(4000).nullable()).default({}),
 });
 
@@ -72,6 +74,17 @@ export function rulesRoutes(app: FastifyInstance) {
        d.match !== undefined, d.match ? JSON.stringify(d.match) : null,
        d.config !== undefined, d.config ? JSON.stringify(d.config) : "{}"]);
     return { rule: ruleOut(row!) };
+  });
+
+  /** Run log — recent fires for a rule (admin observability). */
+  app.get("/api/rules/:id/runs", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const r = await getRule((req.params as { id: string }).id, user.orgId);
+    if (!r) return notFound(reply);
+    const rows = await q<{ dedupe_key: string; fired_at: string; ok: boolean | null; detail: Record<string, string> | null }>(
+      "SELECT dedupe_key, fired_at, ok, detail FROM automation_fires WHERE rule_id = $1 ORDER BY fired_at DESC LIMIT 50",
+      [r.id]);
+    return { runs: rows };
   });
 
   app.delete("/api/rules/:id", async (req, reply) => {

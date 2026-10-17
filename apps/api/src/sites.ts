@@ -3,6 +3,24 @@
 import { randomUUID } from "node:crypto";
 import { one, q, run, now } from "./db.js";
 import { decryptField, encryptField } from "./crypto.js";
+
+/** Normalize a stored approval chain — accepts legacy `string[]` user ids and
+ *  structured `{ mode, ids }` steps; drops empties. */
+export function normalizeChain(raw: unknown): import("@kreatix/shared").ApprovalStep[] {
+  if (!Array.isArray(raw)) return [];
+  const out: import("@kreatix/shared").ApprovalStep[] = [];
+  for (const e of raw) {
+    if (typeof e === "string" && e) {
+      out.push({ mode: "any", ids: [e] });
+    } else if (e && typeof e === "object") {
+      const ids = Array.isArray((e as { ids?: unknown }).ids)
+        ? (e as { ids: unknown[] }).ids.filter((x): x is string => typeof x === "string" && !!x)
+        : [];
+      if (ids.length) out.push({ mode: (e as { mode?: string }).mode === "all" ? "all" : "any", ids });
+    }
+  }
+  return out;
+}
 import type { Library, Permission, Site, SiteMember, SiteRole } from "@kreatix/shared";
 
 export interface SiteRow {
@@ -27,7 +45,7 @@ export interface LibraryRow {
   approval: boolean;
   inherit_permissions: boolean;
   retention_days: number | null;
-  approval_chain: string[] | null;
+  approval_chain: unknown; // JSONB — normalizeChain() parses
   created_at: string;
 }
 
@@ -244,7 +262,8 @@ export async function toLibrary(row: LibraryRow, itemCount?: number): Promise<Li
     versioning: row.versioning === "minor" ? "minor" : "major",
     approval: !!row.approval,
     inheritPermissions: row.inherit_permissions !== false,
-    approvalChain: Array.isArray(row.approval_chain) ? row.approval_chain : null,
+    approvalChain: normalizeChain(row.approval_chain).length
+      ? normalizeChain(row.approval_chain) : null,
     retentionDays: row.retention_days ?? null,
     itemCount,
     createdAt: row.created_at,

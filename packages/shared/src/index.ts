@@ -233,6 +233,13 @@ export interface AccessEntry {
   memberCount?: number;
 }
 
+/** One step in a library approval chain — "any" advances on the first
+ *  signature, "all" needs every listed approver. */
+export interface ApprovalStep {
+  mode: "any" | "all";
+  ids: string[];
+}
+
 export interface Library {
   id: string;
   siteId: string;
@@ -244,8 +251,9 @@ export interface Library {
   approval?: boolean;
   /** false = unique permissions — only explicit grants reach this library */
   inheritPermissions?: boolean;
-  /** Ordered approver user-ids — set = submissions route through each in turn */
-  approvalChain?: string[] | null;
+  /** Ordered approval steps — each step is one or more approvers; "any"
+   *  advances on the first signature, "all" needs every member. */
+  approvalChain?: ApprovalStep[] | null;
   /** Auto-trash items untouched this many days (null = off) */
   retentionDays?: number | null;
   itemCount?: number;

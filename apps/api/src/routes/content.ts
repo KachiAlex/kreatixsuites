@@ -5,7 +5,8 @@ import { isIP } from "node:net";
 import { z } from "zod";
 import { q, one, run, now } from "../db.js";
 import { getItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
-import { getLibrary, libraryPermission, approverIds } from "../sites.js";
+import { getLibrary, libraryPermission } from "../sites.js";
+import { requestApproval } from "../approvals.js";
 import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
@@ -63,7 +64,7 @@ export async function publishHead(item: ItemRow): Promise<number | null> {
   const lastPub = await one<{ major: number }>(
     "SELECT major FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id]);
   const major = (lastPub?.major ?? 0) + 1;
-  await run("UPDATE versions SET major = $1, minor = 0, published = true, pending = false, approval_step = NULL, approval_chain = NULL WHERE id = $2",
+  await run("UPDATE versions SET major = $1, minor = 0, published = true, pending = false, pending_at = NULL, approval_step = NULL, approval_chain = NULL, approval_done = NULL WHERE id = $2",
     [major, head.id]);
   return major;
 }
@@ -81,34 +82,7 @@ export async function submitForApproval(
   if (!lib?.approval) return false;
   const perm = await libraryPermission(user.id, item.library_id);
   if (!perm || perm === "owner") return false;
-  const head = await headVersion(item.id);
-  if (!head || head.published) return false;
-  const chain = Array.isArray(lib.approval_chain) ? lib.approval_chain.filter(Boolean) : [];
-  await run(
-    "UPDATE versions SET pending = true, approval_step = $2, approval_chain = $3 WHERE id = $1",
-    [head.id, chain.length ? 0 : null, chain.length ? JSON.stringify(chain) : null]);
-  void notifyApprovers(item, user, chain.length ? chain[0] : null);
-  return true;
-}
-
-/** Tell the approver(s) someone submitted work — with a chain, only the
- *  current step's designated approver; otherwise all library owners. */
-async function notifyApprovers(
-  item: ItemRow,
-  actor: { id: string },
-  stepApprover?: string | null,
-): Promise<void> {
-  if (!item.library_id) return;
-  const ids = stepApprover ? [stepApprover] : await approverIds(item.library_id);
-  const msg = encryptField(`"${itemName(item)}" is awaiting approval`);
-  for (const uid of ids) {
-    if (uid === actor.id) continue;
-    await run(
-      `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [randomUUID(), uid, "approval", item.id, item.library_id, actor.id, msg, now()],
-    );
-  }
+  return requestApproval(item, user.id);
 }
 
 /** Tell the draft author their submission was decided (approve/reject). */

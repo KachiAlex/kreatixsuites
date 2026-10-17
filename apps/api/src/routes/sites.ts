@@ -6,7 +6,7 @@ import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getSite, getLibrary, siteRoleFor, libraryRoleFor, toSite, toLibrary, memberOut,
-  notifyLibrarySubscribers, SITE_ROLE_SQL, type SiteRow, type LibraryRow,
+  notifyLibrarySubscribers, normalizeChain, SITE_ROLE_SQL, type SiteRow, type LibraryRow,
 } from "../sites.js";
 import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -57,8 +57,12 @@ const librarySchema = z.object({
 const libraryPatchSchema = librarySchema.partial().extend({
   versioning: z.enum(["major", "minor"]).optional(),
   approval: z.boolean().optional(),
-  /** Ordered approver user-ids for multi-step sign-off (null/empty = any owner) */
-  approvalChain: z.array(z.string().max(64)).max(10).nullable().optional(),
+  /** Ordered approval steps — accepts plain user-ids or { mode, ids } steps
+   *  (null/empty = any owner approves in one step) */
+  approvalChain: z.array(z.union([
+    z.string().max(64),
+    z.object({ mode: z.enum(["any", "all"]).default("any"), ids: z.array(z.string().max(64)).min(1).max(20) }),
+  ])).max(10).nullable().optional(),
   inherit: z.boolean().optional(),
   /** auto-trash items untouched this many days (null clears) */
   retentionDays: z.number().int().min(0).max(36500).nullable().optional(),
@@ -701,6 +705,38 @@ export function siteRoutes(app: FastifyInstance) {
       };
     });
 
+    /** Approval delegation — while active, the delegate can act on your
+     *  chain steps and gets the same approval pings. `null` clears it. */
+    authed.put("/api/me/delegate", async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const body = z.object({
+        delegateId: z.string().max(64).nullable(),
+        days: z.number().int().min(1).max(365).default(30),
+      }).parse(req.body ?? {});
+      if (body.delegateId === user.id)
+        return reply.code(400).send({ error: "invalid", message: "Can't delegate to yourself" });
+      if (body.delegateId) {
+        const target = await one<{ id: string }>(
+          "SELECT id FROM users WHERE id = $1 AND org_id = $2 AND NOT disabled", [body.delegateId, user.orgId]);
+        if (!target) return reply.code(400).send({ error: "invalid", message: "Delegate must be a member of your org" });
+      }
+      await run(
+        "UPDATE users SET delegate_id = $2, delegate_until = $3 WHERE id = $1",
+        [user.id, body.delegateId,
+         body.delegateId ? new Date(Date.now() + body.days * 864e5).toISOString() : null]);
+      return { ok: true, delegateId: body.delegateId };
+    });
+
+    authed.get("/api/me/delegate", async (req) => {
+      const { user } = req as AuthedRequest;
+      const row = await one<{ delegate_id: string | null; delegate_until: string | null; display_name: string | null }>(
+        `SELECT u.delegate_id, u.delegate_until, d.display_name
+         FROM users u LEFT JOIN users d ON d.id = u.delegate_id WHERE u.id = $1`, [user.id]);
+      const active = !!row?.delegate_id && (!row.delegate_until || new Date(row.delegate_until) > new Date());
+      return { delegateId: active ? row!.delegate_id : null, delegateName: active ? row!.display_name : null,
+        until: active ? row!.delegate_until : null };
+    });
+
     authed.post("/api/notifications/read", async (req) => {
       const { user } = req as AuthedRequest;
       await run("UPDATE notifications SET read_at = $1 WHERE user_id = $2 AND read_at IS NULL", [now(), user.id]);
@@ -1012,11 +1048,13 @@ export function siteRoutes(app: FastifyInstance) {
         return reply.code(402).send({ error: "plan_limit", message: "This feature requires a paid plan" });
       }
       // chain members must be real org users
-      if (body.approvalChain?.length) {
+      const normChain = body.approvalChain === undefined ? undefined : normalizeChain(body.approvalChain);
+      if (normChain?.length) {
+        const ids = [...new Set(normChain.flatMap((s) => s.ids))];
         const ok = await q<{ id: string }>(
           "SELECT id FROM users WHERE org_id = $1 AND disabled = false AND id = ANY($2)",
-          [user.orgId, body.approvalChain]);
-        if (ok.length !== body.approvalChain.length)
+          [user.orgId, ids]);
+        if (ok.length !== ids.length)
           return reply.code(400).send({ error: "invalid", message: "Chain contains an unknown user" });
       }
       await run(`UPDATE libraries SET name = COALESCE($2, name), kind = COALESCE($3, kind),
@@ -1028,7 +1066,7 @@ export function siteRoutes(app: FastifyInstance) {
          body.versioning ?? null, body.approval ?? null, body.inherit ?? null,
          body.retentionDays !== undefined && body.retentionDays && body.retentionDays > 0 ? body.retentionDays : null,
          body.retentionDays !== undefined,
-         body.approvalChain?.length ? JSON.stringify(body.approvalChain) : null,
+         normChain?.length ? JSON.stringify(normChain) : null,
          body.approvalChain !== undefined]);
       // retentionDays: explicit null/0 clears the rule
       // restoring inheritance discards unique grants (SharePoint behavior)

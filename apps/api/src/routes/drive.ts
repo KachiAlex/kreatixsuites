@@ -7,6 +7,7 @@ import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from ".
 import { entitled } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds, notifyLibrarySubscribers } from "../sites.js";
 import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
+import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
 import { purgeItem } from "../policies.js";
@@ -211,7 +212,12 @@ export function driveRoutes(app: FastifyInstance) {
                    JOIN group_members gm ON gm.group_id = lgp.group_id AND gm.user_id = $1
                    WHERE lgp.library_id = l.id AND lgp.role = 'owner'))
              OR (v.approval_chain IS NOT NULL AND v.approval_step IS NOT NULL
-                 AND v.approval_chain ->> v.approval_step = $1)
+                 AND NOT (COALESCE(v.approval_done, '[]'::jsonb) ? $1)
+                 AND (v.approval_chain -> v.approval_step -> 'ids' ? $1
+                   OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(v.approval_chain -> v.approval_step -> 'ids') e
+                              JOIN users du ON du.id = e
+                              WHERE du.delegate_id = $1
+                                AND (du.delegate_until IS NULL OR du.delegate_until > now()))))
              OR $3)
          ORDER BY i.updated_at ASC`,
         [user.id, user.orgId, user.role === "owner" || user.role === "admin"],
@@ -507,6 +513,7 @@ export function driveRoutes(app: FastifyInstance) {
 
     await logActivity(user.orgId, user.id, id, "create", body.name);
     void notifyLibrarySubscribers(libraryId, user.id, "create", id, `added "${body.name}"`);
+    await pendOnAdd(id, libraryId, user);
     if (libraryId)
       void fireTrigger(user.orgId, "file.created", { fileId: id, libraryId, name: body.name }, app.log);
     return { item: await toDriveItem((await getItem(id))!, "owner") };
@@ -586,6 +593,7 @@ export function driveRoutes(app: FastifyInstance) {
 
     void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
     void notifyLibrarySubscribers(libraryId, user.id, "upload", id, `uploaded "${name ?? "Untitled"}"`);
+    await pendOnAdd(id, libraryId, user);
     if (libraryId)
       void fireTrigger(user.orgId, "file.created", { fileId: id, libraryId, name: name ?? "Untitled" }, app.log);
     // index PDF uploads immediately (body text + later annotation text)
@@ -860,32 +868,54 @@ export function driveRoutes(app: FastifyInstance) {
   // ---- content approval (SharePoint "Approve/reject") ----
 
   /** Approve a submitted draft — publishes it as the next major version.
-   *  With a chain, only the current step's approver advances it (site owners
-   *  can still override); the final step's approval publishes. */
+   *  With a chain, the current step's members (or their delegates) advance it;
+   *  "all"-mode steps wait for every signature; the final step publishes.
+   *  Site owners can always override and publish outright. */
   app.post("/api/drive/:id/approve", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item) return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
-    const head = await one<{ id: string; pending: boolean; published: boolean; created_by: string; approval_step: number | null; approval_chain: string[] | null }>(
-      "SELECT id, pending, published, created_by, approval_step, approval_chain FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
+    if (!item) return reply.code(403).send({ error: "forbidden", message: "No approver access" });
+    const head = await one<{
+      id: string; pending: boolean; published: boolean; created_by: string;
+      approval_step: number | null; approval_chain: unknown; approval_done: string[] | null;
+    }>(
+      `SELECT id, pending, published, created_by, approval_step, approval_chain, approval_done
+       FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1`, [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
-    const chain = Array.isArray(head.approval_chain) ? head.approval_chain : [];
-    const step = head.approval_step ?? 0;
-    const isStepApprover = chain.length > 0 && chain[step] === user.id;
-    if (!isStepApprover && !(await canApprove(user, item))) {
-      return reply.code(403).send({ error: "forbidden", message: "Only the current approver or a site owner can approve" });
-    }
-    // chain: intermediate step — advance and notify the next approver
-    if (chain.length > 0 && step < chain.length - 1) {
-      const next = step + 1;
-      await run("UPDATE versions SET approval_step = $2 WHERE id = $1", [head.id, next]);
-      void run(
-        `INSERT INTO notifications (id, user_id, kind, file_id, library_id, actor_id, message)
-         VALUES ($1,$2,'approval',$3,$4,$5,$6)`,
-        [randomUUID(), chain[next], item.id, item.library_id, user.id,
-         encryptField(`"${itemName(item)}" is awaiting your approval (step ${next + 1} of ${chain.length})`)]);
-      void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} — step ${step + 1}/${chain.length}`);
-      return { ok: true, pending: true, step: next + 1, of: chain.length };
+    const steps = normalizeChain(head.approval_chain);
+    const stepIdx = head.approval_step ?? 0;
+    const step = steps[stepIdx];
+
+    if (step) {
+      const done = new Set(Array.isArray(head.approval_done) ? head.approval_done : []);
+      const mine = (await coveredEntries(user.id, step)).filter((id) => !done.has(id));
+      if (!mine.length && !(await canApprove(user, item))) {
+        return reply.code(403).send({ error: "forbidden", message: "Only the current approver or a site owner can approve" });
+      }
+      // owner rank outside the chain = override → publish immediately
+      if (!mine.length && (await canApprove(user, item))) {
+        const major = await publishHead(item);
+        void notifySubmitter(item, head.created_by, user.id, true);
+        void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} → v${major}.0 (owner override)`);
+        return { ok: true, major };
+      }
+      // "all" mode: record each covered entry; hold pending until complete
+      mine.forEach((id) => done.add(id));
+      if (step.mode === "all" && step.ids.some((id) => !done.has(id))) {
+        await run("UPDATE versions SET approval_done = $2 WHERE id = $1", [head.id, JSON.stringify([...done])]);
+        void logActivity(user.orgId, user.id, item.id, "approve",
+          `${itemName(item)} — step ${stepIdx + 1}/${steps.length} partial (${done.size}/${step.ids.length})`);
+        return { ok: true, pending: true, step: stepIdx + 1, of: steps.length, signed: done.size };
+      }
+      // step complete — advance or publish
+      if (stepIdx < steps.length - 1) {
+        await run("UPDATE versions SET approval_step = $2, approval_done = '[]'::jsonb WHERE id = $1", [head.id, stepIdx + 1]);
+        void notifyApprovalStep(item, user.id, steps[stepIdx + 1], stepIdx + 2, steps.length);
+        void logActivity(user.orgId, user.id, item.id, "approve", `${itemName(item)} — step ${stepIdx + 1}/${steps.length}`);
+        return { ok: true, pending: true, step: stepIdx + 2, of: steps.length };
+      }
+    } else if (!(await canApprove(user, item))) {
+      return reply.code(403).send({ error: "forbidden", message: "Only site owners can approve" });
     }
     const major = await publishHead(item);
     void notifySubmitter(item, head.created_by, user.id, true);
@@ -898,17 +928,18 @@ export function driveRoutes(app: FastifyInstance) {
   app.post("/api/drive/:id/reject", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item) return reply.code(403).send({ error: "forbidden", message: "Only site owners can reject" });
+    if (!item) return reply.code(403).send({ error: "forbidden", message: "No approver access" });
     const { comment } = z.object({ comment: z.string().max(300).optional() }).parse(req.body ?? {});
-    const head = await one<{ id: string; pending: boolean; created_by: string; approval_step: number | null; approval_chain: string[] | null }>(
+    const head = await one<{ id: string; pending: boolean; created_by: string; approval_step: number | null; approval_chain: unknown }>(
       "SELECT id, pending, created_by, approval_step, approval_chain FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [item.id]);
     if (!head?.pending) return reply.code(409).send({ error: "conflict", message: "Nothing awaiting approval" });
-    const chain = Array.isArray(head.approval_chain) ? head.approval_chain : [];
-    const isStepApprover = chain.length > 0 && chain[head.approval_step ?? 0] === user.id;
-    if (!isStepApprover && !(await canApprove(user, item))) {
+    const steps = normalizeChain(head.approval_chain);
+    const step = steps[head.approval_step ?? 0];
+    const covered = step ? (await coveredEntries(user.id, step)).length > 0 : false;
+    if (!covered && !(await canApprove(user, item))) {
       return reply.code(403).send({ error: "forbidden", message: "Only the current approver or a site owner can reject" });
     }
-    await run("UPDATE versions SET pending = false, approval_step = NULL, approval_chain = NULL WHERE id = $1", [head.id]);
+    await run("UPDATE versions SET pending = false, pending_at = NULL, approval_step = NULL, approval_chain = NULL, approval_done = NULL WHERE id = $1", [head.id]);
     void notifySubmitter(item, head.created_by, user.id, false, comment);
     void logActivity(user.orgId, user.id, item.id, "reject",
       `${itemName(item)}${comment ? ` — ${comment}` : ""}`);
@@ -1076,6 +1107,23 @@ async function subtreeIds(rootId: string): Promise<string[]> {
  *  or an explicit 'owner' grant on a non-inheriting library); a member who
  *  created a file can't approve their own submission. Outside libraries it
  *  falls back to item ownership. */
+/** SharePoint "require approval" on add: when a member (below owner rank)
+ *  creates/uploads into an approval-gated library, the initial version lands
+ *  as a pending draft (v0.1) instead of publishing instantly. */
+async function pendOnAdd(itemId: string, libraryId: string | null, user: { id: string }): Promise<void> {
+  if (!libraryId) return;
+  const lib = await getLibrary(libraryId);
+  if (!lib?.approval) return;
+  const perm = await libraryPermission(user.id, libraryId);
+  if (!perm || perm === "owner") return;
+  const item = await getItem(itemId);
+  if (!item) return;
+  await run(
+    "UPDATE versions SET major = 0, minor = 1, published = false WHERE file_id = $1 AND published",
+    [itemId]);
+  await requestApproval(item, user.id);
+}
+
 async function canApprove(user: { id: string; orgId: string; role: string }, item: ItemRow): Promise<boolean> {
   if (item.library_id) {
     return (await libraryPermission(user.id, item.library_id)) === "owner";

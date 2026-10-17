@@ -103,13 +103,17 @@ export function Admin() {
   const [domainBusy, setDomainBusy] = useState<string | null>(null);
   const [openDomain, setOpenDomain] = useState<string | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
-  const [ruleMeta, setRuleMeta] = useState<{ triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] }>({ triggers: [], actions: [] });
+  const [ruleMeta, setRuleMeta] = useState<{
+    triggers: { id: string; label: string; matchKeys?: { key: string; label: string; kind: "select" | "number" }[] }[];
+    actions: { id: string; label: string; needs?: string; fields?: { key: string; label: string; kind: string }[] }[];
+  }>({ triggers: [], actions: [] });
   const [forms, setForms] = useState<{ id: string; title: string }[]>([]);
   const [libs, setLibs] = useState<{ id: string; name: string }[]>([]);
-  const [ruleForm, setRuleForm] = useState<{ name: string; trigger: string; matchVal: string; action: string; cfgTitle: string; cfgMsg: string; cfgAssignee: string; cfgUser: string; cfgDueDays: string }>({
-    name: "", trigger: "form.submitted", matchVal: "", action: "task.create",
-    cfgTitle: "", cfgMsg: "", cfgAssignee: "", cfgUser: "", cfgDueDays: "",
+  const [ruleForm, setRuleForm] = useState<{ name: string; trigger: string; action: string; match: Record<string, string>; cfg: Record<string, string> }>({
+    name: "", trigger: "form.submitted", action: "task.create", match: {}, cfg: {},
   });
+  const [runsFor, setRunsFor] = useState<string | null>(null);
+  const [runs, setRuns] = useState<{ dedupe_key: string; fired_at: string; ok: boolean | null; detail: Record<string, string> | null }[]>([]);
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -129,7 +133,7 @@ export function Admin() {
         api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
         api.get<AiUsage>("/api/billing/ai-usage"),
         api.get<{ domains: OrgDomain[] }>("/api/admin/domains"),
-        api.get<{ rules: Rule[]; triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] }>("/api/rules"),
+        api.get<{ rules: Rule[]; triggers: { id: string; label: string }[]; actions: { id: string; label: string }[] }>("/api/rules"),
         api.get<{ forms: { id: string; title: string }[] }>("/api/forms"),
         api.get<{ sites: { libraries?: { id: string; name: string }[] }[] }>("/api/sites"),
       ];
@@ -144,7 +148,7 @@ export function Admin() {
         { tokens: { id: string; label: string | null; created_at: string }[] },
         AiUsage,
         { domains: OrgDomain[] },
-        { rules: Rule[]; triggers: { id: string; label: string; matchKey?: string; matchLabel?: string }[]; actions: { id: string; label: string }[] },
+        { rules: Rule[]; triggers: { id: string; label: string }[]; actions: { id: string; label: string }[] },
         { forms: { id: string; title: string }[] },
         { sites: { libraries?: { id: string; name: string }[] }[] },
       ];
@@ -326,33 +330,36 @@ export function Admin() {
   };
 
   const selTrigger = ruleMeta.triggers.find((t) => t.id === ruleForm.trigger);
-  const matchOptions: { id: string; label: string }[] =
-    ruleForm.trigger === "form.submitted" ? forms.map((f) => ({ id: f.id, label: f.title }))
-    : ruleForm.trigger === "file.created" ? libs.map((l) => ({ id: l.id, label: l.name }))
-    : ruleForm.trigger === "task.status" ? ["todo", "doing", "done"].map((s) => ({ id: s, label: s }))
+  const selAction = ruleMeta.actions.find((a) => a.id === ruleForm.action);
+  /** option lists for select-typed match keys + action fields */
+  const optsFor = (key: string): { id: string; label: string }[] =>
+    key === "formId" ? forms.map((f) => ({ id: f.id, label: f.title }))
+    : key === "libraryId" ? libs.map((l) => ({ id: l.id, label: l.name }))
+    : key === "status" ? ["todo", "doing", "done"].map((s) => ({ id: s, label: s }))
+    : key === "dow" ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => ({ id: String(i), label: d }))
     : [];
 
   const createRule = async () => {
     try {
-      const cfg: Record<string, string | null> = {};
-      if (ruleForm.action === "task.create") {
-        cfg.title = ruleForm.cfgTitle || null;
-        cfg.assigneeId = ruleForm.cfgAssignee || null;
-        cfg.dueInDays = ruleForm.cfgDueDays || null;
-      } else {
-        cfg.message = ruleForm.cfgMsg || null;
-        cfg.userId = ruleForm.cfgUser || null;
-      }
-      const match = ruleForm.matchVal && selTrigger?.matchKey
-        ? { [selTrigger.matchKey]: ruleForm.matchVal } : null;
+      const cfg = Object.fromEntries(Object.entries(ruleForm.cfg).filter(([, v]) => v !== ""));
+      const match = Object.fromEntries(Object.entries(ruleForm.match).filter(([, v]) => v !== ""));
       await api.post("/api/rules", {
-        name: ruleForm.name.trim() || `${selTrigger?.label ?? "Rule"} → ${ruleForm.action}`,
-        trigger: ruleForm.trigger, match, action: ruleForm.action, config: cfg,
+        name: ruleForm.name.trim() || `${selTrigger?.label ?? "Rule"} → ${selAction?.label ?? ruleForm.action}`,
+        trigger: ruleForm.trigger, match: Object.keys(match).length ? match : null,
+        action: ruleForm.action, config: cfg,
       });
-      setRuleForm({ ...ruleForm, name: "", cfgTitle: "", cfgMsg: "" });
+      setRuleForm({ ...ruleForm, name: "", match: {}, cfg: {} });
       const r = await api.get<{ rules: Rule[] }>("/api/rules");
       setRules(r.rules);
       toast("Automation created");
+    } catch (e) { toast((e as Error).message); }
+  };
+  const loadRuns = async (r: Rule) => {
+    if (runsFor === r.id) { setRunsFor(null); return; }
+    try {
+      const res = await api.get<{ runs: typeof runs }>(`/api/rules/${r.id}/runs`);
+      setRuns(res.runs);
+      setRunsFor(r.id);
     } catch (e) { toast((e as Error).message); }
   };
   const toggleRule = async (r: Rule) => {
@@ -812,61 +819,106 @@ export function Admin() {
         <div className="audit-bar" style={{ flexWrap: "wrap", marginBottom: 8 }}>
           <input placeholder="Rule name" value={ruleForm.name}
             onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })} style={{ minWidth: 180 }} />
-          <select value={ruleForm.trigger} onChange={(e) => setRuleForm({ ...ruleForm, trigger: e.target.value, matchVal: "" })}>
+          <select value={ruleForm.trigger} onChange={(e) => setRuleForm({ ...ruleForm, trigger: e.target.value, match: {} })}>
             {ruleMeta.triggers.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
-          {selTrigger?.matchKey === "hour" ? (
-            <input type="number" min={0} max={23} placeholder="UTC hour (default 8)" value={ruleForm.matchVal}
-              onChange={(e) => setRuleForm({ ...ruleForm, matchVal: e.target.value })} style={{ width: 170 }} />
-          ) : selTrigger?.matchKey && (
-            <select value={ruleForm.matchVal} onChange={(e) => setRuleForm({ ...ruleForm, matchVal: e.target.value })}>
-              <option value="">{selTrigger.matchLabel} — any</option>
-              {matchOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-            </select>
-          )}
+          {(selTrigger?.matchKeys ?? []).map((mk) =>
+            mk.kind === "number" ? (
+              <input key={mk.key} type="number" min={0} placeholder={mk.label}
+                value={ruleForm.match[mk.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, match: { ...ruleForm.match, [mk.key]: e.target.value } })}
+                style={{ width: 170 }} />
+            ) : (
+              <select key={mk.key} value={ruleForm.match[mk.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, match: { ...ruleForm.match, [mk.key]: e.target.value } })}>
+                <option value="">{mk.label} — any</option>
+                {optsFor(mk.key).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            ))}
           <span style={{ color: "var(--muted)" }}>→</span>
-          <select value={ruleForm.action} onChange={(e) => setRuleForm({ ...ruleForm, action: e.target.value })}>
+          <select value={ruleForm.action} onChange={(e) => setRuleForm({ ...ruleForm, action: e.target.value, cfg: {} })}>
             {ruleMeta.actions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
         </div>
         <div className="audit-bar" style={{ flexWrap: "wrap", marginBottom: 12 }}>
-          {ruleForm.action === "task.create" ? (
-            <>
-              <input placeholder={`Task title — e.g. Review {{name}}`} value={ruleForm.cfgTitle}
-                onChange={(e) => setRuleForm({ ...ruleForm, cfgTitle: e.target.value })} style={{ minWidth: 220 }} />
-              <select value={ruleForm.cfgAssignee} onChange={(e) => setRuleForm({ ...ruleForm, cfgAssignee: e.target.value })}>
-                <option value="">Assignee — none</option>
+          {(selAction?.fields ?? []).map((f) =>
+            f.kind === "textarea" ? (
+              <input key={f.key} placeholder={`${f.label} — {{vars}} ok`} value={ruleForm.cfg[f.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.value } })}
+                style={{ minWidth: 220 }} />
+            ) : f.kind === "user" ? (
+              <select key={f.key} value={ruleForm.cfg[f.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.value } })}>
+                <option value="">{f.label} — none</option>
                 {members.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
-              <input placeholder="Due in days" type="number" min={0} max={365} value={ruleForm.cfgDueDays}
-                onChange={(e) => setRuleForm({ ...ruleForm, cfgDueDays: e.target.value })} style={{ width: 100 }} />
-            </>
-          ) : (
-            <>
-              <input placeholder={`Message — e.g. {{name}} needs attention`} value={ruleForm.cfgMsg}
-                onChange={(e) => setRuleForm({ ...ruleForm, cfgMsg: e.target.value })} style={{ minWidth: 220 }} />
-              <select value={ruleForm.cfgUser} onChange={(e) => setRuleForm({ ...ruleForm, cfgUser: e.target.value })}>
-                <option value="">Notify — all admins</option>
-                {members.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+            ) : f.kind === "library" ? (
+              <select key={f.key} value={ruleForm.cfg[f.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.value } })}>
+                <option value="">{f.label}</option>
+                {libs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
-            </>
-          )}
+            ) : f.kind === "status" ? (
+              <select key={f.key} value={ruleForm.cfg[f.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.value } })}>
+                <option value="">{f.label}</option>
+                {["todo", "doing", "done"].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : f.kind === "bool" ? (
+              <label key={f.key} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
+                <input type="checkbox" checked={ruleForm.cfg[f.key] === "true"}
+                  onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.checked ? "true" : "" } })} />
+                {f.label}
+              </label>
+            ) : (
+              <input key={f.key} type={f.kind === "number" ? "number" : "text"} placeholder={`${f.label} — {{vars}} ok`}
+                value={ruleForm.cfg[f.key] ?? ""}
+                onChange={(e) => setRuleForm({ ...ruleForm, cfg: { ...ruleForm.cfg, [f.key]: e.target.value } })}
+                style={{ minWidth: f.kind === "number" ? 100 : 180 }} />
+            ))}
           <button className="btn-primary btn-sm" onClick={() => void createRule()}>Add rule</button>
         </div>
         <div className="tbl-scroll"><table className="admin-table">
           <thead><tr><th>Rule</th><th>Flow</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {rules.map((r) => (
-              <tr key={r.id}>
-                <td><b>{r.name}</b></td>
-                <td style={{ color: "var(--sub)" }}>{ruleDesc(r)}</td>
-                <td>
-                  <button className="btn-ghost btn-sm" onClick={() => void toggleRule(r)}>
-                    {r.enabled ? "● on" : "○ off"}
-                  </button>
-                </td>
-                <td><button className="btn-ghost btn-sm danger" onClick={() => void delRule(r)}>Delete</button></td>
-              </tr>
+              <Fragment key={r.id}>
+                <tr>
+                  <td>
+                    <button className="btn-ghost" style={{ padding: 0, fontWeight: 600 }}
+                      onClick={() => void loadRuns(r)} title="Show recent runs">
+                      {runsFor === r.id ? "▾" : "▸"} {r.name}
+                    </button>
+                  </td>
+                  <td style={{ color: "var(--sub)" }}>{ruleDesc(r)}</td>
+                  <td>
+                    <button className="btn-ghost btn-sm" onClick={() => void toggleRule(r)}>
+                      {r.enabled ? "● on" : "○ off"}
+                    </button>
+                  </td>
+                  <td><button className="btn-ghost btn-sm danger" onClick={() => void delRule(r)}>Delete</button></td>
+                </tr>
+                {runsFor === r.id && (
+                  <tr><td colSpan={4} style={{ background: "var(--bg, #fafafa)" }}>
+                    {runs.length ? (
+                      <table className="admin-table">
+                        <thead><tr><th>When</th><th>Result</th><th>Detail</th></tr></thead>
+                        <tbody>
+                          {runs.map((rn, i) => (
+                            <tr key={i}>
+                              <td style={{ whiteSpace: "nowrap" }}>{new Date(rn.fired_at).toLocaleString()}</td>
+                              <td>{rn.ok === null ? "…" : rn.ok ? "✓ ran" : "✕ failed"}</td>
+                              <td className="d-sub" style={{ wordBreak: "break-all" }}>
+                                {rn.detail ? Object.entries(rn.detail).map(([k, v]) => `${k}=${v}`).join("  ") : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : <p className="d-sub">No runs yet.</p>}
+                  </td></tr>
+                )}
+              </Fragment>
             ))}
             {!rules.length && (
               <tr><td colSpan={4} style={{ color: "var(--sub)", textAlign: "center" }}>No automations yet — e.g. "Form response → create task".</td></tr>

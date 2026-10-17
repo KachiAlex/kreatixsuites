@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ColumnType, ContentType, DriveItem, FileKind, GroupGrant, Library, LibraryColumn, LibraryGrant, OrgGroup, SiteMember, SiteRole, TermSet } from "@kreatix/shared";
+import type { ApprovalStep, ColumnType, ContentType, DriveItem, FileKind, GroupGrant, Library, LibraryColumn, LibraryGrant, OrgGroup, SiteMember, SiteRole, TermSet } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { Modal } from "./Modal";
 
@@ -705,8 +705,9 @@ export function PresetDialog({ siteId, lib, onClose, onChange, toast }: {
   );
 }
 
-/** Ordered multi-step approval chain — site owners only. An empty chain
- *  falls back to "any owner can approve". */
+/** Ordered multi-step approval chain — site owners only. Each step is one
+ *  or more approvers; "any" advances on the first signature, "all" waits for
+ *  every member. An empty chain falls back to "any owner can approve". */
 export function ChainDialog({ siteId, lib, onClose, onChange, toast }: {
   siteId: string; lib: Library;
   onClose: () => void;
@@ -714,7 +715,7 @@ export function ChainDialog({ siteId, lib, onClose, onChange, toast }: {
   toast: (m: string) => void;
 }) {
   const [members, setMembers] = useState<SiteMember[]>([]);
-  const [chain, setChain] = useState<string[]>(lib.approvalChain ?? []);
+  const [steps, setSteps] = useState<ApprovalStep[]>(lib.approvalChain ?? []);
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -725,24 +726,27 @@ export function ChainDialog({ siteId, lib, onClose, onChange, toast }: {
 
   const nameFor = (id: string) =>
     members.find((m) => m.userId === id)?.user.displayName ?? id.slice(0, 8);
-  const notIn = members.filter((m) => !chain.includes(m.userId));
+  const inChain = new Set(steps.flatMap((s) => s.ids));
+  const pool = members.filter((m) => !inChain.has(m.userId));
 
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
-    if (j < 0 || j >= chain.length) return;
-    const next = [...chain];
+    if (j < 0 || j >= steps.length) return;
+    const next = [...steps];
     [next[i], next[j]] = [next[j], next[i]];
-    setChain(next);
+    setSteps(next);
   };
+  const setStep = (i: number, s: ApprovalStep) =>
+    setSteps(steps.map((x, j) => (j === i ? s : x)));
 
   const save = async () => {
     setBusy(true);
     try {
       const r = await api.patch<{ library: Library }>(
-        `/api/sites/${siteId}/libraries/${lib.id}`, { approvalChain: chain });
+        `/api/sites/${siteId}/libraries/${lib.id}`, { approvalChain: steps });
       onChange(r.library);
       onClose();
-      toast(chain.length ? `${chain.length}-step approval chain saved` : "Chain cleared — any owner approves");
+      toast(steps.length ? `${steps.length}-step approval chain saved` : "Chain cleared — any owner approves");
     } catch (e) { toast(e instanceof Error ? e.message : "Save failed"); }
     setBusy(false);
   };
@@ -751,25 +755,49 @@ export function ChainDialog({ siteId, lib, onClose, onChange, toast }: {
     <Modal onClose={onClose} label="Approval chain">
       <h2>Approval chain</h2>
       <p className="d-sub">
-        Ordered approvers — each step must sign off before the file publishes.
-        With an empty chain, any site/library owner approves in one step.
+        Ordered steps — each approver (or all approvers in an "all" step) signs
+        off before the file publishes. Empty chain = any owner approves.
       </p>
-      {chain.map((uid, i) => (
-        <div key={uid} className="dlg-row">
-          <b style={{ flex: 1 }}>{i + 1}. {nameFor(uid)}</b>
-          <button className="btn-ghost btn-sm" onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
-          <button className="btn-ghost btn-sm" onClick={() => move(i, 1)} disabled={i === chain.length - 1}>↓</button>
-          <button className="btn-ghost btn-sm" onClick={() => setChain(chain.filter((x) => x !== uid))}>✕</button>
+      {steps.map((st, i) => (
+        <div key={i} className="dlg-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
+            <b>Step {i + 1}</b>
+            <select value={st.mode} disabled={st.ids.length < 2}
+              title={st.ids.length < 2 ? "Add a second approver to choose a mode" : ""}
+              onChange={(e) => setStep(i, { ...st, mode: e.target.value as "any" | "all" })}>
+              <option value="any">any one approves</option>
+              <option value="all">all must approve</option>
+            </select>
+            <span style={{ flex: 1 }} />
+            <button className="btn-ghost btn-sm" onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
+            <button className="btn-ghost btn-sm" onClick={() => move(i, 1)} disabled={i === steps.length - 1}>↓</button>
+            <button className="btn-ghost btn-sm" onClick={() => setSteps(steps.filter((_, j) => j !== i))}>✕</button>
+          </div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {st.ids.map((uid) => (
+              <span key={uid} className="role-badge">
+                {nameFor(uid)}
+                <button style={{ marginLeft: 4, border: 0, background: "none", cursor: "pointer" }}
+                  onClick={() => setStep(i, { ...st, ids: st.ids.filter((x) => x !== uid) })}>✕</button>
+              </span>
+            ))}
+            <select value="" onChange={(e) => {
+              if (e.target.value) setStep(i, { ...st, ids: [...st.ids, e.target.value] });
+            }}>
+              <option value="">+ approver…</option>
+              {pool.map((m) => <option key={m.userId} value={m.userId}>{m.user.displayName}</option>)}
+            </select>
+          </div>
         </div>
       ))}
-      {chain.length === 0 && <p className="d-sub">No steps — falls back to owner approval.</p>}
+      {steps.length === 0 && <p className="d-sub">No steps — falls back to owner approval.</p>}
       <div className="dlg-row">
         <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ flex: 1 }}>
-          <option value="">Add an approver…</option>
-          {notIn.map((m) => <option key={m.userId} value={m.userId}>{m.user.displayName} · {m.role}</option>)}
+          <option value="">New step — first approver…</option>
+          {pool.map((m) => <option key={m.userId} value={m.userId}>{m.user.displayName} · {m.role}</option>)}
         </select>
         <button className="btn-ghost btn-sm" disabled={!pick}
-          onClick={() => { setChain([...chain, pick]); setPick(""); }}>Add step</button>
+          onClick={() => { setSteps([...steps, { mode: "any", ids: [pick] }]); setPick(""); }}>Add step</button>
       </div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
