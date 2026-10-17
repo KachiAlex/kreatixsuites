@@ -20,6 +20,18 @@ export interface OrgPolicies {
   /** Regex patterns (one per entry) — share links are blocked when a file's
    *  name or indexed text matches any of them. */
   dlpPatterns: string[];
+  /** What happens when a save matches a DLP pattern: flag (audit + item flag)
+   *  or block (save rejected). */
+  dlpOnSave: "off" | "flag" | "block";
+  /** Downloads/exports of confidential+restricted files get a watermark
+   *  footer stamped by the export pipeline. */
+  watermarkConfidentialExports: boolean;
+  /** CIDR ranges (e.g. "203.0.113.0/24") or literal IPs the org's members may
+   *  sign in from. Empty = no restriction. */
+  allowedIpRanges: string[];
+  /** Device posture — sessions must come from the desktop app (the token's
+   *  `client` claim). Web/mobile sessions are rejected when enabled. */
+  requireDesktopClient: boolean;
   /** Kill switch — admins can disable Kreatix AI workspace-wide. */
   aiDisabled: boolean;
 }
@@ -29,6 +41,10 @@ const DEFAULTS: OrgPolicies = {
   blockRestrictedShareLinks: false,
   trashRetentionDays: 0,
   dlpPatterns: [],
+  dlpOnSave: "off",
+  watermarkConfidentialExports: false,
+  allowedIpRanges: [],
+  requireDesktopClient: false,
   aiDisabled: false,
 };
 
@@ -49,6 +65,60 @@ export async function dlpHit(fileId: string, fileName: string, orgId: string): P
   if (!patterns.length) return false;
   const haystack = `${fileName}\n${await indexBody(fileId)}`;
   return patterns.some((re) => re.test(haystack));
+}
+
+/** Scan a name + body against the org's DLP patterns — save-time variant of
+ *  dlpHit that takes the text directly (the index may lag the write). */
+export function dlpScanText(name: string, body: string, policies: OrgPolicies): string | null {
+  for (const re of compileDlp(policies.dlpPatterns)) {
+    if (re.test(name) || re.test(body)) return re.source;
+  }
+  return null;
+}
+
+/** IPv4 CIDR/literal check. IPv6 + malformed entries never match (fail-closed
+ *  is wrong here — an admin typo shouldn't lock everyone out, so only
+ *  well-formed IPv4 entries are enforced). */
+export function ipAllowed(ip: string, ranges: string[]): boolean {
+  if (!ranges.length) return true;
+  const norm = ip.replace(/^::ffff:/, "");
+  const toNum = (s: string) => {
+    const p = s.split(".");
+    if (p.length !== 4 || p.some((x) => !/^\d+$/.test(x) || +x > 255)) return null;
+    return p.reduce((n, x) => n * 256 + +x, 0);
+  };
+  const ipN = toNum(norm);
+  if (ipN === null) return ranges.includes(ip); // non-v4 literal match only
+  for (const r of ranges) {
+    const [base, bits] = r.split("/");
+    const baseN = toNum(base ?? "");
+    if (baseN === null) continue;
+    const mask = bits === undefined ? 0xffffffff : bits === "0" ? 0 : (0xffffffff << (32 - +bits)) >>> 0;
+    if (((ipN & mask) >>> 0) === ((baseN & mask) >>> 0)) return true;
+  }
+  return false;
+}
+
+/** An item is held if its own flag is set OR it's attached to an active
+ *  legal hold OR any ancestor folder is held OR its site is held. */
+export async function isHeld(itemId: string): Promise<boolean> {
+  const hit = await one(
+    `WITH RECURSIVE anc AS (
+       SELECT id, parent_id, library_id, legal_hold FROM items WHERE id = $1
+       UNION ALL SELECT i.id, i.parent_id, i.library_id, i.legal_hold
+         FROM items i JOIN anc a ON i.id = a.parent_id)
+     SELECT 1 AS x FROM anc WHERE legal_hold
+     UNION
+     SELECT 1 FROM legal_hold_items lhi
+       JOIN legal_holds lh ON lh.id = lhi.hold_id AND lh.active
+       WHERE lhi.item_id = $1 OR lhi.item_id IN (SELECT id FROM anc)
+     UNION
+     SELECT 1 FROM sites s
+       WHERE s.legal_hold AND EXISTS (
+         SELECT 1 FROM anc a JOIN libraries l ON l.id = a.library_id
+         WHERE l.site_id = s.id)
+     LIMIT 1`, [itemId]);
+  return !!hit;
 }
 
 export async function getPolicies(orgId: string): Promise<OrgPolicies> {
@@ -92,8 +162,11 @@ export async function sweepRetention(): Promise<number> {
       "SELECT id FROM items WHERE org_id = $1 AND trashed AND updated_at < $2",
       [org_id, cutoff],
     );
-    for (const { id } of doomed) await purgeItem(id);
-    purged += doomed.length;
+    for (const { id } of doomed) {
+      if (await isHeld(id)) continue; // legal hold wins over retention
+      await purgeItem(id);
+      purged++;
+    }
   }
   return purged;
 }
@@ -124,6 +197,7 @@ export async function sweepLibraryRetention(): Promise<number> {
       [lib.id, cutoff],
     );
     for (const item of stale) {
+      if (await isHeld(item.id)) continue; // held items are exempt
       await run("UPDATE items SET trashed = true, updated_at = $1 WHERE id = $2", [new Date().toISOString(), item.id]);
       void logActivity(item.org_id, item.owner_id, item.id, "trash-retention", decryptField(item.name) ?? undefined);
       trashed++;
@@ -131,6 +205,27 @@ export async function sweepLibraryRetention(): Promise<number> {
   }
   return trashed;
 }
+
+// text/* only — JSON-family mimes would be corrupted by an appended stamp
+const WATERMARKABLE = /^text\//i;
+
+/** Stamp a confidentiality footer on downloadable text content when the org
+ *  enables watermarking and the file is labeled confidential|restricted.
+ *  Binary formats (pdf/docx/…) can't be stamped inline — callers add the
+ *  X-Kreatix-Watermark header so clients can overlay it instead. */
+export function watermarkIfNeeded(
+  blob: Buffer, mime: string, label: string, policies: OrgPolicies, who: string,
+): { blob: Buffer; watermarked: boolean } {
+  const labeled = label === "confidential" || label === "restricted";
+  if (!policies.watermarkConfidentialExports || !labeled) return { blob, watermarked: false };
+  const stamp = `\n\n— ${label.toUpperCase()} — exported ${new Date().toISOString()} by ${who} — Kreatix Suites —\n`;
+  if (WATERMARKABLE.test(mime)) {
+    return { blob: Buffer.concat([blob, Buffer.from(stamp)]), watermarked: true };
+  }
+  return { blob, watermarked: true }; // header-only for binary
+}
+
+export const WATERMARK_HEADER = "X-Kreatix-Watermark";
 
 /** Permanently delete an item: row (cascades), index, collab state, AI log, orphan blobs. */
 export async function purgeItem(itemId: string): Promise<void> {

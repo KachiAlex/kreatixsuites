@@ -32,6 +32,7 @@ export interface SiteRow {
   visibility: "org" | "private";
   owner_id: string;
   hub_id: string | null;
+  legal_hold: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +187,7 @@ export function toSite(row: SiteRow, myRole?: SiteRole | null, memberCount?: num
     myRole: myRole ?? null,
     memberCount,
     hubId: row.hub_id ?? null,
+    legalHold: !!row.legal_hold,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

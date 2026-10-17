@@ -8,7 +8,7 @@ import {
   type AuthedRequest, type UserRow,
 } from "../auth.js";
 import { getBlob } from "../blobs.js";
-import { getPolicies, dlpHit } from "../policies.js";
+import { getPolicies, dlpHit, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 import { entitled } from "../billing.js";
 import { sendRawBlob } from "./content.js";
 
@@ -167,11 +167,14 @@ export function sharingRoutes(app: FastifyInstance) {
     );
     const blob = v && getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
+    const policies = await getPolicies(item.org_id);
+    const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, "share-link guest");
+    if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
     if (item.mime.startsWith("application/x-kreatix-")) {
-      return { version: v.number, content: JSON.parse(blob.toString("utf8")), blockDownload: !!row.link.block_download };
+      return { version: v.number, content: JSON.parse(blob.toString("utf8")), blockDownload: !!row.link.block_download, watermarked: wm.watermarked };
     }
     if (row.link.block_download) return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
-    return sendRawBlob(reply, item.mime, blob, itemName(item));
+    return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
   });
 }
 

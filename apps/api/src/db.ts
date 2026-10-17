@@ -773,6 +773,27 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (owner_id, delegate_id)
   )`);
+  // Governance depth — legal hold flag blocks all delete paths; DLP flag is
+  // stamped by the save-time scanner (policies.dlpPatterns).
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS dlp_flagged BOOLEAN NOT NULL DEFAULT false`);
+  // a site-level hold covers every item in every library under the site
+  await pool.query(`ALTER TABLE sites ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS legal_holds (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS legal_hold_items (
+    hold_id TEXT NOT NULL REFERENCES legal_holds(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    PRIMARY KEY (hold_id, item_id)
+  )`);
+
   await pool.query(`CREATE TABLE IF NOT EXISTS forms (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,

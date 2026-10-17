@@ -39,7 +39,7 @@ import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
 import { migrate, one } from "./db.js";
 import { reindexAll } from "./indexer.js";
-import { sweepRetention, sweepLibraryRetention } from "./policies.js";
+import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
 
 /** Auth/session tokens must never land in access logs — strip the query
@@ -157,6 +157,45 @@ async function main() {
         return reply.code(402).send({
           error: "subscription_locked",
           message: "Workspace subscription has expired — the workspace is read-only until billing is renewed.",
+        });
+      }
+    } catch { /* invalid token → requireAuth 401s downstream */ }
+  });
+
+  // ---- conditional access: org IP allowlist ----
+  // If the caller's org sets policies.allowedIpRanges, every authed request
+  // must come from inside one of the ranges (IPv4 CIDR or literal). Unauthed
+  // requests pass through — requireAuth decides them downstream.
+  app.addHook("preHandler", async (req, reply) => {
+    // only pre-auth endpoints are exempt — session endpoints like /api/auth/me
+    // still respect the allowlist (they run on an existing token)
+    if (!req.url.startsWith("/api/") || /^\/api\/auth\/(login|register|mfa|invite)\b/.test(req.url)) return;
+    const header = req.headers.authorization;
+    const cookieToken = (req.headers.cookie ?? "")
+      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
+    if (!token) return;
+    try {
+      const { jwtVerify } = await import("jose");
+      const { payload } = await jwtVerify(token, new TextEncoder().encode(
+        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
+      if (payload.aud === "kreatix-mfa") return;
+      const u = await one<{ org_id: string; is_super: boolean }>(
+        "SELECT org_id, is_super FROM users WHERE id = $1", [payload.sub as string]);
+      if (!u || u.is_super) return;
+      const { allowedIpRanges, requireDesktopClient } = await getPolicies(u.org_id);
+      if (allowedIpRanges.length && !ipAllowed(req.ip, allowedIpRanges)) {
+        return reply.code(403).send({
+          error: "ip_restricted",
+          message: "Your network isn't allowed to access this workspace",
+        });
+      }
+      // device posture — orgs can require the desktop client (Entra's
+      // "approved client app" grant); tokens predate the claim count as web
+      if (requireDesktopClient && payload.client !== "desktop") {
+        return reply.code(403).send({
+          error: "device_restricted",
+          message: "This workspace requires the Kreatix desktop app",
         });
       }
     } catch { /* invalid token → requireAuth 401s downstream */ }

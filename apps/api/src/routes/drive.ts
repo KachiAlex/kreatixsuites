@@ -10,7 +10,7 @@ import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
-import { purgeItem } from "../policies.js";
+import { purgeItem, isHeld } from "../policies.js";
 import { fireTrigger } from "../rules.js";
 import { indexFile } from "../indexer.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -683,6 +683,18 @@ export function driveRoutes(app: FastifyInstance) {
     }
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
+    }
+    if (await isHeld(item.id)) {
+      return reply.code(423).send({ error: "legal_hold", message: "This item is under a legal hold and cannot be deleted" });
+    }
+    // a held descendant anywhere in the subtree blocks the whole delete
+    const heldDesc = await one(
+      `WITH RECURSIVE sub AS (
+         SELECT id, legal_hold FROM items WHERE parent_id = $1
+         UNION ALL SELECT i.id, i.legal_hold FROM items i JOIN sub s ON i.parent_id = s.id)
+       SELECT 1 AS x FROM sub WHERE legal_hold LIMIT 1`, [item.id]);
+    if (heldDesc) {
+      return reply.code(423).send({ error: "legal_hold", message: "An item inside this folder is under a legal hold" });
     }
     if ((req.query as { permanent?: string }).permanent === "true") {
       await purgeItem(item.id);

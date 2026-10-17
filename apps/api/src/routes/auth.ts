@@ -86,7 +86,8 @@ export function authRoutes(app: FastifyInstance) {
     }
     // desktop sessions get 30d — the 14-day offline grace must not strand
     // a logged-in desktop user mid-offline-period
-    return { token: await signToken(row.id, body.client === "desktop" ? "30d" : "7d"), user: toUser(row) };
+    const desktop = body.client === "desktop";
+    return { token: await signToken(row.id, desktop ? "30d" : "7d", desktop ? "desktop" : "web"), user: toUser(row) };
   });
 
   /** Second step of login when the account has TOTP enabled. Accepts a
@@ -109,7 +110,8 @@ export function authRoutes(app: FastifyInstance) {
       }
     }
     if (!ok) return reply.code(401).send({ error: "unauthorized", message: "Invalid authentication code" });
-    return { token: await signToken(row.id, body.client === "desktop" ? "30d" : "7d"), user: toUser(row) };
+    const mfaDesktop = body.client === "desktop";
+    return { token: await signToken(row.id, mfaDesktop ? "30d" : "7d", mfaDesktop ? "desktop" : "web"), user: toUser(row) };
   });
 
   /** Begin enrollment — the secret is returned but not stored until the

@@ -38,6 +38,10 @@ export interface DriveItem {
   updatedAt: string;
   /** Sensitivity label: internal | public | confidential | restricted */
   label?: string;
+  /** Legal hold — deletion is blocked while set */
+  legalHold?: boolean;
+  /** Last save matched an org DLP pattern */
+  dlpFlagged?: boolean;
   /** Site library this item lives in (null = personal/root Drive) */
   libraryId?: string | null;
   /** Content type schema for this item (SharePoint reusable schema) */
@@ -136,6 +140,8 @@ export interface Site {
   memberCount?: number;
   /** Hub this site is associated with (SharePoint hub sites) */
   hubId?: string | null;
+  /** Site-wide legal hold — every item in every library under it is preserved */
+  legalHold?: boolean;
   hubName?: string | null;
   /** Sites associated to this site when it acts as a hub */
   associatedSites?: { id: string; name: string }[];

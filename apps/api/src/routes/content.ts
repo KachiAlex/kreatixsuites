@@ -11,6 +11,7 @@ import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
+import { getPolicies, dlpScanText, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 
 interface VersionRow {
   id: string;
@@ -25,6 +26,59 @@ interface VersionRow {
   size: number;
   created_by: string;
   created_at: string;
+}
+
+/** LCS line diff → list of hunks. Each hunk: {type: "same"|"add"|"del",
+ *  lines: string[]}. Runs of identical lines collapse into "same" hunks
+ *  capped at 3 context lines on each side. */
+export function diffLines(a: string, b: string) {
+  const A = a.split("\n"), B = b.split("\n");
+  const n = A.length, m = B.length;
+  // LCS table (row-major, (n+1)×(m+1)) — fine for document-scale inputs
+  const L = new Uint32Array((n + 1) * (m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      L[i * (m + 1) + j] = A[i] === B[j]
+        ? L[(i + 1) * (m + 1) + j + 1] + 1
+        : Math.max(L[(i + 1) * (m + 1) + j], L[i * (m + 1) + j + 1]);
+  const ops: { t: "same" | "add" | "del"; s: string }[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { ops.push({ t: "same", s: A[i++] }); j++; }
+    else if (L[(i + 1) * (m + 1) + j] >= L[i * (m + 1) + j + 1]) ops.push({ t: "del", s: A[i++] });
+    else ops.push({ t: "add", s: B[j++] });
+  }
+  while (i < n) ops.push({ t: "del", s: A[i++] });
+  while (j < m) ops.push({ t: "add", s: B[j++] });
+  // collapse long "same" runs: keep ≤3 context lines, emit skip markers
+  const hunks: { type: string; lines: string[]; skipped?: number }[] = [];
+  let run: { t: string; s: string }[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    for (const o of run) {
+      const last = hunks[hunks.length - 1];
+      if (last && last.type === o.t) last.lines.push(o.s);
+      else hunks.push({ type: o.t, lines: [o.s] });
+    }
+    run = [];
+  };
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k].t === "same") {
+      // look ahead: is this same-run > 6 lines? keep only edges
+      let len = 0;
+      while (ops[k + len]?.t === "same") len++;
+      if (len > 6) {
+        for (let c = 0; c < 3; c++) run.push(ops[k++]);
+        flush();
+        hunks.push({ type: "skip", lines: [], skipped: len - 6 });
+        k += len - 7; // outer k++ lands on the first of the last 3 context lines
+        continue;
+      }
+    }
+    run.push(ops[k]);
+  }
+  flush();
+  return hunks;
 }
 
 function headVersion(fileId: string): Promise<VersionRow | undefined> {
@@ -175,9 +229,15 @@ export function contentRoutes(app: FastifyInstance) {
     if (!blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
 
     if (item.mime.startsWith("application/x-kreatix-")) {
-      return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
+      const policies = await getPolicies(item.org_id);
+      const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, user.email);
+      if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
+      return { version: v.number, content: JSON.parse(blob.toString("utf8")), watermarked: wm.watermarked };
     }
-    return sendRawBlob(reply, item.mime, blob, itemName(item));
+    const policies = await getPolicies(item.org_id);
+    const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, user.email);
+    if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
+    return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
   });
 
   /** GET the PDF bytes — the LATEST version whose blob is a real PDF (page
@@ -286,6 +346,26 @@ export function contentRoutes(app: FastifyInstance) {
     if ((req.query as { collab?: string }).collab !== "1") {
       await run("DELETE FROM collab_states WHERE file_id = $1", [item.id]);
     }
+    // DLP-lite — scan outgoing content against org patterns. "block" rejects
+    // the save outright; "flag" stamps the item + audit row and lets it in.
+    const policies = await getPolicies(user.orgId);
+    if (policies.dlpOnSave !== "off") {
+      const text = typeof body.content === "string" ? body.content : JSON.stringify(body.content);
+      const hit = dlpScanText(itemName(item), text.slice(0, 200_000), policies);
+      if (hit && policies.dlpOnSave === "block") {
+        return reply.code(422).send({
+          error: "dlp_blocked",
+          message: `Save blocked by org data-loss-prevention policy (matched /${hit}/)`,
+        });
+      }
+      if (hit) {
+        await run("UPDATE items SET dlp_flagged = true WHERE id = $1", [item.id]);
+        void logActivity(user.orgId, user.id, item.id, "dlp-flag", `matched /${hit}/`);
+      } else if (item.dlp_flagged) {
+        await run("UPDATE items SET dlp_flagged = false WHERE id = $1", [item.id]);
+      }
+    }
+
     const data = Buffer.from(JSON.stringify(body.content));
     const { key, size } = putBlob(data);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
@@ -376,6 +456,39 @@ export function contentRoutes(app: FastifyInstance) {
       // binary version (e.g. the original PDF upload) — stream it raw
       return sendRawBlob(reply, item.mime, blob, itemName(item));
     }
+  });
+
+  /** Line-level diff between two versions of a text/JSON file — powers the
+   *  "compare before restore" preview. Binary versions return 422. */
+  app.get("/api/files/:id/diff", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "viewer")) return reply.code(404).send({ error: "not_found" });
+    const { a, b } = req.query as { a?: string; b?: string };
+    const va = Number(a), vb = Number(b);
+    if (!Number.isInteger(va) || !Number.isInteger(vb) || va < 1 || vb < 1)
+      return reply.code(400).send({ error: "bad_request", message: "a and b must be version numbers" });
+    const rows = await q<VersionRow>(
+      "SELECT * FROM versions WHERE file_id = $1 AND number = ANY($2)", [item.id, [va, vb]]);
+    const ra = rows.find((r) => r.number === va), rb = rows.find((r) => r.number === vb);
+    if (!ra || !rb) return reply.code(404).send({ error: "not_found", message: "Version not found" });
+    if ((!ra.published || !rb.published) && !hasPermission(perm, "editor"))
+      return reply.code(404).send({ error: "not_found" });
+    const textOf = (v: VersionRow): string | null => {
+      const blob = getBlob(v.blob_key);
+      if (!blob) return null;
+      try { return JSON.parse(blob.toString("utf8")); } catch { return null; }
+    };
+    const pretty = (v: VersionRow) => {
+      const c = textOf(v);
+      if (c === null) return null;
+      return typeof c === "string" ? c : JSON.stringify(c, null, 2);
+    };
+    const ta = pretty(ra), tb = pretty(rb);
+    if (ta === null || tb === null)
+      return reply.code(422).send({ error: "binary", message: "Only text/JSON versions can be diffed" });
+    return { a: va, b: vb, hunks: diffLines(ta, tb) };
   });
 
   /** Restore an older version — implemented as a new head version copying the old blob (SRS §19) */

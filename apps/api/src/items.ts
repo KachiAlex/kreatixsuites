@@ -15,6 +15,8 @@ export interface ItemRow {
   starred: boolean;
   trashed: boolean;
   label: string;
+  legal_hold: boolean;
+  dlp_flagged: boolean;
   media_for: string | null;
   library_id: string | null;
   content_type_id: string | null;
@@ -65,6 +67,8 @@ export async function toDriveItem(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     label: row.label ?? "internal",
+    legalHold: !!row.legal_hold,
+    dlpFlagged: !!row.dlp_flagged,
     libraryId: row.library_id ?? null,
     contentTypeId: row.content_type_id ?? null,
     checkedOut: row.checked_out_by

@@ -46,6 +46,14 @@ interface Policies {
   blockRestrictedShareLinks: boolean;
   trashRetentionDays: number;
   dlpPatterns: string[];
+  dlpOnSave: "off" | "flag" | "block";
+  watermarkConfidentialExports: boolean;
+  allowedIpRanges: string[];
+  requireDesktopClient: boolean;
+}
+interface Hold {
+  id: string; name: string; description: string | null; active: boolean;
+  createdBy: string; createdAt: string; itemCount: number;
 }
 interface AuditEntry {
   id: string; action: string; detail: string | null; created_at: string;
@@ -109,11 +117,17 @@ export function Admin() {
   }>({ triggers: [], actions: [] });
   const [forms, setForms] = useState<{ id: string; title: string }[]>([]);
   const [libs, setLibs] = useState<{ id: string; name: string }[]>([]);
+  const [sites, setSites] = useState<{ id: string; name: string; legalHold?: boolean }[]>([]);
   const [ruleForm, setRuleForm] = useState<{ name: string; trigger: string; action: string; match: Record<string, string>; cfg: Record<string, string> }>({
     name: "", trigger: "form.submitted", action: "task.create", match: {}, cfg: {},
   });
   const [runsFor, setRunsFor] = useState<string | null>(null);
   const [runs, setRuns] = useState<{ dedupe_key: string; fired_at: string; ok: boolean | null; detail: Record<string, string> | null }[]>([]);
+  const [holds, setHolds] = useState<Hold[]>([]);
+  const [holdName, setHoldName] = useState("");
+  const [holdItems, setHoldItems] = useState<{ id: string; name: string; kind: string; owner: string }[]>([]);
+  const [holdOpen, setHoldOpen] = useState<string | null>(null);
+  const [ediscUser, setEdiscUser] = useState("");
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -135,9 +149,10 @@ export function Admin() {
         api.get<{ domains: OrgDomain[] }>("/api/admin/domains"),
         api.get<{ rules: Rule[]; triggers: { id: string; label: string }[]; actions: { id: string; label: string }[] }>("/api/rules"),
         api.get<{ forms: { id: string; title: string }[] }>("/api/forms"),
-        api.get<{ sites: { libraries?: { id: string; name: string }[] }[] }>("/api/sites"),
+        api.get<{ sites: { id: string; name: string; legalHold?: boolean; libraries?: { id: string; name: string }[] }[] }>("/api/sites"),
+        api.get<{ holds: Hold[] }>("/api/admin/holds"),
       ];
-      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[] },
@@ -150,7 +165,8 @@ export function Admin() {
         { domains: OrgDomain[] },
         { rules: Rule[]; triggers: { id: string; label: string }[]; actions: { id: string; label: string }[] },
         { forms: { id: string; title: string }[] },
-        { sites: { libraries?: { id: string; name: string }[] }[] },
+        { sites: { id: string; name: string; legalHold?: boolean; libraries?: { id: string; name: string }[] }[] },
+        { holds: Hold[] },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -167,6 +183,8 @@ export function Admin() {
       setRuleMeta({ triggers: rl.triggers, actions: rl.actions });
       setForms(fm.forms);
       setLibs((st.sites ?? []).flatMap((s) => s.libraries ?? []));
+      setSites((st.sites ?? []).map((s) => ({ id: s.id, name: s.name, legalHold: s.legalHold })));
+      setHolds(hl.holds);
     }
   }, [isSuper]);
 
@@ -483,6 +501,61 @@ export function Admin() {
                 <em>Trashed items older than this are permanently purged daily. 0 = keep forever.</em>
               </span>
             </label>
+            <label className="pol-row">
+              <select
+                value={policies.dlpOnSave ?? "off"}
+                onChange={(e) => patchPolicy({ dlpOnSave: e.target.value as Policies["dlpOnSave"] })}
+              >
+                <option value="off">Off</option>
+                <option value="flag">Flag only</option>
+                <option value="block">Block save</option>
+              </select>
+              <span>
+                <b>DLP on save</b>
+                <em>"Flag" marks matching files + audit row; "Block" rejects the save entirely.</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input
+                type="checkbox"
+                checked={policies.watermarkConfidentialExports ?? false}
+                onChange={(e) => patchPolicy({ watermarkConfidentialExports: e.target.checked })}
+              />
+              <span>
+                <b>Watermark Confidential/Restricted exports</b>
+                <em>Exported copies get a label + timestamp footer stamped by the download pipeline.</em>
+              </span>
+            </label>
+            <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
+              <span>
+                <b>Allowed IP ranges (conditional access)</b>
+                <em>CIDR or literal IPs, one per line — members can only reach the API from these
+                  networks. Empty = no restriction. Owners/admins included, so keep your own IP in
+                  the list.</em>
+              </span>
+              <textarea
+                rows={2}
+                defaultValue={(policies.allowedIpRanges ?? []).join("\n")}
+                placeholder={"203.0.113.0/24\n198.51.100.7"}
+                onBlur={(e) => {
+                  const ranges = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 50);
+                  if (ranges.join("\n") !== (policies.allowedIpRanges ?? []).join("\n")) {
+                    void patchPolicy({ allowedIpRanges: ranges });
+                  }
+                }}
+                style={{ fontFamily: "monospace", fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
+              />
+            </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.requireDesktopClient ?? false}
+                onChange={(e) => patchPolicy({ requireDesktopClient: e.target.checked })} />
+              <span>
+                <b>Require desktop app (device posture)</b>
+                <em>Web and mobile sessions are rejected — members must use the Kreatix
+                  desktop client. Existing web tokens stop working when enabled.</em>
+              </span>
+            </label>
             <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
               <span>
                 <b>DLP content patterns</b>
@@ -505,6 +578,102 @@ export function Admin() {
           </div>
         )}
       </section>
+
+      {/* ── Legal holds + eDiscovery ── */}
+      {isOwnerOrAdmin && (
+        <section className="admin-card">
+          <h2>Legal holds</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Held items can't be trashed, purged, or swept by retention — until the hold is released.
+          </p>
+          <div className="cal-formrow" style={{ marginBottom: 10 }}>
+            <input placeholder="Hold name (e.g. Matter 2026-014)" value={holdName}
+              onChange={(e) => setHoldName(e.target.value)} style={{ flex: 1 }} />
+            <button className="btn-primary btn-sm" disabled={!holdName.trim()}
+              onClick={async () => {
+                try {
+                  await api.post("/api/admin/holds", { name: holdName.trim() });
+                  setHoldName(""); void load(); toast("Hold created");
+                } catch (e) { toast((e as Error).message); }
+              }}>New hold</button>
+          </div>
+          {holds.map((h) => (
+            <div key={h.id} className="chat-person" style={{ cursor: "default" }}>
+              <span className="chat-item-main">
+                <b>{h.name}</b>
+                <span className="d-sub">{h.itemCount} item{h.itemCount === 1 ? "" : "s"} · {h.active ? "active" : "released"} · by {h.createdBy}</span>
+              </span>
+              <button className="btn-ghost btn-sm" onClick={async () => {
+                if (holdOpen === h.id) { setHoldOpen(null); return; }
+                setHoldOpen(h.id);
+                const r = await api.get<{ items: typeof holdItems }>(`/api/admin/holds/${h.id}/items`).catch(() => null);
+                setHoldItems(r?.items ?? []);
+              }}>{holdOpen === h.id ? "Hide" : `${h.itemCount} items`}</button>
+              <button className="btn-ghost btn-sm" onClick={async () => {
+                try { await api.patch(`/api/admin/holds/${h.id}`, { active: !h.active }); void load(); }
+                catch (e) { toast((e as Error).message); }
+              }}>{h.active ? "Release" : "Reactivate"}</button>
+              {holdOpen === h.id && (
+                <div style={{ flexBasis: "100%", padding: "4px 0 8px" }}>
+                  {holdItems.map((i) => (
+                    <div key={i.id} className="d-sub" style={{ display: "flex", gap: 8, padding: "2px 0" }}>
+                      <span style={{ flex: 1 }}>{i.name} <em>({i.kind} · {i.owner})</em></span>
+                      <button className="btn-ghost btn-sm" onClick={async () => {
+                        await api.del(`/api/admin/holds/${h.id}/items/${i.id}`);
+                        setHoldItems((xs) => xs.filter((x) => x.id !== i.id)); void load();
+                      }}>remove</button>
+                    </div>
+                  ))}
+                  {!holdItems.length && <span className="d-sub">No items on this hold yet — use Drive → item menu → "Legal hold".</span>}
+                </div>
+              )}
+            </div>
+          ))}
+          {!holds.length && <p className="d-sub">No holds. Flag single files from Drive, or create a named hold here and attach items.</p>}
+
+          {sites.length > 0 && (
+            <>
+              <h3 style={{ fontSize: 13, margin: "16px 0 6px" }}>Site-wide holds</h3>
+              <p className="d-sub" style={{ marginTop: 0 }}>Hold an entire site — covers every item in its libraries.</p>
+              {sites.map((s) => (
+                <div key={s.id} className="chat-person" style={{ cursor: "default" }}>
+                  <span className="chat-item-main"><b>{s.name}</b>
+                    <span className="d-sub">{s.legalHold ? "held" : "not held"}</span></span>
+                  <button className="btn-ghost btn-sm" onClick={async () => {
+                    try {
+                      await api.patch(`/api/admin/holds/site/${s.id}`, { hold: !s.legalHold });
+                      setSites((xs) => xs.map((x) => x.id === s.id ? { ...x, legalHold: !s.legalHold } : x));
+                    } catch (e) { toast((e as Error).message); }
+                  }}>{s.legalHold ? "Release" : "Hold"}</button>
+                </div>
+              ))}
+            </>
+          )}
+
+          <h2 style={{ marginTop: 24 }}>eDiscovery export</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            One-click JSON bundle of a member's files, chat, comments, activity, calendar, and tasks.
+          </p>
+          <div className="cal-formrow">
+            <select value={ediscUser} onChange={(e) => setEdiscUser(e.target.value)} style={{ flex: 1 }}>
+              <option value="">Pick a custodian…</option>
+              {members.map((m) => <option key={m.id} value={m.id}>{m.displayName} ({m.email})</option>)}
+            </select>
+            <button className="btn-primary btn-sm" disabled={!ediscUser} onClick={async () => {
+              try {
+                const bundle = await api.get<Record<string, unknown>>(`/api/admin/ediscovery/export/${ediscUser}`);
+                const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                const who = members.find((m) => m.id === ediscUser)?.email ?? "user";
+                a.href = url; a.download = `ediscovery-${who}-${Date.now()}.json`;
+                a.click(); URL.revokeObjectURL(url);
+                toast("Export downloaded");
+              } catch (e) { toast((e as Error).message); }
+            }}>Export JSON</button>
+          </div>
+        </section>
+      )}
 
       {billing && (
         <section className="admin-card" id="billing">

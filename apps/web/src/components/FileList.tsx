@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { DriveItem } from "@kreatix/shared";
 import { KIND_META, timeAgo } from "../lib/format";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { prefetchEditor } from "../pages/editors";
 import { AppIcon } from "./AppIcon";
 import { CopyMoveDialog } from "./CopyMoveDialog";
@@ -34,6 +35,8 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
   const [newName, setNewName] = useState("");
   const [copyMove, setCopyMove] = useState<{ item: DriveItem; mode: "copy" | "move" } | null>(null);
   const [accessFor, setAccessFor] = useState<DriveItem | null>(null);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   if (!items.length) return <div className="panel"><div className="empty">Nothing here yet.</div></div>;
 
@@ -80,6 +83,11 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
         const comment = prompt("Rejection reason (optional):") ?? "";
         await api.post(`/api/drive/${item.id}/reject`, { comment: comment.trim() || undefined });
         toast("Rejected — sent back to draft");
+        onRefresh();
+      }
+      if (action === "hold") {
+        await api.patch(`/api/admin/holds/item/${item.id}`, { hold: !item.legalHold });
+        toast(item.legalHold ? "Legal hold released" : "Legal hold applied — can't be deleted or purged");
         onRefresh();
       }
       if (action === "trash") { await api.del(`/api/drive/${item.id}`); toast("Moved to recycle bin"); onRefresh(); }
@@ -135,6 +143,12 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                     )}
                     {it.label && it.label !== "internal" && (
                       <span className={`label-badge ${it.label}`}>{it.label}</span>
+                    )}
+                    {it.legalHold && (
+                      <span className="perm-badge" title="Under legal hold — delete and retention purge blocked">⚖ hold</span>
+                    )}
+                    {it.dlpFlagged && (
+                      <span className="perm-badge" title="Flagged by org DLP policy">⚑ DLP</span>
                     )}
                   </h4>
                   <p>{meta.label}{it.checkedOut ? ` · Checked out by ${it.checkedOut.name}` : ""}
@@ -200,6 +214,9 @@ export function FileList({ items, onOpen, onRefresh, onShare, onVersions, toast,
                         <button onClick={() => act(it, "approve")}>Approve ✓</button>
                         <button className="danger" onClick={() => act(it, "reject")}>Reject…</button>
                       </>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => act(it, "hold")}>{it.legalHold ? "Release legal hold" : "⚖ Legal hold"}</button>
                     )}
                     <button className="danger" onClick={() => act(it, "trash")}>Move to recycle bin</button>
                   </>

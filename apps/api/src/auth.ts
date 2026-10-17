@@ -40,8 +40,8 @@ export function verifyPassword(password: string, stored: string): boolean {
   return expected.length === candidate.length && timingSafeEqual(expected, candidate);
 }
 
-export async function signToken(userId: string, ttl = "7d"): Promise<string> {
-  return new SignJWT({ sub: userId })
+export async function signToken(userId: string, ttl = "7d", client: "web" | "desktop" = "web"): Promise<string> {
+  return new SignJWT({ sub: userId, client })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(ttl)
