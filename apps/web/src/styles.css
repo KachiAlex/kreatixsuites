@@ -3366,3 +3366,9 @@ html[data-theme="dark"]{
   .sap-details{grid-template-columns:1fr}
   .auth-card{padding:22px 18px}
 }
+
+/* offline conflict resolution */
+.conflict-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.conflict-row:last-of-type{border-bottom:0}
+.conflict-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.conflict-main b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

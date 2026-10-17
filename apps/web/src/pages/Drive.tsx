@@ -8,6 +8,8 @@ import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { prefetchEditorsFor } from "./editors";
 import { openLocalFile } from "../lib/offline/openLocal";
+import { isDesktop, isNativeMobile } from "../lib/platform";
+import { listConflicts, resolveConflict, type ConflictEntry } from "../lib/offline/sync";
 
 const TITLES: Record<string, string> = {
   recent: "Recent",
@@ -48,11 +50,69 @@ export function Drive() {
           </button>
         )}
       </div>
+      <ConflictsBanner toast={toast} onChanged={refresh} />
       <FileList items={items} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions} toast={toast} />
 
       {sharing && <ShareDialog item={sharing} onClose={() => setSharing(null)} toast={toast} />}
       {versions && <VersionsPanel item={versions} onClose={() => setVersions(null)} onRestore={refresh} toast={toast} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
+    </>
+  );
+}
+
+/** Offline-edit conflicts — appears when the sync engine preserved a local
+ *  copy because the server version changed. "Keep copy" uploads it as a new
+ *  file; "Discard" drops the local version (the server copy already won). */
+function ConflictsBanner({ toast, onChanged }: { toast: (m: string) => void; onChanged: () => void }) {
+  const [conflicts, setConflicts] = useState<ConflictEntry[]>([]);
+  const [open, setOpen] = useState(false);
+  const bundled = isDesktop || isNativeMobile;
+
+  useEffect(() => {
+    if (!bundled) return;
+    const load = () => void listConflicts().then(setConflicts).catch(() => {});
+    load();
+    window.addEventListener("kreatix:conflict", load);
+    return () => window.removeEventListener("kreatix:conflict", load);
+  }, [bundled]);
+
+  if (!bundled || conflicts.length === 0) return null;
+  const act = async (c: ConflictEntry, a: "keep" | "discard") => {
+    try {
+      await resolveConflict(c, a);
+      setConflicts((cs) => cs.filter((x) => x.id !== c.id));
+      toast(a === "keep" ? "Saved as a new file in Drive" : "Conflict copy discarded");
+      onChanged();
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  return (
+    <>
+      <div className="billing-banner warn">
+        <span><strong>{conflicts.length}</strong> offline edit{conflicts.length === 1 ? "" : "s"} conflicted with newer server changes.</span>
+        <button onClick={() => setOpen(true)}>Review</button>
+      </div>
+      {open && (
+        <div className="dlg-wrap" onClick={(e) => e.target === e.currentTarget && setOpen(false)}>
+          <div className="dlg modal-card">
+            <h3>Conflict copies</h3>
+            <p className="d-sub">These files changed on the server while you were editing offline. Your version was kept as a separate copy — nothing was lost.</p>
+            {conflicts.map((c) => (
+              <div key={c.id} className="conflict-row">
+                <div className="conflict-main">
+                  <b>{c.name}</b>
+                  {c.at > 0 && <span className="d-sub">{new Date(c.at).toLocaleString()}</span>}
+                </div>
+                <button className="btn-ghost btn-sm" onClick={() => void act(c, "discard")}>Discard copy</button>
+                <button className="btn-primary btn-sm" onClick={() => void act(c, "keep")}>Keep as new file</button>
+              </div>
+            ))}
+            <div className="dlg-actions">
+              <button className="btn-ghost" onClick={() => setOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

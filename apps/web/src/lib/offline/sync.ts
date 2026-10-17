@@ -60,10 +60,17 @@ const runOp = async (op: OutboxOp): Promise<void> => {
   if (!res.ok) {
     // conflict on a content write → keep local as a conflict copy instead of losing work
     if ((res.status === 409 || res.status === 412) && op.fileId) {
+      const cid = `conflict:${op.fileId}:${Date.now()}`;
       const f = await store.files.get(op.fileId);
-      if (f) await store.files.put({ ...f, id: `conflict:${op.fileId}:${Date.now()}`, name: `${f.name} (conflict copy)` });
+      if (f) await store.files.put({ ...f, id: cid, name: `${f.name} (conflict copy)` });
       const b = await store.blobs.get(op.fileId);
-      if (b) await store.blobs.put({ ...b, fileId: `conflict:${op.fileId}:${Date.now()}` });
+      if (b) await store.blobs.put({ ...b, fileId: cid });
+      const list = (await store.meta.get<ConflictEntry[]>("conflicts")) ?? [];
+      list.push({ id: cid, fileId: op.fileId, name: f?.name ?? "file", at: Date.now() });
+      await store.meta.set("conflicts", list);
+      window.dispatchEvent(new CustomEvent("kreatix:conflict"));
+      window.dispatchEvent(new CustomEvent("kreatix:toast",
+        { detail: `"${f?.name ?? "A file"}" changed elsewhere — your offline edits were kept as a conflict copy` }));
       return; // consume the op — the conflict copy preserves local state
     }
     // 4xx = server rejected (locked workspace, gone item) — consume, don't retry
@@ -115,6 +122,59 @@ export async function syncNow(): Promise<void> {
 export async function enqueue(op: Omit<OutboxOp, "ts">): Promise<void> {
   await store.outbox.add({ ...op, ts: Date.now() });
   await emit();
+}
+
+/** A preserved offline edit that collided with a server-side change. */
+export interface ConflictEntry {
+  id: string;      // mirror row id — "conflict:<fileId>:<ts>"
+  fileId: string;  // server file that won
+  name: string;
+  at: number;
+}
+
+export async function listConflicts(): Promise<ConflictEntry[]> {
+  const meta = (await store.meta.get<ConflictEntry[]>("conflicts")) ?? [];
+  const files = new Set((await store.files.all()).map((f) => f.id));
+  // reconcile — mirror rows may have been discarded from another surface
+  const live = meta.filter((c) => files.has(c.id));
+  const stray = [...files].filter((id) => id.startsWith("conflict:"))
+    .filter((id) => !live.some((c) => c.id === id));
+  return [...live, ...stray.map((id) => ({ id, fileId: id.split(":")[1] ?? "", name: "conflict copy", at: 0 }))];
+}
+
+const dropConflict = async (c: ConflictEntry) => {
+  await store.files.del(c.id);
+  await store.blobs.del(c.id);
+  const list = ((await store.meta.get<ConflictEntry[]>("conflicts")) ?? []).filter((x) => x.id !== c.id);
+  await store.meta.set("conflicts", list);
+  window.dispatchEvent(new CustomEvent("kreatix:conflict"));
+};
+
+/**
+ * Resolve a conflict copy. "keep" uploads the local copy as a new Drive file
+ * (server wins the original — the copy is preserved under its own name);
+ * "discard" drops the local copy.
+ */
+export async function resolveConflict(c: ConflictEntry, action: "keep" | "discard"): Promise<void> {
+  if (action === "keep") {
+    const b = await store.blobs.get(c.id);
+    const f = await store.files.get(c.id);
+    if (!b || !f) { await dropConflict(c); return; }
+    const name = f.name;
+    const body = b.binary
+      ? new Blob([b64.from(b.data)], { type: b.mime ?? "application/octet-stream" })
+      : new Blob([b.data], { type: b.mime ?? "application/json" });
+    const res = await fetch(`${API_BASE}/api/drive/upload?name=${encodeURIComponent(name)}&kind=${encodeURIComponent(f.kind)}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${getToken() ?? ""}`, "content-type": body.type },
+      body,
+    });
+    if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+    const { item } = await res.json() as { item: CachedFile };
+    await store.files.put({ ...item, synced: true });
+    await store.blobs.put({ ...b, fileId: item.id });
+  }
+  await dropConflict(c);
 }
 
 /** Cache the file list + open-blob so offline opens hit the mirror. */
