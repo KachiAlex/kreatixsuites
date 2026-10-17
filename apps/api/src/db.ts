@@ -1017,6 +1017,22 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   } catch {
     console.warn("[db] pgvector extension unavailable — semantic search disabled");
   }
+  // ops: backup bookkeeping + sweep coordination state (see backup.ts / monitor.ts)
+  await pool.query(`CREATE TABLE IF NOT EXISTS backup_runs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,               -- db | blobs
+    file TEXT,                        -- filename inside BACKUP_DIR
+    bytes BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',  -- running | ok | error
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS sweep_state (
+    name TEXT PRIMARY KEY,
+    last_run TIMESTAMPTZ NOT NULL,
+    ok BOOLEAN NOT NULL,
+    detail TEXT
+  )`);
   // seed the default billing config row (idempotent)
   await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
   // seed the plan catalog (idempotent — superadmin edits are never overwritten)
@@ -1037,3 +1053,35 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
 }
 
 export const now = () => new Date().toISOString();
+
+/** Multi-instance sweep coordination: take a session-scoped advisory lock on a
+ *  dedicated connection so only one API instance runs a given sweep, then
+ *  record the outcome in sweep_state for /api/admin/health. Returns null when
+ *  another instance holds the lock. */
+export async function runSweep<T>(name: string, lockKey: number, fn: () => Promise<T>): Promise<T | null> {
+  const c = await pool.connect();
+  try {
+    const got = (await c.query(`SELECT pg_try_advisory_lock($1) AS got`, [lockKey])).rows[0]?.got;
+    if (!got) return null;
+    try {
+      const detail = await fn();
+      await c.query(
+        `INSERT INTO sweep_state (name, last_run, ok, detail) VALUES ($1, now(), true, $2)
+         ON CONFLICT (name) DO UPDATE SET last_run = now(), ok = true, detail = $2`,
+        [name, JSON.stringify(detail ?? null)],
+      );
+      return detail;
+    } catch (e) {
+      await c.query(
+        `INSERT INTO sweep_state (name, last_run, ok, detail) VALUES ($1, now(), false, $2)
+         ON CONFLICT (name) DO UPDATE SET last_run = now(), ok = false, detail = $2`,
+        [name, String(e instanceof Error ? e.message : e)],
+      ).catch(() => {});
+      throw e;
+    } finally {
+      await c.query(`SELECT pg_advisory_unlock($1)`, [lockKey]).catch(() => {});
+    }
+  } finally {
+    c.release();
+  }
+}

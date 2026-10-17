@@ -84,6 +84,17 @@ const btn = (href: string, label: string) =>
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export const tpl = {
+  systemAlert(lines: string[]): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `[Kreatix] Health alert — ${lines.length} check${lines.length > 1 ? "s" : ""} degraded`,
+      html: shell("System health alert", `
+<p>The hourly health sweep found issues on your Kreatix Suites instance:</p>
+<ul>${lines.map((l) => `<li style="font-family:monospace;font-size:13px;margin:4px 0">${esc(l)}</li>`).join("")}</ul>
+${btn(`${publicUrl()}/admin`, "Open Admin → Health")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Repeated alerts for the same check are throttled to once every 6 hours.</p>`),
+    };
+  },
+
   welcome(name: string, workspace: string): Pick<Mail, "subject" | "html"> {
     return {
       subject: "Welcome to Kreatix Suites",

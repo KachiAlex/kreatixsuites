@@ -45,6 +45,16 @@ interface SaOverview {
   orgs: number; users: number; activeSubs: number; trialing: number;
   locked: number; granted: number; freeTier: number; pendingPayments: number; mrrNgn: number;
 }
+interface SaHealth {
+  status: "ok" | "warn" | "crit";
+  checks: { id: string; label: string; status: "ok" | "warn" | "crit"; detail?: string }[];
+  sweeps: { name: string; lastRun: string; ok: boolean; detail: string | null }[];
+  uptimeSec: number; errors5xx: number;
+}
+interface SaBackups {
+  dir: string; files: number; bytes: number;
+  runs: { id: string; kind: string; file: string | null; bytes: number; status: string; error: string | null; created_at: string }[];
+}
 interface PlanRow {
   slug: string; name: string; price_ngn: number; member_price_ngn: number;
   features: Record<string, boolean>; limits: Record<string, number>;
@@ -177,6 +187,9 @@ export function SuperPortal() {
   const [ai, setAi] = useState<SaAiUsage | null>(null);
   const [convos, setConvos] = useState<SaConvo[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [health, setHealth] = useState<SaHealth | null>(null);
+  const [backups, setBackups] = useState<SaBackups | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [activeConvo, setActiveConvo] = useState<SaConvo | null>(null);
   const [thread, setThread] = useState<SaFbMsg[] | null>(null);
   const [fbDraft, setFbDraft] = useState("");
@@ -209,7 +222,7 @@ export function SuperPortal() {
   const [audit, setAudit] = useState<SaAudit[] | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
   const [auditAction, setAuditAction] = useState("all");
-  const SECTIONS = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email", "history"] as const;
+  const SECTIONS = ["payments", "feedback", "workspaces", "ai-usage", "pricing", "email", "ops", "history"] as const;
   type Section = (typeof SECTIONS)[number];
   const [activeSec, setActiveSec] = useState<Section>(() => {
     const h = window.location.hash.slice(1);
@@ -220,7 +233,7 @@ export function SuperPortal() {
     setRefreshing(true);
     setLoadErr(null);
     try {
-      const [o, og, pay, c, a, fb, pl] = await Promise.all([
+      const [o, og, pay, c, a, fb, pl, hc, bk] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
         api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
@@ -228,9 +241,12 @@ export function SuperPortal() {
         api.get<SaAiUsage>("/api/superadmin/ai-usage"),
         api.get<{ conversations: SaConvo[]; stats: Record<string, number> }>("/api/superadmin/feedback/conversations"),
         api.get<{ plans: PlanRow[] }>("/api/superadmin/plans"),
+        api.get<SaHealth>("/api/superadmin/health").catch(() => null),
+        api.get<SaBackups>("/api/superadmin/backups").catch(() => null),
       ]);
       setOv(o); setOrgs(og.orgs); setPayments(pay.payments); setCfg(c.config); setPlans(pl.plans);
       setAi(a); setConvos(fb.conversations); setStats(fb.stats);
+      setHealth(hc); setBackups(bk);
       setRefreshedAt(new Date());
     } catch (e) {
       const m = e instanceof Error ? e.message : "Load failed";
@@ -787,6 +803,7 @@ export function SuperPortal() {
               ["ai-usage", "spark", "AI usage"],
               ["pricing", "settings", <>Plan &amp; pricing</>],
               ["email", "mail", "Email tools"],
+              ["ops", "shield", <>Ops {health && health.status !== "ok" && <span className="sap-count warn">!</span>}</>],
               ["history", "clock", "History"],
             ] as [Section, string, ReactNode][]
           ).map(([id, ico, label]) => (
@@ -1160,6 +1177,86 @@ export function SuperPortal() {
         <div className="sap-cardfoot">
           <span>Sends via the platform's configured provider (Brevo).</span>
           <span>Acceptance does not confirm delivery — check the inbox.</span>
+        </div>
+      </section>
+
+      {/* ---------- ops: health + backups ---------- */}
+      <section className="sap-card" id="ops" hidden={activeSec !== "ops"}>
+        <div className="sap-cardhead">
+          <div>
+            <div className="sap-cardtitle"><I n="shield" s={17} /><h2>Ops</h2>
+              {health && <span className={`sap-count ${health.status === "ok" ? "" : "warn"}`}>{health.status}</span>}
+            </div>
+            <p>Instance health checks, scheduled-sweep state and automated backups (pg_dump + blob tarball, kept per <code>KREATIX_BACKUP_KEEP</code>).</p>
+          </div>
+          <button className="btn-secondary sap-btn sm" disabled={backupBusy} onClick={async () => {
+            setBackupBusy(true);
+            try {
+              await api.post("/api/superadmin/backups/run");
+              toast("Backup completed");
+            } catch (e) { toast(`Backup failed: ${e instanceof Error ? e.message : e}`); }
+            setBackupBusy(false);
+            void load();
+          }}><I n="refresh" s={13} />{backupBusy ? "Running…" : "Run backup now"}</button>
+        </div>
+
+        <div className="sap-tablewrap"><table className="sap-table">
+          <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody>
+            {health?.checks.map((c) => (
+              <tr key={c.id}>
+                <td className="sap-from"><b>{c.label}</b></td>
+                <td><StateBadge s={c.status} /></td>
+                <td className="sap-detail">{c.detail ?? "—"}</td>
+              </tr>
+            ))}
+            {!health && <tr><td colSpan={3}><div className="sap-empty"><strong>Loading…</strong></div></td></tr>}
+          </tbody>
+        </table></div>
+
+        {health && health.sweeps.length > 0 && (
+          <div className="sap-tablewrap"><table className="sap-table">
+            <thead><tr><th>Sweep</th><th>Status</th><th>Last run</th><th>Detail</th></tr></thead>
+            <tbody>
+              {health.sweeps.map((s) => (
+                <tr key={s.name}>
+                  <td className="sap-from"><b>{s.name}</b></td>
+                  <td><StateBadge s={s.ok ? "ok" : "crit"} /></td>
+                  <td><When v={s.lastRun} /></td>
+                  <td className="sap-detail"><code>{s.detail ?? "—"}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+
+        <div className="sap-tablewrap"><table className="sap-table">
+          <thead><tr><th>Backup</th><th>Kind</th><th>Size</th><th>When</th><th>Status</th></tr></thead>
+          <tbody>
+            {backups?.runs.map((r) => (
+              <tr key={r.id}>
+                <td className="sap-from">
+                  {r.file
+                    ? <a href={`/api/superadmin/backups/${r.file}/download`}><b>{r.file}</b></a>
+                    : <b>{r.kind} run</b>}
+                  {r.error && <span className="sap-detail"><br /><code>{r.error.slice(0, 120)}</code></span>}
+                </td>
+                <td>{r.kind}</td>
+                <td>{(r.bytes / 1048576).toFixed(1)} MB</td>
+                <td><When v={r.created_at} /></td>
+                <td><StateBadge s={r.status === "ok" ? "ok" : r.status === "error" ? "crit" : "warn"} /></td>
+              </tr>
+            ))}
+            {backups && !backups.runs.length && (
+              <tr><td colSpan={5}><div className="sap-empty"><I n="shield" s={18} /><strong>No backups yet</strong>The daily ops sweep creates them; use “Run backup now” to take one.</div></td></tr>
+            )}
+            {!backups && <tr><td colSpan={5}><div className="sap-empty"><strong>Loading…</strong></div></td></tr>}
+          </tbody>
+        </table></div>
+
+        <div className="sap-cardfoot">
+          <span>{backups ? `${backups.files} files in ${backups.dir} · ${(backups.bytes / 1e9).toFixed(2)} GB` : "Backup dir —"}</span>
+          <span><I n="clock" s={13} /> Uptime {health ? `${Math.floor(health.uptimeSec / 3600)}h ${Math.floor((health.uptimeSec % 3600) / 60)}m` : "—"} · {health?.errors5xx ?? 0} 5xx</span>
         </div>
       </section>
 

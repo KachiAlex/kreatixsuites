@@ -473,6 +473,36 @@ export function superadminRoutes(app: FastifyInstance) {
       [action || null, search || null]);
     return { audit: rows };
   });
+
+  // ---- platform ops: health + backups (whole-instance, hence superadmin-only) ----
+
+  app.get("/api/superadmin/health", async () => {
+    const { healthReport } = await import("../monitor.js");
+    return healthReport();
+  });
+
+  app.get("/api/superadmin/backups", async () => {
+    const { listBackups, backupDirInfo } = await import("../backup.js");
+    return { ...backupDirInfo(), runs: await listBackups() };
+  });
+
+  app.post("/api/superadmin/backups/run", async (req, reply) => {
+    const { runBackup } = await import("../backup.js");
+    const res = await runBackup();
+    if (res.db === "error" || res.blobs === "error")
+      return reply.code(500).send({ error: "backup_failed", ...res });
+    return res;
+  });
+
+  app.get("/api/superadmin/backups/:name/download", async (req, reply) => {
+    const { name } = req.params as { name: string };
+    const { backupPath } = await import("../backup.js");
+    const p = backupPath(name);
+    if (!p) return reply.code(404).send({ error: "not_found" });
+    const { createReadStream } = await import("node:fs");
+    reply.header("content-disposition", `attachment; filename="${name}"`);
+    return reply.type("application/gzip").send(createReadStream(p));
+  });
 }
 
 interface OrgDeleteResult {

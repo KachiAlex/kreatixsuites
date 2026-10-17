@@ -15,6 +15,12 @@ COPY . .
 RUN pnpm --filter @kreatix/shared --filter @kreatix/web --filter @kreatix/api build
 
 FROM node:24-bookworm-slim
+# postgresql-client-17 (PGDG) — pg_dump for the automated backup sweep; tar for the blob archive
+RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && echo "deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 tar gzip \
+ && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 WORKDIR /app
 ENV NODE_ENV=production

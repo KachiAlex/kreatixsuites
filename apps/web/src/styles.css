@@ -2670,7 +2670,9 @@ html[data-theme="dark"]{
 
 /* badges */
 .sap-state{font-size:10px;font-weight:700;border-radius:6px;padding:2px 9px;text-transform:uppercase;letter-spacing:.05em;background:var(--subtle);color:var(--muted);white-space:nowrap}
-.sap-state.active,.sap-state.granted{background:var(--sap-green-bg);color:var(--sap-green)}
+.sap-state.active,.sap-state.granted,.sap-state.ok{background:var(--sap-green-bg);color:var(--sap-green)}
+.sap-state.warn{background:var(--sap-amber-bg);color:var(--sap-amber)}
+.sap-state.crit{background:var(--sap-red-bg);color:var(--sap-red)}
 .sap-state.trialing{background:var(--sap-blue-bg);color:var(--sap-blue)}
 .sap-state.locked,.sap-state.canceled{background:var(--sap-red-bg);color:var(--sap-red)}
 .sap-plan{font-size:10.5px;font-weight:650;border-radius:6px;padding:3px 9px;background:var(--subtle);color:var(--muted);white-space:nowrap}

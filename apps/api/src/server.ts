@@ -33,13 +33,15 @@ import { formRoutes, formPublicRoutes } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
 import { publicApiRoutes } from "./routes/publicApi.js";
 import { billingRoutes } from "./routes/billing.js";
+import { maybeRunDailyBackup } from "./backup.js";
+import { monitorSweep } from "./monitor.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention, getPlans } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
-import { migrate, one } from "./db.js";
+import { migrate, one, runSweep } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
@@ -344,21 +346,23 @@ async function main() {
     "security posture",
   );
 
-  // trash-retention sweep + billing notices (trial-ending / locked emails): daily
+  // trash-retention sweep + billing notices (trial-ending / locked emails): daily.
+  // Each named sweep is wrapped in a pg advisory lock — only one API instance
+  // runs it; others return null immediately (multi-instance safe).
   const sweep = () => {
-    sweepRetention()
+    runSweep("retention.trash", 717001, () => sweepRetention())
       .then((purged) => { if (purged) app.log.info({ purged }, "retention sweep purged trashed items"); })
       .catch((e) => app.log.warn(e, "retention sweep failed"));
-    sweepLibraryRetention()
+    runSweep("retention.library", 717002, () => sweepLibraryRetention())
       .then((trashed) => { if (trashed) app.log.info({ trashed }, "library retention sweep auto-trashed stale items"); })
       .catch((e) => app.log.warn(e, "library retention sweep failed"));
-    billingNotices(app.log)
-      .then((n) => { if (n.warned || n.locked) app.log.info(n, "billing notices sent"); })
+    runSweep("billing.notices", 717003, () => billingNotices(app.log))
+      .then((n) => { if (n && (n.warned || n.locked)) app.log.info(n, "billing notices sent"); })
       .catch((e) => app.log.warn(e, "billing notice sweep failed"));
-    aiBudgetNotices(app.log)
-      .then((n) => { if (n.orgs || n.platform) app.log.info(n, "AI budget notices sent"); })
+    runSweep("ai.budget", 717004, () => aiBudgetNotices(app.log))
+      .then((n) => { if (n && (n.orgs || n.platform)) app.log.info(n, "AI budget notices sent"); })
       .catch((e) => app.log.warn(e, "AI budget notice sweep failed"));
-    sweepVersionRetention()
+    runSweep("retention.versions", 717005, () => sweepVersionRetention())
       .then((n) => { if (n) app.log.info({ pruned: n }, "free-tier version retention applied"); })
       .catch((e) => app.log.warn(e, "version retention sweep failed"));
   };
@@ -367,8 +371,8 @@ async function main() {
 
   // pending-Paystack sweep every 5min — stands in for a shared webhook slot
   const paySweep = () => {
-    sweepPendingPaystack(app.log)
-      .then((n) => { if (n.confirmed) app.log.info(n, "paystack payments confirmed"); })
+    runSweep("billing.paystack", 717006, () => sweepPendingPaystack(app.log))
+      .then((n) => { if (n && n.confirmed) app.log.info(n, "paystack payments confirmed"); })
       .catch((e) => app.log.warn(e, "paystack sweep failed"));
   };
   setTimeout(paySweep, 30_000).unref();
@@ -376,18 +380,30 @@ async function main() {
 
   // automation sweep: schedule.daily digests + task.overdue fires, hourly
   const ruleSweep = () =>
-    runScheduleSweep(app.log).catch((e) => app.log.warn(e, "automation sweep failed"));
+    runSweep("automation.rules", 717007, () => runScheduleSweep(app.log))
+      .catch((e) => app.log.warn(e, "automation sweep failed"));
   setTimeout(ruleSweep, 60_000).unref();
   setInterval(ruleSweep, 60 * 60 * 1000).unref();
 
-  // webhook retry sweep — every 2 minutes; multi-instance deployments should
-  // gate this behind an advisory lock (see sweepRetention note)
+  // webhook retry sweep — every 2 minutes, advisory-locked for multi-instance
   const hookSweep = () =>
-    sweepWebhookDeliveries()
+    runSweep("webhook.retry", 717008, () => sweepWebhookDeliveries())
       .then((n) => { if (n) app.log.info({ retried: n }, "webhook deliveries retried"); })
       .catch((e) => app.log.warn(e, "webhook sweep failed"));
   setTimeout(hookSweep, 45_000).unref();
   setInterval(hookSweep, 2 * 60 * 1000).unref();
+
+  // ops sweep — health checks/alerts hourly + daily backup when due
+  const opsSweep = () => {
+    runSweep("ops.monitor", 717009, () => monitorSweep(app.log))
+      .then((r) => { if (r && r.alerts) app.log.warn({ alerts: r.alerts }, "health alerts sent"); })
+      .catch((e) => app.log.warn(e, "monitor sweep failed"));
+    runSweep("ops.backup", 717010, () => maybeRunDailyBackup())
+      .then((s) => { if (s) app.log.info({ status: s }, "daily backup completed"); })
+      .catch((e) => app.log.warn(e, "backup sweep failed"));
+  };
+  setTimeout(opsSweep, 90_000).unref();
+  setInterval(opsSweep, 60 * 60 * 1000).unref();
 }
 
 main().catch((err) => {
