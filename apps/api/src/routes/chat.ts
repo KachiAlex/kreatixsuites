@@ -10,6 +10,7 @@ import { requireAuth, permissionFor, hasPermission, type AuthedRequest, type Use
 import { getItem } from "../items.js";
 import { q, one, run } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
+import { scanDlp } from "../policies.js";
 
 interface ChannelRow {
   id: string; org_id: string; kind: string; name: string | null;
@@ -350,6 +351,14 @@ export function chatRoutes(app: FastifyInstance) {
         `INSERT INTO chat_members (channel_id, user_id, last_read_at) VALUES ($1,$2,now())
          ON CONFLICT (channel_id, user_id) DO UPDATE SET last_read_at = now()`,
         [c.id, user.id]);
+      // DLP engine — chat-scoped rules scan message bodies
+      if (parsed.data.body) {
+        const scan = await scanDlp(user.orgId, { type: "chat", id: row!.id }, "", parsed.data.body, user.id);
+        if (scan.blockedBy) {
+          await run("DELETE FROM chat_messages WHERE id = $1", [row!.id]);
+          return reply.code(422).send({ error: "dlp_blocked", message: `Message blocked by DLP rule "${scan.blockedBy}"` });
+        }
+      }
       // thread replies carry a parent preview so the bubble can quote it
       let parentBody: string | null = null, parentAuthor: string | null = null;
       if (row!.reply_to) {

@@ -10,7 +10,7 @@ import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
-import { purgeItem, isHeld } from "../policies.js";
+import { purgeItem, isHeld, scanDlp } from "../policies.js";
 import { fireTrigger } from "../rules.js";
 import { indexFile } from "../indexer.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -590,6 +590,17 @@ export function driveRoutes(app: FastifyInstance) {
       "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
       [randomUUID(), id, 1, 1, 0, true, "Initial upload", key, size, user.id, now()],
     );
+
+    // DLP engine — scan text uploads through the rules pipeline
+    const ct = (req.headers["content-type"] as string) ?? "";
+    if (ct.startsWith("text/") || ct.includes("json") || ct.includes("xml") || ct.includes("csv")) {
+      const scan = await scanDlp(user.orgId, { type: "item", id },
+        name ?? "Untitled", buf.toString("utf8").slice(0, 500_000), user.id);
+      if (scan.blockedBy) {
+        await purgeItem(id);
+        return reply.code(422).send({ error: "dlp_blocked", message: `Upload blocked by DLP rule "${scan.blockedBy}"` });
+      }
+    }
 
     void logActivity(user.orgId, user.id, id, "upload", name ?? "Untitled");
     void notifyLibrarySubscribers(libraryId, user.id, "upload", id, `uploaded "${name ?? "Untitled"}"`);

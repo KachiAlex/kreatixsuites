@@ -126,8 +126,14 @@ export function Admin() {
   const [holds, setHolds] = useState<Hold[]>([]);
   const [holdName, setHoldName] = useState("");
   const [holdItems, setHoldItems] = useState<{ id: string; name: string; kind: string; owner: string }[]>([]);
+  const [holdCusts, setHoldCusts] = useState<{ id: string; name: string; email: string; itemCount: number }[]>([]);
   const [holdOpen, setHoldOpen] = useState<string | null>(null);
+  const [custPick, setCustPick] = useState("");
   const [ediscUser, setEdiscUser] = useState("");
+  const [dlpRules, setDlpRules] = useState<{ id: string; name: string; pattern: string; severity: string; action: string; applies_to: string; enabled: boolean }[]>([]);
+  const [dlpEvents, setDlpEvents] = useState<{ id: string; rule: string; refType: string; refId: string; excerpt: string | null; action: string; actor: string | null; itemName: string | null; createdAt: string }[]>([]);
+  const [dlpTab, setDlpTab] = useState<"open" | "confirmed" | "dismissed">("open");
+  const [dlpForm, setDlpForm] = useState({ name: "", pattern: "", severity: "medium", action: "flag", appliesTo: "files" });
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -151,8 +157,10 @@ export function Admin() {
         api.get<{ forms: { id: string; title: string }[] }>("/api/forms"),
         api.get<{ sites: { id: string; name: string; legalHold?: boolean; libraries?: { id: string; name: string }[] }[] }>("/api/sites"),
         api.get<{ holds: Hold[] }>("/api/admin/holds"),
+        api.get<{ rules: typeof dlpRules }>("/api/admin/dlp/rules"),
+        api.get<{ events: typeof dlpEvents }>("/api/admin/dlp/events?status=open"),
       ];
-      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl, dr, de] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[] },
@@ -167,6 +175,8 @@ export function Admin() {
         { forms: { id: string; title: string }[] },
         { sites: { id: string; name: string; legalHold?: boolean; libraries?: { id: string; name: string }[] }[] },
         { holds: Hold[] },
+        { rules: typeof dlpRules },
+        { events: typeof dlpEvents },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -185,6 +195,8 @@ export function Admin() {
       setLibs((st.sites ?? []).flatMap((s) => s.libraries ?? []));
       setSites((st.sites ?? []).map((s) => ({ id: s.id, name: s.name, legalHold: s.legalHold })));
       setHolds(hl.holds);
+      setDlpRules(dr.rules);
+      setDlpEvents(de.events);
     }
   }, [isSuper]);
 
@@ -606,15 +618,55 @@ export function Admin() {
               <button className="btn-ghost btn-sm" onClick={async () => {
                 if (holdOpen === h.id) { setHoldOpen(null); return; }
                 setHoldOpen(h.id);
-                const r = await api.get<{ items: typeof holdItems }>(`/api/admin/holds/${h.id}/items`).catch(() => null);
-                setHoldItems(r?.items ?? []);
+                const [ri, rc] = await Promise.all([
+                  api.get<{ items: typeof holdItems }>(`/api/admin/holds/${h.id}/items`).catch(() => null),
+                  api.get<{ custodians: typeof holdCusts }>(`/api/admin/holds/${h.id}/custodians`).catch(() => null),
+                ]);
+                setHoldItems(ri?.items ?? []);
+                setHoldCusts(rc?.custodians ?? []);
+                setCustPick("");
               }}>{holdOpen === h.id ? "Hide" : `${h.itemCount} items`}</button>
+              <button className="btn-ghost btn-sm" title="Matter-scoped export" onClick={async () => {
+                try {
+                  const bundle = await api.get<Record<string, unknown>>(`/api/admin/holds/${h.id}/export`);
+                  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url; a.download = `matter-${h.name.replace(/[^a-z0-9.-]+/gi, "_")}.json`;
+                  a.click(); URL.revokeObjectURL(url);
+                } catch (e) { toast((e as Error).message); }
+              }}>Export</button>
               <button className="btn-ghost btn-sm" onClick={async () => {
                 try { await api.patch(`/api/admin/holds/${h.id}`, { active: !h.active }); void load(); }
                 catch (e) { toast((e as Error).message); }
               }}>{h.active ? "Release" : "Reactivate"}</button>
               {holdOpen === h.id && (
                 <div style={{ flexBasis: "100%", padding: "4px 0 8px" }}>
+                  <div className="d-sub" style={{ fontWeight: 600, margin: "2px 0 4px" }}>Custodians — everything they own is preserved</div>
+                  {holdCusts.map((c) => (
+                    <div key={c.id} className="d-sub" style={{ display: "flex", gap: 8, padding: "2px 0" }}>
+                      <span style={{ flex: 1 }}>{c.name} <em>({c.email} · {c.itemCount} items)</em></span>
+                      <button className="btn-ghost btn-sm" onClick={async () => {
+                        await api.del(`/api/admin/holds/${h.id}/custodians/${c.id}`);
+                        setHoldCusts((xs) => xs.filter((x) => x.id !== c.id));
+                      }}>remove</button>
+                    </div>
+                  ))}
+                  <div className="cal-formrow" style={{ marginTop: 4 }}>
+                    <select value={custPick} onChange={(e) => setCustPick(e.target.value)} style={{ flex: 1 }}>
+                      <option value="">Add custodian…</option>
+                      {members.filter((m) => !holdCusts.some((c) => c.id === m.id))
+                        .map((m) => <option key={m.id} value={m.id}>{m.displayName} ({m.email})</option>)}
+                    </select>
+                    <button className="btn-ghost btn-sm" disabled={!custPick} onClick={async () => {
+                      try {
+                        await api.post(`/api/admin/holds/${h.id}/custodians`, { userId: custPick });
+                        const rc = await api.get<{ custodians: typeof holdCusts }>(`/api/admin/holds/${h.id}/custodians`);
+                        setHoldCusts(rc.custodians); setCustPick("");
+                      } catch (e) { toast((e as Error).message); }
+                    }}>Add</button>
+                  </div>
+                  <div className="d-sub" style={{ fontWeight: 600, margin: "8px 0 4px" }}>Held items</div>
                   {holdItems.map((i) => (
                     <div key={i.id} className="d-sub" style={{ display: "flex", gap: 8, padding: "2px 0" }}>
                       <span style={{ flex: 1 }}>{i.name} <em>({i.kind} · {i.owner})</em></span>
@@ -672,6 +724,93 @@ export function Admin() {
               } catch (e) { toast((e as Error).message); }
             }}>Export JSON</button>
           </div>
+        </section>
+      )}
+
+      {/* ── DLP engine: rules + violation queue ── */}
+      {isOwnerOrAdmin && (
+        <section className="admin-card">
+          <h2>DLP rules</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Named rules scanned by the pipeline on file saves, text uploads, and chat posts.
+            "Block" rejects the write outright; "flag" records a reviewable violation.
+          </p>
+          {dlpRules.map((r) => (
+            <div key={r.id} className="chat-person" style={{ cursor: "default" }}>
+              <span className="chat-item-main">
+                <b>{r.name}</b>
+                <span className="d-sub"><code>/{r.pattern}/i</code> · {r.severity} · {r.action} · {r.applies_to}{!r.enabled ? " · disabled" : ""}</span>
+              </span>
+              <button className="btn-ghost btn-sm" onClick={async () => {
+                try { await api.patch(`/api/admin/dlp/rules/${r.id}`, { enabled: !r.enabled }); void load(); }
+                catch (e) { toast((e as Error).message); }
+              }}>{r.enabled ? "Disable" : "Enable"}</button>
+              <button className="btn-ghost btn-sm" onClick={async () => {
+                if (!confirm(`Delete rule "${r.name}"?`)) return;
+                await api.del(`/api/admin/dlp/rules/${r.id}`); void load();
+              }}>Delete</button>
+            </div>
+          ))}
+          <div className="cal-formrow" style={{ flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            <input placeholder="Rule name" value={dlpForm.name}
+              onChange={(e) => setDlpForm({ ...dlpForm, name: e.target.value })} style={{ flex: 1, minWidth: 120 }} />
+            <input placeholder="/regex/" value={dlpForm.pattern}
+              onChange={(e) => setDlpForm({ ...dlpForm, pattern: e.target.value })}
+              style={{ flex: 2, minWidth: 160, fontFamily: "monospace" }} />
+            <select value={dlpForm.severity} onChange={(e) => setDlpForm({ ...dlpForm, severity: e.target.value })}>
+              <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+            </select>
+            <select value={dlpForm.action} onChange={(e) => setDlpForm({ ...dlpForm, action: e.target.value })}>
+              <option value="flag">flag</option><option value="block">block</option>
+            </select>
+            <select value={dlpForm.appliesTo} onChange={(e) => setDlpForm({ ...dlpForm, appliesTo: e.target.value })}>
+              <option value="files">files</option><option value="chat">chat</option><option value="all">all</option>
+            </select>
+            <button className="btn-primary btn-sm" disabled={!dlpForm.name.trim() || !dlpForm.pattern.trim()}
+              onClick={async () => {
+                try {
+                  await api.post("/api/admin/dlp/rules", dlpForm);
+                  setDlpForm({ name: "", pattern: "", severity: "medium", action: "flag", appliesTo: "files" });
+                  void load(); toast("Rule added");
+                } catch (e) { toast((e as Error).message); }
+              }}>Add rule</button>
+          </div>
+
+          <h3 style={{ fontSize: 13, margin: "18px 0 6px" }}>Violations</h3>
+          <div className="cal-formrow" style={{ gap: 4, marginBottom: 6 }}>
+            {(["open", "confirmed", "dismissed"] as const).map((s) => (
+              <button key={s} className={dlpTab === s ? "btn-secondary btn-sm" : "btn-ghost btn-sm"}
+                onClick={async () => {
+                  setDlpTab(s);
+                  const r = await api.get<{ events: typeof dlpEvents }>(`/api/admin/dlp/events?status=${s}`).catch(() => null);
+                  setDlpEvents(r?.events ?? []);
+                }}>{s}</button>
+            ))}
+          </div>
+          {dlpEvents.map((e) => (
+            <div key={e.id} className="chat-person" style={{ cursor: "default" }}>
+              <span className="chat-item-main">
+                <b>{e.rule}</b> <span className="perm-badge">{e.action}</span>
+                <span className="d-sub">
+                  {e.refType === "chat_message" ? "chat message" : (e.itemName ?? "item")} · {e.actor ?? "?"} · {new Date(e.createdAt).toLocaleString()}
+                  {e.excerpt && <><br /><code style={{ fontSize: 11 }}>{e.excerpt}</code></>}
+                </span>
+              </span>
+              {dlpTab === "open" && (
+                <>
+                  <button className="btn-ghost btn-sm" onClick={async () => {
+                    await api.patch(`/api/admin/dlp/events/${e.id}`, { status: "confirmed" });
+                    setDlpEvents((xs) => xs.filter((x) => x.id !== e.id));
+                  }}>Confirm</button>
+                  <button className="btn-ghost btn-sm" onClick={async () => {
+                    await api.patch(`/api/admin/dlp/events/${e.id}`, { status: "dismissed" });
+                    setDlpEvents((xs) => xs.filter((x) => x.id !== e.id));
+                  }}>Dismiss</button>
+                </>
+              )}
+            </div>
+          ))}
+          {!dlpEvents.length && <p className="d-sub">No {dlpTab} violations.</p>}
         </section>
       )}
 

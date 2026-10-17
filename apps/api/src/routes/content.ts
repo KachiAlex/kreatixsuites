@@ -11,7 +11,7 @@ import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
-import { getPolicies, dlpScanText, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
+import { getPolicies, dlpScanText, scanDlp, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 
 interface VersionRow {
   id: string;
@@ -364,6 +364,15 @@ export function contentRoutes(app: FastifyInstance) {
       } else if (item.dlp_flagged) {
         await run("UPDATE items SET dlp_flagged = false WHERE id = $1", [item.id]);
       }
+    }
+    // DLP engine — named rules with the reviewable event queue
+    const scan = await scanDlp(user.orgId, { type: "item", id: item.id }, itemName(item),
+      typeof body.content === "string" ? body.content : JSON.stringify(body.content), user.id);
+    if (scan.blockedBy) {
+      return reply.code(422).send({
+        error: "dlp_blocked",
+        message: `Save blocked by DLP rule "${scan.blockedBy}"`,
+      });
     }
 
     const data = Buffer.from(JSON.stringify(body.content));

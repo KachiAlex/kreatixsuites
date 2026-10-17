@@ -5,7 +5,7 @@ import { z } from "zod";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { q as dbq, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
-import { getPolicies, setPolicies } from "../policies.js";
+import { getPolicies, setPolicies, dlpRules, type DlpRule } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
 import { metrics } from "../metrics.js";
 import { activeCollabRooms, collabPeers } from "../collab.js";
@@ -391,6 +391,147 @@ export function adminRoutes(app: FastifyInstance) {
     return { ok: true, active: d.active };
   });
 
+  /* ── Custodians: users whose content a hold preserves ──── */
+
+  app.post("/api/admin/holds/:id/custodians", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const hold = await one<{ id: string }>("SELECT id FROM legal_holds WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!hold) return reply.code(404).send({ error: "not_found" });
+    const { userId } = z.object({ userId: z.string().max(64) }).parse(req.body);
+    const n = await run(
+      `INSERT INTO legal_hold_custodians (hold_id, user_id)
+       SELECT $1, id FROM users WHERE id = $2 AND org_id = $3 ON CONFLICT DO NOTHING`,
+      [id, userId, user.orgId]);
+    if (!n) return reply.code(404).send({ error: "not_found", message: "User not in this org" });
+    return { ok: true };
+  });
+
+  app.delete("/api/admin/holds/:id/custodians/:userId", async (req) => {
+    const { user } = req as AuthedRequest;
+    const { id, userId } = req.params as { id: string; userId: string };
+    await run(
+      `DELETE FROM legal_hold_custodians WHERE hold_id = $1 AND user_id = $2
+         AND hold_id IN (SELECT id FROM legal_holds WHERE org_id = $3)`,
+      [id, userId, user.orgId]);
+    return { ok: true };
+  });
+
+  app.get("/api/admin/holds/:id/custodians", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const hold = await one<{ id: string }>("SELECT id FROM legal_holds WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!hold) return reply.code(404).send({ error: "not_found" });
+    const rows = await dbq<{ user_id: string; display_name: string; email: string; n_items: string }>(
+      `SELECT u.id AS user_id, u.display_name, u.email,
+              (SELECT COUNT(*) FROM items i WHERE i.owner_id = u.id AND i.org_id = $2) AS n_items
+       FROM legal_hold_custodians lhc JOIN users u ON u.id = lhc.user_id
+       WHERE lhc.hold_id = $1`, [id, user.orgId]);
+    return { custodians: rows.map((r) => ({ id: r.user_id, name: r.display_name, email: r.email, itemCount: Number(r.n_items) })) };
+  });
+
+  /* ── DLP engine: rules + review queue ──────────────────── */
+
+  app.get("/api/admin/dlp/rules", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await dlpRules(user.orgId);
+    return { rules: rows };
+  });
+
+  app.post("/api/admin/dlp/rules", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const d = z.object({
+      name: z.string().trim().min(1).max(200),
+      pattern: z.string().min(1).max(300),
+      severity: z.enum(["low", "medium", "high"]).default("medium"),
+      action: z.enum(["flag", "block"]).default("flag"),
+      appliesTo: z.enum(["files", "chat", "all"]).default("files"),
+    }).parse(req.body);
+    try { new RegExp(d.pattern); } catch {
+      return reply.code(400).send({ error: "bad_request", message: "Pattern isn't a valid regex" });
+    }
+    const id = randomUUID();
+    await run(
+      `INSERT INTO dlp_rules (id, org_id, name, pattern, severity, action, applies_to)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [id, user.orgId, d.name, d.pattern, d.severity, d.action, d.appliesTo]);
+    return reply.code(201).send({ rule: { id, name: d.name } });
+  });
+
+  app.patch("/api/admin/dlp/rules/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const d = z.object({
+      name: z.string().trim().min(1).max(200).optional(),
+      pattern: z.string().min(1).max(300).optional(),
+      severity: z.enum(["low", "medium", "high"]).optional(),
+      action: z.enum(["flag", "block"]).optional(),
+      appliesTo: z.enum(["files", "chat", "all"]).optional(),
+      enabled: z.boolean().optional(),
+    }).parse(req.body);
+    if (d.pattern) { try { new RegExp(d.pattern); } catch {
+      return reply.code(400).send({ error: "bad_request", message: "Pattern isn't a valid regex" });
+    } }
+    const cur = await one<DlpRule>("SELECT * FROM dlp_rules WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!cur) return reply.code(404).send({ error: "not_found" });
+    await run(
+      `UPDATE dlp_rules SET name=$2, pattern=$3, severity=$4, action=$5, applies_to=$6, enabled=$7
+       WHERE id = $1`,
+      [id, d.name ?? cur.name, d.pattern ?? cur.pattern, d.severity ?? cur.severity,
+       d.action ?? cur.action, d.appliesTo ?? cur.applies_to, d.enabled ?? cur.enabled]);
+    return { ok: true };
+  });
+
+  app.delete("/api/admin/dlp/rules/:id", async (req) => {
+    const { user } = req as AuthedRequest;
+    await run("DELETE FROM dlp_rules WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId]);
+    return { ok: true };
+  });
+
+  /** Violation queue — events from the scan pipeline, newest first. */
+  app.get("/api/admin/dlp/events", async (req) => {
+    const { user } = req as AuthedRequest;
+    const q_ = req.query as { status?: string };
+    const status = ["open", "confirmed", "dismissed"].includes(q_.status ?? "") ? q_.status! : "open";
+    const rows = await dbq(
+      `SELECT e.id, e.rule_name, e.ref_type, e.ref_id, e.excerpt, e.action, e.status, e.created_at,
+              u.display_name AS actor, i.name AS item_name
+       FROM dlp_events e
+       LEFT JOIN users u ON u.id = e.actor_id
+       LEFT JOIN items i ON e.ref_type = 'item' AND i.id = e.ref_id
+       WHERE e.org_id = $1 AND e.status = $2
+       ORDER BY e.created_at DESC LIMIT 500`,
+      [user.orgId, status]);
+    return {
+      events: rows.map((r: any) => ({
+        id: r.id, rule: r.rule_name, refType: r.ref_type, refId: r.ref_id,
+        excerpt: decryptField(r.excerpt) ?? r.excerpt, action: r.action, status: r.status,
+        actor: r.actor, itemName: r.item_name ? decryptField(r.item_name) ?? r.item_name : null,
+        createdAt: r.created_at,
+      })),
+    };
+  });
+
+  /** Disposition a violation — confirm (true positive) or dismiss. */
+  app.patch("/api/admin/dlp/events/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const d = z.object({ status: z.enum(["confirmed", "dismissed", "open"]) }).parse(req.body);
+    const ev = await one<{ id: string; ref_type: string; ref_id: string }>(
+      "SELECT id, ref_type, ref_id FROM dlp_events WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!ev) return reply.code(404).send({ error: "not_found" });
+    await run("UPDATE dlp_events SET status = $2 WHERE id = $1", [id, d.status]);
+    // dismissing all open item events clears the item's flag
+    if (d.status === "dismissed" && ev.ref_type === "item") {
+      const open = await one(
+        `SELECT 1 AS x FROM dlp_events WHERE ref_type = 'item' AND ref_id = $1 AND status != 'dismissed' LIMIT 1`,
+        [ev.ref_id]);
+      if (!open) await run("UPDATE items SET dlp_flagged = false WHERE id = $1", [ev.ref_id]);
+    }
+    return { ok: true, status: d.status };
+  });
+
   /* ── eDiscovery export ─────────────────────────────────── */
 
   /** One-click custodian export: everything the suite stores for a user —
@@ -405,44 +546,91 @@ export function adminRoutes(app: FastifyInstance) {
     const custodian = await one<{ id: string; email: string; display_name: string }>(
       "SELECT id, email, display_name FROM users WHERE id = $1 AND org_id = $2", [userId, user.orgId]);
     if (!custodian) return reply.code(404).send({ error: "not_found", message: "User not in this org" });
+    const bundle = await custodianBundle(user.orgId, custodian, user.email);
+    reply.header("content-disposition",
+      `attachment; filename="ediscovery-${custodian.email.replace(/[^a-z0-9@.-]+/gi, "_")}-${Date.now()}.json"`);
+    return reply.type("application/json").send(bundle);
+  });
 
+  /** Matter-scoped export: every custodian on the hold + every explicitly
+   *  held item — one document for the whole legal matter. */
+  app.get("/api/admin/holds/:id/export", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const hold = await one<{ id: string; name: string; description: string | null; active: boolean; created_at: string }>(
+      "SELECT id, name, description, active, created_at FROM legal_holds WHERE id = $1 AND org_id = $2", [id, user.orgId]);
+    if (!hold) return reply.code(404).send({ error: "not_found" });
+
+    const custodianRows = await dbq<{ id: string; email: string; display_name: string }>(
+      `SELECT u.id, u.email, u.display_name FROM legal_hold_custodians lhc
+       JOIN users u ON u.id = lhc.user_id WHERE lhc.hold_id = $1`, [id]);
+    const heldItems = await dbq(
+      `SELECT i.id, i.name, i.kind, i.mime, i.size, i.owner_id, u.display_name AS owner, i.created_at
+       FROM legal_hold_items lhi JOIN items i ON i.id = lhi.item_id
+       JOIN users u ON u.id = i.owner_id WHERE lhi.hold_id = $1`, [id]);
+    const dec = (v: unknown) => (typeof v === "string" ? (decryptField(v) ?? v) : v);
+
+    const bundles = [];
+    for (const c of custodianRows) bundles.push(await custodianBundle(user.orgId, c, user.email));
+
+    const bundle = {
+      exportedAt: now(), orgId: user.orgId, exportedBy: user.email,
+      matter: { id: hold.id, name: hold.name, description: hold.description, active: hold.active, createdAt: hold.created_at },
+      custodianCount: bundles.length,
+      custodians: bundles,
+      heldItems: heldItems.map((i: any) => ({
+        id: i.id, name: dec(i.name), kind: i.kind, mime: i.mime, size: Number(i.size),
+        owner: i.owner, createdAt: i.created_at,
+      })),
+      note: "Per-custodian sections follow the same schema as /api/admin/ediscovery/export/:userId. Binary content is referenced by item id, not inlined.",
+    };
+    reply.header("content-disposition",
+      `attachment; filename="matter-${hold.name.replace(/[^a-z0-9.-]+/gi, "_")}-${Date.now()}.json"`);
+    return reply.type("application/json").send(bundle);
+  });
+}
+
+/** Everything the suite stores for one custodian — shared by the single-user
+ *  export and the matter-scoped hold export. */
+async function custodianBundle(orgId: string, custodian: { id: string; email: string; display_name: string }, exportedBy: string) {
+    const userId = custodian.id;
     const files = await dbq(
       `SELECT i.id, i.name, i.kind, i.mime, i.size, i.label, i.trashed, i.legal_hold,
               i.created_at, i.updated_at,
               (SELECT COUNT(*) FROM versions v WHERE v.file_id = i.id) AS n_versions
        FROM items i WHERE i.org_id = $1 AND (i.owner_id = $2 OR EXISTS
          (SELECT 1 FROM shares s WHERE s.file_id = i.id AND s.user_id = $2))
-       ORDER BY i.updated_at DESC LIMIT 5000`, [user.orgId, userId]);
+       ORDER BY i.updated_at DESC LIMIT 5000`, [orgId, userId]);
 
     const chat = await dbq(
       `SELECT m.id, m.channel_id, m.body, m.created_at, c.name AS channel
        FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
-       WHERE m.user_id = $1 AND c.org_id = $2 ORDER BY m.created_at LIMIT 20000`, [userId, user.orgId]);
+       WHERE m.user_id = $1 AND c.org_id = $2 ORDER BY m.created_at LIMIT 20000`, [userId, orgId]);
 
     const comments = await dbq(
       `SELECT cm.id, cm.body, cm.anchor, cm.created_at, cm.resolved, i.name AS file_name
        FROM comments cm JOIN items i ON i.id = cm.file_id
-       WHERE cm.author_id = $1 AND i.org_id = $2 ORDER BY cm.created_at LIMIT 5000`, [userId, user.orgId]);
+       WHERE cm.author_id = $1 AND i.org_id = $2 ORDER BY cm.created_at LIMIT 5000`, [userId, orgId]);
 
     const activity = await dbq(
       `SELECT a.action, a.detail, a.created_at, i.name AS file_name
        FROM activity a LEFT JOIN items i ON i.id = a.file_id
-       WHERE a.org_id = $1 AND a.actor_id = $2 ORDER BY a.created_at DESC LIMIT 20000`, [user.orgId, userId]);
+       WHERE a.org_id = $1 AND a.actor_id = $2 ORDER BY a.created_at DESC LIMIT 20000`, [orgId, userId]);
 
     const events = await dbq(
       `SELECT e.title, e.starts_at, e.ends_at, e.created_at FROM calendar_events e
        WHERE e.org_id = $1 AND (e.created_by = $2 OR EXISTS
          (SELECT 1 FROM calendar_attendees a WHERE a.event_id = e.id AND a.user_id = $2))
-       ORDER BY e.starts_at LIMIT 5000`, [user.orgId, userId]);
+       ORDER BY e.starts_at LIMIT 5000`, [orgId, userId]);
 
     const tasks = await dbq(
       `SELECT t.title, t.status, t.due_at, t.created_at FROM tasks t
        WHERE t.org_id = $1 AND (t.assignee_id = $2 OR t.created_by = $2)
-       ORDER BY t.created_at DESC LIMIT 5000`, [user.orgId, userId]);
+       ORDER BY t.created_at DESC LIMIT 5000`, [orgId, userId]);
 
     const dec = (v: unknown) => (typeof v === "string" ? (decryptField(v) ?? v) : v);
-    const bundle = {
-      exportedAt: now(), orgId: user.orgId, exportedBy: user.email,
+    return {
+      exportedAt: now(), orgId, exportedBy,
       custodian: { id: custodian.id, email: custodian.email, displayName: custodian.display_name },
       files: files.map((f: any) => ({
         id: f.id, name: dec(f.name), kind: f.kind, mime: f.mime, size: Number(f.size),
@@ -467,8 +655,4 @@ export function adminRoutes(app: FastifyInstance) {
       })),
       note: "Binary file content is not inlined — fetch items via /api/files/:id/content with an admin session. Mail lives in the mail service; export mailboxes there separately.",
     };
-    reply.header("content-disposition",
-      `attachment; filename="ediscovery-${custodian.email.replace(/[^a-z0-9@.-]+/gi, "_")}-${Date.now()}.json"`);
-    return reply.type("application/json").send(bundle);
-  });
 }

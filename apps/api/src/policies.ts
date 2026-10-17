@@ -1,9 +1,10 @@
 // Org-scoped admin policies: sensitivity labels, DLP rules, retention.
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { DATA_DIR, q, one, run } from "./db.js";
 import { indexBody } from "./indexer.js";
-import { decryptField } from "./crypto.js";
+import { decryptField, encryptField } from "./crypto.js";
 import { logActivity } from "./items.js";
 
 export const LABELS = ["internal", "public", "confidential", "restricted"] as const;
@@ -76,6 +77,64 @@ export function dlpScanText(name: string, body: string, policies: OrgPolicies): 
   return null;
 }
 
+/* ── DLP engine ──────────────────────────────────────────── */
+
+export interface DlpRule {
+  id: string; org_id: string; name: string; pattern: string;
+  severity: "low" | "medium" | "high"; action: "flag" | "block";
+  applies_to: "files" | "chat" | "all"; enabled: boolean;
+}
+
+export async function dlpRules(orgId: string): Promise<DlpRule[]> {
+  return q<DlpRule>(
+    "SELECT id, org_id, name, pattern, severity, action, applies_to, enabled FROM dlp_rules WHERE org_id = $1",
+    [orgId]);
+}
+
+/** 60 chars of context around the first match — enough for review without
+ *  leaking the whole secret into the events table. */
+function matchExcerpt(text: string, re: RegExp): string | null {
+  const m = re.exec(text);
+  if (!m) return null;
+  const s = Math.max(0, m.index - 30);
+  const e = Math.min(text.length, m.index + m[0].length + 30);
+  return (s > 0 ? "…" : "") + text.slice(s, e).replace(/\s+/g, " ") + (e < text.length ? "…" : "");
+}
+
+/** Pipeline scan: run the org's enabled DLP rules against a piece of content.
+ *  Records one event per rule hit (encrypted excerpt), stamps items.dlp_flagged,
+ *  and returns the name of the first blocking rule if the write must be
+ *  rejected. ref: {type:'item'|'chat', id} — chat events never stamp items. */
+export async function scanDlp(
+  orgId: string, ref: { type: "item" | "chat"; id: string },
+  name: string, text: string, actorId: string | null,
+): Promise<{ blockedBy: string | null; hits: number }> {
+  const rules = (await dlpRules(orgId)).filter((r) =>
+    r.enabled && (r.applies_to === "all" || r.applies_to === (ref.type === "chat" ? "chat" : "files")));
+  if (!rules.length) return { blockedBy: null, hits: 0 };
+  const haystack = `${name}\n${text.slice(0, 500_000)}`;
+  let blockedBy: string | null = null;
+  let hits = 0;
+  for (const rule of rules) {
+    let re: RegExp;
+    try { re = new RegExp(rule.pattern.slice(0, 300), "i"); } catch { continue; }
+    if (!re.test(haystack)) continue;
+    hits++;
+    const action = rule.action === "block" ? "blocked" : "flagged";
+    if (rule.action === "block" && !blockedBy) blockedBy = rule.name;
+    await run(
+      `INSERT INTO dlp_events (id, org_id, rule_id, rule_name, ref_type, ref_id, excerpt, actor_id, action)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [randomUUID(), orgId, rule.id, rule.name,
+       ref.type === "chat" ? "chat_message" : "item", ref.id,
+       encryptField(matchExcerpt(haystack, re) ?? ""), actorId, action]);
+  }
+  if (hits && ref.type === "item" && !blockedBy) {
+    await run("UPDATE items SET dlp_flagged = true WHERE id = $1", [ref.id]);
+  }
+  return { blockedBy, hits };
+}
+
 /** IPv4 CIDR/literal check. IPv6 + malformed entries never match (fail-closed
  *  is wrong here — an admin typo shouldn't lock everyone out, so only
  *  well-formed IPv4 entries are enforced). */
@@ -100,12 +159,13 @@ export function ipAllowed(ip: string, ranges: string[]): boolean {
 }
 
 /** An item is held if its own flag is set OR it's attached to an active
- *  legal hold OR any ancestor folder is held OR its site is held. */
+ *  legal hold OR any ancestor folder is held OR its site is held OR its
+ *  owner (or an ancestor's owner) is a custodian on an active hold. */
 export async function isHeld(itemId: string): Promise<boolean> {
   const hit = await one(
     `WITH RECURSIVE anc AS (
-       SELECT id, parent_id, library_id, legal_hold FROM items WHERE id = $1
-       UNION ALL SELECT i.id, i.parent_id, i.library_id, i.legal_hold
+       SELECT id, parent_id, library_id, owner_id, legal_hold FROM items WHERE id = $1
+       UNION ALL SELECT i.id, i.parent_id, i.library_id, i.owner_id, i.legal_hold
          FROM items i JOIN anc a ON i.id = a.parent_id)
      SELECT 1 AS x FROM anc WHERE legal_hold
      UNION
@@ -117,6 +177,10 @@ export async function isHeld(itemId: string): Promise<boolean> {
        WHERE s.legal_hold AND EXISTS (
          SELECT 1 FROM anc a JOIN libraries l ON l.id = a.library_id
          WHERE l.site_id = s.id)
+     UNION
+     SELECT 1 FROM legal_hold_custodians lhc
+       JOIN legal_holds lh ON lh.id = lhc.hold_id AND lh.active
+       WHERE lhc.user_id IN (SELECT owner_id FROM anc)
      LIMIT 1`, [itemId]);
   return !!hit;
 }

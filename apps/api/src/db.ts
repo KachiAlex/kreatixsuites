@@ -793,6 +793,40 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     PRIMARY KEY (hold_id, item_id)
   )`);
+  // Custodian graph: attaching a user to an active hold preserves everything
+  // they own (files) — matter-scoped exports aggregate per custodian.
+  await pool.query(`CREATE TABLE IF NOT EXISTS legal_hold_custodians (
+    hold_id TEXT NOT NULL REFERENCES legal_holds(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (hold_id, user_id)
+  )`);
+  // DLP engine — named rules scanned by the pipeline (file save/upload, chat
+  // posts) plus a reviewable violation event queue for admins.
+  await pool.query(`CREATE TABLE IF NOT EXISTS dlp_rules (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'medium',        -- low | medium | high
+    action TEXT NOT NULL DEFAULT 'flag',            -- flag | block
+    applies_to TEXT NOT NULL DEFAULT 'files',       -- files | chat | all
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS dlp_events (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    rule_id TEXT REFERENCES dlp_rules(id) ON DELETE SET NULL,
+    rule_name TEXT NOT NULL,                        -- snapshot survives rule deletion
+    ref_type TEXT NOT NULL,                         -- item | chat_message
+    ref_id TEXT NOT NULL,
+    excerpt TEXT,                                   -- short match context (encrypted at rest)
+    actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,                           -- flagged | blocked
+    status TEXT NOT NULL DEFAULT 'open',            -- open | confirmed | dismissed
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS dlp_events_org ON dlp_events (org_id, status, created_at)`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS forms (
     id TEXT PRIMARY KEY,
