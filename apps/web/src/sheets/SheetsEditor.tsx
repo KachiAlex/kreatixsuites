@@ -314,6 +314,43 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const fxAnchor = useRef(anchorRef);
   useEffect(() => { fxAnchor.current = anchorRef; setFxValue(cellEditText(anchorCell)); }, [anchorRef, anchorCell]);
 
+  // AI formula assist — explain the selected formula, or write one from a
+  // prompt; generated formulas land in the formula bar for review, not committed
+  const [aiFxBusy, setAiFxBusy] = useState(false);
+  const [aiFxOut, setAiFxOut] = useState<string | null>(null);
+  const aiFormula = async () => {
+    if (aiFxBusy) return;
+    const cur = sheet.cells[fxAnchor.current];
+    const hasFormula = !!cur?.f;
+    const instruction = hasFormula
+      ? "Explain this formula"
+      : (prompt(`What should ${fxAnchor.current} compute?`) ?? "").trim();
+    if (!hasFormula && !instruction) return;
+    // neighborhood context — the sheet's first row (headers) helps the model
+    // write formulas that reference the right columns
+    const headers = Object.entries(sheet.cells)
+      .filter(([ref]) => /^\d+$/.test(ref.replace(/^[A-Z]+/i, "")) && Number(ref.replace(/^[A-Z]+/i, "")) === 1)
+      .slice(0, 24)
+      .map(([ref, c]) => `${ref}=${c.v ?? c.f ?? ""}`).join(", ");
+    setAiFxBusy(true);
+    try {
+      const r = await api.post<{ text: string }>("/api/ai/compose", {
+        task: "sheets-formula",
+        instruction,
+        context: `sheet "${sheet.name}", cell ${fxAnchor.current}, current: ${cur?.f ? `=${cur.f}` : cur?.v ?? "(empty)"}, row-1 headers: ${headers || "(none)"}`,
+      });
+      const text = r.text.trim();
+      if (!hasFormula && canEdit && /^=/.test(text.split("\n")[0])) {
+        setFxValue(text.split("\n")[0].trim());
+        setAiFxOut(text.split("\n").slice(1).join(" ").trim() || null);
+        toast("Formula in the bar — Enter to commit");
+      } else {
+        setAiFxOut(text);
+      }
+    } catch (e) { toast((e as Error).message); }
+    setAiFxBusy(false);
+  };
+
   // formula auditing — precedents of the anchor cell / dependents of it
   const auditRefs = useMemo(() => {
     if (!audit) return null;
@@ -1853,7 +1890,14 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
           onBlur={() => fxValue !== cellEditText(anchorCell) && commitCell(fxAnchor.current, fxValue)} />
         <span className="fx-val">{anchorCell?.f ? `= ${anchorRes?.error ?? formatValue(anchorRes?.value, anchorStyle.fmt, wb?.locale)}` : ""}</span>
         {anchorInputMsg && <span className="fx-val" style={{ color: "#7A6A5C", fontStyle: "italic" }} title="Input message">{anchorInputMsg}</span>}
+        <button className="btn-ghost btn-sm" title="AI — explain this formula or write one for the selected cell"
+          disabled={aiFxBusy} onClick={() => void aiFormula()}>✨</button>
       </div>
+      {aiFxOut && (
+        <div className="fx-ai" onClick={() => setAiFxOut(null)}>
+          {aiFxOut} <span className="d-sub" style={{ marginLeft: 8 }}>(click to dismiss)</span>
+        </div>
+      )}
 
       <div className="sheet-workspace" style={{ marginRight: panel !== "none" ? 330 : 0, zoom }}>
         {(() => {

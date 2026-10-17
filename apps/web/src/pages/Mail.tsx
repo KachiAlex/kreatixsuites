@@ -71,6 +71,8 @@ export function Mail() {
   const [newFolder, setNewFolder] = useState("");
   const [sharedWith, setSharedWith] = useState<{ ownerId: string; name: string; address: string | null }[]>([]);
   const [asUser, setAsUser] = useState<{ ownerId: string; name: string; address: string | null } | null>(null);
+  const [triage, setTriage] = useState<Record<string, { priority: string; reason: string }>>({});
+  const [triageBusy, setTriageBusy] = useState(false);
   const asRef = useRef<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -100,6 +102,11 @@ export function Mail() {
         const r = await api.get<{ emails: MailListItem[]; pagination: { total: number } }>(
           mp(`/emails?${params}`));
         setEmails(r.emails); setTotal(r.pagination.total); setDrafts([]);
+        // merge stored triage annotations for the visible ids
+        void api.post<{ triage: { id: string; priority: string; reason: string }[] }>(
+          "/api/ai/mail-triage/lookup", { ids: r.emails.map((e) => String(e.id)) })
+          .then((t) => setTriage((cur) => ({ ...cur, ...Object.fromEntries(t.triage.map((x) => [x.id, x])) })))
+          .catch(() => {});
       }
     } finally { setListBusy(false); }
   }, [mp]);
@@ -344,6 +351,24 @@ export function Mail() {
           <div className="mail-toolbar">
             <button className="iconbtn mail-only-mobile" onClick={() => setMobilePane("folders")} title="Folders">☰</button>
             <input className="mail-search" placeholder="Search mail…" value={search} onChange={(e) => onSearch(e.target.value)} />
+            {!asUser && emails.length > 0 && (
+              <button className="btn-ghost btn-sm" disabled={triageBusy} title="AI priority triage on the visible list"
+                onClick={async () => {
+                  setTriageBusy(true);
+                  try {
+                    const r = await api.post<{ triage: { id: string; priority: string; reason: string }[] }>(
+                      "/api/ai/mail-triage", {
+                        messages: emails.slice(0, 40).map((e) => ({
+                          id: String(e.id), from: e.from_name || e.from_address,
+                          subject: e.subject ?? "", snippet: e.snippet ?? "",
+                        })),
+                      });
+                    setTriage((cur) => ({ ...cur, ...Object.fromEntries(r.triage.map((x) => [x.id, x])) }));
+                    toast(`Triaged ${r.triage.length} messages`);
+                  } catch (e) { toast((e as Error).message); }
+                  setTriageBusy(false);
+                }}>{triageBusy ? "…" : "✨ Triage"}</button>
+            )}
           </div>
           {listBusy && <div className="empty">Loading…</div>}
           {!listBusy && view?.kind === "drafts" && drafts.map((d) => (
@@ -368,6 +393,12 @@ export function Mail() {
                 <span className="mail-row-time">{fmtWhen(e.received_at ?? e.sent_at)}</span>
               </span>
               <span className="mail-row-subj">
+                {triage[String(e.id)]?.priority === "high" && (
+                  <span className="mail-pri high" title={triage[String(e.id)].reason}>▲</span>
+                )}
+                {triage[String(e.id)]?.priority === "low" && (
+                  <span className="mail-pri low" title={triage[String(e.id)].reason}>▽</span>
+                )}
                 {e.has_attachments ? "📎 " : ""}{e.subject || "(no subject)"}
               </span>
               <span className="mail-row-snip">{e.snippet}</span>

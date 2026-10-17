@@ -736,6 +736,17 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE meeting_recordings ADD COLUMN IF NOT EXISTS transcript TEXT`);
   // meeting ↔ suite chat channel link + join roster
   await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS channel_id TEXT`);
+  // AI-generated meeting summary (encrypted at rest)
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS summary TEXT`);
+  // AI mail triage — per-user priority annotations keyed by mail-service id
+  await pool.query(`CREATE TABLE IF NOT EXISTS mail_priority (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL,
+    priority TEXT NOT NULL,                    -- high | normal | low
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, message_id)
+  )`);
   await pool.query(`CREATE TABLE IF NOT EXISTS meeting_attendance (
     meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -24,7 +24,7 @@ export function Home() {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [askWs, setAskWs] = useState(false);
   const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<{ q: string; reply: string; sources: { fileId: string; name: string }[] } | null>(null);
+  const [answer, setAnswer] = useState<{ q: string; reply: string; sources: { ref: string; kind: string; name: string }[] } | null>(null);
 
   // AI quota — blocks doc-creation when the workspace is out of credits so
   // no orphan doc gets created for a prompt that will immediately 402
@@ -106,7 +106,7 @@ export function Home() {
           buf = buf.slice(sep + 2);
           const line = evt.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
-          let j: { t?: string; done?: boolean; error?: string; reply?: string; sources?: { fileId: string; name: string }[] };
+          let j: { t?: string; done?: boolean; error?: string; reply?: string; sources?: { ref: string; kind: string; name: string }[] };
           try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
           if (j.error) throw new Error(String(j.error));
           if (j.t) { raw += j.t; setAnswer({ q: text, reply: raw, sources: [] }); }
@@ -231,9 +231,12 @@ export function Home() {
                 {answer.sources.length > 0 && (
                   <div className="ai-answer-src">
                     {t("home.aiSources")}
-                    {answer.sources.map((s) => (
-                      <a key={s.fileId} onClick={() => navigate(`/edit/${s.fileId}`)}>{s.name}</a>
-                    ))}
+                    {answer.sources.map((s) => {
+                      const id = s.ref.includes(":") ? s.ref.split(":")[1] : s.ref;
+                      const href = s.kind === "wiki" ? "/notes" : s.kind === "chat" ? "/chat"
+                        : s.kind === "meeting" ? "/meet" : `/edit/${id}`;
+                      return <a key={s.ref} onClick={() => navigate(href)}>{s.name}</a>;
+                    })}
                   </div>
                 )}
               </div>

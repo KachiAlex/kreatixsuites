@@ -3303,3 +3303,8 @@ html[data-theme="dark"]{
 .diff-line.add{background:#e9f7ec;color:#177245}
 .diff-line.del{background:#fdecea;color:#b3261e}
 .diff-skip{padding:2px 10px;color:var(--muted);font-style:italic}
+
+/* AI formula assist output */
+.fx-ai{padding:4px 12px;font-size:12px;background:var(--k-orange-soft,#fdf0e6);border-bottom:1px solid var(--line);cursor:pointer}
+.mail-pri{font-size:9px;margin-right:4px}
+.mail-pri.high{color:#c0392b}.mail-pri.low{color:#7f8c8d}

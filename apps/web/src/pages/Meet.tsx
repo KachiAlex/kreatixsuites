@@ -13,6 +13,7 @@ interface Meeting {
   id: string; code: string; title: string; status: string;
   scheduledAt: string | null; createdBy: string; createdByName: string | null;
   createdAt: string; endedAt: string | null; recordings: number; channelId: string | null;
+  summary: string | null;
 }
 interface Rec {
   id: string; size: number | null; durationSec: number | null; createdAt: string; name: string;
@@ -239,6 +240,23 @@ export function Meet() {
   };
 
   const [transcriptText, setTranscriptText] = useState<string | null>(null);
+  const [sumFor, setSumFor] = useState<string | null>(null);
+  const [sumBusy, setSumBusy] = useState<string | null>(null);
+
+  const summarize = async (m: Meeting) => {
+    if (sumFor === m.id && m.summary) { setSumFor(null); return; }
+    if (!m.summary) {
+      setSumBusy(m.id);
+      try {
+        const r = await api.post<{ summary: string }>("/api/ai/meeting-summary", { meetingId: m.id });
+        m.summary = r.summary;
+        setSumFor(m.id);
+      } catch (e) { toast((e as Error).message); }
+      setSumBusy(null);
+      return;
+    }
+    setSumFor(m.id);
+  };
 
   if (enabled === null) return <div className="empty">Loading Meet…</div>;
   if (!enabled) return (
@@ -334,6 +352,11 @@ export function Meet() {
             })}
           </div>
         )}
+        {sumFor === m.id && m.summary && (
+          <div className="meet-recs">
+            <div className="meet-summary">{m.summary}</div>
+          </div>
+        )}
         {attFor === m.id && (
           <div className="meet-recs">
             {!attendees.length && <span className="d-sub">No joins recorded.</span>}
@@ -352,6 +375,12 @@ export function Meet() {
         <button className="btn-ghost btn-sm" onClick={() => void openRecs(m)}>▶ {m.recordings}</button>
       )}
       <button className="btn-ghost btn-sm" title="Attendance" onClick={() => void openAtt(m)}>👥</button>
+      {(m.recordings > 0 || m.channelId || m.summary) && (
+        <button className="btn-ghost btn-sm" title="AI meeting summary" disabled={sumBusy === m.id}
+          onClick={() => void summarize(m)}>
+          {sumBusy === m.id ? "…" : "✨"} {m.summary ? "summary" : ""}
+        </button>
+      )}
       {m.status !== "ended" && (
         <>
           <button className="btn-primary btn-sm" disabled={busy} onClick={() => void join(m)}>Join</button>

@@ -13,7 +13,7 @@ interface MeetingRow {
   id: string; org_id: string; code: string; title: string;
   created_by: string; scheduled_at: string | null; status: string;
   created_at: string; ended_at: string | null; channel_id: string | null;
-  creator_name?: string;
+  summary: string | null; creator_name?: string;
 }
 
 const createSchema = z.object({
@@ -29,6 +29,7 @@ const meetingOut = (r: MeetingRow & { rec_count?: number; channel_id?: string | 
   createdAt: r.created_at, endedAt: r.ended_at,
   recordings: Number(r.rec_count ?? 0),
   channelId: r.channel_id ?? null,
+  summary: r.summary ? decryptField(r.summary) ?? r.summary : null,
 });
 
 /** Record a participant join (idempotent roster row per meeting+user). */
