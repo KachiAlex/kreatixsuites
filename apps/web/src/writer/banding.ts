@@ -121,13 +121,25 @@ export function bandPadBottom(
 
 /**
  * Desired padding-top so the element's content starts at the next band's
- * start (page-break-before semantics). Returns null when unmeasurable.
+ * start (page-break-before semantics). `bandParity` (odd/even-page breaks)
+ * skips bands until the landing band has the requested page parity: page
+ * n = band n-1, so odd pages land on even band indexes. The result is
+ * bounded — never more than ~2 bands — unlike bandPadBottom which can
+ * overshoot when wall positions are stale. Returns null when unmeasurable.
  */
-export function bandPadTop(el: HTMLElement, root: HTMLElement, bands?: Bands | null): number | null {
+export function bandPadTop(
+  el: HTMLElement, root: HTMLElement, bands?: Bands | null,
+  bandParity?: { skipTo: "odd" | "even" },
+): number | null {
   bands ??= measureBands(root);
   if (!bands) return null;
   const top = flowY(el, root); // border-box top ignores paddingTop
-  const i = bandIndexAt(bands, top);
+  let i = bandIndexAt(bands, top);
+  if (bandParity) {
+    const want = bandParity.skipTo === "odd" ? 0 : 1;
+    while (i < bands.starts.length && i % 2 !== want) i++;
+    return Math.max(0, bands.starts[i] - top);
+  }
   if (top - bands.starts[i] < 2) return 0; // already at a band start
   const next = bands.starts[i + 1] ?? bands.starts[i] + bands.pitch;
   return Math.max(0, next - top);

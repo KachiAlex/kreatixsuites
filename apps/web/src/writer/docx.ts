@@ -1873,8 +1873,13 @@ function extractXmlTables(docXml: string): XmlTbl[] {
       const gridXml = docXml.slice(re.lastIndex, segEnd < 0 ? re.lastIndex + 2000 : segEnd)
         .match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/)?.[1];
       if (gridXml) {
-        tbl.grid = [...gridXml.matchAll(/<w:gridCol\b[^>]*w:w="(\d+)"/g)]
+        const g = [...gridXml.matchAll(/<w:gridCol\b[^>]*w:w="(\d+)"/g)]
           .map((g) => Math.round(parseInt(g[1]) / 15));
+        // Some generators write placeholder gridCols (e.g. a constant 100
+        // twips ≈ 7px per column) and let auto-layout/pct width do the real
+        // sizing — a sub-2cm total can't be a real table's proportions, so
+        // treating it as authoritative squeezes text into sliver columns.
+        if (g.length && g.reduce((a, b) => a + b, 0) >= 80) tbl.grid = g;
       }
       tables.push(tbl);
       if (!selfClose) stack.push({ kind: "tbl", tbl });
@@ -2044,7 +2049,16 @@ function buildStyleMaps(meta: DocxMeta): { idToKey: Map<string, string>; styles:
   const normalStyle = [...meta.styles.values()].find((s) =>
     s.name.toLowerCase().replace(/[^a-z0-9]/g, "") === "normal");
   const normalDef: StyleDef = { ...meta.docDefaults, ...(normalStyle?.def ?? {}), key: "normal", label: "Normal", node: "paragraph" };
+  // When the package is silent about its baseline (empty docDefaults, no
+  // Normal style — generators that rely on Word's factory defaults), import
+  // Word's own fallback so unstyled paragraphs don't inherit our roomier
+  // editor defaults (14px/1.7 vs Word's 11pt/~1.15): the same content would
+  // otherwise paginate ~40% longer than it does in Word.
   if (cssFor(normalDef)) styles.normal = normalDef;
+  else styles.normal = {
+    key: "normal", label: "Normal", node: "paragraph", nextStyle: "normal",
+    fontSize: "11pt", lineHeight: "1.15", spaceAfter: 10,
+  };
   for (const [id, s] of meta.styles) {
     const key = styleKeyFor(meta, id);
     if (!key) continue;

@@ -93,8 +93,13 @@ export const ForcedBreaks = Extension.create({
                 }
                 const known = widths.filter((w): w is number => w != null && w > 0);
                 const fill = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 0;
+                // fr weights are relative — use the raw width. Dividing them
+                // down (e.g. /100) lets the sum drop below 1, where grid hands
+                // each track its literal fraction instead of normalizing —
+                // degenerate colwidths (a 7px "column") then collapse the row
+                // into slivers and every row overflows a page band.
                 const tpl = known.length
-                  ? widths.map((w) => `minmax(0,${Math.max(((w ?? fill) || fill) / 100, 0.01)}fr)`).join(" ")
+                  ? widths.map((w) => `minmax(0,${Math.max((w ?? fill) || fill, 0.01)}fr)`).join(" ")
                   : Array(W).fill("minmax(0,1fr)").join(" ");
                 extra.push(Decoration.node(pos, pos + node.nodeSize,
                   { "data-kx-split": "", style: `--kx-cols:${tpl}` }));
@@ -159,12 +164,26 @@ export const ForcedBreaks = Extension.create({
               add(el, bandPadTop(el, root, bands), null);
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-force-break]")) {
+              // pad the FOLLOWING block to the next band start instead of
+              // padding this break's bottom to mid-wall: the sibling pad is
+              // bounded (< one band), while bottom pads could overshoot a
+              // whole band and burn phantom pages when walls shift
               const oe = el.getAttribute("data-odd-even");
-              add(el, null, bandPadBottom(
-                el, root, 0,
-                oe === "oddPage" ? { skipTo: "odd" } : oe === "evenPage" ? { skipTo: "even" } : undefined,
-                bands,
-              ));
+              let sib = el.nextElementSibling as HTMLElement | null;
+              while (sib && !posOfEl(sib))
+                sib = sib.nextElementSibling as HTMLElement | null;
+              if (sib) {
+                add(sib, bandPadTop(sib, root, bands,
+                  oe === "oddPage" ? { skipTo: "odd" } : oe === "evenPage" ? { skipTo: "even" } : undefined), null);
+              } else {
+                // trailing break at doc end — keep the old mid-wall pad so the
+                // final page still terminates
+                add(el, null, bandPadBottom(
+                  el, root, 0,
+                  oe === "oddPage" ? { skipTo: "odd" } : oe === "evenPage" ? { skipTo: "even" } : undefined,
+                  bands,
+                ));
+              }
             }
             for (const el of root.querySelectorAll<HTMLElement>("[data-keep-next]")) {
               add(el, keepNextPadTop(el, root, bands), null);
