@@ -78,6 +78,7 @@ export function Shell() {
         <AnonBanner />
         <SyncChip />
         <UpdateBanner />
+        <VerifyBanner />
         <BillingBanner />
         <Outlet />
       </main>
@@ -232,6 +233,28 @@ function BillingBanner() {
     );
   }
   return null;
+}
+
+/** Unverified-email nag — verify links go out at registration; this banner
+ *  offers a resend until the flag flips. Dismissible per session. */
+function VerifyBanner() {
+  const { user } = useAuth();
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem("kx_verify_dismissed") === "1");
+  const [sent, setSent] = useState(false);
+  if (!user || user.emailVerified || dismissed) return null;
+  return (
+    <div className="billing-banner warn" role="status">
+      Verify your email — check {user.email} for the confirmation link.
+      {!sent && (
+        <button onClick={() => {
+          api.post("/api/auth/resend-verification", {}).then(() => setSent(true)).catch(() => setSent(true));
+        }}>Resend</button>
+      )}
+      {sent && <span style={{ marginLeft: 8, opacity: .8 }}>sent ✓</span>}
+      <button style={{ marginLeft: "auto" }} aria-label="Dismiss"
+        onClick={() => { sessionStorage.setItem("kx_verify_dismissed", "1"); setDismissed(true); }}>×</button>
+    </div>
+  );
 }
 
 function Rail({ toast }: { toast: (m: string) => void }) {

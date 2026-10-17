@@ -9,6 +9,7 @@ import { getLibrary, libraryPermission } from "../sites.js";
 import { requestApproval } from "../approvals.js";
 import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { storageQuota } from "../billing.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
 import { getPolicies, dlpScanText, scanDlp, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
@@ -211,7 +212,7 @@ export function contentRoutes(app: FastifyInstance) {
       const rows = await q<VersionRow>(
         `SELECT * FROM versions v WHERE file_id = $1 ${onlyPublished} ORDER BY number DESC LIMIT 25`, [item.id]);
       for (const row of rows) {
-        const b = getBlob(row.blob_key);
+        const b = await getBlob(row.blob_key);
         if (!b || b[0] !== 0x7b) continue;
         try {
           const parsed = JSON.parse(b.toString("utf8"));
@@ -225,7 +226,7 @@ export function contentRoutes(app: FastifyInstance) {
           "SELECT * FROM versions WHERE file_id = $1 AND published ORDER BY number DESC LIMIT 1", [item.id])
       : await headVersion(item.id);
     if (!v) return reply.code(404).send({ error: "not_found", message: "No published content" });
-    const blob = getBlob(v.blob_key);
+    const blob = await getBlob(v.blob_key);
     if (!blob) return reply.code(404).send({ error: "not_found", message: "Blob missing" });
 
     if (item.mime.startsWith("application/x-kreatix-")) {
@@ -251,7 +252,7 @@ export function contentRoutes(app: FastifyInstance) {
     const rows = await q<VersionRow>(
       "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 50", [item.id]);
     for (const v of rows) {
-      const blob = getBlob(v.blob_key);
+      const blob = await getBlob(v.blob_key);
       if (blob && blob.subarray(0, 5).equals(Buffer.from("%PDF-")))
         return sendRawBlob(reply, item.mime, blob, itemName(item));
     }
@@ -277,8 +278,13 @@ export function contentRoutes(app: FastifyInstance) {
     }
     if (!buf.length || !buf.subarray(0, 5).equals(Buffer.from("%PDF-")))
       return reply.code(400).send({ error: "bad_request", message: "Expected PDF bytes" });
+    const quota = await storageQuota(user.orgId, buf.length);
+    if (!quota.ok) {
+      return reply.code(413).send({ error: "storage_quota",
+        message: `Workspace storage full (${Math.round(quota.limit / 1048576)}MB plan limit) — upgrade or free space` });
+    }
     const label = (req.query as { label?: string }).label?.slice(0, 120);
-    const { key, size } = putBlob(buf);
+    const { key, size } = await putBlob(buf);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
     const stamp = await versionStamp(item);
     await run(
@@ -376,7 +382,12 @@ export function contentRoutes(app: FastifyInstance) {
     }
 
     const data = Buffer.from(JSON.stringify(body.content));
-    const { key, size } = putBlob(data);
+    const quota = await storageQuota(user.orgId, data.length);
+    if (!quota.ok) {
+      return reply.code(413).send({ error: "storage_quota",
+        message: `Workspace storage full (${Math.round(quota.limit / 1048576)}MB plan limit) — upgrade or free space` });
+    }
+    const { key, size } = await putBlob(data);
     const next = ((await headVersion(item.id))?.number ?? 0) + 1;
     const stamp = await versionStamp(item);
 
@@ -457,7 +468,7 @@ export function contentRoutes(app: FastifyInstance) {
     if (v && !v.published && !hasPermission(perm, "editor")) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const blob = v && getBlob(v.blob_key);
+    const blob = v && await getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
     try {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
@@ -484,17 +495,17 @@ export function contentRoutes(app: FastifyInstance) {
     if (!ra || !rb) return reply.code(404).send({ error: "not_found", message: "Version not found" });
     if ((!ra.published || !rb.published) && !hasPermission(perm, "editor"))
       return reply.code(404).send({ error: "not_found" });
-    const textOf = (v: VersionRow): string | null => {
-      const blob = getBlob(v.blob_key);
+    const textOf = async (v: VersionRow): Promise<string | null> => {
+      const blob = await getBlob(v.blob_key);
       if (!blob) return null;
       try { return JSON.parse(blob.toString("utf8")); } catch { return null; }
     };
-    const pretty = (v: VersionRow) => {
-      const c = textOf(v);
+    const pretty = async (v: VersionRow) => {
+      const c = await textOf(v);
       if (c === null) return null;
       return typeof c === "string" ? c : JSON.stringify(c, null, 2);
     };
-    const ta = pretty(ra), tb = pretty(rb);
+    const ta = await pretty(ra), tb = await pretty(rb);
     if (ta === null || tb === null)
       return reply.code(422).send({ error: "binary", message: "Only text/JSON versions can be diffed" });
     return { a: va, b: vb, hunks: diffLines(ta, tb) };

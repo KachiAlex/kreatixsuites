@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-route
 import { AuthProvider, useAuth } from "./lib/auth";
 import { I18nProvider, useT } from "./lib/i18n";
 import { Login } from "./pages/Login";
+import { ResetPassword, VerifyEmail } from "./pages/AccountRecovery";
 import { Landing } from "./pages/Landing";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
 import { useGlobalModalA11y } from "./lib/a11y";
@@ -113,6 +114,9 @@ export default function App() {
           <Route path="/" element={<LandingOrHome />} />
           <Route path="/login" element={<Login mode="login" />} />
           <Route path="/register" element={<Login mode="register" />} />
+          <Route path="/forgot" element={<Login mode="forgot" />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/download" element={<Download />} />
           <Route path="/shared/:token" element={<SharedLink />} />
           <Route path="/f/:token" element={<FormFill />} />

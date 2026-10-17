@@ -51,7 +51,7 @@ export function taskRoutes(app: FastifyInstance) {
     return { tasks: rows.map(taskOut) };
   });
 
-  app.post("/api/tasks", async (req, reply) => {
+  app.post("/api/tasks", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const parsed = taskSchema.safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid task" });

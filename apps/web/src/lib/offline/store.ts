@@ -39,6 +39,7 @@ export interface OutboxOp {
   localFileId?: string; // local: id to remap after upload
   name?: string;        // for uploads
   ts: number;
+  attempts?: number;    // failed-push tries — a transient 4xx retries until this cap
 }
 
 export function openStore(): Promise<IDBDatabase> {
@@ -89,6 +90,7 @@ export const store = {
   outbox: {
     all: () => tx<OutboxOp[]>("outbox", "readonly", (s) => s.getAll()),
     add: (op: OutboxOp) => tx("outbox", "readwrite", (s) => s.add(op)),
+    put: (op: OutboxOp) => tx("outbox", "readwrite", (s) => s.put(op)),
     del: (id: number) => tx("outbox", "readwrite", (s) => s.delete(id)),
     count: async () => (await tx<OutboxOp[]>("outbox", "readonly", (s) => s.getAll())).length,
   },

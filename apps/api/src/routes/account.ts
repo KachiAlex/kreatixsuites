@@ -1,17 +1,13 @@
 // Self-service account routes: GDPR data export and account erasure.
 import type { FastifyInstance } from "fastify";
-import { unlinkSync } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
-import { q, one, run, tx, now, DATA_DIR } from "../db.js";
+import { q, one, run, now } from "../db.js";
 import { requireAuth, verifyPassword, type AuthedRequest, type UserRow } from "../auth.js";
 import { verifyTotp, consumeBackupCode } from "../mfa.js";
 import { decryptField } from "../crypto.js";
 import { getBlob } from "../blobs.js";
-import { itemName } from "../items.js";
 import { zipFiles } from "../zip.js";
-
-const blobFile = (key: string) => join(DATA_DIR, "blobs", key.slice(0, 2), key);
+import { eraseUser } from "../lifecycle.js";
 
 export function accountRoutes(app: FastifyInstance) {
   /**
@@ -46,7 +42,7 @@ export function accountRoutes(app: FastifyInstance) {
        WHERE i.owner_id = $1 ORDER BY v.file_id, v.number DESC`, [user.id]);
     const used = new Set<string>();
     for (const h of heads) {
-      const blob = getBlob(h.blob_key);
+      const blob = await getBlob(h.blob_key);
       if (!blob) continue;
       let name = (decryptField(h.name) ?? h.name).replace(/[\\/:*?"<>|]/g, "_");
       while (used.has(name)) name = `_${name}`;
@@ -63,10 +59,11 @@ export function accountRoutes(app: FastifyInstance) {
 
   /**
    * POST /api/me/delete — permanent account erasure. Requires password and
-   * (when MFA is enabled) a valid TOTP/backup code. Deletes owned items
-   * (cascading versions/comments/shares/collab state), unlinks orphaned
-   * blobs, removes authored content, and drops the user row — existing JWTs
-   * die with it since requireAuth re-reads the user each request.
+   * (when MFA is enabled) a valid TOTP/backup code. Personal data is removed
+   * and the row is anonymized so shared content keeps a coherent "Deleted
+   * user" attribution; org-shared resources transfer to a successor instead
+   * of being cascade-wiped. If this is the org's last member the whole org
+   * (and its data) is deleted instead.
    */
   app.post("/api/me/delete", { preHandler: requireAuth }, async (req, reply) => {
     const body = z.object({ password: z.string(), code: z.string().optional() }).parse(req.body);
@@ -82,31 +79,7 @@ export function accountRoutes(app: FastifyInstance) {
         [consumeBackupCode(body.code!, row.totp_backups) ?? row.totp_backups, row.id]);
     }
 
-    const blobKeys = (await q<{ blob_key: string }>(
-      "SELECT v.blob_key FROM versions v JOIN items i ON i.id = v.file_id WHERE i.owner_id = $1",
-      [row.id])).map((r) => r.blob_key);
-
-    const orgId = row.org_id;
-    await tx(async (c) => {
-      await c.query("DELETE FROM activity WHERE actor_id = $1", [row.id]);
-      await c.query("DELETE FROM mentions WHERE from_user_id = $1", [row.id]);
-      await c.query("DELETE FROM comments WHERE author_id = $1", [row.id]);
-      await c.query("DELETE FROM ai_actions WHERE user_id = $1", [row.id]);
-      await c.query("DELETE FROM shares WHERE user_id = $1", [row.id]);
-      await c.query("DELETE FROM org_invites WHERE created_by = $1", [row.id]);
-      await c.query("DELETE FROM versions WHERE created_by = $1 AND file_id NOT IN (SELECT id FROM items WHERE owner_id = $1)", [row.id]);
-      await c.query("DELETE FROM items WHERE owner_id = $1", [row.id]);
-      await c.query("DELETE FROM users WHERE id = $1", [row.id]);
-      // empty org → remove it (policies/subscriptions cascade or go too)
-      await c.query("DELETE FROM orgs WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE org_id = $1)", [orgId]);
-    });
-
-    // drop blob files no other version still references (content-addressed
-    // dedup means another item may share a key)
-    for (const k of blobKeys) {
-      const still = await one("SELECT 1 FROM versions WHERE blob_key = $1 LIMIT 1", [k]);
-      if (!still) try { unlinkSync(blobFile(k)); } catch { /* already gone */ }
-    }
-    return { ok: true };
+    const result = await eraseUser(row.id);
+    return { ok: true, mode: result.mode };
   });
 }

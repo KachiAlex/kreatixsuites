@@ -198,6 +198,30 @@ ${btn(`${publicUrl()}/calendar`, "Open Calendar")}`),
     };
   },
 
+  passwordReset(name: string, token: string): Pick<Mail, "subject" | "html"> {
+    const link = `${publicUrl()}/reset-password?token=${encodeURIComponent(token)}`;
+    return {
+      subject: "Reset your Kreatix Suites password",
+      html: shell("Password reset", `
+<p>Hi ${esc(name)},</p>
+<p>We got a request to reset your password. This link works for <b>1 hour</b>:</p>
+${btn(link, "Reset password")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">If you didn't ask for this, ignore this email — your password stays unchanged.</p>`),
+    };
+  },
+
+  verifyEmail(name: string, token: string): Pick<Mail, "subject" | "html"> {
+    const link = `${publicUrl()}/verify-email?token=${encodeURIComponent(token)}`;
+    return {
+      subject: "Verify your email — Kreatix Suites",
+      html: shell("Verify your email", `
+<p>Hi ${esc(name)},</p>
+<p>Confirm this email address belongs to you — it unlocks email notifications and account recovery:</p>
+${btn(link, "Verify email")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">This link expires in 24 hours.</p>`),
+    };
+  },
+
   workspaceLocked(workspace: string, amountNgn: number): Pick<Mail, "subject" | "html"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {

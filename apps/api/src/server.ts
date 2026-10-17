@@ -45,6 +45,7 @@ import { migrate, one, runSweep } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
 import { encryptionEnabled } from "./crypto.js";
+import { resolveSession } from "./auth.js";
 
 /** Auth/session tokens must never land in access logs — strip the query
  *  params that carry them (?t= media auth, ?token= collab WS auth). */
@@ -124,16 +125,26 @@ async function main() {
   const CSP =
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; " +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
-    "font-src 'self' data:; connect-src 'self' wss: ws: https://cloudflareinsights.com; worker-src 'self' blob:; " +
+    "font-src 'self' data:; connect-src 'self' wss: https://cloudflareinsights.com; worker-src 'self' blob:; " +
     "media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; " +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; manifest-src 'self'";
-  app.addHook("onSend", async (_req, reply) => {
+  // the Sheets script sandbox needs eval — scoped to that page only, which is
+  // additionally isolated by sandbox="allow-scripts" (opaque origin)
+  const SANDBOX_CSP =
+    "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
+    "connect-src 'none'; base-uri 'none'; form-action 'none'";
+  app.addHook("onSend", async (req, reply) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "SAMEORIGIN");
     reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
     reply.header("Permissions-Policy", "microphone=(self), camera=(), geolocation=()");
+    if ((req.raw.socket as { encrypted?: boolean }).encrypted
+      || req.headers["x-forwarded-proto"] === "https") {
+      reply.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    }
     if (!reply.getHeader("content-security-policy")) {
-      reply.header("Content-Security-Policy", CSP);
+      const path = (req.url ?? "").split("?")[0];
+      reply.header("Content-Security-Policy", path === "/script-sandbox.html" ? SANDBOX_CSP : CSP);
     }
   });
 
@@ -145,17 +156,9 @@ async function main() {
   app.addHook("preHandler", async (req, reply) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return;
     if (!req.url.startsWith("/api/") || GATE_EXEMPT.test(req.url)) return;
-    const header = req.headers.authorization;
-    const cookieToken = (req.headers.cookie ?? "")
-      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
-    if (!token) return; // requireAuth will handle the 401
-    try {
-      const { jwtVerify } = await import("jose");
-      const { payload } = await jwtVerify(token, new TextEncoder().encode(
-        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
-      const user = await one<{ org_id: string }>("SELECT org_id FROM users WHERE id = $1", [payload.sub as string]);
-      if (!user) return;
+    const { user } = await resolveSession(req);
+    if (!user) return; // requireAuth will handle the 401
+    {
       const sub = await ensureSubscription(user.org_id);
       if (effectiveState(sub).state === "locked") {
         return reply.code(402).send({
@@ -163,7 +166,7 @@ async function main() {
           message: "Workspace subscription has expired — the workspace is read-only until billing is renewed.",
         });
       }
-    } catch { /* invalid token → requireAuth 401s downstream */ }
+    }
   });
 
   // ---- conditional access: org IP allowlist ----
@@ -173,36 +176,24 @@ async function main() {
   app.addHook("preHandler", async (req, reply) => {
     // only pre-auth endpoints are exempt — session endpoints like /api/auth/me
     // still respect the allowlist (they run on an existing token)
-    if (!req.url.startsWith("/api/") || /^\/api\/auth\/(login|register|mfa|invite)\b/.test(req.url)) return;
-    const header = req.headers.authorization;
-    const cookieToken = (req.headers.cookie ?? "")
-      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : cookieToken;
-    if (!token) return;
-    try {
-      const { jwtVerify } = await import("jose");
-      const { payload } = await jwtVerify(token, new TextEncoder().encode(
-        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
-      if (payload.aud === "kreatix-mfa") return;
-      const u = await one<{ org_id: string; is_super: boolean }>(
-        "SELECT org_id, is_super FROM users WHERE id = $1", [payload.sub as string]);
-      if (!u || u.is_super) return;
-      const { allowedIpRanges, requireDesktopClient } = await getPolicies(u.org_id);
-      if (allowedIpRanges.length && !ipAllowed(req.ip, allowedIpRanges)) {
-        return reply.code(403).send({
-          error: "ip_restricted",
-          message: "Your network isn't allowed to access this workspace",
-        });
-      }
-      // device posture — orgs can require the desktop client (Entra's
-      // "approved client app" grant); tokens predate the claim count as web
-      if (requireDesktopClient && payload.client !== "desktop") {
-        return reply.code(403).send({
-          error: "device_restricted",
-          message: "This workspace requires the Kreatix desktop app",
-        });
-      }
-    } catch { /* invalid token → requireAuth 401s downstream */ }
+    if (!req.url.startsWith("/api/") || /^\/api\/auth\/(login|register|mfa|invite|forgot|reset|verify)\b/.test(req.url)) return;
+    const { payload, user } = await resolveSession(req);
+    if (!user || user.is_super) return;
+    const { allowedIpRanges, requireDesktopClient } = await getPolicies(user.org_id);
+    if (allowedIpRanges.length && !ipAllowed(req.ip, allowedIpRanges)) {
+      return reply.code(403).send({
+        error: "ip_restricted",
+        message: "Your network isn't allowed to access this workspace",
+      });
+    }
+    // device posture — orgs can require the desktop client (Entra's
+    // "approved client app" grant); tokens predate the claim count as web
+    if (requireDesktopClient && payload?.client !== "desktop") {
+      return reply.code(403).send({
+        error: "device_restricted",
+        message: "This workspace requires the Kreatix desktop app",
+      });
+    }
   });
 
   // ---- superadmin confinement ----
@@ -213,26 +204,13 @@ async function main() {
   const SUPER_ALLOW = /^\/api\/(superadmin|auth|health)\b/;
   app.addHook("preHandler", async (req, reply) => {
     if (!req.url.startsWith("/api/") || SUPER_ALLOW.test(req.url)) return;
-    const header = req.headers.authorization;
-    const cookieToken = (req.headers.cookie ?? "")
-      .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
-    const queryToken = (req.query as Record<string, string | undefined>)?.token;
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : (cookieToken ?? queryToken);
-    if (!token) return; // no credentials — requireAuth decides downstream
-    try {
-      const { jwtVerify } = await import("jose");
-      const { payload } = await jwtVerify(token, new TextEncoder().encode(
-        process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production"));
-      if (payload.aud === "kreatix-mfa") return;
-      const u = await one<{ is_super: boolean }>(
-        "SELECT is_super FROM users WHERE id = $1", [payload.sub as string]);
-      if (u?.is_super) {
-        return reply.code(403).send({
-          error: "superadmin_only",
-          message: "This account is restricted to the platform portal.",
-        });
-      }
-    } catch { /* invalid token → requireAuth 401s downstream */ }
+    const { user } = await resolveSession(req);
+    if (user?.is_super) {
+      return reply.code(403).send({
+        error: "superadmin_only",
+        message: "This account is restricted to the platform portal.",
+      });
+    }
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
@@ -303,6 +281,24 @@ async function main() {
   app.register(publicApiRoutes);
   app.register(integrationAdminRoutes);
   app.register(brandingRoutes);
+
+  // Client crash reports — the web ErrorBoundary + global handlers post here.
+  // Unauthenticated (crashes can precede login), strictly capped and logged —
+  // there's no Sentry in this stack, so server logs are the observability path.
+  app.post("/api/client-error", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
+    const b = (req.body ?? {}) as { message?: string; stack?: string; componentStack?: string; url?: string; ua?: string; kind?: string };
+    app.log.error({
+      clientError: {
+        message: String(b.message ?? "").slice(0, 500),
+        stack: String(b.stack ?? "").slice(0, 4000),
+        componentStack: String(b.componentStack ?? "").slice(0, 2000),
+        url: String(b.url ?? "").slice(0, 200),
+        ua: String(b.ua ?? "").slice(0, 200),
+        kind: String(b.kind ?? "boundary"),
+      },
+    }, "client-side error report");
+    return { ok: true };
+  });
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");

@@ -322,7 +322,7 @@ export function chatRoutes(app: FastifyInstance) {
       return { messages: ordered.map((r) => body({ ...r, reactions: byMsg.get(r.id) ?? [] })) };
     });
 
-    authed.post("/api/chat/:id/messages", async (req, reply) => {
+    authed.post("/api/chat/:id/messages", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
       const { user } = req as AuthedRequest;
       const c = await getChannel((req.params as { id: string }).id, user.orgId);
       if (!c) return notFound(reply);

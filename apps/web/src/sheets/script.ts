@@ -149,7 +149,8 @@ export class WorkbookApi {
 }
 
 /** Run `code` against `wb`, mutating in place. Returns the console.log output
- *  lines. Throws on script errors — callers should toast/report them. */
+ *  lines. Throws on script errors — callers should toast/report them.
+ *  Only invoked inside the sandboxed iframe: the app CSP forbids eval. */
 export function runScript(wb: Workbook, code: string, activeSheetName = ""): string[] {
   const log: string[] = [];
   const api = new WorkbookApi(wb, activeSheetName);
@@ -157,4 +158,73 @@ export function runScript(wb: Workbook, code: string, activeSheetName = ""): str
   const fn = new Function("workbook", "console", `"use strict";\n${code}`) as (w: WorkbookApi, c: typeof fakeConsole) => void;
   fn(api, fakeConsole);
   return log;
+}
+
+// ---------- sandboxed execution ----------
+// new Function() is blocked by the app's CSP (no 'unsafe-eval'), so scripts
+// execute inside a sandboxed iframe served at /script-sandbox.html — an
+// opaque-origin page whose own (relaxed) CSP permits eval. Confinement is
+// real: the frame can't reach app DOM, cookies, storage, or make same-origin
+// fetches; the only bridge is postMessage — workbook in, mutated sheets/names
+// out. The main document CSP stays strict.
+
+export interface SandboxOutcome {
+  sheets: SheetData[];
+  names: Record<string, string> | null;
+  log: string[];
+}
+
+let frame: HTMLIFrameElement | null = null;
+let frameReady: Promise<HTMLIFrameElement> | null = null;
+let seq = 0;
+const inflight = new Map<string, {
+  resolve: (o: SandboxOutcome) => void; reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+
+function onSandboxMessage(ev: MessageEvent) {
+  if (ev.source !== frame?.contentWindow) return;
+  const d = ev.data as { id?: string; ok?: boolean; sheets?: SheetData[]; names?: Record<string, string>; log?: string[]; error?: string };
+  const p = typeof d?.id === "string" ? inflight.get(d.id) : undefined;
+  if (!p) return;
+  inflight.delete(d.id!);
+  clearTimeout(p.timer);
+  if (d.ok) p.resolve({ sheets: d.sheets ?? [], names: d.names ?? null, log: d.log ?? [] });
+  else p.reject(new Error(d.error ?? "Script failed"));
+}
+
+function ensureFrame(): Promise<HTMLIFrameElement> {
+  frameReady ??= new Promise((resolve, reject) => {
+    const f = document.createElement("iframe");
+    f.setAttribute("sandbox", "allow-scripts");
+    f.src = "/script-sandbox.html";
+    f.style.display = "none";
+    f.addEventListener("load", () => { frame = f; resolve(f); });
+    f.addEventListener("error", () => { frameReady = null; reject(new Error("Script sandbox failed to load")); });
+    window.addEventListener("message", onSandboxMessage);
+    document.body.appendChild(f);
+  });
+  return frameReady;
+}
+
+/** Run `code` against a clone of `wb` inside the sandboxed iframe. Resolves
+ *  with the mutated sheets/names — callers apply them inside mutate(). */
+export async function runScriptSandboxed(wb: Workbook, code: string, activeSheetName = ""): Promise<SandboxOutcome> {
+  const f = await ensureFrame();
+  const id = `s${++seq}`;
+  return new Promise<SandboxOutcome>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      inflight.delete(id);
+      // a runaway script shares the main thread and can't be interrupted —
+      // drop the frame so at least the next run gets a fresh sandbox
+      frame?.remove();
+      frame = null;
+      frameReady = null;
+      reject(new Error("Script timed out"));
+    }, 15_000);
+    inflight.set(id, { resolve, reject, timer });
+    f.contentWindow?.postMessage(
+      { id, code, workbook: structuredClone(wb), active: activeSheetName },
+      { targetOrigin: "*" });
+  });
 }

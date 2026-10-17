@@ -14,6 +14,8 @@ export interface User {
   isSuper?: boolean;
   /** TOTP second factor enrolled */
   mfaEnabled?: boolean;
+  /** email_verified flag — false until the verification link is clicked */
+  emailVerified?: boolean;
   createdAt: string;
 }
 

@@ -53,7 +53,7 @@ export function noteRoutes(app: FastifyInstance) {
     return { page: pageOut(p) };
   });
 
-  app.post("/api/notes", async (req, reply) => {
+  app.post("/api/notes", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const parsed = pageSchema.safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid page" });

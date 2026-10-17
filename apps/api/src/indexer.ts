@@ -84,7 +84,7 @@ export async function indexFile(fileId: string, kind: string, content: unknown) 
       "SELECT blob_key FROM versions WHERE file_id = $1 ORDER BY number ASC LIMIT 1",
       [fileId],
     );
-    const raw = v1 && getBlob(v1.blob_key);
+    const raw = v1 && await getBlob(v1.blob_key);
     if (raw && raw.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
       try {
         body = `${body} ${await extractPdfText(raw)}`.trim();
@@ -93,9 +93,13 @@ export async function indexFile(fileId: string, kind: string, content: unknown) 
       }
     }
   }
-  await run("DELETE FROM search_index WHERE file_id = $1", [fileId]);
+  // upsert keeps an indexed_at stamp even for empty bodies so reindexAll
+  // doesn't re-attempt them on every boot
+  await run(
+    `INSERT INTO search_index (file_id, body, indexed_at) VALUES ($1,$2,now())
+     ON CONFLICT (file_id) DO UPDATE SET body = $2, indexed_at = now()`,
+    [fileId, encryptField(body)!]);
   if (body.trim()) {
-    await run("INSERT INTO search_index (file_id, body) VALUES ($1,$2)", [fileId, encryptField(body)!]);
     void embedIndex(fileId, body); // optional semantic vector — no-op unless KREATIX_AI_EMBED_* set
   }
 }
@@ -113,14 +117,21 @@ export async function indexBody(fileId: string): Promise<string> {
   return decryptField(row?.body ?? null) ?? "";
 }
 
-/** One-shot backfill — index every file's head version. Called at boot. */
+/** Boot-time backfill — re-extracts only files whose index row is missing or
+ *  older than the item's last update (indexed_at dirty-tracking). Pre-existing
+ *  rows without indexed_at (legacy installs) get one catch-up pass. */
 export async function reindexAll() {
-  const items = await q<{ id: string; kind: string }>("SELECT id, kind FROM items");
+  const items = await q<{ id: string; kind: string }>(
+    `SELECT i.id, i.kind FROM items i
+     LEFT JOIN search_index s ON s.file_id = i.id
+     WHERE s.file_id IS NULL OR s.indexed_at IS NULL OR s.indexed_at < i.updated_at
+     ORDER BY i.updated_at DESC LIMIT 2000`);
+  if (!items.length) return 0;
   const headSql = "SELECT blob_key FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1";
   let n = 0;
   for (const item of items) {
     const v = await one<{ blob_key: string }>(headSql, [item.id]);
-    const blob = v && getBlob(v.blob_key);
+    const blob = v && await getBlob(v.blob_key);
     if (!blob) continue;
     let content: unknown = null;
     try {

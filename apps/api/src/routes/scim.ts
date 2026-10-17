@@ -228,14 +228,13 @@ export async function scimRoutes(app: FastifyInstance) {
   app.delete("/scim/v2/Users/:id", async (req, reply) => {
     const org = (req as ScimReq).scimOrg!;
     const id = (req.params as { id: string }).id;
-    try {
-      const n = await run("DELETE FROM users WHERE id = $1 AND org_id = $2", [id, org]);
-      if (!n) return scimError(reply, 404, "User not found");
-    } catch (e) {
-      // FK constraints (owned items etc.) — fall back to deactivation
-      if ((e as { code?: string }).code !== "23503") throw e;
-      await run("UPDATE users SET disabled = true WHERE id = $1 AND org_id = $2", [id, org]);
-    }
+    const target = await one<{ id: string }>("SELECT id FROM users WHERE id = $1 AND org_id = $2", [id, org]);
+    if (!target) return scimError(reply, 404, "User not found");
+    // deprovisioning anonymizes rather than dropping the row — enterprise
+    // audit trails and shared-content attribution stay intact, and owned
+    // org resources transfer to a successor instead of cascading away
+    const { eraseUser } = await import("../lifecycle.js");
+    await eraseUser(id);
     return reply.code(204).send();
   });
 }

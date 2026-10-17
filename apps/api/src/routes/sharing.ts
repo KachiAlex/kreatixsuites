@@ -165,7 +165,7 @@ export function sharingRoutes(app: FastifyInstance) {
       "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1",
       [item.id],
     );
-    const blob = v && getBlob(v.blob_key);
+    const blob = v && await getBlob(v.blob_key);
     if (!v || !blob) return reply.code(404).send({ error: "not_found" });
     const policies = await getPolicies(item.org_id);
     const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, "share-link guest");

@@ -182,7 +182,9 @@ export function formPublicRoutes(app: FastifyInstance) {
     return { form: { title: dec(f.title), description: dec(f.description), fields: fieldsOf(f) } };
   });
 
-  app.post("/api/forms/public/:token", async (req, reply) => {
+  // anonymous mutation — capped hard; each submit writes rows, notifies
+  // subscribers and fires automation rules/webhooks
+  app.post("/api/forms/public/:token", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const f = await byToken((req.params as { token: string }).token);
     if (!f || !f.open) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
     const { answers, respondent } = (req.body ?? {}) as { answers?: Record<string, unknown>; respondent?: string };

@@ -1021,6 +1021,29 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   } catch {
     console.warn("[db] pgvector extension unavailable — semantic search disabled");
   }
+  // search_index dirty-tracking: reindexAll() only touches files whose index
+  // row is missing or older than the item's last update
+  await pool.query(`ALTER TABLE search_index ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMPTZ`);
+  // hot-path indexes (query shapes verified against routes/search, drive, chat)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_shares_user ON shares(user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_cal_attendees_user ON calendar_attendees(user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages(reply_to)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_items_media_for ON items(media_for)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_versions_file_pending ON versions(file_id, pending)`);
+  // single-use auth tokens — password reset + email verification links.
+  // Only the sha256 of the emailed token is stored.
+  await pool.query(`CREATE TABLE IF NOT EXISTS auth_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL,               -- password_reset | email_verify
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_logo_mime TEXT`);
   // ops: backup bookkeeping + sweep coordination state (see backup.ts / monitor.ts)
   await pool.query(`CREATE TABLE IF NOT EXISTS backup_runs (
     id TEXT PRIMARY KEY,

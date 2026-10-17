@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { q, one, run, now } from "./db.js";
 import { encryptField, decryptField } from "./crypto.js";
 import { putBlob } from "./blobs.js";
+import { storageQuota } from "./billing.js";
 import { getItem } from "./items.js";
 import { normalizeChain } from "./sites.js";
 import { requestApproval } from "./approvals.js";
@@ -208,7 +209,9 @@ async function execute(rule: RuleRow, ctx: Record<string, string>): Promise<void
           ? { type: "paragraph", content: [{ type: "text", text: line }] }
           : { type: "paragraph" }),
       };
-      const { key, size } = putBlob(Buffer.from(JSON.stringify(doc)));
+      const quota = await storageQuota(rule.org_id, JSON.stringify(doc).length);
+      if (!quota.ok) throw new Error("workspace storage quota exceeded");
+      const { key, size } = await putBlob(Buffer.from(JSON.stringify(doc)));
       const id = randomUUID();
       await run(
         `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, library_id, created_at, updated_at)

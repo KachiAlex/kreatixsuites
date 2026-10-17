@@ -6,7 +6,7 @@ import { API_BASE, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
 
-export function Login({ mode }: { mode: "login" | "register" }) {
+export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const { login, register, loginWithToken, enterAnonymous, completeMfaLogin } = useAuth();
   const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
@@ -23,6 +23,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [inviteBrand, setInviteBrand] = useState<{ name: string; logoUrl: string | null } | null>(null);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
   const invite = params.get("invite") ?? undefined;
 
   // warm the app-shell chunks while auth state settles — the /home
@@ -67,6 +68,11 @@ export function Login({ mode }: { mode: "login" | "register" }) {
     try {
       if (mfaToken) {
         await completeMfaLogin(mfaToken, mfaCode);
+      } else if (mode === "forgot") {
+        await api.post("/api/auth/forgot", { email });
+        setForgotSent(true);
+        setBusy(false);
+        return;
       } else if (mode === "login") {
         const pending = await login(email, password);
         if (pending) { setMfaToken(pending); setBusy(false); return; }
@@ -100,10 +106,18 @@ export function Login({ mode }: { mode: "login" | "register" }) {
               : <BrandLockup light size={64} />}
         </div>
         <form className="auth-card" onSubmit={submit}>
-        <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : inviteOrg ? t("auth.joinOrg", { org: inviteOrg }) : t("auth.createWorkspace")}</h1>
-        <p>{mfaToken ? t("auth.mfaPrompt") : t("auth.tagline")}</p>
+        <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : mode === "forgot" ? "Reset password" : inviteOrg ? t("auth.joinOrg", { org: inviteOrg }) : t("auth.createWorkspace")}</h1>
+        <p>{mfaToken ? t("auth.mfaPrompt") : mode === "forgot" ? "We'll email you a reset link." : t("auth.tagline")}</p>
         {error && <div className="auth-error">{error}</div>}
-        {mfaToken ? (
+        {mode === "forgot" ? (
+          forgotSent
+            ? <p style={{ color: "var(--text-2)", fontSize: 14 }}>If that email has an account, a reset link is on its way. Check your inbox (and spam).</p>
+            : <>
+                <div className="field"><label>{t("auth.email")}</label>
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@company.com" /></div>
+                <button className="btn-primary" disabled={busy}>{busy ? t("auth.pleaseWait") : "Send reset link"}</button>
+              </>
+        ) : mfaToken ? (
           <>
             <div className="field"><label>{t("auth.mfaCode")}</label>
               <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required autoFocus
@@ -150,7 +164,8 @@ export function Login({ mode }: { mode: "login" | "register" }) {
         <div className="auth-switch">
           {mode === "login"
             ? <>{t("auth.newToKreatix")} <Link to="/register">{t("auth.createAccountLink")}</Link></>
-            : <>{t("auth.haveAccount")} <Link to="/login">{t("auth.signInLink")}</Link></>}
+            : <><Link to="/login">{t("auth.signInLink")}</Link></>}
+          {mode === "login" && <><br /><Link to="/forgot" style={{ fontSize: 13 }}>Forgot password?</Link></>}
         </div>
         <div className="field" style={{ marginTop: 10 }}>
           <label>{t("shell.language")}</label>

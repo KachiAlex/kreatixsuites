@@ -131,13 +131,29 @@ function persistRoom(fileId: string, room: Room) {
   );
 }
 
+// in-flight creation promises — without this, two simultaneous first-connects
+// both miss `rooms.get`, both hydrate a Y.Doc, and the second clobbers the
+// first's entry (forked state that never merges)
+const pendingRooms = new Map<string, Promise<Room>>();
+
 async function getRoom(fileId: string): Promise<Room> {
-  let room = rooms.get(fileId);
-  if (room) return room;
+  const existing = rooms.get(fileId);
+  if (existing) return existing;
+  const pending = pendingRooms.get(fileId);
+  if (pending) return pending;
+  const p = openRoom(fileId).finally(() => pendingRooms.delete(fileId));
+  pendingRooms.set(fileId, p);
+  return p;
+}
+
+async function openRoom(fileId: string): Promise<Room> {
   const doc = new Y.Doc();
   const row = await one<{ state: Buffer }>("SELECT state FROM collab_states WHERE file_id = $1", [fileId]);
   if (row?.state) Y.applyUpdate(doc, new Uint8Array(row.state));
-  room = { doc, awareness: new awarenessProtocol.Awareness(doc), conns: new Map(), saveTimer: null };
+  const room: Room = { doc, awareness: new awarenessProtocol.Awareness(doc), conns: new Map(), saveTimer: null };
+  // a close may have raced the await — don't resurrect a destroyed room
+  const current = rooms.get(fileId);
+  if (current) return current;
   rooms.set(fileId, room);
 
   // broadcast doc updates to every conn + schedule persistence

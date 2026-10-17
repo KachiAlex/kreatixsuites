@@ -5,7 +5,7 @@ import { z } from "zod";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { q as dbq, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
-import { getPolicies, setPolicies, dlpRules, type DlpRule } from "../policies.js";
+import { getPolicies, setPolicies, dlpRules, isSafePattern, type DlpRule } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
 import { metrics } from "../metrics.js";
 import { activeCollabRooms, collabPeers } from "../collab.js";
@@ -178,24 +178,31 @@ export function adminRoutes(app: FastifyInstance) {
     return { policies: await getPolicies(user.orgId), encryptionAtRest: encryptionEnabled() };
   });
 
-  app.put("/api/admin/policies", async (req) => {
+  app.put("/api/admin/policies", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const patch = policiesSchema.parse(req.body);
+    if (patch.dlpPatterns?.length) {
+      const bad = patch.dlpPatterns.find((p) => { try { return !isSafePattern(p); } catch { return true; } });
+      if (bad) return reply.code(400).send({ error: "unsafe_pattern",
+        message: `Pattern rejected — nested quantifiers or ambiguous alternation can stall scanning: /${bad.slice(0, 60)}/` });
+    }
     return { policies: await setPolicies(user.orgId, patch) };
   });
 
   /**
    * Audit log: org-scoped activity, filterable by action prefix, user, file,
    * and date range. ?action=share&user=<id>&file=<id>&from=<iso>&to=<iso>
-   * &limit=200 (max 500)
+   * &limit=200 (max 500). Keyset pagination: pass ?before=<created_at>
+   * &beforeId=<id> from the previous page's nextCursor.
    */
   app.get("/api/admin/audit", async (req) => {
     const { user } = req as AuthedRequest;
-    const q = req.query as { action?: string; user?: string; file?: string; from?: string; to?: string; limit?: string };
+    const q = req.query as { action?: string; user?: string; file?: string; from?: string; to?: string; limit?: string; before?: string; beforeId?: string };
     const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 500);
     const from = q.from && !isNaN(Date.parse(q.from)) ? new Date(q.from).toISOString() : null;
     const to = q.to && !isNaN(Date.parse(q.to)) ? new Date(q.to).toISOString() : null;
-    const rows = await dbq<{ detail: string | null; file_name: string | null }>(
+    const before = q.before && !isNaN(Date.parse(q.before)) ? new Date(q.before).toISOString() : null;
+    const rows = await dbq<{ id: string; detail: string | null; file_name: string | null; created_at: string }>(
       `SELECT a.id, a.action, a.detail, a.created_at,
               u.display_name AS actor_name, u.email AS actor_email,
               i.name AS file_name, a.file_id
@@ -208,15 +215,21 @@ export function adminRoutes(app: FastifyInstance) {
          AND ($4::text IS NULL OR a.file_id = $4)
          AND ($5::timestamptz IS NULL OR a.created_at >= $5)
          AND ($6::timestamptz IS NULL OR a.created_at <= $6)
-       ORDER BY a.created_at DESC LIMIT $7`,
-      [user.orgId, q.action || null, q.user || null, q.file || null, from, to, limit],
+         AND ($7::timestamptz IS NULL OR (a.created_at, a.id) < ($7::timestamptz, $8::text))
+       ORDER BY a.created_at DESC, a.id DESC LIMIT $9`,
+      [user.orgId, q.action || null, q.user || null, q.file || null, from, to,
+       before, q.beforeId || null, limit],
     );
+    const last = rows[rows.length - 1];
     return {
       entries: rows.map((r) => ({
         ...r,
         detail: decryptField(r.detail),
         file_name: decryptField(r.file_name),
       })),
+      nextCursor: rows.length === limit && last
+        ? { before: last.created_at, beforeId: last.id }
+        : null,
     };
   });
 
@@ -450,6 +463,10 @@ export function adminRoutes(app: FastifyInstance) {
     try { new RegExp(d.pattern); } catch {
       return reply.code(400).send({ error: "bad_request", message: "Pattern isn't a valid regex" });
     }
+    if (!isSafePattern(d.pattern)) {
+      return reply.code(400).send({ error: "unsafe_pattern",
+        message: "Pattern rejected — nested quantifiers or ambiguous alternation can stall scanning" });
+    }
     const id = randomUUID();
     await run(
       `INSERT INTO dlp_rules (id, org_id, name, pattern, severity, action, applies_to)
@@ -471,6 +488,9 @@ export function adminRoutes(app: FastifyInstance) {
     }).parse(req.body);
     if (d.pattern) { try { new RegExp(d.pattern); } catch {
       return reply.code(400).send({ error: "bad_request", message: "Pattern isn't a valid regex" });
+    } if (!isSafePattern(d.pattern)) {
+      return reply.code(400).send({ error: "unsafe_pattern",
+        message: "Pattern rejected — nested quantifiers or ambiguous alternation can stall scanning" });
     } }
     const cur = await one<DlpRule>("SELECT * FROM dlp_rules WHERE id = $1 AND org_id = $2", [id, user.orgId]);
     if (!cur) return reply.code(404).send({ error: "not_found" });
@@ -804,14 +824,20 @@ export function brandingRoutes(app: FastifyInstance) {
     if (!Buffer.isBuffer(buf) || buf.length === 0 || buf.length > 512 * 1024) {
       return reply.code(400).send({ error: "bad_size", message: "Logo must be under 512KB" });
     }
+    const { storageQuota } = await import("../billing.js");
+    const quota = await storageQuota(orgId(req), buf.length);
+    if (!quota.ok) {
+      return reply.code(413).send({ error: "storage_quota",
+        message: "Workspace storage full — upgrade or free space" });
+    }
     const { putBlob } = await import("../blobs.js");
-    const { key } = putBlob(buf);
-    await run("UPDATE orgs SET brand_logo = $1 WHERE id = $2", [key, orgId(req)]);
+    const { key } = await putBlob(buf);
+    await run("UPDATE orgs SET brand_logo = $1, brand_logo_mime = $2 WHERE id = $3", [key, mime, orgId(req)]);
     return { logoUrl: `/api/org/brand/${orgId(req)}/logo` };
   });
 
   app.delete("/api/admin/branding/logo", { preHandler: requireOrgAdmin }, async (req) => {
-    await run("UPDATE orgs SET brand_logo = NULL WHERE id = $1", [orgId(req)]);
+    await run("UPDATE orgs SET brand_logo = NULL, brand_logo_mime = NULL WHERE id = $1", [orgId(req)]);
     return { ok: true };
   });
 }

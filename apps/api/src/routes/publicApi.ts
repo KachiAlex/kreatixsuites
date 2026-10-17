@@ -9,7 +9,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { q, one, run } from "../db.js";
 import { resolveApiKey, keyAllows, type ApiKey, type ApiScope } from "../integrations.js";
 import { getPolicies, ipAllowed } from "../policies.js";
-import { encryptField } from "../crypto.js";
+import { encryptField, decryptField } from "../crypto.js";
 import { itemName, type ItemRow } from "../items.js";
 import { getBlob } from "../blobs.js";
 
@@ -87,7 +87,7 @@ export async function publicApiRoutes(app: FastifyInstance) {
        WHERE i.id = $1 AND i.org_id = $2 AND NOT i.trashed
        ORDER BY v.number DESC LIMIT 1`, [id, key.org_id]);
     if (!r) return reply.code(404).send({ error: "not_found" });
-    const buf = getBlob(r.blob_key);
+    const buf = await getBlob(r.blob_key);
     if (!buf) return reply.code(404).send({ error: "not_found" });
     return reply.header("content-type", r.mime).send(buf);
   });
@@ -96,12 +96,18 @@ export async function publicApiRoutes(app: FastifyInstance) {
     const key = (req as KeyedRequest).apiKey;
     const term = ((req.query as { q?: string }).q ?? "").trim();
     if (!term) return { items: [] };
-    const rows = await q<ItemRow & { owner_name: string | null }>(
-      `SELECT ${LIST_COLS} FROM items i LEFT JOIN users u ON u.id = i.owner_id
+    // search_index.body is AES-GCM ciphertext under KREATIX_DATA_KEY, so SQL
+    // ILIKE can never match it — fetch a bounded candidate set and match
+    // JS-side after decryption (same strategy as /api/search)
+    const rows = await q<ItemRow & { owner_name: string | null; body: string }>(
+      `SELECT ${LIST_COLS}, s.body FROM items i LEFT JOIN users u ON u.id = i.owner_id
        JOIN search_index s ON s.file_id = i.id
-       WHERE i.org_id = $1 AND NOT i.trashed AND s.body ILIKE '%' || $2 || '%'
-       ORDER BY i.updated_at DESC LIMIT 50`, [key.org_id, term]);
-    return { items: rows.map(itemOut) };
+       WHERE i.org_id = $1 AND NOT i.trashed
+       ORDER BY i.updated_at DESC LIMIT 400`, [key.org_id]);
+    const needle = term.toLowerCase();
+    const hits = rows.filter((r) =>
+      (decryptField(r.body) ?? r.body).toLowerCase().includes(needle)).slice(0, 50);
+    return { items: hits.map(itemOut) };
   });
 
   app.post("/api/v1/tasks", { preHandler: keyAuth("write") }, async (req, reply) => {

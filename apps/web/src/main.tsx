@@ -10,8 +10,10 @@ import "@fontsource/inter/latin-700.css";
 import "@fontsource/inter/latin-800.css";
 import { registerSW } from "virtual:pwa-register";
 import { installDesktopMediaRewrite } from "./lib/platform";
+import { ErrorBoundary, installGlobalErrorReporting } from "./components/ErrorBoundary";
 
 installDesktopMediaRewrite();
+installGlobalErrorReporting();
 
 // PWA — precached app shell + offline navigation (API calls stay live).
 // Skipped in the Electron shell: the bundle is already local and the kx://
@@ -31,6 +33,8 @@ createRoot(document.getElementById("root")!, {
   },
 }).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

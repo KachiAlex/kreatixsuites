@@ -1,11 +1,11 @@
 // Platform superadmin — pricing config, all workspaces, payment confirmation.
 // Every route requires auth + users.is_super (seeded from env, not per-org).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { unlinkSync } from "node:fs";
-import { join } from "node:path";
+
+
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { q, one, run, now, tx, DATA_DIR } from "../db.js";
+import { q, one, run, now } from "../db.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import {
   getConfig, setConfig, ensureSubscription, confirmPayment, seatCount,
@@ -521,111 +521,9 @@ async function deleteOrg(orgId: string): Promise<OrgDeleteResult> {
   if (await one("SELECT 1 AS x FROM users WHERE org_id = $1 AND is_super", [orgId])) {
     return { ok: false, error: "super_org" };
   }
-
-  let stats = { users: 0, files: 0 };
-  const blobKeys = await tx(async (c) => {
-    const del = async (sql: string, params: unknown[]) => (await c.query(sql, params)).rowCount ?? 0;
-    const fileIds = (await c.query<{ id: string }>("SELECT id FROM items WHERE org_id = $1", [orgId])).rows.map((r) => r.id);
-    const userIds = (await c.query<{ id: string }>("SELECT id FROM users WHERE org_id = $1", [orgId])).rows.map((r) => r.id);
-    const keys = fileIds.length
-      ? (await c.query<{ blob_key: string }>("SELECT DISTINCT blob_key FROM versions WHERE file_id = ANY($1)", [fileIds])).rows.map((r) => r.blob_key)
-      : [];
-    if (userIds.length) {
-      // cross-org safety: content these users authored on OTHER workspaces'
-      // files (shared-file edits) is reassigned to each file's owner so the
-      // other tenant keeps its history.
-      await del("UPDATE versions v SET created_by = (SELECT owner_id FROM items i WHERE i.id = v.file_id) WHERE v.created_by = ANY($1)", [userIds]);
-      await del("UPDATE comments c SET author_id = (SELECT owner_id FROM items i WHERE i.id = c.file_id) WHERE c.author_id = ANY($1)", [userIds]);
-      await del("UPDATE items SET owner_id = (SELECT u2.id FROM users u2 WHERE u2.org_id = items.org_id ORDER BY NOT u2.disabled DESC, u2.created_at LIMIT 1) WHERE owner_id = ANY($1) AND org_id <> $2", [userIds, orgId]);
-    }
-
-    // Generic org-scoped cascade — the FK graph is derived from pg_constraint
-    // so tables added by later migrations are covered automatically instead of
-    // rotting in a handwritten list. Scope of each table = "org_id = $1" (when
-    // it has the column) OR any row reachable through an FK into an org-scoped
-    // parent (e.g. meeting_attendance → meetings).
-    const fks = (await c.query<{ child: string; col: string; parent: string; pkey: string }>(
-      `SELECT cl.relname AS child, a.attname AS col, pl.relname AS parent, pa.attname AS pkey
-       FROM pg_constraint con
-       JOIN pg_class cl ON cl.oid = con.conrelid
-       JOIN pg_class pl ON pl.oid = con.confrelid
-       JOIN pg_attribute a  ON a.attrelid = con.conrelid  AND a.attnum = con.conkey[1]
-       JOIN pg_attribute pa ON pa.attrelid = con.confrelid AND pa.attnum = con.confkey[1]
-       WHERE con.contype = 'f' AND array_length(con.conkey, 1) = 1`)).rows;
-    const orgTables = new Set((await c.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.columns
-       WHERE column_name = 'org_id' AND table_schema = 'public'`)).rows.map((r) => r.table_name));
-    const NEVER = new Set(["orgs", "users", "items", "sa_audit", "sweep_state", "backup_runs",
-      "billing_config", "plans", "schema_migrations"]);
-
-    // recursive scope expression for table t — memoized; self-FKs ignored
-    const scopeOf = (t: string, seen = new Set<string>()): string | null => {
-      if (seen.has(t)) return null;
-      seen.add(t);
-      const parts: string[] = [];
-      if (orgTables.has(t)) parts.push(`org_id = $1`);
-      for (const f of fks.filter((f) => f.child === t && f.parent !== t)) {
-        const ps = scopeOf(f.parent, seen);
-        if (ps) parts.push(`${f.col} IN (SELECT ${f.pkey} FROM ${f.parent} WHERE ${ps})`);
-      }
-      return parts.length ? `(${parts.join(" OR ")})` : null;
-    };
-
-    // delete children before parents — topological order over child→parent edges.
-    // Union of org_id tables (even FK-less ones like org_policies) and every
-    // table that references an org-scoped parent.
-    const scoped = [...new Set([...orgTables, ...fks.map((f) => f.child)])]
-      .filter((t) => !NEVER.has(t) && scopeOf(t) !== null);
-    const depth = new Map<string, number>();
-    const depthOf = (t: string, seen = new Set<string>()): number => {
-      if (depth.has(t)) return depth.get(t)!;
-      if (seen.has(t)) return 0;
-      seen.add(t);
-      const d = 1 + Math.max(0, ...fks.filter((f) => f.parent === t && f.child !== t).map((f) => depthOf(f.child, seen)));
-      depth.set(t, d);
-      return d;
-    };
-    scoped.sort((a, b) => depthOf(b) - depthOf(a)); // deepest (most-child) first
-
-    // each DELETE under a savepoint; on FK violation retry next round until
-    // convergence (covers non-self FK cycles the topo sort can't order)
-    const pending = new Set([...scoped, "users", "items"]);
-    for (let round = 0; round < 8 && pending.size; round++) {
-      let progress = false;
-      for (const t of [...pending]) {
-        const scope = t === "users" || t === "items" ? `org_id = $1` : scopeOf(t);
-        if (!scope) { pending.delete(t); continue; }
-        try {
-          await c.query("SAVEPOINT orgdel");
-          const n = await del(`DELETE FROM ${t} WHERE ${scope}`, [orgId]);
-          await c.query("RELEASE SAVEPOINT orgdel");
-          pending.delete(t);
-          if (t === "users") stats.users = n;
-          progress = true;
-        } catch {
-          await c.query("ROLLBACK TO SAVEPOINT orgdel");
-        }
-      }
-      if (!progress) break;
-    }
-    if (pending.size)
-      throw new Error(`org delete blocked by FK: ${[...pending].join(", ")}`);
-
-    stats.files = fileIds.length;
-    await del("DELETE FROM orgs WHERE id = $1", [orgId]);
-    return keys;
-  });
-
-  // blobs are content-addressed — only unlink keys no remaining version needs
-  let blobs = 0;
-  for (const key of blobKeys) {
-    if (await one("SELECT 1 AS x FROM versions WHERE blob_key = $1 LIMIT 1", [key])) continue;
-    try {
-      unlinkSync(join(DATA_DIR, "blobs", key.slice(0, 2), key));
-      blobs++;
-    } catch { /* already gone — non-fatal */ }
-  }
-  return { ok: true, name: org.name, users: stats.users, files: stats.files, blobs };
+  const { deleteOrgData } = await import("../orgDelete.js");
+  const stats = await deleteOrgData(orgId);
+  return { ok: true, name: org.name, ...stats };
 }
 
 function pickSub(r: { status: string | null; trial_ends_at: string | null; period_end: string | null; override_until: string | null; amount_ngn: number | null }) {

@@ -92,26 +92,59 @@ export interface AuthedRequest extends FastifyRequest {
   user: User;
 }
 
-/** Fastify preHandler — requires a valid Bearer token (or the `kx_t` cookie,
- *  which lets <img>/<iframe> media URLs authenticate without headers), attaches req.user */
-export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+export interface ResolvedSession {
+  token: string | null;
+  payload: Record<string, unknown> | null;
+  user: UserRow | null;
+}
+
+/** ?t= is only honored on blob-serving GETs (img/iframe/video src can't send
+ *  headers) — anywhere else a URL-carried token just leaks into Referer and
+ *  history. The WS endpoints verify their own tokens outside requireAuth. */
+const QUERY_TOKEN_PATHS =
+  /^\/api\/(files\/[^/]+\/(content|raw|versions\/\d+\/content)|meet\/recordings\/[^/]+\/stream)$/;
+
+/** Extract + verify the session credentials ONCE per request. The result is
+ *  cached on the request so the global hooks (billing gate, IP allowlist,
+ *  superadmin confinement) and route-level requireAuth share a single
+ *  jwtVerify + user lookup instead of four. */
+export function resolveSession(req: FastifyRequest): Promise<ResolvedSession> {
+  const cached = req as FastifyRequest & { _kxSession?: Promise<ResolvedSession> };
+  if (!cached._kxSession) cached._kxSession = resolveSessionInner(req);
+  return cached._kxSession;
+}
+
+async function resolveSessionInner(req: FastifyRequest): Promise<ResolvedSession> {
   const header = req.headers.authorization;
   const cookieToken = (req.headers.cookie ?? "")
     .split(";").map((c) => c.trim()).find((c) => c.startsWith("kx_t="))?.slice(5);
-  const queryToken = (req.query as Record<string, unknown> | undefined)?.t as string | undefined;
+  const queryToken = req.method === "GET" && QUERY_TOKEN_PATHS.test((req.url ?? "").split("?")[0])
+    ? (req.query as Record<string, unknown> | undefined)?.t as string | undefined
+    : undefined;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : (cookieToken ?? queryToken);
+  if (!token) return { token: null, payload: null, user: null };
+  try {
+    const { payload } = await jwtVerify(token, secret);
+    if (payload.aud === "kreatix-mfa") return { token, payload: null, user: null };
+    const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
+    if (!user || user.disabled) return { token, payload, user: null };
+    return { token, payload: payload as Record<string, unknown>, user };
+  } catch {
+    return { token, payload: null, user: null };
+  }
+}
+
+/** Fastify preHandler — requires a valid Bearer token (or the `kx_t` cookie,
+ *  which lets <img>/<iframe> media URLs authenticate without headers), attaches req.user */
+export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const { token, user } = await resolveSession(req);
   if (!token) {
     return reply.code(401).send({ error: "unauthorized", message: "Missing token" });
   }
-  try {
-    const { payload } = await jwtVerify(token, secret);
-    if (payload.aud === "kreatix-mfa") throw new Error("mfa-pending token is not a session");
-    const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
-    if (!user || user.disabled) throw new Error("unknown user");
-    (req as AuthedRequest).user = toUser(user);
-  } catch {
+  if (!user) {
     return reply.code(401).send({ error: "unauthorized", message: "Invalid token" });
   }
+  (req as AuthedRequest).user = toUser(user);
 }
 
 export interface UserRow {
@@ -126,6 +159,7 @@ export interface UserRow {
   disabled: boolean;
   totp_secret: string | null;
   totp_backups: string | null;
+  email_verified?: boolean;
   created_at: string;
 }
 
@@ -139,6 +173,7 @@ export function toUser(row: UserRow): User {
     role: row.role,
     isSuper: row.is_super,
     mfaEnabled: !!row.totp_secret,
+    emailVerified: !!row.email_verified,
     createdAt: row.created_at,
   };
 }
@@ -212,6 +247,42 @@ async function ancestorShare(parentId: string, userId: string): Promise<Permissi
   let best: Permission | null = null;
   for (const r of rows) if (!best || PERM_RANK[r.permission] > PERM_RANK[best]) best = r.permission;
   return best;
+}
+
+/** Bulk permissionFor — one query for direct shares plus one per DISTINCT
+ *  library/parent (typically constant per listing), instead of 3–4 queries
+ *  per item. Media-chain inheritance still walks per item (rare, DAG-capped). */
+export async function permissionsFor(
+  userId: string,
+  items: { owner_id: string; id: string; parent_id?: string | null; media_for?: string | null; library_id?: string | null }[],
+): Promise<(Permission | null)[]> {
+  if (!items.length) return [];
+  const ids = items.map((i) => i.id);
+  const shareRows = await q<{ file_id: string; permission: Permission }>(
+    "SELECT file_id, permission FROM shares WHERE file_id = ANY($1) AND user_id = $2",
+    [ids, userId]);
+  const shareMap = new Map(shareRows.map((r) => [r.file_id, r.permission]));
+  const libIds = [...new Set(items.map((i) => i.library_id).filter((x): x is string => !!x))];
+  const libMap = new Map(await Promise.all(
+    libIds.map(async (l) => [l, await libraryPermission(userId, l)] as const)));
+  const parentIds = [...new Set(items.map((i) => i.parent_id).filter((x): x is string => !!x))];
+  const ancMap = new Map(await Promise.all(
+    parentIds.map(async (p) => [p, await ancestorShare(p, userId)] as const)));
+  return Promise.all(items.map(async (item) => {
+    if (item.owner_id === userId) return "owner" as Permission;
+    let best = shareMap.get(item.id) ?? null;
+    const lp = item.library_id ? libMap.get(item.library_id) ?? null : null;
+    if (lp && (!best || PERM_RANK[lp] > PERM_RANK[best])) best = lp;
+    const ap = item.parent_id ? ancMap.get(item.parent_id) ?? null : null;
+    if (ap && (!best || PERM_RANK[ap] > PERM_RANK[best])) best = ap;
+    if (best) return best;
+    if (item.media_for) {
+      const host = await one<{ owner_id: string; id: string }>(
+        "SELECT id, owner_id FROM items WHERE id = $1", [item.media_for]);
+      if (host && (await permissionFor(userId, host, 1))) return "viewer" as Permission;
+    }
+    return null;
+  }));
 }
 
 export function hasPermission(actual: Permission | null, required: Permission): boolean {

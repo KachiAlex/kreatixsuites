@@ -1,5 +1,6 @@
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { fileURLToPath } from "node:url"
 import { defineConfig } from 'vite'
 
 // https://vite.dev/config/
@@ -41,6 +42,14 @@ export default defineConfig({
     // NOTE: no manual chunk groups — rolldown parks shared helpers in them,
     // which turns them into eager entry deps (modulepreloaded on every route).
     chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      // second entry: the Sheets script sandbox page, served under its own
+      // CSP (unsafe-eval) inside an opaque-origin iframe
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        sandbox: fileURLToPath(new URL('./script-sandbox.html', import.meta.url)),
+      },
+    },
   },
   server: {
     port: 5173,

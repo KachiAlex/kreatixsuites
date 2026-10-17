@@ -49,12 +49,118 @@ const DEFAULTS: OrgPolicies = {
   aiDisabled: false,
 };
 
-/** Compile policy DLP regexes safely — bad patterns are skipped, not fatal. */
+// ---- ReDoS guard ------------------------------------------------------------
+// Admins write DLP patterns by hand; a hostile or careless pattern
+// ((a+)+$, (\d|\w)+$ …) scanned over up-to-500KB of text can park the event
+// loop. The guard below rejects the dangerous shapes statically — it's a
+// heuristic, not a proof, but it catches realistic bombs while letting
+// ordinary patterns ((jpg|png|pdf)$, \b\d{4}[- ]\d{4}\b, SSNs) through.
+
+/** First-token descriptor of an alternation branch, for overlap checks. */
+type FirstTok =
+  | { k: "any" }
+  | { k: "cls"; cls: string }
+  | { k: "set"; chars: Set<string> }
+  | { k: "lit"; ch: string };
+
+const SHORTHAND = /\\[dwsDWS]/;
+
+function clsCovers(cls: string, ch: string): boolean {
+  switch (cls) {
+    case "\\d": return /[0-9]/.test(ch);
+    case "\\w": return /[\w]/.test(ch);
+    case "\\s": return /\s/.test(ch);
+    case "\\D": return !/[0-9]/.test(ch);
+    case "\\W": return !/\w/.test(ch);
+    case "\\S": return !/\s/.test(ch);
+    default: return false;
+  }
+}
+
+/** Expand a bracket class like [a-z0-9_-] into a capped char set. */
+function expandSet(src: string): Set<string> | null {
+  const inner = src.replace(/^\[\^?/, "").replace(/\]$/, "");
+  const chars = new Set<string>();
+  for (let i = 0; i < inner.length && chars.size < 300; i++) {
+    const a = inner[i], dash = inner[i + 1], b = inner[i + 2];
+    if (dash === "-" && b !== undefined && b !== "]") {
+      if (a > b) return null;
+      for (let c = a.charCodeAt(0); c <= b.charCodeAt(0) && chars.size < 300; c++)
+        chars.add(String.fromCharCode(c));
+      i += 2;
+    } else {
+      chars.add(a);
+    }
+  }
+  return chars;
+}
+
+function firstTok(branch: string): FirstTok {
+  const t = branch.replace(/^\^+/, "");
+  if (!t) return { k: "lit", ch: "" };
+  if (t[0] === ".") return { k: "any" };
+  if (t[0] === "\\") {
+    const cls = t.slice(0, 2);
+    return SHORTHAND.test(cls) ? { k: "cls", cls } : { k: "lit", ch: t[1] ?? "" };
+  }
+  if (t[0] === "[") {
+    const end = t.indexOf("]");
+    const chars = expandSet(end > 0 ? t.slice(0, end + 1) : t);
+    return chars ? { k: "set", chars } : { k: "any" };
+  }
+  if (t[0] === "(") return { k: "any" }; // nested group — conservative
+  return { k: "lit", ch: t[0] };
+}
+
+function tokOverlap(a: FirstTok, b: FirstTok): boolean {
+  if (a.k === "any" || b.k === "any") return true;
+  if (a.k === "lit" && b.k === "lit") return a.ch === b.ch;
+  if (a.k === "cls" && b.k === "cls") {
+    // sample chars probing both classes — shorthand classes are closed under
+    // these test points for all practical inputs
+    const samples = "09azAZ_ \t\n\r-.,@:;";
+    return [...samples].some((c) => clsCovers(a.cls, c) && clsCovers(b.cls, c));
+  }
+  if (a.k === "set" && b.k === "set") return [...a.chars].some((c) => b.chars.has(c));
+  if (a.k === "cls" && b.k === "set") return [...b.chars].some((c) => clsCovers(a.cls, c));
+  if (a.k === "set" && b.k === "cls") return [...a.chars].some((c) => clsCovers(b.cls, c));
+  if (a.k === "cls" && b.k === "lit") return clsCovers(a.cls, b.ch);
+  if (a.k === "lit" && b.k === "cls") return clsCovers(b.cls, a.ch);
+  if (a.k === "set" && b.k === "lit") return a.chars.has(b.ch);
+  if (a.k === "lit" && b.k === "set") return b.chars.has(a.ch);
+  return true;
+}
+
+/** Heuristic ReDoS rejection. Unsafe shapes:
+ *   (x+)+ / (x*)* style nested quantified groups
+ *   (a|b)+ where the branches' leading char sets overlap
+ *  Everything else passes — false negatives are possible but rare in admin
+ *  hand-written rules; false positives only cost a "pattern rejected" error. */
+export function isSafePattern(p: string): boolean {
+  // quantified group whose body contains a quantifier or another quantified
+  // group — the classic exponential blowup
+  if (/\([^()]*[+*][^()]*\)\s*(?:[+*]|\{\d)/.test(p)) return false;
+  if (/\([^()]*\([^()]*[+*][^()]*\)[^()]*\)\s*(?:[+*]|\{\d)/.test(p)) return false;
+  // quantified alternation with overlapping branch starts, e.g. (\d|\w)+
+  const alt = p.match(/\(([^()]*)\)\s*(?:[+*]|\{\d)/);
+  if (alt && alt[1].includes("|")) {
+    const toks = alt[1].split("|").map(firstTok);
+    for (let i = 0; i < toks.length; i++)
+      for (let j = i + 1; j < toks.length; j++)
+        if (tokOverlap(toks[i], toks[j])) return false;
+  }
+  return true;
+}
+
+/** Compile policy DLP regexes safely — invalid or ReDoS-shaped patterns are
+ *  skipped, never fatal. */
 export function compileDlp(patterns: string[]): RegExp[] {
   const out: RegExp[] = [];
   for (const p of patterns.slice(0, 10)) {
     try {
-      out.push(new RegExp(p.slice(0, 300), "i"));
+      const src = p.slice(0, 300);
+      if (!isSafePattern(src)) continue;
+      out.push(new RegExp(src, "i"));
     } catch { /* invalid regex — ignore */ }
   }
   return out;
@@ -117,7 +223,11 @@ export async function scanDlp(
   let hits = 0;
   for (const rule of rules) {
     let re: RegExp;
-    try { re = new RegExp(rule.pattern.slice(0, 300), "i"); } catch { continue; }
+    try {
+      const src = rule.pattern.slice(0, 300);
+      if (!isSafePattern(src)) continue;
+      re = new RegExp(src, "i");
+    } catch { continue; }
     if (!re.test(haystack)) continue;
     hits++;
     const action = rule.action === "block" ? "blocked" : "flagged";

@@ -172,7 +172,7 @@ export function Admin() {
       const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
-        { entries: AuditEntry[] },
+        { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
         { actions: string[] },
         Metrics,
         { invites: Invite[] },
@@ -193,6 +193,7 @@ export function Admin() {
       setPolicies(p.policies);
       setEncryption(p.encryptionAtRest);
       setAudit(a.entries);
+      setAuditCursor(a.nextCursor);
       setAuditActions(acts.actions);
       setMetrics(mx);
       setInvites(inv.invites);
@@ -356,10 +357,21 @@ export function Admin() {
     if (auditTo) p.set("to", new Date(new Date(auditTo).getTime() + 86400000 - 1).toISOString());
     return p.toString();
   };
+  const [auditCursor, setAuditCursor] = useState<{ before: string; beforeId: string } | null>(null);
   const reloadAudit = async () => {
     try {
-      const r = await api.get<{ entries: AuditEntry[] }>(`/api/admin/audit?${auditQuery()}`);
+      const r = await api.get<{ entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null }>(`/api/admin/audit?${auditQuery()}`);
       setAudit(r.entries);
+      setAuditCursor(r.nextCursor);
+    } catch (e) { toast((e as Error).message); }
+  };
+  const loadMoreAudit = async () => {
+    if (!auditCursor) return;
+    try {
+      const r = await api.get<{ entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null }>(
+        `/api/admin/audit?${auditQuery()}&before=${encodeURIComponent(auditCursor.before)}&beforeId=${encodeURIComponent(auditCursor.beforeId)}`);
+      setAudit((prev) => [...prev, ...r.entries]);
+      setAuditCursor(r.nextCursor);
     } catch (e) { toast((e as Error).message); }
   };
   const exportAudit = async () => {
@@ -1413,6 +1425,11 @@ export function Admin() {
             )}
           </tbody>
         </table></div>
+        {auditCursor && (
+          <button className="btn-ghost" style={{ marginTop: 8 }} onClick={() => void loadMoreAudit()}>
+            Load older entries
+          </button>
+        )}
       </section>
       </>
       )}

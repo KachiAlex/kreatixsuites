@@ -35,52 +35,84 @@ export function itemName(row: { name: string }): string {
   return decryptField(row.name) ?? row.name;
 }
 
+/** Bulk variant — 3 queries total regardless of row count (was ~3 per row:
+ *  collaborators, lock-holder name, pending-head). `perms[i]` aligns with
+ *  `rows[i]`; pass the result of a bulk permissionsFor. */
+export async function toDriveItems(
+  rows: ItemRow[],
+  perms?: (DriveItem["permission"] | undefined)[],
+  opts?: { metaByItem?: Map<string, Record<string, string | null>>; approver?: boolean; inherited?: boolean },
+): Promise<DriveItem[]> {
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
+  const lockIds = [...new Set(rows.map((r) => r.checked_out_by).filter((x): x is string => !!x))];
+  const libIds = rows.filter((r) => r.library_id).map((r) => r.id);
+  const [shareRows, lockRows, pendingRows] = await Promise.all([
+    q<{ file_id: string; initials: string; display_name: string }>(
+      `SELECT s.file_id, u.initials, u.display_name FROM shares s JOIN users u ON u.id = s.user_id
+       WHERE s.file_id = ANY($1)`, [ids]),
+    lockIds.length
+      ? q<{ id: string; display_name: string }>("SELECT id, display_name FROM users WHERE id = ANY($1)", [lockIds])
+      : Promise.resolve([] as { id: string; display_name: string }[]),
+    libIds.length
+      ? q<{ file_id: string; pending: boolean }>(
+        `SELECT DISTINCT ON (file_id) file_id, pending FROM versions
+         WHERE file_id = ANY($1) ORDER BY file_id, number DESC`, [libIds])
+      : Promise.resolve([] as { file_id: string; pending: boolean }[]),
+  ]);
+  const collabByFile = new Map<string, { initials: string; displayName: string }[]>();
+  for (const s of shareRows) {
+    const list = collabByFile.get(s.file_id) ?? [];
+    if (list.length < 4) list.push({ initials: s.initials, displayName: s.display_name });
+    collabByFile.set(s.file_id, list);
+  }
+  const lockNames = new Map(lockRows.map((r) => [r.id, r.display_name]));
+  const pendingByFile = new Map(pendingRows.map((r) => [r.file_id, r.pending]));
+  return rows.map((row, i) => {
+    const lockHolderName = row.checked_out_by ? lockNames.get(row.checked_out_by) : undefined;
+    const pendingApproval = row.library_id ? pendingByFile.get(row.id) : undefined;
+    return {
+      id: row.id,
+      orgId: row.org_id,
+      parentId: row.parent_id,
+      ownerId: row.owner_id,
+      name: itemName(row),
+      kind: row.kind,
+      mimeType: row.mime,
+      size: row.size,
+      starred: !!row.starred,
+      trashed: !!row.trashed,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      label: row.label ?? "internal",
+      legalHold: !!row.legal_hold,
+      dlpFlagged: !!row.dlp_flagged,
+      libraryId: row.library_id ?? null,
+      contentTypeId: row.content_type_id ?? null,
+      checkedOut: row.checked_out_by
+        ? { userId: row.checked_out_by, name: lockHolderName ?? "Someone", at: row.checked_out_at ?? "" }
+        : null,
+      pendingApproval,
+      canApprove: opts?.approver,
+      metadata: opts?.metaByItem?.get(row.id),
+      inherited: opts?.inherited,
+      permission: perms?.[i],
+      collaborators: collabByFile.get(row.id) ?? [],
+    } satisfies DriveItem;
+  });
+}
+
 export async function toDriveItem(
   row: ItemRow,
   permission?: DriveItem["permission"],
   opts?: { metadata?: Record<string, string | null>; inherited?: boolean; approver?: boolean },
 ): Promise<DriveItem> {
-  const collaborators = await q<{ initials: string; display_name: string }>(
-    `SELECT u.initials, u.display_name FROM shares s JOIN users u ON u.id = s.user_id
-     WHERE s.file_id = $1 LIMIT 4`,
-    [row.id],
-  );
-  const lockHolder = row.checked_out_by
-    ? await one<{ display_name: string }>("SELECT display_name FROM users WHERE id = $1", [row.checked_out_by])
-    : undefined;
-  // content-approval badge: library items surface a pending head draft
-  const pendingApproval = row.library_id
-    ? !!(await one<{ pending: boolean }>(
-        "SELECT pending FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [row.id]))?.pending
-    : undefined;
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    parentId: row.parent_id,
-    ownerId: row.owner_id,
-    name: itemName(row),
-    kind: row.kind,
-    mimeType: row.mime,
-    size: row.size,
-    starred: !!row.starred,
-    trashed: !!row.trashed,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    label: row.label ?? "internal",
-    legalHold: !!row.legal_hold,
-    dlpFlagged: !!row.dlp_flagged,
-    libraryId: row.library_id ?? null,
-    contentTypeId: row.content_type_id ?? null,
-    checkedOut: row.checked_out_by
-      ? { userId: row.checked_out_by, name: lockHolder?.display_name ?? "Someone", at: row.checked_out_at ?? "" }
-      : null,
-    pendingApproval,
-    canApprove: opts?.approver,
-    metadata: opts?.metadata,
+  const [item] = await toDriveItems([row], [permission], {
+    metaByItem: opts?.metadata ? new Map([[row.id, opts.metadata]]) : undefined,
     inherited: opts?.inherited,
-    permission,
-    collaborators: collaborators.map((c) => ({ initials: c.initials, displayName: c.display_name })),
-  };
+    approver: opts?.approver,
+  });
+  return item;
 }
 
 /** True when the item is checked out by someone other than `userId` — those

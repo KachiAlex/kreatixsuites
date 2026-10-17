@@ -62,3 +62,15 @@ SITE_ADDRESS=suite.example.com docker compose --profile tls up -d   # + Caddy ma
 ## Roadmap (SRS §23 order)
 
 Sheets engine → Present canvas → PDF renderer → Yjs CRDT collab (WS) → AI tool layer → enterprise governance. See todo list.
+
+## Architecture notes (post-audit)
+
+- **Auth**: `resolveSession(req)` in `apps/api/src/auth.ts` verifies the JWT + loads the user ONCE per request (cached on the request); global hooks (billing write-gate, IP allowlist, superadmin confinement) and `requireAuth` share it. `?t=` query-token auth only works on blob-serving GETs (`QUERY_TOKEN_PATHS`).
+- **Versions are immutable** — never `UPDATE versions.blob_key`; content-type templates insert a new version row instead.
+- **User deletion is non-destructive**: `lifecycle.ts` anonymizes + transfers ownership; `orgDelete.ts` derives the org cascade from `pg_constraint` (child-before-parent, savepoint retries) — no handwritten table list to maintain.
+- **Encrypted search**: `search_index.body` is ciphertext under `KREATIX_DATA_KEY` — never `ILIKE` it. Fetch bounded org-scoped candidates, decrypt + match in JS (`routes/search.ts`, `routes/publicApi.ts`). Reindex is dirty-checked via `search_index.indexed_at`.
+- **Bulk helpers**: `toDriveItems` (items.ts) + `permissionsFor` (auth.ts) — use them in list paths; per-item `toDriveItem`/`permissionFor` in a loop is an N+1.
+- **Storage quota**: `checkStorageQuota` (billing.ts) gates every blob-writing route — run it before `putBlob`.
+- **Sheets scripts** run in `script-sandbox.html`, an opaque-origin iframe (`sandbox="allow-scripts"`, own CSP with `unsafe-eval`) — never `new Function` in the main context.
+- **Ops**: backups (`backup.ts`), health monitor (`monitor.ts`), all sweeps run under `runSweep` advisory locks (`sweep_state`); surfaces live in SuperPortal.
+- `better-sqlite3` is a dev-only dep (SQLite→PG migration script); CI runs typecheck/build + roundtrip/encryption/perf harnesses + API e2e against service Postgres.

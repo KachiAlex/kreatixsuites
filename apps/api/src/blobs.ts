@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "./db.js";
 import { decryptBlob, encryptBlob } from "./crypto.js";
@@ -11,19 +11,25 @@ import { decryptBlob, encryptBlob } from "./crypto.js";
  * encrypted when KREATIX_DATA_KEY is set (see crypto.ts).
  * Swap for S3/MinIO in production by keeping this interface.
  */
-export function putBlob(data: Buffer): { key: string; size: number } {
+export async function putBlob(data: Buffer): Promise<{ key: string; size: number }> {
   const key = createHash("sha256").update(data).digest("hex");
   const path = blobPath(key);
-  if (!existsSync(path)) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, encryptBlob(data));
+  try {
+    await access(path);
+  } catch {
+    await mkdir(dirname(path), { recursive: true });
+    // wx — a same-key race writes identical bytes anyway; no clobber
+    await writeFile(path, encryptBlob(data), { flag: "wx" }).catch(() => {});
   }
   return { key, size: data.length };
 }
 
-export function getBlob(key: string): Buffer | null {
-  const path = blobPath(key);
-  return existsSync(path) ? decryptBlob(readFileSync(path)) : null;
+export async function getBlob(key: string): Promise<Buffer | null> {
+  try {
+    return decryptBlob(await readFile(blobPath(key)));
+  } catch {
+    return null;
+  }
 }
 
 function blobPath(key: string): string {

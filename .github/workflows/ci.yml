@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r build
+      - run: pnpm --filter @kreatix/web lint
+      # OOXML export→import + ECMA-376 encryption harnesses (no services needed)
+      - run: pnpm --filter @kreatix/web test:roundtrip
+      - run: pnpm --filter @kreatix/web test:encryption
+      - run: pnpm --filter @kreatix/web perf:budget
+
+  api-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @kreatix/api build
+      - name: Boot API against CI Postgres
+        env:
+          KREATIX_DATABASE_URL: postgres://postgres:postgres@localhost:5432/kreatix
+          JWT_SECRET: ci-test-secret
+          APP_PORT: "3001"
+          APP_BIND: 127.0.0.1
+        run: |
+          node apps/api/dist/server.cjs &
+          for i in $(seq 1 30); do curl -sf http://localhost:3001/api/health && break || sleep 1; done
+      - name: API e2e harnesses
+        run: pnpm --filter @kreatix/api test:mfa && pnpm --filter @kreatix/api test:scim

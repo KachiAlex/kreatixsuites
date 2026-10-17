@@ -47,7 +47,7 @@ export function commentRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/api/files/:id/comments", async (req, reply) => {
+  app.post("/api/files/:id/comments", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
     if (!item || !hasPermission(await permissionFor(user.id, item), "commenter")) {

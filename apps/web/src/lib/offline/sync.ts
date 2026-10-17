@@ -60,24 +60,48 @@ const runOp = async (op: OutboxOp): Promise<void> => {
   if (!res.ok) {
     // conflict on a content write → keep local as a conflict copy instead of losing work
     if ((res.status === 409 || res.status === 412) && op.fileId) {
-      const cid = `conflict:${op.fileId}:${Date.now()}`;
-      const f = await store.files.get(op.fileId);
-      if (f) await store.files.put({ ...f, id: cid, name: `${f.name} (conflict copy)` });
-      const b = await store.blobs.get(op.fileId);
-      if (b) await store.blobs.put({ ...b, fileId: cid });
-      const list = (await store.meta.get<ConflictEntry[]>("conflicts")) ?? [];
-      list.push({ id: cid, fileId: op.fileId, name: f?.name ?? "file", at: Date.now() });
-      await store.meta.set("conflicts", list);
-      window.dispatchEvent(new CustomEvent("kreatix:conflict"));
-      window.dispatchEvent(new CustomEvent("kreatix:toast",
-        { detail: `"${f?.name ?? "A file"}" changed elsewhere — your offline edits were kept as a conflict copy` }));
+      await preserveConflict(op, "changed elsewhere");
       return; // consume the op — the conflict copy preserves local state
     }
-    // 4xx = server rejected (locked workspace, gone item) — consume, don't retry
+    // Transient rejections must NOT consume the op — a locked workspace
+    // (402 billing, 423 hold), an expired token (401), or rate limiting (429)
+    // resolves itself and the edit still needs to land. Stop the drain and
+    // retry on the next sync; after MAX_ATTEMPTS give up but still preserve
+    // the local content rather than dropping it on the floor.
+    if (TRANSIENT.has(res.status)) {
+      const attempts = (op.attempts ?? 0) + 1;
+      if (op.id != null) await store.outbox.put({ ...op, attempts });
+      if (attempts < MAX_ATTEMPTS) throw new Error(`sync op deferred: ${res.status}`);
+      if (op.fileId) await preserveConflict(op, "couldn't sync after several tries");
+      window.dispatchEvent(new CustomEvent("kreatix:toast",
+        { detail: `An offline change couldn't be synced (${res.status}) and was set aside` }));
+      return; // consume — the user keeps their content either way
+    }
+    // other 4xx = genuinely rejected (gone item, bad shape) — consume, don't retry
     if (res.status >= 400 && res.status < 500) return;
     throw new Error(`sync op failed: ${res.status}`);
   }
 };
+
+const TRANSIENT = new Set([401, 402, 403, 423, 425, 429]);
+const MAX_ATTEMPTS = 8;
+
+/** Keep the local file as a "(conflict copy)" so a rejected push never loses
+ *  the user's offline work — same treatment 409/412 conflicts get. */
+async function preserveConflict(op: OutboxOp, why: string): Promise<void> {
+  if (!op.fileId) return;
+  const cid = `conflict:${op.fileId}:${Date.now()}`;
+  const f = await store.files.get(op.fileId);
+  if (f) await store.files.put({ ...f, id: cid, name: `${f.name} (conflict copy)` });
+  const b = await store.blobs.get(op.fileId);
+  if (b) await store.blobs.put({ ...b, fileId: cid });
+  const list = (await store.meta.get<ConflictEntry[]>("conflicts")) ?? [];
+  list.push({ id: cid, fileId: op.fileId, name: f?.name ?? "file", at: Date.now() });
+  await store.meta.set("conflicts", list);
+  window.dispatchEvent(new CustomEvent("kreatix:conflict"));
+  window.dispatchEvent(new CustomEvent("kreatix:toast",
+    { detail: `"${f?.name ?? "A file"}" ${why} — your offline edits were kept as a conflict copy` }));
+}
 
 /** Push queued ops then refresh the mirror. Safe to call repeatedly. */
 export async function syncNow(): Promise<void> {

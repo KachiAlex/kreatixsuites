@@ -24,7 +24,7 @@ import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, exp
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, sheetToTSV, csvToSheet, workbookToXLSXBytes, workbookToODSBytes, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
 import { ExportDialog, type ExportFormat } from "../components/ExportDialog";
-import { runScript } from "./script";
+import { runScriptSandboxed } from "./script";
 import { runQuery, queryToSheet, type QueryResult } from "./query";
 import { Grid } from "./Grid";
 import { ChartCard } from "./Chart";
@@ -2390,10 +2390,12 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       )}
       {scriptDlg && (
         <ScriptDialog wb={wb}
-          onRun={(code) => {
-            let out: string[] = [];
-            mutate((w) => { out = runScript(w, code, sheet.name); });
-            return out;
+          onRun={async (code) => {
+            // runs in the opaque-origin sandbox iframe; the mutated sheets/
+            // names come back over postMessage and are applied via mutate()
+            const res = await runScriptSandboxed(wb, code, sheet.name);
+            mutate((w) => { w.sheets = res.sheets; w.names = res.names ?? undefined; });
+            return res.log;
           }}
           onSave={(name, code) => mutate((w) => {
             const list = (w.scripts ??= []);
@@ -4276,7 +4278,7 @@ function SlicerPanel({ sheet, wb, slicer, index, onChange, onRemove }: {
 
 function ScriptDialog({ wb, onRun, onSave, onDelete, onClose }: {
   wb: Workbook;
-  onRun: (code: string) => string[];
+  onRun: (code: string) => Promise<string[]>;
   onSave: (name: string, code: string) => void;
   onDelete: (name: string) => void;
   onClose: () => void;
@@ -4291,6 +4293,7 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
 `);
   const [out, setOut] = useState<string[] | null>(null);
   const [err, setErr] = useState("");
+  const [running, setRunning] = useState(false);
   // Scripts stored in a workbook can come from other collaborators — they run
   // with the user's full session, so stored code needs an explicit per-session
   // trust decision before it executes.
@@ -4323,7 +4326,7 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
             {needsTrust && (
               <div style={{ fontSize: 12, padding: "8px 10px", borderRadius: 6, background: "rgba(214,69,69,.08)", border: "1px solid rgba(214,69,69,.35)" }}>
                 ⚠ This script is stored in the workbook and may have been written by someone else.
-                Scripts run with <b>full access to your account</b> — review the code, then
+                It runs sandboxed and can <b>modify this workbook</b> — review the code, then
                 <button className="btn-ghost btn-sm" style={{ marginLeft: 6 }}
                   onClick={() => setTrusted(new Set(trusted).add(code))}>Trust this script</button>
               </div>
@@ -4344,11 +4347,12 @@ if (rng) console.log(rng.getAddress(), rng.getRowCount(), "rows");
             <button className="btn-ghost btn-sm" onClick={onClose}>Close</button>
             <button className="btn-ghost btn-sm" disabled={!name.trim()}
               onClick={() => { onSave(name.trim(), code); setSel(name.trim()); }}>Save</button>
-            <button className="btn-primary btn-sm" disabled={needsTrust} onClick={() => {
-              setErr(""); setOut(null);
-              try { onSave(name.trim(), code); setOut(onRun(code)); }
+            <button className="btn-primary btn-sm" disabled={needsTrust || running} onClick={async () => {
+              setErr(""); setOut(null); setRunning(true);
+              try { onSave(name.trim(), code); setOut(await onRun(code)); }
               catch (e) { setErr((e as Error).message); }
-            }}>▶ Run</button>
+              finally { setRunning(false); }
+            }}>{running ? "Running…" : "▶ Run"}</button>
           </div>
         </div>
       </div>

@@ -89,6 +89,19 @@ export async function entitled(orgId: string, feature: string): Promise<boolean>
   return planEntitled(plan, feature);
 }
 
+/** Storage quota — `limits.storage_mb` on the effective plan (0 = unlimited).
+ *  `additionalBytes` is the pending write, checked BEFORE the blob lands. */
+export async function storageQuota(orgId: string, additionalBytes = 0)
+  : Promise<{ ok: boolean; used: number; limit: number }> {
+  const plan = await effectivePlan(await ensureSubscription(orgId));
+  const limit = planLimit(plan, "storage_mb", 0) * 1024 * 1024;
+  if (!limit) return { ok: true, used: 0, limit: 0 };
+  const row = await one<{ n: string }>(
+    "SELECT COALESCE(SUM(size), 0) AS n FROM items WHERE org_id = $1 AND NOT trashed", [orgId]);
+  const used = Number(row?.n ?? 0);
+  return { ok: used + additionalBytes <= limit, used, limit };
+}
+
 export type SubState = "free" | "trialing" | "active" | "grace" | "locked" | "granted";
 
 const GRACE_DAYS = 7;

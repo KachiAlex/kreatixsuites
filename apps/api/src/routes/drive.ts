@@ -2,9 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { q as dbq, one, run, now, tx } from "../db.js";
-import { getItem, toDriveItem, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
-import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
-import { entitled } from "../billing.js";
+import { getItem, toDriveItem, toDriveItems, touchItem, logActivity, itemName, writeLocked, type ItemRow } from "../items.js";
+import { requireAuth, permissionFor, permissionsFor, hasPermission, type AuthedRequest } from "../auth.js";
+import { entitled, storageQuota } from "../billing.js";
 import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds, notifyLibrarySubscribers } from "../sites.js";
 import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
@@ -142,7 +142,7 @@ export function driveRoutes(app: FastifyInstance) {
           approver = (await libraryPermission(user.id, parent.library_id)) === "owner";
         }
         rows = await dbq<ItemRow>(
-          `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.parent_id = $2`,
+          `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.parent_id = $2 LIMIT 1000`,
           [user.id, parentId],
         );
       } else {
@@ -150,7 +150,7 @@ export function driveRoutes(app: FastifyInstance) {
         // surface via Sites
         rows = await dbq<ItemRow>(
           `${base} WHERE i.trashed = false AND i.media_for IS NULL AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
-           AND i.parent_id IS NULL AND i.library_id IS NULL`,
+           AND i.parent_id IS NULL AND i.library_id IS NULL LIMIT 1000`,
           [user.id],
         );
       }
@@ -158,13 +158,13 @@ export function driveRoutes(app: FastifyInstance) {
       rows = await dbq<ItemRow>(
         `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.starred
          AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
-         ORDER BY i.updated_at DESC`,
+         ORDER BY i.updated_at DESC LIMIT 1000`,
         [user.id, libIds],
       );
     } else if (q.view === "shared") {
       rows = await dbq<ItemRow>(
         `SELECT i.* FROM items i JOIN shares s ON s.file_id = i.id
-         WHERE s.user_id = $1 AND i.trashed = false AND i.media_for IS NULL ORDER BY i.updated_at DESC`,
+         WHERE s.user_id = $1 AND i.trashed = false AND i.media_for IS NULL ORDER BY i.updated_at DESC LIMIT 1000`,
         [user.id],
       );
     } else if (q.view === "trash") {
@@ -180,12 +180,12 @@ export function driveRoutes(app: FastifyInstance) {
         rows = await dbq<ItemRow>(
           `SELECT * FROM items WHERE trashed AND media_for IS NULL
            AND library_id IN (SELECT id FROM libraries WHERE site_id = $1)
-           ORDER BY updated_at DESC`,
+           ORDER BY updated_at DESC LIMIT 1000`,
           [site.id],
         );
       } else {
         rows = await dbq<ItemRow>(
-          "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC",
+          "SELECT * FROM items WHERE owner_id = $1 AND media_for IS NULL AND trashed ORDER BY updated_at DESC LIMIT 1000",
           [user.id],
         );
       }
@@ -219,7 +219,7 @@ export function driveRoutes(app: FastifyInstance) {
                               WHERE du.delegate_id = $1
                                 AND (du.delegate_until IS NULL OR du.delegate_until > now()))))
              OR $3)
-         ORDER BY i.updated_at ASC`,
+         ORDER BY i.updated_at ASC LIMIT 500`,
         [user.id, user.orgId, user.role === "owner" || user.role === "admin"],
       );
       approver = true;
@@ -271,10 +271,11 @@ export function driveRoutes(app: FastifyInstance) {
       }
     }
 
-    const items = await Promise.all(
-      rows.map(async (r) => toDriveItem(r, (await permissionFor(user.id, r)) ?? undefined,
-        { metadata: metaByItem?.get(r.id), approver })),
-    );
+    // bulk: 3 queries for shares/libs/ancestors + 3 for collaborator/lock/
+    // pending lookups — was ~7 queries per item before
+    const perms = await permissionsFor(user.id, rows);
+    const items = await toDriveItems(
+      rows, perms.map((p) => p ?? undefined), { metaByItem: metaByItem ?? undefined, approver });
     // names are encrypted at rest — ciphertext can't sort in SQL, so folder
     // and library browsing re-sort on the decrypted name
     if (q.parent !== undefined || q.library !== undefined) {
@@ -487,21 +488,30 @@ export function driveRoutes(app: FastifyInstance) {
     // Seed initial immutable version for suite-native docs (SRS §19)
     const doc = DEFAULT_DOCS[body.kind];
     if (doc) {
-      const { key, size } = putBlob(Buffer.from(JSON.stringify(doc)));
+      const seed = Buffer.from(JSON.stringify(doc));
+      const quota = await storageQuota(user.orgId, seed.length);
+      if (!quota.ok) {
+        return reply.code(413).send({ error: "storage_quota",
+          message: `Workspace storage full (${Math.round(quota.limit / 1048576)}MB plan limit) — upgrade or free space` });
+      }
+      const { key, size } = await putBlob(seed);
       await run(
         "INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
         [randomUUID(), id, 1, "Initial version", key, size, user.id, now()],
       );
       await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
     }
-    // content type template overrides the default doc
+    // content type template overrides the default doc — as a new immutable
+    // version 2, never a mutation of version 1 (SRS §19: versions are
+    // content-addressed and permanent)
     if (templateBlobKey) {
       const buf = await getBlob(templateBlobKey);
       if (buf) {
         const size = buf.length;
         await run(
-          "UPDATE versions SET blob_key = $1, size = $2 WHERE file_id = $3 AND number = 1",
-          [templateBlobKey, size, id],
+          `INSERT INTO versions (id, file_id, number, label, blob_key, size, created_by, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [randomUUID(), id, doc ? 2 : 1, "From template", templateBlobKey, size, user.id, now()],
         );
         await run("UPDATE items SET size = $1 WHERE id = $2", [size, id]);
       }
@@ -520,7 +530,7 @@ export function driveRoutes(app: FastifyInstance) {
   });
 
   /** Binary upload (PDFs, office files, media): raw body + ?name=&parent= */
-  app.post("/api/drive/upload", async (req, reply) => {
+  app.post("/api/drive/upload", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { name, parent, kind, mediaFor, library } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string; library?: string };
     // text/* content-types hit Fastify's built-in parser (string body) before
@@ -531,6 +541,12 @@ export function driveRoutes(app: FastifyInstance) {
         ? Buffer.from(req.body)
         : await buffer(req);
     if (!buf.length) return reply.code(400).send({ error: "bad_request", message: "Empty upload" });
+    // plan storage quota — checked before the blob lands
+    const quota = await storageQuota(user.orgId, buf.length);
+    if (!quota.ok) {
+      return reply.code(413).send({ error: "storage_quota",
+        message: `Workspace storage full (${Math.round(quota.limit / 1048576)}MB plan limit) — upgrade or free space` });
+    }
 
     // malware/type gate: never-executable extensions, plus optional external
     // scanner (KREATIX_SCAN_CMD receives the temp path; non-zero exit = reject)
@@ -571,7 +587,7 @@ export function driveRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "No write access to this library" });
     }
     const id = randomUUID();
-    const { key, size } = putBlob(buf);
+    const { key, size } = await putBlob(buf);
 
     // mediaFor: embedded media (doc images) inherit viewer access from the host doc
     let mediaForId: string | null = null;

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { one, run, now } from "../db.js";
 import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
@@ -12,6 +12,28 @@ import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } 
 // TLS-terminating rate control at the edge for distributed attacks.
 const RL_LOGIN = { max: 10, timeWindow: "1 minute" };
 const RL_AUTH = { max: 20, timeWindow: "1 minute" };
+
+// ---- single-use auth tokens (password reset / email verification) ----
+// Only the sha256 of the emailed secret is stored; tokens are single-use.
+
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+
+async function issueAuthToken(userId: string, purpose: string, ttlMinutes: number): Promise<string> {
+  const token = randomBytes(32).toString("base64url");
+  await run(
+    "INSERT INTO auth_tokens (id, user_id, purpose, token_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+    [randomUUID(), userId, purpose, sha256(token), new Date(Date.now() + ttlMinutes * 60_000).toISOString(), now()]);
+  return token;
+}
+
+async function consumeAuthToken(purpose: string, token: string): Promise<{ id: string; user_id: string } | null> {
+  const row = await one<{ id: string; user_id: string }>(
+    "SELECT id, user_id FROM auth_tokens WHERE token_hash = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > $3",
+    [sha256(token), purpose, now()]);
+  if (!row) return null;
+  await run("UPDATE auth_tokens SET used_at = $1 WHERE id = $2", [now(), row.id]);
+  return row;
+}
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -42,14 +64,16 @@ export function authRoutes(app: FastifyInstance) {
    *  as Slack/Discord public workspace icons. */
   app.get("/api/org/brand/:orgId/logo", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const { orgId } = req.params as { orgId: string };
-    const org = await one<{ brand_logo: string | null }>(
-      "SELECT brand_logo FROM orgs WHERE id = $1", [orgId]);
+    const org = await one<{ brand_logo: string | null; brand_logo_mime: string | null }>(
+      "SELECT brand_logo, brand_logo_mime FROM orgs WHERE id = $1", [orgId]);
     if (!org?.brand_logo) return reply.code(404).send({ error: "not_found" });
     const { getBlob } = await import("../blobs.js");
-    const buf = getBlob(org.brand_logo);
+    const buf = await getBlob(org.brand_logo);
     if (!buf) return reply.code(404).send({ error: "not_found" });
     return reply
-      .header("content-type", "image/png")
+      .header("content-type", org.brand_logo_mime ?? "image/png")
+      // an SVG opened directly must not execute script in our origin
+      .header("content-security-policy", "default-src 'none'")
       .header("cache-control", "public, max-age=3600")
       .send(buf);
   });
@@ -91,9 +115,59 @@ export function authRoutes(app: FastifyInstance) {
 
     const t = body.invite ? tpl.joinedWorkspace(body.displayName, orgName) : tpl.welcome(body.displayName, orgName);
     sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...t });
+    // email verification — unverified logins still work for now; the flag
+    // surfaces in /api/auth/me so the UI can nag
+    const vtok = await issueAuthToken(userId, "email_verify", 24 * 60);
+    sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...tpl.verifyEmail(body.displayName, vtok) });
 
     const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
     return { token: await signToken(userId), user };
+  });
+
+  /**
+   * POST /api/auth/forgot — start a password reset. Always 200: the
+   * response must not reveal whether the email exists (enumeration).
+   */
+  app.post("/api/auth/forgot", { config: { rateLimit: RL_LOGIN } }, async (req) => {
+    const body = z.object({ email: z.string().email() }).parse(req.body);
+    const row = await one<UserRow>("SELECT * FROM users WHERE email = $1 AND NOT disabled", [body.email]);
+    if (row) {
+      const token = await issueAuthToken(row.id, "password_reset", 60);
+      sendMailSafe(app.log, { to: row.email, toName: row.display_name, ...tpl.passwordReset(row.display_name, token) });
+    }
+    return { ok: true };
+  });
+
+  /** POST /api/auth/reset — consume the emailed token, set a new password. */
+  app.post("/api/auth/reset", { config: { rateLimit: RL_LOGIN } }, async (req, reply) => {
+    const body = z.object({ token: z.string().min(20), password: z.string().min(8) }).parse(req.body);
+    const tok = await consumeAuthToken("password_reset", body.token);
+    if (!tok) return reply.code(400).send({ error: "bad_token", message: "Reset link is expired or already used" });
+    await run("UPDATE users SET password_hash = $1 WHERE id = $2", [hashPassword(body.password), tok.user_id]);
+    // burn any other outstanding reset/verify tokens for the account
+    await run("UPDATE auth_tokens SET used_at = $1 WHERE user_id = $2 AND used_at IS NULL", [now(), tok.user_id]);
+    return { ok: true };
+  });
+
+  /** GET /api/auth/verify-email?token= — marks the account verified. */
+  app.get("/api/auth/verify-email", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    const token = String((req.query as { token?: string }).token ?? "");
+    const tok = token.length >= 20 ? await consumeAuthToken("email_verify", token) : null;
+    if (!tok) return reply.code(400).send({ error: "bad_token", message: "Verification link is expired or already used" });
+    await run("UPDATE users SET email_verified = true WHERE id = $1", [tok.user_id]);
+    return { ok: true };
+  });
+
+  /** POST /api/auth/resend-verification — new verify link for the session user. */
+  app.post("/api/auth/resend-verification", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req) => {
+    const user = (req as AuthedRequest).user;
+    if (user.emailVerified) return { ok: true };
+    const row = await one<UserRow>("SELECT * FROM users WHERE id = $1", [user.id]);
+    if (row && !row.email_verified) {
+      const token = await issueAuthToken(row.id, "email_verify", 24 * 60);
+      sendMailSafe(app.log, { to: row.email, toName: row.display_name, ...tpl.verifyEmail(row.display_name, token) });
+    }
+    return { ok: true };
   });
 
   app.post("/api/auth/login", { config: { rateLimit: RL_LOGIN } }, async (req, reply) => {
