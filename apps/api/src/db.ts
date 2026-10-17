@@ -705,6 +705,19 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     UNIQUE (meeting_id, path)
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_recordings_org ON meeting_recordings(org_id, created_at DESC)`);
+  // recording polish: saved playback clip + optional transcript
+  await pool.query(`ALTER TABLE meeting_recordings ADD COLUMN IF NOT EXISTS clip_start REAL`);
+  await pool.query(`ALTER TABLE meeting_recordings ADD COLUMN IF NOT EXISTS clip_end REAL`);
+  await pool.query(`ALTER TABLE meeting_recordings ADD COLUMN IF NOT EXISTS transcript TEXT`);
+  // meeting ↔ suite chat channel link + join roster
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS channel_id TEXT`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS meeting_attendance (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    left_at TIMESTAMPTZ,
+    PRIMARY KEY (meeting_id, user_id)
+  )`);
 
   // Kreatix Forms — surveys/forms with a public share-token submit endpoint
   await pool.query(`CREATE TABLE IF NOT EXISTS forms (

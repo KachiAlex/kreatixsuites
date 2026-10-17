@@ -12,10 +12,14 @@ import { Modal } from "../components/Modal";
 interface Meeting {
   id: string; code: string; title: string; status: string;
   scheduledAt: string | null; createdBy: string; createdByName: string | null;
-  createdAt: string; endedAt: string | null; recordings: number;
+  createdAt: string; endedAt: string | null; recordings: number; channelId: string | null;
 }
-interface Rec { id: string; size: number | null; durationSec: number | null; createdAt: string; name: string }
-interface JoinInfo { base: string; room: string; jwt: string; displayName: string }
+interface Rec {
+  id: string; size: number | null; durationSec: number | null; createdAt: string; name: string;
+  clipStart: number | null; clipEnd: number | null; hasTranscript: boolean;
+}
+interface JoinInfo { base: string; room: string; jwt: string; displayName: string; meetingId: string; channelId: string | null; dialIn: string | null }
+interface ChatMsg { id: string; body: string; author: { id: string; name: string; initials: string }; createdAt: string }
 
 declare global {
   interface Window { JitsiMeetExternalAPI?: new (domain: string, opts: Record<string, unknown>) => { dispose: () => void; addListener: (m: Record<string, () => void>) => void } }
@@ -36,15 +40,23 @@ export function Meet() {
   const [call, setCall] = useState<JoinInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [recOn, setRecOn] = useState(false);
+  const [dialIn, setDialIn] = useState<string | null>(null);
   const [recFor, setRecFor] = useState<string | null>(null);      // meeting id w/ open list
   const [recs, setRecs] = useState<Rec[]>([]);
+  const [attFor, setAttFor] = useState<string | null>(null);
+  const [attendees, setAttendees] = useState<{ userId: string; name: string; joinedAt: string; leftAt: string | null }[]>([]);
+  const [meetChat, setMeetChat] = useState<ChatMsg[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const chatRef = useRef<HTMLDivElement>(null);
+  const recVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const frameHost = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{ dispose: () => void; addListener: (m: Record<string, () => void>) => void } | null>(null);
 
   const load = useCallback(async () => {
-    const r = await api.get<{ enabled: boolean; recording?: boolean; meetings?: Meeting[] }>("/api/meet");
+    const r = await api.get<{ enabled: boolean; recording?: boolean; dialIn?: string | null; meetings?: Meeting[] }>("/api/meet");
     setEnabled(r.enabled);
     setRecOn(!!r.recording);
+    setDialIn(r.dialIn ?? null);
     setMeetings(r.meetings ?? []);
   }, []);
 
@@ -76,7 +88,11 @@ export function Meet() {
         width: "100%",
         height: "100%",
         userInfo: { displayName: call.displayName, email: user?.email },
-        configOverwrite: { disableDeepLinking: true },
+        configOverwrite: {
+          disableDeepLinking: true,
+          // Breakout rooms: available to moderators (host) via the participants pane.
+          breakoutRooms: { hideAddRoomButton: false, hideAutoAssignButton: false, hideJoinRoomButton: false },
+        },
       });
       inst.addListener({ videoConferenceLeft: () => setCall(null), readyToClose: () => setCall(null) });
       apiRef.current = inst;
@@ -154,6 +170,76 @@ export function Meet() {
     } catch (e) { toast((e as Error).message); }
   };
 
+  const openAtt = async (m: Meeting) => {
+    if (attFor === m.id) { setAttFor(null); return; }
+    try {
+      const r = await api.get<{ attendees: typeof attendees }>(`/api/meet/${m.id}/attendance`);
+      setAttendees(r.attendees); setAttFor(m.id);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  // Meeting chat — the linked channel persists after the call ends; poll while in-call.
+  useEffect(() => {
+    if (!call?.channelId) { setMeetChat([]); return; }
+    let dead = false;
+    const pull = async () => {
+      try {
+        const r = await api.get<{ messages: ChatMsg[] }>(`/api/chat/${call.channelId}/messages`);
+        if (!dead) setMeetChat(r.messages);
+      } catch { /* transient */ }
+    };
+    void pull();
+    const t = setInterval(() => void pull(), 4000);
+    return () => { dead = true; clearInterval(t); };
+  }, [call?.channelId]);
+
+  useEffect(() => {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight });
+  }, [meetChat.length]);
+
+  const sendMeetChat = async () => {
+    const body = chatDraft.trim();
+    if (!body || !call?.channelId) return;
+    setChatDraft("");
+    try {
+      const r = await api.post<{ message: ChatMsg }>(`/api/chat/${call.channelId}/messages`, { body });
+      setMeetChat((cur) => [...cur, r.message]);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const setClip = async (recId: string, clipStart: number | null, clipEnd: number | null) => {
+    try {
+      await api.patch(`/api/meet/recordings/${recId}`, { clipStart, clipEnd });
+      setRecs((cur) => cur.map((r) => r.id === recId ? { ...r, clipStart, clipEnd } : r));
+      toast(clipStart != null || clipEnd != null ? "Clip range saved" : "Clip cleared");
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const clipFromVideo = async (recId: string, el: HTMLVideoElement | null, which: "start" | "end") => {
+    if (!el) return;
+    const t = Math.floor(el.currentTime);
+    const rec = recs.find((r) => r.id === recId);
+    if (!rec) return;
+    await setClip(recId, which === "start" ? t : rec.clipStart, which === "end" ? t : rec.clipEnd);
+  };
+
+  const transcribe = async (recId: string) => {
+    try {
+      await api.post(`/api/meet/recordings/${recId}/transcribe`, {});
+      setRecs((cur) => cur.map((r) => r.id === recId ? { ...r, hasTranscript: true } : r));
+      toast("Transcript ready");
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const viewTranscript = async (recId: string) => {
+    try {
+      const r = await api.get<{ transcript: string }>(`/api/meet/recordings/${recId}/transcript`);
+      setTranscriptText(r.transcript);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const [transcriptText, setTranscriptText] = useState<string | null>(null);
+
   if (enabled === null) return <div className="empty">Loading Meet…</div>;
   if (!enabled) return (
     <>
@@ -166,9 +252,32 @@ export function Meet() {
     <div className="meet-call">
       <div className="meet-call-bar">
         <button className="btn-ghost btn-sm" onClick={() => setCall(null)}>← Back to meetings</button>
-        {recOn && <span className="d-sub" style={{ marginLeft: "auto" }}>Moderators: recording is in the Jitsi toolbar (●)</span>}
+        {call.dialIn && <span className="d-sub" style={{ marginLeft: 12 }}>📞 Dial-in: {call.dialIn}</span>}
+        {recOn && <span className="d-sub" style={{ marginLeft: "auto" }}>Moderators: recording & breakout rooms are in the Jitsi toolbar</span>}
       </div>
-      <div ref={frameHost} className="meet-frame" />
+      <div className="meet-call-body">
+        <div ref={frameHost} className="meet-frame" />
+        {call.channelId && (
+          <div className="meet-chat">
+            <div className="meet-chat-h">Meeting chat <span className="d-sub">— saved to Chat</span></div>
+            <div className="meet-chat-msgs" ref={chatRef}>
+              {meetChat.length === 0 && <span className="d-sub" style={{ padding: 8 }}>Messages here persist after the meeting.</span>}
+              {meetChat.map((m) => (
+                <div key={m.id} className="meet-chat-msg">
+                  <span className="avatar" style={{ width: 20, height: 20, fontSize: 9 }}>{m.author.initials}</span>
+                  <div><b>{m.author.name}</b><div className="meet-chat-body">{m.body}</div></div>
+                </div>
+              ))}
+            </div>
+            <div className="meet-chat-in">
+              <input placeholder="Message…" value={chatDraft}
+                onChange={(e) => setChatDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void sendMeetChat()} />
+              <button className="btn-primary btn-sm" onClick={() => void sendMeetChat()}>Send</button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -188,10 +297,52 @@ export function Meet() {
         {recFor === m.id && (
           <div className="meet-recs">
             {!recs.length && <span className="d-sub">No recordings yet.</span>}
-            {recs.map((r) => (
-              <div key={r.id} className="meet-rec">
-                <video controls preload="metadata" src={mediaUrl(`/api/meet/recordings/${r.id}/stream`)} />
-                <span className="d-sub">{r.name} · {fmtWhen(r.createdAt)}{r.size ? ` · ${Math.round(r.size / 1048576)} MB` : ""}</span>
+            {recs.map((r) => {
+              const isHost = m.createdBy === user?.id || user?.role === "owner" || user?.role === "admin";
+              return (
+                <div key={r.id} className="meet-rec">
+                  <video controls preload="metadata" ref={(el) => { recVideoRefs.current[r.id] = el; }}
+                    src={mediaUrl(`/api/meet/recordings/${r.id}/stream`)}
+                    onLoadedMetadata={(e) => { if (r.clipStart != null) e.currentTarget.currentTime = r.clipStart; }}
+                    onTimeUpdate={(e) => { if (r.clipEnd != null && e.currentTarget.currentTime >= r.clipEnd) e.currentTarget.pause(); }} />
+                  <span className="d-sub">
+                    {r.name} · {fmtWhen(r.createdAt)}{r.size ? ` · ${Math.round(r.size / 1048576)} MB` : ""}
+                    {r.clipStart != null || r.clipEnd != null
+                      ? ` · clip ${r.clipStart ?? 0}s–${r.clipEnd != null ? `${r.clipEnd}s` : "end"}` : ""}
+                  </span>
+                  <div className="meet-rec-tools">
+                    {isHost && (
+                      <>
+                        <button className="btn-ghost btn-sm" title="Mark clip start at playhead"
+                          onClick={() => void clipFromVideo(r.id, recVideoRefs.current[r.id], "start")}>⏮ start</button>
+                        <button className="btn-ghost btn-sm" title="Mark clip end at playhead"
+                          onClick={() => void clipFromVideo(r.id, recVideoRefs.current[r.id], "end")}>⏭ end</button>
+                        {(r.clipStart != null || r.clipEnd != null) && (
+                          <button className="btn-ghost btn-sm" onClick={() => void setClip(r.id, null, null)}>clear</button>
+                        )}
+                        <button className="btn-ghost btn-sm" onClick={() => void transcribe(r.id)}>
+                          {r.hasTranscript ? "↻ transcript" : "⧉ transcribe"}
+                        </button>
+                      </>
+                    )}
+                    {r.hasTranscript && (
+                      <button className="btn-ghost btn-sm" onClick={() => void viewTranscript(r.id)}>📄 transcript</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {attFor === m.id && (
+          <div className="meet-recs">
+            {!attendees.length && <span className="d-sub">No joins recorded.</span>}
+            {attendees.map((a) => (
+              <div key={a.userId + a.joinedAt} className="meet-att">
+                <b>{a.name}</b>
+                <span className="d-sub">
+                  {fmtWhen(a.joinedAt)} → {a.leftAt ? fmtWhen(a.leftAt) : "still in"}
+                </span>
               </div>
             ))}
           </div>
@@ -200,6 +351,7 @@ export function Meet() {
       {m.recordings > 0 && (
         <button className="btn-ghost btn-sm" onClick={() => void openRecs(m)}>▶ {m.recordings}</button>
       )}
+      <button className="btn-ghost btn-sm" title="Attendance" onClick={() => void openAtt(m)}>👥</button>
       {m.status !== "ended" && (
         <>
           <button className="btn-primary btn-sm" disabled={busy} onClick={() => void join(m)}>Join</button>
@@ -227,6 +379,7 @@ export function Meet() {
             <button className="btn-ghost" disabled={busy || !joinCode.trim()} onClick={() => void joinByCode()}>Join</button>
           </div>
         </div>
+        {dialIn && <div className="d-sub" style={{ marginTop: 8 }}>📞 Dial in: <code>{dialIn}</code></div>}
       </div>
 
       {live.length > 0 && (
@@ -260,6 +413,12 @@ export function Meet() {
               <button className="btn-primary" disabled={busy || !schedAt} onClick={() => void schedule()}>Schedule</button>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {transcriptText != null && (
+        <Modal label="Transcript" onClose={() => setTranscriptText(null)} style={{ width: 560 }}>
+          <pre className="meet-transcript">{transcriptText}</pre>
         </Modal>
       )}
       {msg && <div className="toast" role="status">{msg}</div>}

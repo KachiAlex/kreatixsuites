@@ -3075,8 +3075,21 @@ html[data-theme="dark"]{
 .meet-call{position:fixed;inset:0;z-index:60;background:#0b0b0d;display:flex;flex-direction:column}
 .meet-call-bar{padding:8px 12px;background:#131316;display:flex}
 .meet-call-bar .btn-ghost{color:#e8e8ea}
+.meet-call-body{flex:1;display:flex;min-height:0}
 .meet-frame{flex:1}
 .meet-frame iframe{border:0}
+.meet-chat{width:280px;background:#131316;border-left:1px solid #232327;display:flex;flex-direction:column}
+.meet-chat-h{padding:8px 10px;font-size:12px;font-weight:700;color:#e8e8ea;border-bottom:1px solid #232327}
+.meet-chat-msgs{flex:1;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:8px}
+.meet-chat-msg{display:flex;gap:7px;color:#e8e8ea;font-size:12px}
+.meet-chat-msg .avatar{background:#2a2a30;color:#e8e8ea;flex-shrink:0}
+.meet-chat-body{color:#c9c9cf;white-space:pre-wrap;word-break:break-word}
+.meet-chat-in{display:flex;gap:6px;padding:8px;border-top:1px solid #232327}
+.meet-chat-in input{flex:1;background:#1c1c21;border:1px solid #2e2e34;color:#e8e8ea;border-radius:8px;padding:6px 8px;font-size:12px}
+.meet-rec-tools{display:flex;gap:4px;flex-wrap:wrap}
+.meet-rec-tools .btn-ghost{font-size:11px;padding:3px 8px}
+.meet-att{display:flex;align-items:baseline;gap:8px;font-size:12.5px}
+.meet-transcript{white-space:pre-wrap;font:12px/1.6 var(--font);max-height:60vh;overflow:auto;margin:0;color:var(--ink)}
 
 /* onboarding wizard */
 .ob-steps{display:flex;gap:8px;margin-bottom:16px}

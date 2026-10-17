@@ -5,14 +5,14 @@ import { basename, resolve, sep } from "node:path";
 import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { q, one, run } from "../db.js";
-import { meetBase, meetEnabled, mintMeetToken, recDir, recordingEnabled } from "../meetBridge.js";
-import { encryptField } from "../crypto.js";
+import { meetBase, meetEnabled, mintMeetToken, recDir, recordingEnabled, dialInNumber } from "../meetBridge.js";
+import { encryptField, decryptField } from "../crypto.js";
 import { fireTrigger } from "../rules.js";
 
 interface MeetingRow {
   id: string; org_id: string; code: string; title: string;
   created_by: string; scheduled_at: string | null; status: string;
-  created_at: string; ended_at: string | null;
+  created_at: string; ended_at: string | null; channel_id: string | null;
   creator_name?: string;
 }
 
@@ -22,13 +22,22 @@ const createSchema = z.object({
   startNow: z.boolean().optional(),
 });
 
-const meetingOut = (r: MeetingRow & { rec_count?: number }) => ({
+const meetingOut = (r: MeetingRow & { rec_count?: number; channel_id?: string | null }) => ({
   id: r.id, code: r.code, title: r.title, status: r.status,
   scheduledAt: r.scheduled_at, createdBy: r.created_by,
   createdByName: r.creator_name ?? null,
   createdAt: r.created_at, endedAt: r.ended_at,
   recordings: Number(r.rec_count ?? 0),
+  channelId: r.channel_id ?? null,
 });
+
+/** Record a participant join (idempotent roster row per meeting+user). */
+const markJoin = async (meetingId: string, userId: string) =>
+  run(
+    `INSERT INTO meeting_attendance (meeting_id, user_id, joined_at, left_at)
+     VALUES ($1,$2,now(),NULL)
+     ON CONFLICT (meeting_id, user_id) DO UPDATE SET left_at = NULL`,
+    [meetingId, userId]);
 
 /** Join payload — fresh Jitsi JWT per call; the room code is the Jitsi room. */
 const joinPayload = (m: MeetingRow, user: { displayName: string; email: string }, moderator: boolean) => ({
@@ -36,6 +45,9 @@ const joinPayload = (m: MeetingRow, user: { displayName: string; email: string }
   room: m.code,
   jwt: mintMeetToken({ room: m.code, name: user.displayName, email: user.email, moderator }),
   displayName: user.displayName,
+  meetingId: m.id,
+  channelId: m.channel_id,
+  dialIn: dialInNumber() || null,
 });
 
 export function meetRoutes(app: FastifyInstance) {
@@ -49,7 +61,10 @@ export function meetRoutes(app: FastifyInstance) {
   const notFound = (reply: FastifyReply) =>
     reply.code(404).send({ error: "not_found", message: "Meeting not found" });
 
-  app.get("/api/meet/status", async () => ({ enabled: meetEnabled() }));
+  app.get("/api/meet/status", async () => ({
+    enabled: meetEnabled(), recording: recordingEnabled(),
+    dialIn: dialInNumber() || null,
+  }));
 
   app.get("/api/meet", async (req) => {
     const { user } = req as AuthedRequest;
@@ -62,7 +77,7 @@ export function meetRoutes(app: FastifyInstance) {
        ORDER BY CASE m.status WHEN 'live' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,
                 COALESCE(m.scheduled_at, m.created_at) DESC
        LIMIT 60`, [user.orgId]);
-    return { enabled: true, recording: recordingEnabled(), meetings: rows.map(meetingOut) };
+    return { enabled: true, recording: recordingEnabled(), dialIn: dialInNumber() || null, meetings: rows.map(meetingOut) };
   });
 
   app.post("/api/meet", async (req, reply) => {
@@ -78,6 +93,19 @@ export function meetRoutes(app: FastifyInstance) {
       [randomUUID(), user.orgId, code,
        title?.trim() || `${user.displayName}'s meeting`,
        user.id, scheduledAt ?? null, startNow ? "live" : "scheduled"]);
+    // every meeting gets a suite chat channel so in-call chat persists after
+    // the call ends (the Jitsi iframe chat dies with the room)
+    if (row) {
+      const channelId = randomUUID();
+      await run(
+        `INSERT INTO chat_channels (id, org_id, kind, name, description, created_by)
+         VALUES ($1,$2,'channel',$3,$4,$5)`,
+        [channelId, user.orgId, `Meet: ${row.title}`, `Persistent chat for meeting ${code}`, user.id]);
+      await run("INSERT INTO chat_members (channel_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [channelId, user.id]);
+      await run("UPDATE meetings SET channel_id = $2 WHERE id = $1", [row.id, channelId]);
+      row.channel_id = channelId;
+    }
     // scheduled meetings get a calendar event so they show up on the calendar
     if (scheduledAt && row) {
       const endsAt = new Date(Date.parse(scheduledAt) + 30 * 60_000).toISOString();
@@ -96,6 +124,10 @@ export function meetRoutes(app: FastifyInstance) {
     if (!m) return notFound(reply);
     if (m.status === "ended") return reply.code(410).send({ error: "ended", message: "This meeting has ended" });
     if (m.status === "scheduled") await run("UPDATE meetings SET status = 'live' WHERE id = $1", [m.id]);
+    await markJoin(m.id, user.id);
+    if (m.channel_id)
+      await run("INSERT INTO chat_members (channel_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [m.channel_id, user.id]);
     return { join: joinPayload(m, user, m.created_by === user.id) };
   });
 
@@ -111,6 +143,10 @@ export function meetRoutes(app: FastifyInstance) {
     if (!m) return notFound(reply);
     if (m.status === "ended") return reply.code(410).send({ error: "ended", message: "This meeting has ended" });
     if (m.status === "scheduled") await run("UPDATE meetings SET status = 'live' WHERE id = $1", [m.id]);
+    await markJoin(m.id, user.id);
+    if (m.channel_id)
+      await run("INSERT INTO chat_members (channel_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [m.channel_id, user.id]);
     return { join: joinPayload(m, user, m.created_by === user.id) };
   });
 
@@ -133,9 +169,86 @@ export function meetRoutes(app: FastifyInstance) {
     if (m.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
       return reply.code(403).send({ error: "forbidden", message: "Only the host can end a meeting" });
     await run("UPDATE meetings SET status = 'ended', ended_at = now() WHERE id = $1", [m.id]);
+    // close any still-open attendance rows
+    await run("UPDATE meeting_attendance SET left_at = now() WHERE meeting_id = $1 AND left_at IS NULL", [m.id]);
     void fireTrigger(user.orgId, "meeting.ended",
       { meetingId: m.id, name: m.title ?? "Meeting" }, app.log);
     return { ok: true };
+  });
+
+  /** Attendance roster — who joined and when; left_at is filled on end. */
+  app.get("/api/meet/:id/attendance", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const m = await getMeeting((req.params as { id: string }).id, user.orgId);
+    if (!m) return notFound(reply);
+    const rows = await q<{ user_id: string; joined_at: string; left_at: string | null; display_name: string; initials: string }>(
+      `SELECT a.user_id, a.joined_at, a.left_at, u.display_name, u.initials
+       FROM meeting_attendance a JOIN users u ON u.id = a.user_id
+       WHERE a.meeting_id = $1 ORDER BY a.joined_at`, [m.id]);
+    return {
+      attendees: rows.map((r) => ({
+        userId: r.user_id, name: r.display_name, initials: r.initials,
+        joinedAt: r.joined_at, leftAt: r.left_at,
+      })),
+    };
+  });
+
+  /** Recording clip markers + transcript — host/admin edit, members read. */
+  app.patch("/api/meet/recordings/:rid", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const rec = await one<{ id: string; org_id: string; meeting_id: string; created_by: string }>(
+      `SELECT r.id, r.org_id, r.meeting_id, m.created_by
+       FROM meeting_recordings r JOIN meetings m ON m.id = r.meeting_id WHERE r.id = $1`,
+      [(req.params as { rid: string }).rid]);
+    if (!rec || rec.org_id !== user.orgId) return notFound(reply);
+    if (rec.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
+      return reply.code(403).send({ error: "forbidden", message: "Only the host can edit a recording" });
+    const body = z.object({
+      clipStart: z.number().min(0).nullable().optional(),
+      clipEnd: z.number().min(0).nullable().optional(),
+    }).parse(req.body ?? {});
+    await run("UPDATE meeting_recordings SET clip_start = $2, clip_end = $3 WHERE id = $1",
+      [rec.id, body.clipStart ?? null, body.clipEnd ?? null]);
+    return { ok: true };
+  });
+
+  /** Transcription via an OpenAI-compatible /audio/transcriptions endpoint
+   *  (KREATIX_TRANSCRIBE_URL + KREATIX_TRANSCRIBE_KEY) — off-box Whisper,
+   *  Groq, or any compatible service. Runs inline; mp4 may be large. */
+  app.post("/api/meet/recordings/:rid/transcribe", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const url = process.env.KREATIX_TRANSCRIBE_URL;
+    if (!url) return reply.code(404).send({ error: "disabled", message: "Transcription is not configured" });
+    const rec = await one<{ id: string; org_id: string; path: string; meeting_id: string; created_by: string }>(
+      `SELECT r.id, r.org_id, r.path, r.meeting_id, m.created_by
+       FROM meeting_recordings r JOIN meetings m ON m.id = r.meeting_id WHERE r.id = $1`,
+      [(req.params as { rid: string }).rid]);
+    if (!rec || rec.org_id !== user.orgId) return notFound(reply);
+    if (rec.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
+      return reply.code(403).send({ error: "forbidden", message: "Only the host can transcribe" });
+    const file = safeRecordingPath(rec.path);
+    if (!file || !existsSync(file)) return reply.code(410).send({ error: "gone" });
+    const form = new FormData();
+    form.append("file", new Blob([await import("node:fs/promises").then((fs) => fs.readFile(file))]),
+      basename(file));
+    form.append("model", process.env.KREATIX_TRANSCRIBE_MODEL ?? "whisper-large-v3");
+    form.append("response_format", "verbose_json");
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: process.env.KREATIX_TRANSCRIBE_KEY
+        ? { authorization: `Bearer ${process.env.KREATIX_TRANSCRIBE_KEY}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!resp.ok) {
+      return reply.code(502).send({ error: "transcribe_failed", message: `Upstream ${resp.status}` });
+    }
+    const out = (await resp.json()) as { text?: string; segments?: { start: number; text: string }[] };
+    const text = out.segments?.length
+      ? out.segments.map((s) => `[${Math.floor(s.start / 60)}:${String(Math.floor(s.start % 60)).padStart(2, "0")}] ${s.text.trim()}`).join("\n")
+      : (out.text ?? "");
+    await run("UPDATE meeting_recordings SET transcript = $2 WHERE id = $1", [rec.id, encryptField(text) ?? text]);
+    return { ok: true, transcript: text };
   });
 
   /** Recordings for a meeting — org members can list; playback is /stream. */
@@ -143,13 +256,16 @@ export function meetRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const m = await getMeeting((req.params as { id: string }).id, user.orgId);
     if (!m) return notFound(reply);
-    const rows = await q<{ id: string; size: number | null; duration_sec: number | null; created_at: string; path: string }>(
-      "SELECT id, size, duration_sec, created_at, path FROM meeting_recordings WHERE meeting_id = $1 ORDER BY created_at DESC",
+    const rows = await q<{ id: string; size: number | null; duration_sec: number | null; created_at: string; path: string; clip_start: number | null; clip_end: number | null; has_tr: boolean }>(
+      `SELECT id, size, duration_sec, created_at, path, clip_start, clip_end,
+              (transcript IS NOT NULL) AS has_tr
+       FROM meeting_recordings WHERE meeting_id = $1 ORDER BY created_at DESC`,
       [m.id]);
     return {
       recordings: rows.map((r) => ({
         id: r.id, size: r.size, durationSec: r.duration_sec,
         createdAt: r.created_at, name: basename(r.path),
+        clipStart: r.clip_start, clipEnd: r.clip_end, hasTranscript: r.has_tr,
       })),
     };
   });
@@ -174,6 +290,16 @@ export function meetRoutes(app: FastifyInstance) {
         .send(createReadStream(file, { start, end }));
     }
     return reply.header("content-length", size).send(createReadStream(file));
+  });
+
+  /** Transcript text for a recording (members of the org can read). */
+  app.get("/api/meet/recordings/:rid/transcript", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const rec = await one<{ transcript: string | null; org_id: string }>(
+      "SELECT transcript, org_id FROM meeting_recordings WHERE id = $1", [(req.params as { rid: string }).rid]);
+    if (!rec || rec.org_id !== user.orgId) return notFound(reply);
+    if (!rec.transcript) return reply.code(404).send({ error: "no_transcript" });
+    return { transcript: decryptField(rec.transcript) ?? rec.transcript };
   });
 }
 

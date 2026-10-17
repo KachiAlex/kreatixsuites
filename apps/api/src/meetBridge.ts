@@ -15,6 +15,11 @@ export const meetBase = () => MEET_BASE();
 export const recDir = () => process.env.KREATIX_MEET_RECORDINGS_DIR ?? "";
 export const recordingEnabled = () => !!recDir();
 
+/** PSTN dial-in — set once a Jigasi SIP trunk is configured. The number is
+ *  what participants dial; the IVR asks for the meeting code. */
+export const dialInNumber = () => process.env.KREATIX_MEET_DIALIN_NUMBER ?? "";
+export const dialOutEnabled = () => process.env.KREATIX_MEET_DIALOUT === "1";
+
 const b64u = (b: Buffer | string) =>
   Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
@@ -43,6 +48,8 @@ export function mintMeetToken(opts: {
         livestreaming: false,
         // moderators get the Jitsi record button when Jibri is wired in
         recording: !!opts.moderator && recordingEnabled(),
+        // PSTN dial-out (invite by phone) once Jigasi+SIP is provisioned
+        "outbound-call": !!opts.moderator && dialOutEnabled(),
       },
     },
   }));
