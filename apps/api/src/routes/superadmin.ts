@@ -530,30 +530,87 @@ async function deleteOrg(orgId: string): Promise<OrgDeleteResult> {
     const keys = fileIds.length
       ? (await c.query<{ blob_key: string }>("SELECT DISTINCT blob_key FROM versions WHERE file_id = ANY($1)", [fileIds])).rows.map((r) => r.blob_key)
       : [];
-    if (fileIds.length) {
-      for (const t of ["search_index", "mentions", "ai_actions", "comments", "share_links", "shares", "collab_states", "versions"]) {
-        await del(`DELETE FROM ${t} WHERE file_id = ANY($1)`, [fileIds]);
-      }
-      await del("DELETE FROM items WHERE org_id = $1", [orgId]);
-    }
     if (userIds.length) {
       // cross-org safety: content these users authored on OTHER workspaces'
       // files (shared-file edits) is reassigned to each file's owner so the
-      // other tenant keeps its history; ephemeral traces are deleted.
+      // other tenant keeps its history.
       await del("UPDATE versions v SET created_by = (SELECT owner_id FROM items i WHERE i.id = v.file_id) WHERE v.created_by = ANY($1)", [userIds]);
       await del("UPDATE comments c SET author_id = (SELECT owner_id FROM items i WHERE i.id = c.file_id) WHERE c.author_id = ANY($1)", [userIds]);
       await del("UPDATE items SET owner_id = (SELECT u2.id FROM users u2 WHERE u2.org_id = items.org_id ORDER BY NOT u2.disabled DESC, u2.created_at LIMIT 1) WHERE owner_id = ANY($1) AND org_id <> $2", [userIds, orgId]);
-      await del("DELETE FROM mentions WHERE from_user_id = ANY($1) OR to_user_id = ANY($1)", [userIds]);
-      await del("DELETE FROM activity WHERE actor_id = ANY($1)", [userIds]);
-      await del("DELETE FROM ai_usage WHERE user_id = ANY($1)", [userIds]);
-      await del("DELETE FROM ai_actions WHERE user_id = ANY($1)", [userIds]);
-      await del("DELETE FROM feedback WHERE user_id = ANY($1)", [userIds]);
-      await del("DELETE FROM org_invites WHERE created_by = ANY($1)", [userIds]);
-      stats.users = await del("DELETE FROM users WHERE org_id = $1", [orgId]);
     }
-    for (const t of ["activity", "org_policies", "scim_tokens", "org_invites", "payments", "subscriptions", "feedback", "ai_usage"]) {
-      await del(`DELETE FROM ${t} WHERE org_id = $1`, [orgId]);
+
+    // Generic org-scoped cascade — the FK graph is derived from pg_constraint
+    // so tables added by later migrations are covered automatically instead of
+    // rotting in a handwritten list. Scope of each table = "org_id = $1" (when
+    // it has the column) OR any row reachable through an FK into an org-scoped
+    // parent (e.g. meeting_attendance → meetings).
+    const fks = (await c.query<{ child: string; col: string; parent: string; pkey: string }>(
+      `SELECT cl.relname AS child, a.attname AS col, pl.relname AS parent, pa.attname AS pkey
+       FROM pg_constraint con
+       JOIN pg_class cl ON cl.oid = con.conrelid
+       JOIN pg_class pl ON pl.oid = con.confrelid
+       JOIN pg_attribute a  ON a.attrelid = con.conrelid  AND a.attnum = con.conkey[1]
+       JOIN pg_attribute pa ON pa.attrelid = con.confrelid AND pa.attnum = con.confkey[1]
+       WHERE con.contype = 'f' AND array_length(con.conkey, 1) = 1`)).rows;
+    const orgTables = new Set((await c.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.columns
+       WHERE column_name = 'org_id' AND table_schema = 'public'`)).rows.map((r) => r.table_name));
+    const NEVER = new Set(["orgs", "users", "items", "sa_audit", "sweep_state", "backup_runs",
+      "billing_config", "plans", "schema_migrations"]);
+
+    // recursive scope expression for table t — memoized; self-FKs ignored
+    const scopeOf = (t: string, seen = new Set<string>()): string | null => {
+      if (seen.has(t)) return null;
+      seen.add(t);
+      const parts: string[] = [];
+      if (orgTables.has(t)) parts.push(`org_id = $1`);
+      for (const f of fks.filter((f) => f.child === t && f.parent !== t)) {
+        const ps = scopeOf(f.parent, seen);
+        if (ps) parts.push(`${f.col} IN (SELECT ${f.pkey} FROM ${f.parent} WHERE ${ps})`);
+      }
+      return parts.length ? `(${parts.join(" OR ")})` : null;
+    };
+
+    // delete children before parents — topological order over child→parent edges.
+    // Union of org_id tables (even FK-less ones like org_policies) and every
+    // table that references an org-scoped parent.
+    const scoped = [...new Set([...orgTables, ...fks.map((f) => f.child)])]
+      .filter((t) => !NEVER.has(t) && scopeOf(t) !== null);
+    const depth = new Map<string, number>();
+    const depthOf = (t: string, seen = new Set<string>()): number => {
+      if (depth.has(t)) return depth.get(t)!;
+      if (seen.has(t)) return 0;
+      seen.add(t);
+      const d = 1 + Math.max(0, ...fks.filter((f) => f.parent === t && f.child !== t).map((f) => depthOf(f.child, seen)));
+      depth.set(t, d);
+      return d;
+    };
+    scoped.sort((a, b) => depthOf(b) - depthOf(a)); // deepest (most-child) first
+
+    // each DELETE under a savepoint; on FK violation retry next round until
+    // convergence (covers non-self FK cycles the topo sort can't order)
+    const pending = new Set([...scoped, "users", "items"]);
+    for (let round = 0; round < 8 && pending.size; round++) {
+      let progress = false;
+      for (const t of [...pending]) {
+        const scope = t === "users" || t === "items" ? `org_id = $1` : scopeOf(t);
+        if (!scope) { pending.delete(t); continue; }
+        try {
+          await c.query("SAVEPOINT orgdel");
+          const n = await del(`DELETE FROM ${t} WHERE ${scope}`, [orgId]);
+          await c.query("RELEASE SAVEPOINT orgdel");
+          pending.delete(t);
+          if (t === "users") stats.users = n;
+          progress = true;
+        } catch {
+          await c.query("ROLLBACK TO SAVEPOINT orgdel");
+        }
+      }
+      if (!progress) break;
     }
+    if (pending.size)
+      throw new Error(`org delete blocked by FK: ${[...pending].join(", ")}`);
+
     stats.files = fileIds.length;
     await del("DELETE FROM orgs WHERE id = $1", [orgId]);
     return keys;
