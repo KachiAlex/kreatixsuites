@@ -656,3 +656,116 @@ async function custodianBundle(orgId: string, custodian: { id: string; email: st
       note: "Binary file content is not inlined — fetch items via /api/files/:id/content with an admin session. Mail lives in the mail service; export mailboxes there separately.",
     };
 }
+
+// ---------- public API keys + outbound webhooks ----------
+
+const keyCreateSchema = z.object({
+  name: z.string().min(1).max(80),
+  scopes: z.array(z.enum(["read", "write", "hooks"])).min(1).max(3),
+});
+const hookSchema = z.object({
+  url: z.string().url().max(500),
+  events: z.array(z.string().max(60)).max(40).default([]),
+});
+
+export function integrationAdminRoutes(app: FastifyInstance) {
+  app.addHook("preHandler", requireAuth);
+  app.addHook("preHandler", requireOrgAdmin);
+  const orgId = (req: FastifyRequest) => (req as AuthedRequest).user.orgId;
+  const uid = (req: FastifyRequest) => (req as AuthedRequest).user.id;
+
+  app.get("/api/admin/api-keys", async (req) => {
+    const keys = await dbq(
+      `SELECT id, name, prefix, scopes, created_at, last_used_at,
+              (SELECT display_name FROM users WHERE id = api_keys.created_by) AS creator
+       FROM api_keys WHERE org_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC`,
+      [orgId(req)]);
+    return { keys };
+  });
+
+  app.post("/api/admin/api-keys", async (req, reply) => {
+    const body = keyCreateSchema.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid", issues: body.error.issues });
+    const { createApiKey } = await import("../integrations.js");
+    const r = await createApiKey(orgId(req), body.data.name, body.data.scopes, uid(req));
+    return reply.code(201).send(r);
+  });
+
+  app.delete("/api/admin/api-keys/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const n = await run("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND org_id = $2", [id, orgId(req)]);
+    if (!n) return reply.code(404).send({ error: "not_found" });
+    return { ok: true };
+  });
+
+  app.get("/api/admin/webhooks", async (req) => {
+    const hooks = await dbq(
+      `SELECT w.id, w.url, w.events, w.active, w.created_at,
+              (SELECT count(*) FROM webhook_deliveries d WHERE d.webhook_id = w.id AND d.status = 'failed')::int AS failures,
+              (SELECT max(d.delivered_at) FROM webhook_deliveries d WHERE d.webhook_id = w.id AND d.status = 'delivered') AS last_delivered
+       FROM webhooks w WHERE w.org_id = $1 ORDER BY w.created_at DESC`, [orgId(req)]);
+    return { hooks };
+  });
+
+  app.post("/api/admin/webhooks", async (req, reply) => {
+    const body = hookSchema.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid", issues: body.error.issues });
+    // SSRF guard — only http(s) webhook targets, no link-local/metadata hosts
+    let u: URL;
+    try { u = new URL(body.data.url); } catch { return reply.code(400).send({ error: "bad_url" }); }
+    if (!["http:", "https:"].includes(u.protocol)) return reply.code(400).send({ error: "bad_url" });
+    if (/^(localhost|127\.|10\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0|\[?::1)/i.test(u.hostname)) {
+      return reply.code(400).send({ error: "bad_url", message: "Private/link-local webhook targets aren't allowed" });
+    }
+    const id = randomUUID();
+    const secret = randomBytes(24).toString("hex");
+    await run(
+      `INSERT INTO webhooks (id, org_id, url, secret, events, created_by) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, orgId(req), body.data.url, secret, JSON.stringify(body.data.events), uid(req)]);
+    return reply.code(201).send({ hook: { id, url: body.data.url, events: body.data.events, secret } });
+  });
+
+  app.delete("/api/admin/webhooks/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const n = await run("DELETE FROM webhooks WHERE id = $1 AND org_id = $2", [id, orgId(req)]);
+    if (!n) return reply.code(404).send({ error: "not_found" });
+    return { ok: true };
+  });
+
+  app.post("/api/admin/webhooks/:id/toggle", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const n = await run(
+      "UPDATE webhooks SET active = NOT active WHERE id = $1 AND org_id = $2", [id, orgId(req)]);
+    if (!n) return reply.code(404).send({ error: "not_found" });
+    return { ok: true };
+  });
+
+  app.get("/api/admin/webhooks/:id/deliveries", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const hook = await one("SELECT id FROM webhooks WHERE id = $1 AND org_id = $2", [id, orgId(req)]);
+    if (!hook) return reply.code(404).send({ error: "not_found" });
+    const deliveries = await dbq(
+      `SELECT id, event, status, attempts, response_code, last_error, created_at, delivered_at
+       FROM webhook_deliveries WHERE webhook_id = $1 ORDER BY created_at DESC LIMIT 50`, [id]);
+    return { deliveries };
+  });
+
+  // manual test ping — sends a signed synthetic event through the real path
+  app.post("/api/admin/webhooks/:id/test", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const hook = await one<{ id: string; org_id: string; url: string; secret: string; events: string[]; active: boolean }>(
+      "SELECT * FROM webhooks WHERE id = $1 AND org_id = $2", [id, orgId(req)]);
+    if (!hook) return reply.code(404).send({ error: "not_found" });
+    // bypass the event-subscription filter — a test always targets this hook
+    const { deliverOne } = await import("../integrations.js");
+    const body = { id: `evt_${randomUUID()}`, event: "test.ping", orgId: hook.org_id, at: new Date().toISOString(), data: {} };
+    const did = randomUUID();
+    await run(
+      `INSERT INTO webhook_deliveries (id, webhook_id, org_id, event, payload, next_retry_at)
+       VALUES ($1,$2,$3,'test.ping',$4,now())`, [did, hook.id, hook.org_id, JSON.stringify(body)]);
+    await deliverOne(did, { url: hook.url, secret: hook.secret }, body);
+    const d = await one<{ status: string; response_code: number | null }>(
+      "SELECT status, response_code FROM webhook_deliveries WHERE id = $1", [did]);
+    return { ok: d?.status === "delivered", status: d?.response_code, error: d?.status !== "delivered" ? "delivery failed" : undefined };
+  });
+}

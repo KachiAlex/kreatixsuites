@@ -17,7 +17,7 @@ import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
 import { aiRoutes } from "./routes/ai.js";
-import { adminRoutes } from "./routes/admin.js";
+import { adminRoutes, integrationAdminRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
@@ -28,8 +28,10 @@ import { calendarRoutes } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
 import { runScheduleSweep } from "./rules.js";
+import { sweepWebhookDeliveries } from "./integrations.js";
 import { formRoutes, formPublicRoutes } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
+import { publicApiRoutes } from "./routes/publicApi.js";
 import { billingRoutes } from "./routes/billing.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { downloadRoutes } from "./routes/downloads.js";
@@ -296,6 +298,8 @@ async function main() {
   app.register(formRoutes);
   app.register(formPublicRoutes);
   app.register(noteRoutes);
+  app.register(publicApiRoutes);
+  app.register(integrationAdminRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");
@@ -374,6 +378,15 @@ async function main() {
     runScheduleSweep(app.log).catch((e) => app.log.warn(e, "automation sweep failed"));
   setTimeout(ruleSweep, 60_000).unref();
   setInterval(ruleSweep, 60 * 60 * 1000).unref();
+
+  // webhook retry sweep — every 2 minutes; multi-instance deployments should
+  // gate this behind an advisory lock (see sweepRetention note)
+  const hookSweep = () =>
+    sweepWebhookDeliveries()
+      .then((n) => { if (n) app.log.info({ retried: n }, "webhook deliveries retried"); })
+      .catch((e) => app.log.warn(e, "webhook sweep failed"));
+  setTimeout(hookSweep, 45_000).unref();
+  setInterval(hookSweep, 2 * 60 * 1000).unref();
 }
 
 main().catch((err) => {

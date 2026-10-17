@@ -125,6 +125,10 @@ export async function fireTrigger(
   ctx: Record<string, string>,
   log?: { warn: (o: unknown, m: string) => void },
 ): Promise<number> {
+  // outbound webhooks share this emit point — fires whether or not a rule matches
+  void import("./integrations.js")
+    .then((m) => m.deliverHooks(orgId, trigger, ctx, log))
+    .catch((e) => log?.warn({ err: String(e) }, "webhook dispatch failed"));
   let fired = 0;
   try {
     const rules = await q<RuleRow>(

@@ -923,6 +923,52 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_id TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_until TIMESTAMPTZ`);
 
+  // public API — org-scoped service keys (app-only access; the key sees the
+  // org, not the creator's ACL — documented as service-principal semantics)
+  await pool.query(`CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prefix TEXT NOT NULL,                    -- "kx_ab12cd" — shown in lists
+    key_hash TEXT NOT NULL,                  -- sha256 hex of the full token
+    scopes JSONB NOT NULL DEFAULT '["read"]',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_apikeys_org ON api_keys(org_id) WHERE revoked_at IS NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)`);
+
+  // outbound webhooks — signed deliveries on the same events the automation
+  // engine emits; failed deliveries retry from the sweep
+  await pool.query(`CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    events JSONB NOT NULL DEFAULT '[]',      -- empty = all events
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_webhooks_org ON webhooks(org_id) WHERE active`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | delivered | failed
+    attempts INTEGER NOT NULL DEFAULT 0,
+    response_code INTEGER,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_whdel_due ON webhook_deliveries(next_retry_at) WHERE status = 'pending'`);
+
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);

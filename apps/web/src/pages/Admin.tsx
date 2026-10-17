@@ -134,6 +134,13 @@ export function Admin() {
   const [dlpEvents, setDlpEvents] = useState<{ id: string; rule: string; refType: string; refId: string; excerpt: string | null; action: string; actor: string | null; itemName: string | null; createdAt: string }[]>([]);
   const [dlpTab, setDlpTab] = useState<"open" | "confirmed" | "dismissed">("open");
   const [dlpForm, setDlpForm] = useState({ name: "", pattern: "", severity: "medium", action: "flag", appliesTo: "files" });
+  const [apiKeys, setApiKeys] = useState<{ id: string; name: string; prefix: string; scopes: string[]; last_used_at: string | null; creator: string | null }[]>([]);
+  const [newKey, setNewKey] = useState<{ name: string; scopes: string[] }>({ name: "", scopes: ["read"] });
+  const [freshKey, setFreshKey] = useState("");
+  const [webhooks, setWebhooks] = useState<{ id: string; url: string; events: string[]; active: boolean; failures: number; last_delivered: string | null }[]>([]);
+  const [hookForm, setHookForm] = useState({ url: "", events: "" });
+  const [hookDeliveries, setHookDeliveries] = useState<{ id: string; event: string; status: string; attempts: number; response_code: number | null; created_at: string }[]>([]);
+  const [hookOpen, setHookOpen] = useState<string | null>(null);
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
@@ -159,8 +166,10 @@ export function Admin() {
         api.get<{ holds: Hold[] }>("/api/admin/holds"),
         api.get<{ rules: typeof dlpRules }>("/api/admin/dlp/rules"),
         api.get<{ events: typeof dlpEvents }>("/api/admin/dlp/events?status=open"),
+        api.get<{ keys: typeof apiKeys }>("/api/admin/api-keys"),
+        api.get<{ hooks: typeof webhooks }>("/api/admin/webhooks"),
       ];
-      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl, dr, de] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[] },
@@ -177,6 +186,8 @@ export function Admin() {
         { holds: Hold[] },
         { rules: typeof dlpRules },
         { events: typeof dlpEvents },
+        { keys: typeof apiKeys },
+        { hooks: typeof webhooks },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -197,6 +208,8 @@ export function Admin() {
       setHolds(hl.holds);
       setDlpRules(dr.rules);
       setDlpEvents(de.events);
+      setApiKeys(ak.keys);
+      setWebhooks(wh.hooks);
     }
   }, [isSuper]);
 
@@ -1119,6 +1132,127 @@ export function Admin() {
             </span>
           </div>
         )}
+      </section>
+
+      <section className="admin-card">
+        <h2>API &amp; webhooks</h2>
+        <p className="d-sub" style={{ marginTop: -6 }}>
+          Public API base: <code>{PUBLIC_ORIGIN}/api/v1</code> — authenticate with <code>Authorization: Bearer kx_…</code>.
+          Keys are org-scoped service principals, not a user's ACL.
+        </p>
+        <div className="audit-bar" style={{ flexWrap: "wrap" }}>
+          <input placeholder="Key name" value={newKey.name}
+            onChange={(e) => setNewKey({ ...newKey, name: e.target.value })} style={{ width: 160 }} />
+          {["read", "write", "hooks"].map((s) => (
+            <label key={s} className="flag" style={{ flex: "0 0 auto" }}>
+              <input type="checkbox" checked={newKey.scopes.includes(s)}
+                onChange={(e) => setNewKey({ ...newKey, scopes: e.target.checked ? [...newKey.scopes, s] : newKey.scopes.filter((x) => x !== s) })} />
+              <span>{s}</span>
+            </label>
+          ))}
+          <button className="btn-secondary" disabled={!newKey.name.trim() || !newKey.scopes.length}
+            onClick={async () => {
+              try {
+                const r = await api.post<{ id: string; token: string }>("/api/admin/api-keys", newKey);
+                setFreshKey(r.token); setNewKey({ name: "", scopes: ["read"] });
+                await load();
+              } catch (e) { toast((e as Error).message); }
+            }}>+ API key</button>
+        </div>
+        {apiKeys.map((k) => (
+          <div key={k.id} className="pol-row">
+            <span>
+              <b>{k.name}</b> <code>{k.prefix}…</code>
+              <em style={{ display: "block" }}>
+                {k.scopes.join(", ")} · {k.creator ?? "service"} · {k.last_used_at ? `last used ${new Date(k.last_used_at).toLocaleDateString()}` : "never used"}
+              </em>
+            </span>
+            <button className="btn-ghost" onClick={async () => {
+              await api.del(`/api/admin/api-keys/${k.id}`).catch(() => {});
+              await load();
+            }}>Revoke</button>
+          </div>
+        ))}
+        {freshKey && (
+          <div className="pol-row">
+            <span>
+              <b>Copy this key now — it is shown once:</b>
+              <code style={{ display: "block", wordBreak: "break-all", marginTop: 4 }}>{freshKey}</code>
+              <button className="btn-secondary" style={{ marginTop: 6 }}
+                onClick={() => { void navigator.clipboard.writeText(freshKey); toast("Copied"); }}>Copy</button>
+              <button className="btn-ghost" style={{ marginTop: 6, marginLeft: 6 }} onClick={() => setFreshKey("")}>Dismiss</button>
+            </span>
+          </div>
+        )}
+
+        <h3 style={{ marginTop: 18 }}>Outbound webhooks</h3>
+        <p className="d-sub">POST a signed JSON payload to your endpoint on suite events (form submissions, file adds, task moves, meeting end). Verify with <code>x-kreatix-signature</code> (HMAC-SHA256).</p>
+        <div className="audit-bar" style={{ flexWrap: "wrap" }}>
+          <input placeholder="https://example.com/hook" value={hookForm.url}
+            onChange={(e) => setHookForm({ ...hookForm, url: e.target.value })} style={{ minWidth: 260 }} />
+          <input placeholder="events (comma-sep, blank = all)" value={hookForm.events}
+            onChange={(e) => setHookForm({ ...hookForm, events: e.target.value })} style={{ minWidth: 220 }} />
+          <button className="btn-secondary" disabled={!hookForm.url.trim()}
+            onClick={async () => {
+              try {
+                const r = await api.post<{ hook: { id: string; secret: string } }>("/api/admin/webhooks", {
+                  url: hookForm.url.trim(),
+                  events: hookForm.events.split(",").map((s) => s.trim()).filter(Boolean),
+                });
+                toast(`Webhook added — signing secret ${r.hook.secret.slice(0, 10)}… (shown in list)`);
+                setHookForm({ url: "", events: "" });
+                await load();
+              } catch (e) { toast((e as Error).message); }
+            }}>+ Webhook</button>
+        </div>
+        {webhooks.map((h) => (
+          <div key={h.id}>
+            <div className="pol-row">
+              <span>
+                <b style={{ wordBreak: "break-all" }}>{h.url}</b>
+                <em style={{ display: "block" }}>
+                  {h.events.length ? h.events.join(", ") : "all events"} · {h.active ? "active" : "paused"}
+                  {h.failures > 0 && ` · ${h.failures} failed`}
+                  {h.last_delivered && ` · last ok ${new Date(h.last_delivered).toLocaleString()}`}
+                </em>
+              </span>
+              <span style={{ display: "flex", gap: 4 }}>
+                <button className="btn-ghost btn-sm" onClick={async () => {
+                  const r = await api.post<{ ok: boolean; status?: number; error?: string }>(`/api/admin/webhooks/${h.id}/test`, {});
+                  toast(r.ok ? `Delivered (${r.status})` : `Failed — ${r.error ?? r.status}`);
+                }}>Test</button>
+                <button className="btn-ghost btn-sm" onClick={async () => {
+                  if (hookOpen === h.id) { setHookOpen(null); return; }
+                  const r = await api.get<{ deliveries: typeof hookDeliveries }>(`/api/admin/webhooks/${h.id}/deliveries`);
+                  setHookDeliveries(r.deliveries); setHookOpen(h.id);
+                }}>Log</button>
+                <button className="btn-ghost btn-sm" onClick={async () => {
+                  await api.post(`/api/admin/webhooks/${h.id}/toggle`, {}).catch(() => {}); await load();
+                }}>{h.active ? "Pause" : "Resume"}</button>
+                <button className="btn-ghost btn-sm" onClick={async () => {
+                  await api.del(`/api/admin/webhooks/${h.id}`).catch(() => {}); await load();
+                }}>Delete</button>
+              </span>
+            </div>
+            {hookOpen === h.id && (
+              <div className="tbl-scroll" style={{ marginTop: 4 }}>
+                <table className="admin-table">
+                  <thead><tr><th>Event</th><th>Status</th><th>Tries</th><th>Code</th><th>At</th></tr></thead>
+                  <tbody>
+                    {hookDeliveries.map((d) => (
+                      <tr key={d.id}>
+                        <td>{d.event}</td><td>{d.status}</td><td>{d.attempts}</td>
+                        <td>{d.response_code ?? "—"}</td><td>{new Date(d.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                    {!hookDeliveries.length && <tr><td colSpan={5} className="d-sub">No deliveries yet.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ))}
+        {!webhooks.length && <p className="d-sub">No webhooks configured.</p>}
       </section>
 
       <section className="admin-card">
