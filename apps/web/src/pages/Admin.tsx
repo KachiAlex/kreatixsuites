@@ -2,8 +2,8 @@
 // workspace billing; plus the platform superadmin surface when user.isSuper.
 // Server enforces owner/admin role; this UI is gated the same way.
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { api } from "../lib/api";
-import { PUBLIC_ORIGIN } from "../lib/platform";
+import { api, getToken } from "../lib/api";
+import { PUBLIC_ORIGIN, API_BASE } from "../lib/platform";
 import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/hooks";
@@ -1135,6 +1135,12 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
+        <h2>Branding</h2>
+        <p className="d-sub" style={{ marginTop: -6 }}>Your workspace's name and logo in the app shell, invite pages and document titles.</p>
+        <BrandingCard toast={toast} />
+      </section>
+
+      <section className="admin-card">
         <h2>API &amp; webhooks</h2>
         <p className="d-sub" style={{ marginTop: -6 }}>
           Public API base: <code>{PUBLIC_ORIGIN}/api/v1</code> — authenticate with <code>Authorization: Bearer kx_…</code>.
@@ -1413,6 +1419,62 @@ export function Admin() {
 
       {isSuper && <SuperPortal />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
+    </div>
+  );
+}
+
+/** White-label controls — org display name + logo (PNG/JPEG/SVG/WebP ≤512KB). */
+function BrandingCard({ toast }: { toast: (m: string) => void }) {
+  const { org, refreshUser } = useAuth();
+  const [name, setName] = useState(org?.brandName ?? "");
+  const [logoUrl, setLogoUrl] = useState(org?.logoUrl ?? null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setName(org?.brandName ?? ""); setLogoUrl(org?.logoUrl ?? null); }, [org]);
+
+  const saveName = async () => {
+    setBusy(true);
+    try {
+      await api.put("/api/admin/branding", { name: name.trim() });
+      await refreshUser();
+      toast("Branding saved");
+    } catch (e) { toast((e as Error).message); }
+    setBusy(false);
+  };
+
+  const uploadLogo = async (f: File) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/branding/logo`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${getToken() ?? ""}`, "content-type": f.type },
+        body: f,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? `HTTP ${res.status}`);
+      await refreshUser();
+      setLogoUrl((await res.json()).logoUrl);
+      toast("Logo updated");
+    } catch (e) { toast((e as Error).message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="audit-bar" style={{ flexWrap: "wrap", alignItems: "center" }}>
+      {logoUrl && <img src={logoUrl} alt="org logo" style={{ height: 34, width: "auto", borderRadius: 6, background: "#fff" }} />}
+      <input placeholder="Workspace name (blank = Kreatix Suites)" value={name}
+        onChange={(e) => setName(e.target.value)} style={{ minWidth: 220 }} />
+      <label className="btn-secondary" style={{ cursor: "pointer" }}>
+        {busy ? "…" : "Upload logo"}
+        <input type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp" hidden
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadLogo(f); e.target.value = ""; }} />
+      </label>
+      {logoUrl && (
+        <button className="btn-ghost" onClick={async () => {
+          await api.del("/api/admin/branding/logo").catch(() => {});
+          await refreshUser(); setLogoUrl(null);
+        }}>Remove logo</button>
+      )}
+      <button className="btn-primary" disabled={busy} onClick={() => void saveName()}>Save</button>
     </div>
   );
 }

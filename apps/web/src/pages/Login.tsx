@@ -20,6 +20,7 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   const [sso, setSso] = useState(false);
   const [saml, setSaml] = useState(false);
   const [inviteOrg, setInviteOrg] = useState<string | null>(null);
+  const [inviteBrand, setInviteBrand] = useState<{ name: string; logoUrl: string | null } | null>(null);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const invite = params.get("invite") ?? undefined;
@@ -52,8 +53,8 @@ export function Login({ mode }: { mode: "login" | "register" }) {
       .then((r) => setSaml(r.enabled))
       .catch(() => setSaml(false));
     if (invite) {
-      api.get<{ orgName: string }>(`/api/auth/invite/${invite}`)
-        .then((r) => setInviteOrg(r.orgName))
+      api.get<{ orgName: string; brand?: { name: string; logoUrl: string | null } }>(`/api/auth/invite/${invite}`)
+        .then((r) => { setInviteOrg(r.orgName); setInviteBrand(r.brand ?? null); })
         .catch(() => setError(t("auth.inviteExpired")));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,7 +92,13 @@ export function Login({ mode }: { mode: "login" | "register" }) {
   return (
     <div className="auth-wrap">
       <div>
-        <div className="auth-brand"><BrandLockup light size={64} /></div>
+        <div className="auth-brand">
+          {inviteBrand?.logoUrl
+            ? <img src={inviteBrand.logoUrl} alt={inviteBrand.name} style={{ height: 64, width: "auto", maxWidth: 280, objectFit: "contain" }} />
+            : inviteBrand
+              ? <span style={{ color: "#fff", fontSize: 30, fontWeight: 800, letterSpacing: -1 }}>{inviteBrand.name}</span>
+              : <BrandLockup light size={64} />}
+        </div>
         <form className="auth-card" onSubmit={submit}>
         <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : inviteOrg ? t("auth.joinOrg", { org: inviteOrg }) : t("auth.createWorkspace")}</h1>
         <p>{mfaToken ? t("auth.mfaPrompt") : t("auth.tagline")}</p>

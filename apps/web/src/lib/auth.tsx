@@ -14,7 +14,13 @@ export interface SessionPlan {
 }
 
 /** Org snapshot from /api/auth/me — onboardedAt drives the setup wizard. */
-export interface SessionOrg { name: string; onboardedAt: string | null }
+export interface SessionOrg {
+  name: string;
+  onboardedAt: string | null;
+  /** White-label — org display name/logo override (nulls = Kreatix brand). */
+  brandName?: string | null;
+  logoUrl?: string | null;
+}
 
 interface AuthState {
   user: User | null;

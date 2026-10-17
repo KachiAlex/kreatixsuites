@@ -769,3 +769,49 @@ export function integrationAdminRoutes(app: FastifyInstance) {
     return { ok: d?.status === "delivered", status: d?.response_code, error: d?.status !== "delivered" ? "delivery failed" : undefined };
   });
 }
+
+// ---------- white-labeling ----------
+
+export function brandingRoutes(app: FastifyInstance) {
+  app.addHook("preHandler", requireAuth);
+  const orgId = (req: FastifyRequest) => (req as AuthedRequest).user.orgId;
+
+  app.get("/api/org/brand", async (req) => {
+    const o = await one<{ name: string; brand_name: string | null; brand_logo: string | null }>(
+      "SELECT name, brand_name, brand_logo FROM orgs WHERE id = $1", [orgId(req)]);
+    return {
+      brand: {
+        name: o?.brand_name ?? o?.name ?? "",
+        logoUrl: o?.brand_logo ? `/api/org/brand/${orgId(req)}/logo` : null,
+      },
+    };
+  });
+
+  app.put("/api/admin/branding", { preHandler: requireOrgAdmin }, async (req, reply) => {
+    const body = z.object({ name: z.string().min(1).max(80) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid" });
+    await run("UPDATE orgs SET brand_name = $1 WHERE id = $2", [body.data.name, orgId(req)]);
+    return { ok: true };
+  });
+
+  // raw image bytes — capped at 512KB, stored in the blob store
+  app.post("/api/admin/branding/logo", { preHandler: requireOrgAdmin }, async (req, reply) => {
+    const buf = req.body as Buffer;
+    const mime = req.headers["content-type"] ?? "";
+    if (!/^image\/(png|jpeg|svg\+xml|webp|x-icon|vnd\.microsoft\.icon)$/.test(mime)) {
+      return reply.code(400).send({ error: "bad_type", message: "PNG, JPEG, SVG or WebP logo" });
+    }
+    if (!Buffer.isBuffer(buf) || buf.length === 0 || buf.length > 512 * 1024) {
+      return reply.code(400).send({ error: "bad_size", message: "Logo must be under 512KB" });
+    }
+    const { putBlob } = await import("../blobs.js");
+    const { key } = putBlob(buf);
+    await run("UPDATE orgs SET brand_logo = $1 WHERE id = $2", [key, orgId(req)]);
+    return { logoUrl: `/api/org/brand/${orgId(req)}/logo` };
+  });
+
+  app.delete("/api/admin/branding/logo", { preHandler: requireOrgAdmin }, async (req) => {
+    await run("UPDATE orgs SET brand_logo = NULL WHERE id = $1", [orgId(req)]);
+    return { ok: true };
+  });
+}

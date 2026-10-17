@@ -17,7 +17,7 @@ import { sharingRoutes } from "./routes/sharing.js";
 import { commentRoutes } from "./routes/comments.js";
 import { searchRoutes } from "./routes/search.js";
 import { aiRoutes } from "./routes/ai.js";
-import { adminRoutes, integrationAdminRoutes } from "./routes/admin.js";
+import { adminRoutes, integrationAdminRoutes, brandingRoutes } from "./routes/admin.js";
 import { ssoRoutes, ssoEnabled } from "./routes/sso.js";
 import { samlRoutes } from "./routes/saml.js";
 import { collabRoutes } from "./collab.js";
@@ -300,6 +300,7 @@ async function main() {
   app.register(noteRoutes);
   app.register(publicApiRoutes);
   app.register(integrationAdminRoutes);
+  app.register(brandingRoutes);
 
   // Production: serve the built SPA with client-side routing fallback
   const webDist = process.env.KREATIX_WEB_DIST ?? join(process.cwd(), "..", "web", "dist");

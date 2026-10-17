@@ -303,6 +303,22 @@ function Rail({ toast }: { toast: (m: string) => void }) {
   );
 }
 
+/** Sidebar brand lockup — org logo/name when white-labeled, Kreatix otherwise. */
+function OrgBrand() {
+  const { org } = useAuth();
+  useEffect(() => {
+    if (org?.brandName) document.title = org.brandName;
+  }, [org?.brandName]);
+  if (org?.logoUrl) {
+    return <img src={org.logoUrl} alt={org.brandName ?? org.name} draggable={false}
+      style={{ height: 34, width: "auto", maxWidth: 200, objectFit: "contain", display: "block" }} />;
+  }
+  if (org?.brandName) {
+    return <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.4, padding: "4px 6px" }}>{org.brandName}</span>;
+  }
+  return <BrandLockup size={34} />;
+}
+
 function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => void; open: boolean; onClose: () => void; toast: (m: string) => void }) {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -380,7 +396,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
   return (
     <aside className={`sidebar${open ? " open" : ""}`}>
       <div className="brand-name">
-        <BrandLockup size={34} />
+        <OrgBrand />
         <button className="sidebar-close iconbtn" onClick={onClose} aria-label={t("shell.closeNav")}>✕</button>
       </div>
       <div ref={menuRef} style={{ position: "relative" }}>

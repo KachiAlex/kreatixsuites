@@ -940,6 +940,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_apikeys_org ON api_keys(org_id) WHERE revoked_at IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)`);
 
+  // white-labeling — org display name + logo (blob key into the blob store)
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_name TEXT`);
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_logo TEXT`);
+
   // outbound webhooks — signed deliveries on the same events the automation
   // engine emits; failed deliveries retry from the sweep
   await pool.query(`CREATE TABLE IF NOT EXISTS webhooks (

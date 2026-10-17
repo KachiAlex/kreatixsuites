@@ -22,14 +22,36 @@ const registerSchema = z.object({
 });
 
 export function authRoutes(app: FastifyInstance) {
-  /** Invite-link preview — name of the workspace you're joining. */
+  /** Invite-link preview — name + branding of the workspace you're joining. */
   app.get("/api/auth/invite/:token", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
-    const inv = await one<{ org_id: string; name: string }>(
-      `SELECT i.org_id, o.name FROM org_invites i JOIN orgs o ON o.id = i.org_id
+    const inv = await one<{ org_id: string; name: string; brand_name: string | null; brand_logo: string | null }>(
+      `SELECT i.org_id, o.name, o.brand_name, o.brand_logo FROM org_invites i JOIN orgs o ON o.id = i.org_id
        WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
       [(req.params as { token: string }).token, now()]);
     if (!inv) return reply.code(404).send({ error: "not_found", message: "Invite expired or invalid" });
-    return { orgName: inv.name };
+    return {
+      orgName: inv.name,
+      brand: {
+        name: inv.brand_name ?? inv.name,
+        logoUrl: inv.brand_logo ? `/api/org/brand/${inv.org_id}/logo` : null,
+      },
+    };
+  });
+
+  /** Public org logo — non-sensitive brand asset (workspace icon), same model
+   *  as Slack/Discord public workspace icons. */
+  app.get("/api/org/brand/:orgId/logo", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    const { orgId } = req.params as { orgId: string };
+    const org = await one<{ brand_logo: string | null }>(
+      "SELECT brand_logo FROM orgs WHERE id = $1", [orgId]);
+    if (!org?.brand_logo) return reply.code(404).send({ error: "not_found" });
+    const { getBlob } = await import("../blobs.js");
+    const buf = getBlob(org.brand_logo);
+    if (!buf) return reply.code(404).send({ error: "not_found" });
+    return reply
+      .header("content-type", "image/png")
+      .header("cache-control", "public, max-age=3600")
+      .send(buf);
   });
 
   app.post("/api/auth/register", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
@@ -163,11 +185,15 @@ export function authRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const sub = await ensureSubscription(user.orgId);
     const plan = await effectivePlan(sub);
-    const org = await one<{ name: string; onboarded_at: string | null }>(
-      "SELECT name, onboarded_at FROM orgs WHERE id = $1", [user.orgId]);
+    const org = await one<{ name: string; onboarded_at: string | null; brand_name: string | null; brand_logo: string | null }>(
+      "SELECT name, onboarded_at, brand_name, brand_logo FROM orgs WHERE id = $1", [user.orgId]);
     return {
       user,
-      org: { name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null },
+      org: {
+        name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null,
+        brandName: org?.brand_name ?? null,
+        logoUrl: org?.brand_logo ? `/api/org/brand/${user.orgId}/logo` : null,
+      },
       plan: { slug: plan.slug, name: plan.name, features: plan.features ?? {}, limits: plan.limits ?? {}, state: effectiveState(sub).state },
     };
   });
