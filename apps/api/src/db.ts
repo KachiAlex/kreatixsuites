@@ -631,6 +631,9 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // via /api/meet/dialin-map (Jitsi conferenceMapper protocol)
   await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS dial_pin TEXT`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_dial_pin ON meetings(dial_pin) WHERE dial_pin IS NOT NULL`);
+  // Zoom-style personal meeting room — one stable room per user
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS is_personal BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_personal ON meetings(created_by) WHERE is_personal`);
 
   // Kreatix Chat — Teams-style channels + DMs per org. 'channel' rows are
   // org-wide (visible to every member); 'dm'/'group' rows are member-scoped

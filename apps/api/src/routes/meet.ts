@@ -14,6 +14,7 @@ interface MeetingRow {
   created_by: string; scheduled_at: string | null; status: string;
   created_at: string; ended_at: string | null; channel_id: string | null;
   summary: string | null; dial_pin: string | null; creator_name?: string;
+  is_personal?: boolean;
 }
 
 /** Jitsi MUC domain the deployment uses — default of docker-jitsi-meet; the
@@ -47,6 +48,7 @@ const meetingOut = (r: MeetingRow & { rec_count?: number; channel_id?: string | 
   summary: r.summary ? decryptField(r.summary) ?? r.summary : null,
   dialIn: dialInNumber() || null,
   dialPin: r.dial_pin ?? null,
+  personal: !!r.is_personal,
 });
 
 /** Record a participant join (idempotent roster row per meeting+user). */
@@ -67,6 +69,7 @@ const joinPayload = (m: MeetingRow, user: { displayName: string; email: string }
   channelId: m.channel_id,
   dialIn: dialInNumber() || null,
   dialPin: m.dial_pin ?? null,
+  moderator,
 });
 
 export function meetRoutes(app: FastifyInstance) {
@@ -144,6 +147,50 @@ export function meetRoutes(app: FastifyInstance) {
     return reply.code(201).send({ meeting: { ...meetingOut(row!), createdByName: user.displayName }, join: joinPayload(row!, user, true) });
   });
 
+  /** Zoom-style personal room — one stable code per user, created on first
+   *  use. Always joinable; the owner is the moderator by definition. */
+  app.post("/api/meet/personal", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!meetEnabled()) return reply.code(404).send({ error: "meet_disabled", message: "Meet is not configured" });
+    let m = await one<MeetingRow>(
+      `SELECT m.*, u.display_name AS creator_name FROM meetings m
+       JOIN users u ON u.id = m.created_by
+       WHERE m.org_id = $1 AND m.created_by = $2 AND m.is_personal`,
+      [user.orgId, user.id]);
+    if (!m) {
+      const code = `kx-p${user.id.replace(/-/g, "").slice(0, 10)}`;
+      m = await one<MeetingRow>(
+        `INSERT INTO meetings (id, org_id, code, title, created_by, status, dial_pin, is_personal)
+         VALUES ($1,$2,$3,$4,$5,'live',$6,true)
+         ON CONFLICT (org_id, code) DO UPDATE SET title = meetings.title
+         RETURNING *, $4::text AS creator_name`,
+        [randomUUID(), user.orgId, code, `${user.displayName}'s room`, user.id, await genDialPin()]);
+    }
+    if (m!.status === "ended") await run("UPDATE meetings SET status = 'live', ended_at = NULL WHERE id = $1", [m!.id]);
+    await markJoin(m!.id, user.id);
+    return { meeting: meetingOut(m!), join: joinPayload(m!, user, true) };
+  });
+
+  /** Canonical invite block — link + code (+ dial-in/PIN when provisioned).
+   *  Host copies it into mail/chat; guests land in the lobby. */
+  app.get("/api/meet/:id/invite", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const m = await getMeeting((req.params as { id: string }).id, user.orgId);
+    if (!m) return notFound(reply);
+    const url = `${meetBase()}/${m.code}#config.disableThirdPartyRequests=true&config.disableDeepLinking=true` +
+      `&interfaceConfig.SHOW_JITSI_WATERMARK=false&interfaceConfig.SHOW_WATERMARK_FOR_GUESTS=false` +
+      `&interfaceConfig.APP_NAME=%22Kreatix%20Meet%22&interfaceConfig.MOBILE_APP_PROMO=false`;
+    const lines = [
+      `${m.creator_name ?? "A teammate"} invited you to a Kreatix Meet`,
+      ``,
+      `Join: ${url}`,
+      `Meeting code: ${m.code}`,
+    ];
+    if (dialInNumber() && m.dial_pin)
+      lines.push(`Dial-in: ${dialInNumber()} · PIN ${m.dial_pin}`);
+    return { url, text: lines.join("\n") };
+  });
+
   app.get("/api/meet/:id/join", async (req, reply) => {
     const { user } = req as AuthedRequest;
     if (!meetEnabled()) return reply.code(404).send({ error: "meet_disabled", message: "Meet is not configured" });
@@ -177,7 +224,9 @@ export function meetRoutes(app: FastifyInstance) {
     return { join: joinPayload(m, user, m.created_by === user.id) };
   });
 
-  /** Guest link — outsiders open the Jitsi URL directly with a guest JWT. */
+  /** Guest link — outsiders open the Jitsi URL directly, no JWT: they land
+   *  on the guest domain and wait in the lobby until a moderator admits
+   *  them (Zoom's waiting room). Org members always join via suite JWT. */
   app.post("/api/meet/:id/guest-link", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const m = await getMeeting((req.params as { id: string }).id, user.orgId);
@@ -185,12 +234,11 @@ export function meetRoutes(app: FastifyInstance) {
     if (m.created_by !== user.id && user.role !== "owner" && user.role !== "admin")
       return reply.code(403).send({ error: "forbidden", message: "Only the host can share a guest link" });
     if (m.status === "ended") return reply.code(410).send({ error: "ended", message: "This meeting has ended" });
-    const jwt = mintMeetToken({ room: m.code, name: "Guest", ttlSec: 6 * 3600 });
     // Guests land on Jitsi directly (no iframe), so tune via URL-hash config instead.
     const tuning = "#config.disableThirdPartyRequests=true&config.disableDeepLinking=true" +
       "&interfaceConfig.SHOW_JITSI_WATERMARK=false&interfaceConfig.SHOW_WATERMARK_FOR_GUESTS=false" +
       "&interfaceConfig.APP_NAME=%22Kreatix%20Meet%22&interfaceConfig.MOBILE_APP_PROMO=false";
-    return { url: `${meetBase()}/${m.code}?jwt=${jwt}${tuning}` };
+    return { url: `${meetBase()}/${m.code}${tuning}` };
   });
 
   app.post("/api/meet/:id/end", async (req, reply) => {

@@ -3091,6 +3091,11 @@ html[data-theme="dark"]{
 .meet-rec-tools{display:flex;gap:4px;flex-wrap:wrap}
 .meet-rec-tools .btn-ghost{font-size:11px;padding:3px 8px}
 .meet-att{display:flex;align-items:baseline;gap:8px;font-size:12.5px}
+.meet-roster{border-bottom:1px solid #232327;max-height:128px;overflow:auto}
+.meet-roster-list{display:flex;flex-wrap:wrap;gap:5px;padding:8px 10px}
+.meet-roster-chip{font-size:11px;color:#e8e8ea;background:#1f8a4c33;border:1px solid #1f8a4c66;border-radius:999px;padding:3px 9px}
+.meet-roster-chip.left{color:#8b8b93;background:#232327;border-color:#2e2e34}
+.meet-pbadge{font-size:10px;font-weight:700;color:var(--k-orange);border:1px solid var(--k-orange);border-radius:999px;padding:1px 7px;margin-left:6px;text-transform:uppercase;letter-spacing:.4px}
 .meet-transcript{white-space:pre-wrap;font:12px/1.6 var(--font);max-height:60vh;overflow:auto;margin:0;color:var(--ink)}
 
 /* onboarding wizard */

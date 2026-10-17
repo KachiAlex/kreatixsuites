@@ -13,13 +13,13 @@ interface Meeting {
   id: string; code: string; title: string; status: string;
   scheduledAt: string | null; createdBy: string; createdByName: string | null;
   createdAt: string; endedAt: string | null; recordings: number; channelId: string | null;
-  summary: string | null;
+  summary: string | null; personal?: boolean;
 }
 interface Rec {
   id: string; size: number | null; durationSec: number | null; createdAt: string; name: string;
   clipStart: number | null; clipEnd: number | null; hasTranscript: boolean;
 }
-interface JoinInfo { base: string; room: string; jwt: string; displayName: string; meetingId: string; channelId: string | null; dialIn: string | null }
+interface JoinInfo { base: string; room: string; jwt: string; displayName: string; meetingId: string; channelId: string | null; dialIn: string | null; moderator?: boolean }
 interface ChatMsg { id: string; body: string; author: { id: string; name: string; initials: string }; createdAt: string }
 
 declare global {
@@ -69,6 +69,7 @@ export function Meet() {
   const [attFor, setAttFor] = useState<string | null>(null);
   const [attendees, setAttendees] = useState<{ userId: string; name: string; joinedAt: string; leftAt: string | null }[]>([]);
   const [meetChat, setMeetChat] = useState<ChatMsg[]>([]);
+  const [roster, setRoster] = useState<{ name: string; leftAt: string | null }[]>([]);
   const [chatDraft, setChatDraft] = useState("");
   const chatRef = useRef<HTMLDivElement>(null);
   const recVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
@@ -124,14 +125,23 @@ export function Meet() {
           constraints: { video: { height: { ideal: 720, max: 720, min: 240 } } },
           p2p: { enabled: true },                      // 1:1 calls bypass the bridge
           enableWelcomePage: false,
-          // Breakout rooms: available to moderators (host) via the participants pane.
-          breakoutRooms: { hideAddRoomButton: false, hideAutoAssignButton: false, hideJoinRoomButton: false },
+          disablePolls: false,                         // in-call polls (Zoom parity)
+          enableNoisyMicDetection: true,
+          // Breakout rooms: host creates/auto-assigns; everyone can join when sent.
+          breakoutRooms: {
+            hideAddRoomButton: !call.moderator,
+            hideAutoAssignButton: !call.moderator,
+            hideJoinRoomButton: false,
+          },
           toolbarButtons: [
             "microphone", "camera", "desktop", "participants-pane", "tileview",
-            "raisehand", "reactions", "select-background", "videoquality",
-            "settings", "fullscreen", "whiteboard", "recording", "security",
-            "shortcuts", "stats", "mute-everyone", "mute-video-everyone", "hangup",
-          ],
+            "raisehand", "reactions", "polls", "speakerstats", "select-background",
+            "videoquality", "settings", "fullscreen", "whiteboard", "recording",
+            "security", "shortcuts", "stats", "mute-everyone", "mute-video-everyone",
+            "hangup",
+          ].filter((b) => call.moderator ||
+            // Jitsi auto-hides moderator-only actions anyway; keep the bar clean
+            !["recording", "security", "mute-everyone", "mute-video-everyone"].includes(b)),
         },
         interfaceConfigOverwrite: {
           APP_NAME: "Kreatix Meet",
@@ -162,6 +172,24 @@ export function Meet() {
     });
     return () => { cancelled = true; apiRef.current?.dispose(); apiRef.current = null; host.innerHTML = ""; };
   }, [call, user?.email]);
+
+  const personalRoom = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<{ join: JoinInfo }>("/api/meet/personal", {});
+      setCall(r.join);
+      void load();
+    } catch (e) { toast(e instanceof Error ? e.message : "Could not open your room"); }
+    setBusy(false);
+  };
+
+  const copyInvite = async (meetingId: string) => {
+    try {
+      const r = await api.get<{ text: string }>(`/api/meet/${meetingId}/invite`);
+      await navigator.clipboard.writeText(r.text);
+      toast("Invite copied — guests wait in the lobby for the host");
+    } catch (e) { toast((e as Error).message); }
+  };
 
   const meetNow = async () => {
     setBusy(true);
@@ -205,14 +233,6 @@ export function Meet() {
     setBusy(false);
   };
 
-  const copyGuestLink = async (m: Meeting) => {
-    try {
-      const r = await api.post<{ url: string }>(`/api/meet/${m.id}/guest-link`, {});
-      await navigator.clipboard.writeText(r.url);
-      toast("Guest link copied — anyone with it can join");
-    } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
-  };
-
   const endMeeting = async (m: Meeting) => {
     await api.post(`/api/meet/${m.id}/end`, {}).catch((e) => toast((e as Error).message));
     void load();
@@ -233,6 +253,23 @@ export function Meet() {
       setAttendees(r.attendees); setAttFor(m.id);
     } catch (e) { toast((e as Error).message); }
   };
+
+  // Live roster — suite members who joined (attendance marks on join); poll
+  // while in-call. Guests aren't tracked here — they show in Jitsi's own pane.
+  useEffect(() => {
+    if (!call) { setRoster([]); return; }
+    let dead = false;
+    const pull = async () => {
+      try {
+        const r = await api.get<{ attendees: { name: string; leftAt: string | null }[] }>(
+          `/api/meet/${call.meetingId}/attendance`);
+        if (!dead) setRoster(r.attendees);
+      } catch { /* transient */ }
+    };
+    void pull();
+    const t = setInterval(() => void pull(), 10_000);
+    return () => { dead = true; clearInterval(t); };
+  }, [call]);
 
   // Meeting chat — the linked channel persists after the call ends; poll while in-call.
   useEffect(() => {
@@ -325,13 +362,30 @@ export function Meet() {
     <div className="meet-call">
       <div className="meet-call-bar">
         <button className="btn-ghost btn-sm" onClick={() => setCall(null)}>← Back to meetings</button>
+        <button className="btn-ghost btn-sm" onClick={() => void copyInvite(call.meetingId)}>📋 Copy invite</button>
         {call.dialIn && <span className="d-sub" style={{ marginLeft: 12 }}>📞 Dial-in: {call.dialIn}</span>}
-        {recOn && <span className="d-sub" style={{ marginLeft: "auto" }}>Moderators: recording & breakout rooms are in the Jitsi toolbar</span>}
+        {recOn && call.moderator && (
+          <span className="d-sub" style={{ marginLeft: "auto" }}>
+            Host tools: recording · breakout rooms · lobby & passcode in the toolbar
+          </span>
+        )}
       </div>
       <div className="meet-call-body">
         <div ref={frameHost} className="meet-frame" />
-        {call.channelId && (
+        {(call.channelId || roster.length > 0) && (
           <div className="meet-chat">
+            {roster.length > 0 && (
+              <div className="meet-roster">
+                <div className="meet-chat-h">Participants <span className="d-sub">— suite members</span></div>
+                <div className="meet-roster-list">
+                  {roster.map((p, i) => (
+                    <span key={i} className={`meet-roster-chip${p.leftAt ? " left" : ""}`}>{p.name}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {call.channelId && (
+            <>
             <div className="meet-chat-h">Meeting chat <span className="d-sub">— saved to Chat</span></div>
             <div className="meet-chat-msgs" ref={chatRef}>
               {meetChat.length === 0 && <span className="d-sub" style={{ padding: 8 }}>Messages here persist after the meeting.</span>}
@@ -348,6 +402,8 @@ export function Meet() {
                 onKeyDown={(e) => e.key === "Enter" && void sendMeetChat()} />
               <button className="btn-primary btn-sm" onClick={() => void sendMeetChat()}>Send</button>
             </div>
+            </>
+            )}
           </div>
         )}
       </div>
@@ -366,6 +422,7 @@ export function Meet() {
         <span className="d-sub">
           {m.scheduledAt ? fmtWhen(m.scheduledAt) : fmtWhen(m.createdAt)}
           {m.createdByName ? ` · ${m.createdByName}` : ""} · <code>{m.code}</code>
+          {m.personal && <span className="meet-pbadge">personal</span>}
         </span>
         {recFor === m.id && (
           <div className="meet-recs">
@@ -439,7 +496,7 @@ export function Meet() {
       {m.status !== "ended" && (
         <>
           <button className="btn-primary btn-sm" disabled={busy} onClick={() => void join(m)}>Join</button>
-          <button className="btn-ghost btn-sm" title="Copy guest link" onClick={() => void copyGuestLink(m)}>🔗</button>
+          <button className="btn-ghost btn-sm" title="Copy invite (link + code)" onClick={() => void copyInvite(m.id)}>�</button>
           {(m.createdBy === user?.id || user?.role === "owner" || user?.role === "admin") && (
             <button className="btn-ghost btn-sm" title="End meeting" onClick={() => void endMeeting(m)}>End</button>
           )}
@@ -456,6 +513,8 @@ export function Meet() {
         <div className="meet-actions">
           <button className="btn-primary" disabled={busy} onClick={() => void meetNow()}>▶ Meet now</button>
           <button className="btn-secondary" onClick={() => setSchedOpen(true)}>📅 Schedule</button>
+          <button className="btn-secondary" disabled={busy} title="Your permanent room — same link every time"
+            onClick={() => void personalRoom()}>🏠 Personal room</button>
           <div className="meet-joincode">
             <input placeholder="Enter a code — kx-…" value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
