@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { createReadStream, statSync, existsSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
 import { z } from "zod";
@@ -13,7 +13,22 @@ interface MeetingRow {
   id: string; org_id: string; code: string; title: string;
   created_by: string; scheduled_at: string | null; status: string;
   created_at: string; ended_at: string | null; channel_id: string | null;
-  summary: string | null; creator_name?: string;
+  summary: string | null; dial_pin: string | null; creator_name?: string;
+}
+
+/** Jitsi MUC domain the deployment uses — default of docker-jitsi-meet; the
+ *  conference mapper returns <room>@<this>. */
+const MUC_DOMAIN = () => process.env.KREATIX_MEET_MUC_DOMAIN ?? "muc.meet.jitsi";
+
+/** 9-digit numeric PIN for PSTN dial-in — unique across meetings; retries on
+ *  the (rare) collision via the unique index. */
+async function genDialPin(): Promise<string> {
+  for (let i = 0; i < 8; i++) {
+    const pin = String(randomInt(100_000_000, 1_000_000_000));
+    const clash = await one(`SELECT 1 AS x FROM meetings WHERE dial_pin = $1`, [pin]);
+    if (!clash) return pin;
+  }
+  return String(randomInt(1_000_000_000, 9_999_999_999));
 }
 
 const createSchema = z.object({
@@ -30,6 +45,8 @@ const meetingOut = (r: MeetingRow & { rec_count?: number; channel_id?: string | 
   recordings: Number(r.rec_count ?? 0),
   channelId: r.channel_id ?? null,
   summary: r.summary ? decryptField(r.summary) ?? r.summary : null,
+  dialIn: dialInNumber() || null,
+  dialPin: r.dial_pin ?? null,
 });
 
 /** Record a participant join (idempotent roster row per meeting+user). */
@@ -49,10 +66,18 @@ const joinPayload = (m: MeetingRow, user: { displayName: string; email: string }
   meetingId: m.id,
   channelId: m.channel_id,
   dialIn: dialInNumber() || null,
+  dialPin: m.dial_pin ?? null,
 });
 
 export function meetRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
+
+  // backfill dial PINs for meetings created before dial-in support
+  void (async () => {
+    const missing = await q<{ id: string }>(`SELECT id FROM meetings WHERE dial_pin IS NULL LIMIT 500`);
+    for (const r of missing)
+      await run(`UPDATE meetings SET dial_pin = $2 WHERE id = $1 AND dial_pin IS NULL`, [r.id, await genDialPin()]).catch(() => {});
+  })();
 
   const getMeeting = async (id: string, orgId: string) =>
     one<MeetingRow>(
@@ -88,12 +113,13 @@ export function meetRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid meeting" });
     const { title, scheduledAt, startNow } = parsed.data;
     const code = `kx-${randomBytes(5).toString("hex")}`;
+    const dialPin = await genDialPin();
     const row = await one<MeetingRow>(
-      `INSERT INTO meetings (id, org_id, code, title, created_by, scheduled_at, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *, NULL AS creator_name`,
+      `INSERT INTO meetings (id, org_id, code, title, created_by, scheduled_at, status, dial_pin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *, NULL AS creator_name`,
       [randomUUID(), user.orgId, code,
        title?.trim() || `${user.displayName}'s meeting`,
-       user.id, scheduledAt ?? null, startNow ? "live" : "scheduled"]);
+       user.id, scheduledAt ?? null, startNow ? "live" : "scheduled", dialPin]);
     // every meeting gets a suite chat channel so in-call chat persists after
     // the call ends (the Jitsi iframe chat dies with the room)
     if (row) {
@@ -348,5 +374,45 @@ export function meetIngestRoutes(app: FastifyInstance) {
        VALUES ($1,$2,'meet',$3,$4)`,
       [randomUUID(), m.created_by, m.created_by, encryptField(`Recording ready: ${m.title}`)]);
     return reply.code(row ? 201 : 200).send({ ok: true, id: row?.id ?? null });
+  });
+
+  /**
+   * Jitsi conferenceMapper protocol — the piece an IVR (Asterisk/FreeSWITCH)
+   * queries to turn a dialled PIN into the conference Jigasi should join.
+   *   GET /api/meet/dialin-map?id=<pin>                  → { id, conference, name }
+   *   GET /api/meet/dialin-map?conference=<room@muc>     → same (reverse lookup,
+   *                                                       used by the Jitsi web
+   *                                                       "dial in" dialog via
+   *                                                       dialInConfCodeUrl)
+   * Deliberately unauthenticated — PBX/Jigasi infra calls it; it only reveals a
+   * room name for a PIN, and rooms themselves stay JWT-gated.
+   */
+  app.get("/api/meet/dialin-map", async (req, reply) => {
+    const { id, conference } = req.query as { id?: string; conference?: string };
+    let m: MeetingRow | undefined;
+    if (id && /^\d{6,12}$/.test(id)) {
+      m = await one<MeetingRow>(`SELECT * FROM meetings WHERE dial_pin = $1`, [id]);
+    } else if (conference) {
+      const room = conference.split("@")[0];
+      if (/^kx-[0-9a-f]{10}$/i.test(room))
+        m = await one<MeetingRow>(`SELECT * FROM meetings WHERE code = $1`, [room.toLowerCase()]);
+    }
+    if (!m) return reply.code(404).send({ error: "not_found" });
+    return {
+      id: m.dial_pin,
+      conference: `${m.code}@${MUC_DOMAIN()}`,
+      name: m.title,
+      meeting_id: m.id,
+    };
+  });
+
+  /** phoneNumberList for the Jitsi "invite → dial in" dialog (dialInNumbersUrl). */
+  app.get("/api/meet/dialin-numbers", async (_req, reply) => {
+    const number = dialInNumber();
+    if (!number) return reply.code(404).send({ error: "disabled" });
+    return {
+      numbers: { default: [number] },
+      conferenceMapper: `${process.env.KREATIX_PUBLIC_URL ?? ""}/api/meet/dialin-map`,
+    };
   });
 }
