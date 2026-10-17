@@ -122,8 +122,14 @@ async function main() {
 
   // Baseline security headers at the app layer so they hold regardless of the
   // fronting proxy (nginx sets the same set in deploy/ but isn't guaranteed).
+  // The Jitsi origin (KREATIX_MEET_BASE) must be script-src'd — Meet mounts
+  // external_api.js from it — and needs camera/mic delegation for the iframe.
+  const meetOrigin = (() => {
+    try { return process.env.KREATIX_MEET_BASE ? new URL(process.env.KREATIX_MEET_BASE).origin : ""; }
+    catch { return ""; }
+  })();
   const CSP =
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; " +
+    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
     "font-src 'self' data:; connect-src 'self' wss: https://cloudflareinsights.com; worker-src 'self' blob:; " +
     "media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; " +
@@ -137,7 +143,8 @@ async function main() {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "SAMEORIGIN");
     reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    reply.header("Permissions-Policy", "microphone=(self), camera=(), geolocation=()");
+    reply.header("Permissions-Policy",
+      `microphone=(self${meetOrigin ? ` "${meetOrigin}"` : ""}), camera=(self${meetOrigin ? ` "${meetOrigin}"` : ""}), geolocation=(), display-capture=(self${meetOrigin ? ` "${meetOrigin}"` : ""})`);
     if ((req.raw.socket as { encrypted?: boolean }).encrypted
       || req.headers["x-forwarded-proto"] === "https") {
       reply.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");

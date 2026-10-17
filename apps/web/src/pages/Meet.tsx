@@ -103,6 +103,10 @@ export function Meet() {
       const s = document.createElement("script");
       s.src = `${call.base}/external_api.js`;
       s.onload = boot;
+      s.onerror = () => {
+        toast("Couldn't load the meeting client — check that the Meet service is reachable");
+        setCall(null);
+      };
       document.head.appendChild(s);
     }
     return () => { cancelled = true; apiRef.current?.dispose(); apiRef.current = null; host.innerHTML = ""; };
