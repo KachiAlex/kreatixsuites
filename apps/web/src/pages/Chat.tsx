@@ -81,11 +81,16 @@ export function Chat() {
   const navigate = useNavigate();
   const msgsRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
+  const activeObjRef = useRef<Channel | null>(null);
+  const channelsRef = useRef<Channel[]>([]);
   const threadRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sendingRef = useRef(false);
 
   activeRef.current = active?.id ?? null;
+  activeObjRef.current = active;
+  channelsRef.current = channels;
   threadRef.current = thread?.id ?? null;
 
   const loadChannels = useCallback(async () => {
@@ -96,9 +101,10 @@ export function Chat() {
     } catch { /* listed on next tick */ }
   }, []);
 
-  const loadMessages = useCallback(async (ch: Channel, before?: string) => {
+  const loadMessages = useCallback(async (ch: Channel, before?: string, beforeId?: string) => {
     const r = await api.get<{ messages: Message[] }>(
-      `/api/chat/${ch.id}/messages${before ? `?before=${encodeURIComponent(before)}` : ""}`);
+      `/api/chat/${ch.id}/messages${before
+        ? `?before=${encodeURIComponent(before)}&beforeId=${encodeURIComponent(beforeId ?? "")}` : ""}`);
     if (before) setMessages((m) => [...r.messages, ...m]);
     else {
       setMessages(r.messages);
@@ -122,13 +128,16 @@ export function Chat() {
   useEffect(() => {
     void loadChannels();
     let dead = false, retry: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0, hadReady = false;
     const connect = () => {
       if (dead) return;
       const t = getToken();
       if (!t) return;
       const wsProto = API_BASE ? API_BASE.replace(/^http/, "ws") : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
-      const ws = new WebSocket(`${wsProto}/api/chat/stream?t=${encodeURIComponent(t)}`);
+      const ws = new WebSocket(`${wsProto}/api/chat/stream`);
       wsRef.current = ws;
+      // auth rides the first frame, not the URL — keeps the token out of proxy logs
+      ws.onopen = () => ws.send(JSON.stringify({ t: "auth", token: t }));
       ws.onmessage = (ev) => {
         try {
           const e = JSON.parse(ev.data as string) as
@@ -141,7 +150,17 @@ export function Chat() {
             | { t: "typing"; channelId: string; userId: string; name: string }
             | { t: "presence"; userId: string; online: boolean }
             | { t: "ready"; online?: string[] };
-          if (e.t === "ready") { setOnline(new Set(e.online ?? [])); return; }
+          if (e.t === "ready") {
+            // reconnect — the socket missed events; resync list + open channel
+            if (hadReady) {
+              void loadChannels();
+              const ch = activeObjRef.current;
+              if (ch) void loadMessages(ch);
+            }
+            hadReady = true; attempt = 0;
+            setOnline(new Set(e.online ?? []));
+            return;
+          }
           if (e.t === "presence") {
             setOnline((s) => { const n = new Set(s); e.online ? n.add(e.userId) : n.delete(e.userId); return n; });
             return;
@@ -159,7 +178,21 @@ export function Chat() {
               setMessages((m) => (m.some((x) => x.id === e.message.id) || e.message.replyTo ? m : [...m, e.message]));
               void api.post(`/api/chat/${e.channelId}/read`, {}).catch(() => {});
             }
-            void loadChannels();
+            // patch the list locally — a full refetch per message doesn't scale
+            if (!channelsRef.current.some((c) => c.id === e.channelId)) {
+              void loadChannels();   // a conversation we didn't know (new dm/group)
+            } else setChannels((cs) => {
+              const c = cs.find((x) => x.id === e.channelId);
+              if (!c) return cs;
+              const updated: Channel = {
+                ...c,
+                lastMessage: e.message.body || (e.message.file ? `📎 ${e.message.file.name}` : c.lastMessage),
+                lastAt: e.message.createdAt,
+                unread: e.channelId === activeRef.current || e.message.author.id === user?.id
+                  ? c.unread : c.unread + 1,
+              };
+              return [updated, ...cs.filter((x) => x.id !== c.id)];
+            });
             return;
           }
           if (e.t === "message:update") {
@@ -208,7 +241,11 @@ export function Chat() {
       };
       ws.onclose = () => {
         wsRef.current = null;
-        if (!dead) retry = setTimeout(connect, 4000);
+        if (!dead) {
+          attempt += 1;
+          const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5)) + Math.random() * 1000;
+          retry = setTimeout(connect, delay);
+        }
       };
     };
     connect();
@@ -220,7 +257,7 @@ export function Chat() {
       if (pollRef.current) clearInterval(pollRef.current);
       wsRef.current?.close();
     };
-  }, [loadChannels]);
+  }, [loadChannels, loadMessages]);
 
   // keep scrolled to the newest message
   useEffect(() => {
@@ -229,9 +266,10 @@ export function Chat() {
   }, [messages.length, active?.id]);
 
   const send = async () => {
-    if (!active) return;
+    if (!active || sendingRef.current) return;
     const text = draft.trim();
     if (!text && !attach) return;
+    sendingRef.current = true;
     const file = attach;
     setDraft(""); setAttach(null); setMentionQ(null);
     try {
@@ -249,7 +287,7 @@ export function Chat() {
     } catch (e) {
       setDraft(text); setAttach(file);
       toast((e as Error).message);
-    }
+    } finally { sendingRef.current = false; }
   };
 
   /** Attach from this computer: upload straight into Drive, then post the
@@ -544,7 +582,7 @@ export function Chat() {
             )}
             <div className="chat-msgs" ref={msgsRef}>
               {hasMore && messages.length > 0 && (
-                <button className="chat-more" onClick={() => void loadMessages(active, messages[0].createdAt)}>Load earlier</button>
+                <button className="chat-more" onClick={() => void loadMessages(active, messages[0].createdAt, messages[0].id)}>Load earlier</button>
               )}
               {topLevel.map((m, i) => {
                 const prev = topLevel[i - 1];

@@ -91,49 +91,85 @@ const postSchema = z.object({
   fileId: z.string().max(64).nullish(),
 });
 
+/** dm/group member lists are frozen at creation — cache them so typing pings
+ *  don't hit the DB per frame. Channels broadcast org-wide and skip it. */
+const memberCache = new Map<string, { ids: string[]; at: number }>();
+const cachedMembers = async (channelId: string) => {
+  const hit = memberCache.get(channelId);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ids;
+  const ids = (await q<{ user_id: string }>(
+    "SELECT user_id FROM chat_members WHERE channel_id = $1", [channelId])).map((r) => r.user_id);
+  memberCache.set(channelId, { ids, at: Date.now() });
+  return ids;
+};
+
+/** Typing relay — channels go org-wide; dm/group require actual membership
+ *  (a non-member must not be able to inject activity into someone else's dm). */
+const relayTyping = async (u: UserRow, channelId: string) => {
+  const c = await one<{ id: string; kind: string }>(
+    "SELECT id, kind FROM chat_channels WHERE id = $1 AND org_id = $2", [channelId, u.org_id]);
+  if (!c) return;
+  if (c.kind === "channel") {
+    broadcast(u.org_id, null, { t: "typing", channelId: c.id, userId: u.id, name: u.display_name });
+    return;
+  }
+  const members = await cachedMembers(c.id);
+  if (!members.includes(u.id)) return;
+  broadcast(u.org_id, members, { t: "typing", channelId: c.id, userId: u.id, name: u.display_name });
+};
+
+/** Reactions: emoji (or emoji sequence) only — no arbitrary strings. */
+const EMOJI_RE = /^(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\u200D|\uFE0F)+$/u;
+
 export function chatRoutes(app: FastifyInstance) {
 
   // ---- live stream: one ws per client; server pushes message/channel events ----
+  // Auth: the JWT arrives as the first frame ({t:"auth",token}) — keeps tokens
+  // out of proxy access logs. ?t= is still accepted for older clients.
   app.get("/api/chat/stream", { websocket: true }, (socket, req) => {
-    const token = (req.query as { t?: string; token?: string }).t
+    const queryToken = (req.query as { t?: string; token?: string }).t
       ?? (req.query as { token?: string }).token ?? "";
-    void (async () => {
+    let user: UserRow | null = null;
+    const authTimer = setTimeout(() => { if (!user) socket.close(4401, "unauthorized"); }, 10_000);
+
+    const admit = async (token: string) => {
       try {
         const { payload } = await jwtVerify(token, secret);
         if (payload.aud === "kreatix-mfa") throw new Error("mfa");
-        const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
-        if (!user || user.disabled) throw new Error("unauthorized");
-        const wasOnline = onlineIn(user.org_id).includes(user.id);
-        peers.set(socket, { userId: user.id, orgId: user.org_id });
-        socket.send(JSON.stringify({ t: "ready", online: onlineIn(user.org_id) }));
+        const u = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
+        if (!u || u.disabled) throw new Error("unauthorized");
+        user = u;
+        clearTimeout(authTimer);
+        const wasOnline = onlineIn(u.org_id).includes(u.id);
+        peers.set(socket, { userId: u.id, orgId: u.org_id });
+        socket.send(JSON.stringify({ t: "ready", online: onlineIn(u.org_id) }));
         if (!wasOnline)
-          broadcast(user.org_id, null, { t: "presence", userId: user.id, online: true });
-        // client→server: typing pings get relayed to the channel's audience
-        socket.on("message", async (raw: Buffer) => {
-          try {
-            const evt = JSON.parse(raw.toString()) as { t?: string; channelId?: string };
-            if (evt.t !== "typing" || !evt.channelId) return;
-            const c = await one<ChannelRow>(
-              "SELECT * FROM chat_channels WHERE id = $1 AND org_id = $2", [evt.channelId, user.org_id]);
-            if (!c) return;
-            const targets = c.kind === "channel" ? null
-              : (await q<{ user_id: string }>("SELECT user_id FROM chat_members WHERE channel_id = $1", [c.id]))
-                  .map((r) => r.user_id);
-            broadcast(user.org_id, targets,
-              { t: "typing", channelId: c.id, userId: user.id, name: user.display_name });
-          } catch { /* malformed client frame */ }
-        });
-        const drop = () => {
-          peers.delete(socket);
-          if (!onlineIn(user.org_id).includes(user.id))
-            broadcast(user.org_id, null, { t: "presence", userId: user.id, online: false });
-        };
-        socket.on("close", drop);
-        socket.on("error", drop);
+          broadcast(u.org_id, null, { t: "presence", userId: u.id, online: true });
       } catch {
         socket.close(4401, "unauthorized");
       }
-    })();
+    };
+    if (queryToken) void admit(queryToken);
+
+    const drop = () => {
+      if (!user) return;
+      peers.delete(socket);
+      if (!onlineIn(user.org_id).includes(user.id))
+        broadcast(user.org_id, null, { t: "presence", userId: user.id, online: false });
+    };
+    socket.on("close", drop);
+    socket.on("error", drop);
+    socket.on("message", (raw: Buffer) => {
+      try {
+        const evt = JSON.parse(raw.toString()) as { t?: string; token?: string; channelId?: string };
+        if (!user) {
+          if (evt.t === "auth" && typeof evt.token === "string") void admit(evt.token);
+          return;
+        }
+        if (evt.t !== "typing" || !evt.channelId) return;
+        void relayTyping(user, evt.channelId);
+      } catch { /* malformed client frame */ }
+    });
   });
 
   // ---- REST surface ----
@@ -292,8 +328,12 @@ export function chatRoutes(app: FastifyInstance) {
       const c = await getChannel((req.params as { id: string }).id, user.orgId);
       if (!c) return notFound(reply);
       if (!(await canSee(c, user.id))) return forbidden(reply);
-      const { before, limit: lim } = req.query as { before?: string; limit?: string };
+      const { before, beforeId, limit: lim } = req.query as { before?: string; beforeId?: string; limit?: string };
       const limit = Math.min(Number(lim) || 50, 100);
+      // (created_at, id) keyset cursor — timestamps can tie under concurrent inserts
+      const cursor = before
+        ? beforeId ? "AND (m.created_at < $3 OR (m.created_at = $3 AND m.id < $4))" : "AND m.created_at < $3"
+        : "";
       const rows = await q<MessageRow>(
         `SELECT m.*, u.display_name AS author_name, u.initials AS author_initials,
                 i.name AS file_name, i.kind AS file_kind,
@@ -303,9 +343,9 @@ export function chatRoutes(app: FastifyInstance) {
          LEFT JOIN items i ON i.id = m.file_id
          LEFT JOIN chat_messages p ON p.id = m.reply_to
          LEFT JOIN users pu ON pu.id = p.user_id
-         WHERE m.channel_id = $1 ${before ? "AND m.created_at < $3" : ""}
-         ORDER BY m.created_at DESC LIMIT $2`,
-        before ? [c.id, limit, before] : [c.id, limit]);
+         WHERE m.channel_id = $1 ${cursor}
+         ORDER BY m.created_at DESC, m.id DESC LIMIT $2`,
+        before ? (beforeId ? [c.id, limit, before, beforeId] : [c.id, limit, before]) : [c.id, limit]);
       const ordered = rows.reverse();
       const rxns = ordered.length
         ? await q<{ message_id: string; emoji: string; cnt: string; mine: boolean }>(
@@ -436,7 +476,8 @@ export function chatRoutes(app: FastifyInstance) {
     /** Toggle an emoji reaction — one row per (message, user, emoji). */
     authed.post("/api/chat/messages/:id/reactions", async (req, reply) => {
       const { user } = req as AuthedRequest;
-      const emoji = z.string().trim().min(1).max(16).safeParse((req.body as { emoji?: string })?.emoji);
+      const emoji = z.string().trim().min(1).max(16).regex(EMOJI_RE, "Emoji required")
+        .safeParse((req.body as { emoji?: string })?.emoji);
       if (!emoji.success) return reply.code(400).send({ error: "invalid", message: "Emoji required" });
       const m = await one<MessageRow & { org_id: string; kind: string }>(
         `SELECT m.*, c.org_id, c.kind FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
