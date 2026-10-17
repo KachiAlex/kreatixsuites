@@ -23,7 +23,13 @@ interface JoinInfo { base: string; room: string; jwt: string; displayName: strin
 interface ChatMsg { id: string; body: string; author: { id: string; name: string; initials: string }; createdAt: string }
 
 declare global {
-  interface Window { JitsiMeetExternalAPI?: new (domain: string, opts: Record<string, unknown>) => { dispose: () => void; addListener: (m: Record<string, () => void>) => void } }
+  interface Window {
+    JitsiMeetExternalAPI?: new (domain: string, opts: Record<string, unknown>) => {
+      dispose: () => void;
+      addListeners?: (m: Record<string, () => void>) => void;
+      addListener?: (e: string, f: () => void) => void;
+    }
+  }
 }
 
 const fmtWhen = (iso: string) =>
@@ -51,7 +57,7 @@ export function Meet() {
   const chatRef = useRef<HTMLDivElement>(null);
   const recVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const frameHost = useRef<HTMLDivElement>(null);
-  const apiRef = useRef<{ dispose: () => void; addListener: (m: Record<string, () => void>) => void } | null>(null);
+  const apiRef = useRef<{ dispose: () => void } | null>(null);
 
   const load = useCallback(async () => {
     const r = await api.get<{ enabled: boolean; recording?: boolean; dialIn?: string | null; meetings?: Meeting[] }>("/api/meet");
@@ -95,7 +101,12 @@ export function Meet() {
           breakoutRooms: { hideAddRoomButton: false, hideAutoAssignButton: false, hideJoinRoomButton: false },
         },
       });
-      inst.addListener({ videoConferenceLeft: () => setCall(null), readyToClose: () => setCall(null) });
+      const listeners = { videoConferenceLeft: () => setCall(null), readyToClose: () => setCall(null) };
+      if (typeof inst.addListeners === "function") inst.addListeners(listeners);
+      else {
+        inst.addListener?.("videoConferenceLeft", listeners.videoConferenceLeft);
+        inst.addListener?.("readyToClose", listeners.readyToClose);
+      }
       apiRef.current = inst;
     };
     if (window.JitsiMeetExternalAPI) boot();
