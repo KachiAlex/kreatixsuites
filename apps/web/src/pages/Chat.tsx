@@ -13,14 +13,17 @@ import { Modal } from "../components/Modal";
 
 interface Channel {
   id: string; kind: "channel" | "dm" | "group"; name: string | null;
-  description: string | null; unread: number;
+  description: string | null; topic: string | null; unread: number;
   members?: { id: string; displayName: string; initials: string }[];
   lastMessage: string | null; lastAt: string;
 }
+interface Reaction { emoji: string; count: number; mine: boolean }
 interface Message {
   id: string; channelId: string;
   author: { id: string; displayName: string | null; initials: string | null };
   body: string; replyTo: string | null; editedAt: string | null; createdAt: string;
+  pinnedAt: string | null; replyCount: number; reactions: Reaction[];
+  parent: { id: string; author: string; body: string } | null;
   file: { id: string; name: string; kind: string } | null;
 }
 interface Person { id: string; displayName: string; email: string; initials: string }
@@ -62,15 +65,28 @@ export function Chat() {
   const [sumBusy, setSumBusy] = useState(false);
   const [attach, setAttach] = useState<{ id: string; name: string } | null>(null);
   const [mentionQ, setMentionQ] = useState<string | null>(null);
+  const [online, setOnline] = useState<Set<string>>(new Set());
+  const [typing, setTyping] = useState<Record<string, string>>({});  // userId → name (active channel)
+  const [thread, setThread] = useState<Message | null>(null);       // open thread parent
+  const [threadMsgs, setThreadMsgs] = useState<Message[]>([]);
+  const [threadDraft, setThreadDraft] = useState("");
+  const [pinsOpen, setPinsOpen] = useState(false);
+  const [pins, setPins] = useState<Message[]>([]);
+  const [topicEdit, setTopicEdit] = useState(false);
+  const [topicDraft, setTopicDraft] = useState("");
+  const [reactFor, setReactFor] = useState<string | null>(null);    // message id w/ picker open
+  const typingSent = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
   const msgsRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
+  const threadRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   activeRef.current = active?.id ?? null;
+  threadRef.current = thread?.id ?? null;
 
   const loadChannels = useCallback(async () => {
     try {
@@ -93,6 +109,8 @@ export function Chat() {
 
   const open = useCallback(async (ch: Channel) => {
     setActive(ch); setReplyTo(null); setEditing(null); setDraft("");
+    setThread(null); setThreadMsgs([]); setPinsOpen(false); setTopicEdit(false);
+    setTyping({}); setReactFor(null);
     setMessages([]);
     try { await loadMessages(ch); } catch (e) { toast((e as Error).message); }
     void api.post(`/api/chat/${ch.id}/read`, {}).then(() => {
@@ -118,11 +136,27 @@ export function Chat() {
             | { t: "channel"; channelId: string }
             | { t: "message:update"; channelId: string; messageId: string; body: string; editedAt: string }
             | { t: "message:delete"; channelId: string; messageId: string }
-            | { t: "ready" };
+            | { t: "reaction"; channelId: string; messageId: string; emoji: string; userId: string; added: boolean }
+            | { t: "pin"; channelId: string; messageId: string; pinned: boolean }
+            | { t: "typing"; channelId: string; userId: string; name: string }
+            | { t: "presence"; userId: string; online: boolean }
+            | { t: "ready"; online?: string[] };
+          if (e.t === "ready") { setOnline(new Set(e.online ?? [])); return; }
+          if (e.t === "presence") {
+            setOnline((s) => { const n = new Set(s); e.online ? n.add(e.userId) : n.delete(e.userId); return n; });
+            return;
+          }
           if (e.t === "channel") { void loadChannels(); return; }
           if (e.t === "message") {
+            // thread replies bump the parent's count + refresh the open thread
+            if (e.message.replyTo) {
+              setMessages((m) => m.map((x) => x.id === e.message.replyTo
+                ? { ...x, replyCount: x.replyCount + 1 } : x));
+              setThreadMsgs((tm) => (threadRef.current === e.message.replyTo
+                && !tm.some((x) => x.id === e.message.id) ? [...tm, e.message] : tm));
+            }
             if (e.channelId === activeRef.current) {
-              setMessages((m) => (m.some((x) => x.id === e.message.id) ? m : [...m, e.message]));
+              setMessages((m) => (m.some((x) => x.id === e.message.id) || e.message.replyTo ? m : [...m, e.message]));
               void api.post(`/api/chat/${e.channelId}/read`, {}).catch(() => {});
             }
             void loadChannels();
@@ -130,10 +164,44 @@ export function Chat() {
           }
           if (e.t === "message:update") {
             setMessages((m) => m.map((x) => (x.id === e.messageId ? { ...x, body: e.body, editedAt: e.editedAt } : x)));
+            setThreadMsgs((m) => m.map((x) => (x.id === e.messageId ? { ...x, body: e.body, editedAt: e.editedAt } : x)));
             return;
           }
           if (e.t === "message:delete") {
             setMessages((m) => m.filter((x) => x.id !== e.messageId));
+            setThreadMsgs((m) => m.filter((x) => x.id !== e.messageId));
+            return;
+          }
+          if (e.t === "reaction") {
+            const apply = (x: Message): Message => {
+              if (x.id !== e.messageId) return x;
+              let rx = x.reactions.map((r) => ({ ...r }));
+              const hit = rx.find((r) => r.emoji === e.emoji);
+              if (e.added) {
+                if (hit) { hit.count++; if (e.userId === user?.id) hit.mine = true; }
+                else rx.push({ emoji: e.emoji, count: 1, mine: e.userId === user?.id });
+              } else if (hit) {
+                hit.count--;
+                if (e.userId === user?.id) hit.mine = false;
+                if (hit.count <= 0) rx = rx.filter((r) => r !== hit);
+              }
+              return { ...x, reactions: rx };
+            };
+            setMessages((m) => m.map(apply));
+            setThreadMsgs((m) => m.map(apply));
+            return;
+          }
+          if (e.t === "pin") {
+            setMessages((m) => m.map((x) => x.id === e.messageId
+              ? { ...x, pinnedAt: e.pinned ? new Date().toISOString() : null } : x));
+            return;
+          }
+          if (e.t === "typing") {
+            if (e.channelId !== activeRef.current || e.userId === user?.id) return;
+            setTyping((t) => ({ ...t, [e.userId]: e.name }));
+            setTimeout(() => setTyping((t) => {
+              const n = { ...t }; delete n[e.userId]; return n;
+            }), 3500);
             return;
           }
         } catch { /* malformed frame */ }
@@ -204,6 +272,12 @@ export function Chat() {
 
   const onDraft = (v: string) => {
     setDraft(v);
+    // typing ping — throttled to one frame per 2.5s, fire-and-forget
+    if (v && active && Date.now() - typingSent.current > 2500
+        && wsRef.current?.readyState === WebSocket.OPEN) {
+      typingSent.current = Date.now();
+      wsRef.current.send(JSON.stringify({ t: "typing", channelId: active.id }));
+    }
     const caret = draftRef.current?.selectionStart ?? v.length;
     const before = v.slice(0, caret);
     const m = before.match(/@([a-zA-Z0-9._-]*)$/);
@@ -242,6 +316,81 @@ export function Chat() {
     try {
       await api.del(`/api/chat/messages/${m.id}`);
       setMessages((ms) => ms.filter((x) => x.id !== m.id));
+      setThreadMsgs((ms) => ms.filter((x) => x.id !== m.id));
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "🔥"];
+
+  const react = async (m: Message, emoji: string) => {
+    setReactFor(null);
+    try {
+      const r = await api.post<{ added: boolean }>(`/api/chat/messages/${m.id}/reactions`, { emoji });
+      // optimistic patch (the ws echo also lands — same reducer, idempotent-ish)
+      const apply = (x: Message): Message => {
+        if (x.id !== m.id) return x;
+        let rx = x.reactions.map((e) => ({ ...e }));
+        const hit = rx.find((e) => e.emoji === emoji);
+        if (r.added) {
+          if (hit) { hit.count++; hit.mine = true; }
+          else rx.push({ emoji, count: 1, mine: true });
+        } else if (hit) {
+          hit.count--; hit.mine = false;
+          if (hit.count <= 0) rx = rx.filter((e) => e !== hit);
+        }
+        return { ...x, reactions: rx };
+      };
+      setMessages((ms) => ms.map(apply));
+      setThreadMsgs((ms) => ms.map(apply));
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const togglePin = async (m: Message) => {
+    try {
+      const r = await api.post<{ pinned: boolean }>(`/api/chat/messages/${m.id}/pin`, {});
+      setMessages((ms) => ms.map((x) => x.id === m.id
+        ? { ...x, pinnedAt: r.pinned ? new Date().toISOString() : null } : x));
+      toast(r.pinned ? "Pinned" : "Unpinned");
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const openThread = async (m: Message) => {
+    setThread(m); setThreadDraft("");
+    try {
+      const r = await api.get<{ parent: Message; replies: Message[] }>(`/api/chat/messages/${m.id}/thread`);
+      setThreadMsgs(r.replies);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const sendThread = async () => {
+    const text = threadDraft.trim();
+    if (!text || !active || !thread) return;
+    setThreadDraft("");
+    try {
+      const r = await api.post<{ message: Message }>(`/api/chat/${active.id}/messages`,
+        { body: text, replyTo: thread.id });
+      setThreadMsgs((tm) => [...tm, r.message]);
+      setMessages((ms) => ms.map((x) => x.id === thread.id ? { ...x, replyCount: x.replyCount + 1 } : x));
+      setThread((t) => t ? { ...t, replyCount: t.replyCount + 1 } : t);
+    } catch (e) { setThreadDraft(text); toast((e as Error).message); }
+  };
+
+  const openPins = async () => {
+    if (!active) return;
+    if (pinsOpen) { setPinsOpen(false); return; }
+    try {
+      const r = await api.get<{ pins: Message[] }>(`/api/chat/${active.id}/pins`);
+      setPins(r.pins); setPinsOpen(true);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const saveTopic = async () => {
+    if (!active) return;
+    try {
+      await api.patch(`/api/chat/${active.id}`, { topic: topicDraft });
+      setActive((a) => a ? { ...a, topic: topicDraft || null } : a);
+      setTopicEdit(false);
+      void loadChannels();
     } catch (e) { toast((e as Error).message); }
   };
 
@@ -299,7 +448,9 @@ export function Chat() {
 
   const chanList = channels.filter((c) => c.kind === "channel");
   const dmList = channels.filter((c) => c.kind !== "channel");
-  const replySource = replyTo && messages.find((m) => m.id === replyTo.id);
+  const topLevel = messages.filter((m) => !m.replyTo);
+  const replySource = replyTo && (messages.find((m) => m.id === replyTo.id)
+    ?? threadMsgs.find((m) => m.id === replyTo.id) ?? (thread?.id === replyTo.id ? thread : null));
 
   return (
     <div className="chat">
@@ -326,9 +477,12 @@ export function Chat() {
           </button>
         ))}
         <div className="chat-list-sec">Direct messages</div>
-        {dmList.map((c) => (
+        {dmList.map((c) => {
+          const other = c.members?.filter((m) => m.id !== user?.id)[0];
+          return (
           <button key={c.id} className={`chat-item${active?.id === c.id ? " active" : ""}`} onClick={() => void open(c)}>
-            <span className="chat-avatar">{c.members?.filter((m) => m.id !== user?.id)[0]?.initials ?? "?"}</span>
+            <span className="chat-avatar chat-avatar-wrap">{other?.initials ?? "?"}
+              {other && <span className={`chat-dot${online.has(other.id) ? " on" : ""}`} />}</span>
             <span className="chat-item-main">
               <b className={c.unread ? "unread" : ""}>{c.name}</b>
               {c.lastMessage && <span className="chat-item-prev">{c.lastMessage.slice(0, 48)}</span>}
@@ -338,7 +492,8 @@ export function Chat() {
               {c.unread > 0 && <span className="chat-badge">{c.unread > 99 ? "99+" : c.unread}</span>}
             </span>
           </button>
-        ))}
+          );
+        })}
         {!dmList.length && <div className="chat-empty-side">No direct messages yet — hit ✎ to start one.</div>}
       </aside>
 
@@ -353,32 +508,60 @@ export function Chat() {
               {isMobile && <button className="iconbtn" onClick={() => setActive(null)}>←</button>}
               {active.kind === "channel" ? <span className="chat-hash">#</span> : null}
               <b>{active.name}</b>
-              {active.description && <span className="d-sub">— {active.description}</span>}
-              <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} disabled={sumBusy || !messages.length}
+              {active.kind === "channel" && !topicEdit && (
+                <button className="chat-topic" title="Edit topic"
+                  onClick={() => { setTopicDraft(active.topic ?? ""); setTopicEdit(true); }}>
+                  {active.topic || <span className="d-sub">Add a topic</span>}
+                </button>
+              )}
+              {topicEdit && (
+                <span className="chat-topic-edit">
+                  <input value={topicDraft} autoFocus maxLength={200}
+                    onChange={(e) => setTopicDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void saveTopic(); if (e.key === "Escape") setTopicEdit(false); }} />
+                  <button className="iconbtn" onClick={() => void saveTopic()}>✓</button>
+                </span>
+              )}
+              <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+                title="Pinned messages" onClick={() => void openPins()}>📌</button>
+              <button className="btn-ghost btn-sm" disabled={sumBusy || !messages.length}
                 title="Summarize the loaded conversation with Kreatix AI"
                 onClick={() => void summarize()}>{sumBusy ? "Summarizing…" : "✨ Summary"}</button>
             </div>
+            {pinsOpen && (
+              <div className="chat-pins">
+                {!pins.length && <span className="d-sub">Nothing pinned yet — hover a message → 📌.</span>}
+                {pins.map((p) => (
+                  <div key={p.id} className="chat-pin">
+                    <b>{p.author.displayName}</b>
+                    <span className="chat-pin-body">{p.body.slice(0, 140)}</span>
+                    <button className="iconbtn" title="Unpin" onClick={() => void togglePin(p)
+                      .then(() => api.get<{ pins: Message[] }>(`/api/chat/${active.id}/pins`))
+                      .then((r) => setPins(r.pins))}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="chat-msgs" ref={msgsRef}>
               {hasMore && messages.length > 0 && (
                 <button className="chat-more" onClick={() => void loadMessages(active, messages[0].createdAt)}>Load earlier</button>
               )}
-              {messages.map((m, i) => {
-                const prev = messages[i - 1];
+              {topLevel.map((m, i) => {
+                const prev = topLevel[i - 1];
                 const sameAuthor = prev && prev.author.id === m.author.id
                   && new Date(m.createdAt).getTime() - new Date(prev.createdAt).getTime() < 5 * 60_000;
                 const mine = m.author.id === user?.id;
-                const quoted = m.replyTo ? messages.find((x) => x.id === m.replyTo) : null;
                 return (
-                  <div key={m.id} className={`chat-msg${sameAuthor ? " cont" : ""}`}>
+                  <div key={m.id} className={`chat-msg${sameAuthor ? " cont" : ""}${m.pinnedAt ? " pinned" : ""}`}>
                     {!sameAuthor && <span className="chat-avatar">{m.author.initials ?? "?"}</span>}
                     <div className="chat-msg-body">
                       {!sameAuthor && (
                         <div className="chat-msg-meta">
                           <b>{m.author.displayName ?? "Unknown"}</b>
                           <span className="chat-item-time">{fmtTime(m.createdAt)}</span>
+                          {m.pinnedAt && <span className="chat-pinned-tag" title="Pinned">📌</span>}
                         </div>
                       )}
-                      {quoted && <div className="chat-quote"><b>{quoted.author.displayName}</b> {quoted.body.slice(0, 90)}</div>}
                       <div className="chat-msg-text">
                         {m.body}
                         {m.editedAt && <span className="chat-edited">(edited)</span>}
@@ -389,19 +572,47 @@ export function Chat() {
                           📄 {m.file.name}
                         </button>
                       )}
+                      {m.reactions.length > 0 && (
+                        <div className="chat-rxns">
+                          {m.reactions.map((r) => (
+                            <button key={r.emoji} className={`chat-rxn${r.mine ? " mine" : ""}`}
+                              onClick={() => void react(m, r.emoji)}>
+                              {r.emoji} {r.count}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {m.replyCount > 0 && (
+                        <button className="chat-thread-link" onClick={() => void openThread(m)}>
+                          💬 {m.replyCount} {m.replyCount === 1 ? "reply" : "replies"}
+                        </button>
+                      )}
                       <div className="chat-msg-actions">
-                        <button title="Reply" onClick={() => { setReplyTo(m); setEditing(null); }}>↩</button>
+                        <button title="React" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>☺</button>
+                        <button title="Reply inline" onClick={() => { setReplyTo(m); setEditing(null); }}>↩</button>
+                        <button title="Reply in thread" onClick={() => void openThread(m)}>🧵</button>
+                        <button title={m.pinnedAt ? "Unpin" : "Pin"} onClick={() => void togglePin(m)}>📌</button>
                         {mine && <button title="Edit" onClick={() => { setEditing(m); setDraft(m.body); setReplyTo(null); }}>✎</button>}
                         {(mine || user?.role === "owner" || user?.role === "admin") && (
                           <button title="Delete" onClick={() => void del(m)}>🗑</button>
                         )}
                       </div>
+                      {reactFor === m.id && (
+                        <div className="chat-emoji-pop">
+                          {REACTIONS.map((e) => (
+                            <button key={e} onClick={() => void react(m, e)}>{e}</button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
               })}
-              {!messages.length && <div className="empty" style={{ padding: 24 }}>No messages yet — say hello.</div>}
+              {!topLevel.length && <div className="empty" style={{ padding: 24 }}>No messages yet — say hello.</div>}
             </div>
+            {Object.keys(typing).length > 0 && (
+              <div className="chat-typing">{Object.values(typing).join(", ")} {Object.keys(typing).length === 1 ? "is" : "are"} typing…</div>
+            )}
             {(replyTo || editing || attach) && (
               <div className="chat-context">
                 {attach
@@ -443,6 +654,54 @@ export function Chat() {
           </>
         )}
       </section>
+
+      {thread && (
+        <aside className="chat-thread">
+          <div className="chat-thread-h">
+            <b>Thread</b>
+            <button className="iconbtn" onClick={() => { setThread(null); setThreadMsgs([]); }}>✕</button>
+          </div>
+          <div className="chat-thread-parent">
+            <span className="chat-avatar">{thread.author.initials ?? "?"}</span>
+            <div>
+              <div className="chat-msg-meta"><b>{thread.author.displayName ?? "Unknown"}</b>
+                <span className="chat-item-time">{fmtTime(thread.createdAt)}</span></div>
+              <div className="chat-msg-text">{thread.body}</div>
+            </div>
+          </div>
+          <div className="chat-thread-msgs">
+            {threadMsgs.map((m) => (
+              <div key={m.id} className="chat-msg">
+                <span className="chat-avatar">{m.author.initials ?? "?"}</span>
+                <div className="chat-msg-body">
+                  <div className="chat-msg-meta"><b>{m.author.displayName ?? "Unknown"}</b>
+                    <span className="chat-item-time">{fmtTime(m.createdAt)}</span></div>
+                  <div className="chat-msg-text">{m.body}
+                    {m.editedAt && <span className="chat-edited">(edited)</span>}</div>
+                  {m.reactions.length > 0 && (
+                    <div className="chat-rxns">
+                      {m.reactions.map((r) => (
+                        <button key={r.emoji} className={`chat-rxn${r.mine ? " mine" : ""}`}
+                          onClick={() => void react(m, r.emoji)}>{r.emoji} {r.count}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {!threadMsgs.length && <div className="chat-empty-side">No replies yet.</div>}
+          </div>
+          <div className="chat-compose">
+            <textarea value={threadDraft} rows={1} placeholder={`Reply to ${thread.author.displayName ?? "thread"}…`}
+              onChange={(e) => setThreadDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendThread(); }
+                if (e.key === "Escape") { setThread(null); setThreadMsgs([]); }
+              }} />
+            <button className="btn-primary btn-sm" disabled={!threadDraft.trim()} onClick={() => void sendThread()}>Send</button>
+          </div>
+        </aside>
+      )}
 
       {summary && (
         <Modal label="Conversation summary" onClose={() => setSummary(null)} style={{ width: 480 }}>

@@ -664,6 +664,19 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at DESC)`);
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS file_id TEXT REFERENCES items(id) ON DELETE SET NULL`);
+  // pinned messages + channel topics
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS pinned_by TEXT`);
+  await pool.query(`ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS topic TEXT`);
+  // emoji reactions — toggle model, one row per (message, user, emoji)
+  await pool.query(`CREATE TABLE IF NOT EXISTS chat_reactions (
+    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emoji TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (message_id, user_id, emoji)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reactions_msg ON chat_reactions(message_id)`);
 
   // Kreatix Calendar — org events. Visibility = creator + attendees;
   // meeting_id links to a Kreatix Meet room when the event has a call.
