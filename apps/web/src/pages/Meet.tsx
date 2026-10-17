@@ -134,11 +134,11 @@ export function Meet() {
             hideJoinRoomButton: false,
           },
           toolbarButtons: [
-            "microphone", "camera", "desktop", "participants-pane", "tileview",
-            "raisehand", "reactions", "polls", "speakerstats", "select-background",
-            "videoquality", "settings", "fullscreen", "whiteboard", "recording",
-            "security", "shortcuts", "stats", "mute-everyone", "mute-video-everyone",
-            "hangup",
+            "microphone", "camera", "desktop", "closedcaptions", "participants-pane",
+            "tileview", "raisehand", "reactions", "polls", "speakerstats",
+            "select-background", "videoquality", "settings", "fullscreen",
+            "whiteboard", "recording", "security", "shortcuts", "stats",
+            "mute-everyone", "mute-video-everyone", "hangup",
           ].filter((b) => call.moderator ||
             // Jitsi auto-hides moderator-only actions anyway; keep the bar clean
             !["recording", "security", "mute-everyone", "mute-video-everyone"].includes(b)),
