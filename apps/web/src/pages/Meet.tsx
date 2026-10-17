@@ -32,6 +32,22 @@ declare global {
   }
 }
 
+// Injects external_api.js once; prefetched on page mount so joining is instant.
+// The element removes itself on load failure so a later join re-injects it.
+const ensureMeetClient = (base: string, onload?: () => void, onerror?: () => void) => {
+  if (window.JitsiMeetExternalAPI) { onload?.(); return; }
+  let s = document.querySelector<HTMLScriptElement>("script[data-kx-meet]");
+  if (!s) {
+    s = document.createElement("script");
+    s.src = `${base}/external_api.js`;
+    s.dataset.kxMeet = "1";
+    s.addEventListener("error", () => s?.remove(), { once: true });
+    document.head.appendChild(s);
+  }
+  if (onload) s.addEventListener("load", onload, { once: true });
+  if (onerror) s.addEventListener("error", onerror, { once: true });
+};
+
 const fmtWhen = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -60,11 +76,12 @@ export function Meet() {
   const apiRef = useRef<{ dispose: () => void } | null>(null);
 
   const load = useCallback(async () => {
-    const r = await api.get<{ enabled: boolean; recording?: boolean; dialIn?: string | null; meetings?: Meeting[] }>("/api/meet");
+    const r = await api.get<{ enabled: boolean; base?: string; recording?: boolean; dialIn?: string | null; meetings?: Meeting[] }>("/api/meet");
     setEnabled(r.enabled);
     setRecOn(!!r.recording);
     setDialIn(r.dialIn ?? null);
     setMeetings(r.meetings ?? []);
+    if (r.enabled && r.base) ensureMeetClient(r.base);
   }, []);
 
   useEffect(() => { load().catch(() => setEnabled(false)); }, [load]);
@@ -97,8 +114,38 @@ export function Meet() {
         userInfo: { displayName: call.displayName, email: user?.email },
         configOverwrite: {
           disableDeepLinking: true,
+          prejoinConfig: { enabled: false },           // straight into the call — name/mic controls live in-call
+          disableThirdPartyRequests: true,             // no gravatar/callstats/etc fetches
+          disableInviteFunctions: true,                // sharing goes through suite links
+          localRecording: { disable: true },           // recording is server-side (Jibri)
+          channelLastN: 8,                             // cap rendered remote videos
+          enableLayerSuspension: true,                 // pause decode for offscreen tiles
+          resolution: 720,
+          constraints: { video: { height: { ideal: 720, max: 720, min: 240 } } },
+          p2p: { enabled: true },                      // 1:1 calls bypass the bridge
+          enableWelcomePage: false,
           // Breakout rooms: available to moderators (host) via the participants pane.
           breakoutRooms: { hideAddRoomButton: false, hideAutoAssignButton: false, hideJoinRoomButton: false },
+          toolbarButtons: [
+            "microphone", "camera", "desktop", "participants-pane", "tileview",
+            "raisehand", "reactions", "select-background", "videoquality",
+            "settings", "fullscreen", "whiteboard", "recording", "security",
+            "shortcuts", "stats", "mute-everyone", "mute-video-everyone", "hangup",
+          ],
+        },
+        interfaceConfigOverwrite: {
+          APP_NAME: "Kreatix Meet",
+          PROVIDER_NAME: "Kreatix Meet",
+          SHOW_JITSI_WATERMARK: false,
+          SHOW_WATERMARK_FOR_GUESTS: false,
+          SHOW_BRAND_WATERMARK: false,
+          JITSI_WATERMARK_LINK: "",
+          BRAND_WATERMARK_LINK: "",
+          TOOLBAR_ALWAYS_VISIBLE: true,
+          GENERATE_ROOMNAMES_ON_WELCOME_PAGE: false,
+          HIDE_INVITE_MORE_HEADER: true,
+          MOBILE_APP_PROMO: false,
+          DEFAULT_REMOTE_DISPLAY_NAME: "Guest",
         },
       });
       const listeners = { videoConferenceLeft: () => setCall(null), readyToClose: () => setCall(null) };
@@ -109,17 +156,10 @@ export function Meet() {
       }
       apiRef.current = inst;
     };
-    if (window.JitsiMeetExternalAPI) boot();
-    else {
-      const s = document.createElement("script");
-      s.src = `${call.base}/external_api.js`;
-      s.onload = boot;
-      s.onerror = () => {
-        toast("Couldn't load the meeting client — check that the Meet service is reachable");
-        setCall(null);
-      };
-      document.head.appendChild(s);
-    }
+    ensureMeetClient(call.base, boot, () => {
+      toast("Couldn't load the meeting client — check that the Meet service is reachable");
+      setCall(null);
+    });
     return () => { cancelled = true; apiRef.current?.dispose(); apiRef.current = null; host.innerHTML = ""; };
   }, [call, user?.email]);
 

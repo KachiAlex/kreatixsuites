@@ -103,7 +103,7 @@ export function meetRoutes(app: FastifyInstance) {
        ORDER BY CASE m.status WHEN 'live' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,
                 COALESCE(m.scheduled_at, m.created_at) DESC
        LIMIT 60`, [user.orgId]);
-    return { enabled: true, recording: recordingEnabled(), dialIn: dialInNumber() || null, meetings: rows.map(meetingOut) };
+    return { enabled: true, base: meetBase(), recording: recordingEnabled(), dialIn: dialInNumber() || null, meetings: rows.map(meetingOut) };
   });
 
   app.post("/api/meet", async (req, reply) => {
@@ -186,7 +186,11 @@ export function meetRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Only the host can share a guest link" });
     if (m.status === "ended") return reply.code(410).send({ error: "ended", message: "This meeting has ended" });
     const jwt = mintMeetToken({ room: m.code, name: "Guest", ttlSec: 6 * 3600 });
-    return { url: `${meetBase()}/${m.code}?jwt=${jwt}` };
+    // Guests land on Jitsi directly (no iframe), so tune via URL-hash config instead.
+    const tuning = "#config.disableThirdPartyRequests=true&config.disableDeepLinking=true" +
+      "&interfaceConfig.SHOW_JITSI_WATERMARK=false&interfaceConfig.SHOW_WATERMARK_FOR_GUESTS=false" +
+      "&interfaceConfig.APP_NAME=%22Kreatix%20Meet%22&interfaceConfig.MOBILE_APP_PROMO=false";
+    return { url: `${meetBase()}/${m.code}?jwt=${jwt}${tuning}` };
   });
 
   app.post("/api/meet/:id/end", async (req, reply) => {
