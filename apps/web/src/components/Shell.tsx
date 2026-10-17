@@ -238,9 +238,17 @@ function BillingBanner() {
 /** Unverified-email nag — verify links go out at registration; this banner
  *  offers a resend until the flag flips. Dismissible per session. */
 function VerifyBanner() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [dismissed, setDismissed] = useState(() => sessionStorage.getItem("kx_verify_dismissed") === "1");
   const [sent, setSent] = useState(false);
+  // verified in another tab/window → pick it up on focus instead of nagging
+  // until reload
+  useEffect(() => {
+    if (!user || user.emailVerified) return;
+    const onVis = () => { if (document.visibilityState === "visible") void refreshUser().catch(() => {}); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [user?.emailVerified, refreshUser]);
   if (!user || user.emailVerified || dismissed) return null;
   return (
     <div className="billing-banner warn" role="status">

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { BrandLockup } from "../components/AppIcon";
 
 /** /reset-password?token=… — consumes the emailed single-use token. */
@@ -53,13 +54,19 @@ export function ResetPassword() {
 /** /verify-email?token=… — consumes the emailed verification token. */
 export function VerifyEmail() {
   const [params] = useSearchParams();
+  const { refreshUser } = useAuth();
   const [state, setState] = useState<"working" | "ok" | "bad">("working");
 
   useEffect(() => {
     const token = params.get("token");
     if (!token) { setState("bad"); return; }
     api.get(`/api/auth/verify-email?token=${encodeURIComponent(token)}`)
-      .then(() => setState("ok"))
+      .then(() => {
+        setState("ok");
+        // the auth context may have fetched /auth/me before the verify call
+        // landed — refresh so the flag is true everywhere this session
+        void refreshUser().catch(() => {});
+      })
       .catch(() => setState("bad"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
