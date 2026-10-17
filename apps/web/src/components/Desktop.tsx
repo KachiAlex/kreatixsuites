@@ -5,9 +5,9 @@
 // (kreatix:toast — file saves in the WebView can't use <a download>).
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { desktop, isDesktop, isNativeMobile } from "../lib/platform";
+import { desktop, isDesktop, isNativeMobile, type UpdateStatus } from "../lib/platform";
 import { api } from "../lib/api";
-import { startSyncLoop } from "../lib/offline/sync";
+import { onSyncState, startSyncLoop } from "../lib/offline/sync";
 import { canEditOffline, entitlement, refreshEntitlement } from "../lib/offline/license";
 import { anonDaysLeft, isAnonymous } from "../lib/offline/trial";
 import { importLocalFile, importLocalPath, kindForPath } from "../lib/offline/openLocal";
@@ -191,6 +191,48 @@ export function EntitlementGate({ children }: { children: ReactNode }) {
           I'm online — retry
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Desktop auto-update status — a quiet "Downloading…" line plus a
+ *  restart-to-apply button once the package is staged. */
+export function UpdateBanner() {
+  const [s, setS] = useState<UpdateStatus | null>(null);
+  useEffect(() => {
+    if (!isDesktop) return;
+    void desktop!.updates.status().then(setS);
+    return desktop!.updates.onStatus(setS);
+  }, []);
+  if (!s || s.state === "none" || s.state === "checking" || s.state === "error") return null;
+  if (s.state === "downloaded") {
+    return (
+      <div className="billing-banner">
+        <span>Kreatix Suites {s.version} is ready.</span>
+        <button onClick={() => void desktop!.updates.install()}>Restart to update</button>
+      </div>
+    );
+  }
+  return (
+    <div className="billing-banner">
+      <span>{s.state === "downloading" ? `Downloading update… ${s.percent}%` : "Downloading update…"}</span>
+    </div>
+  );
+}
+
+/** Offline/pending-sync chip for bundled shells — visible while offline or
+ *  while outbox ops wait to drain. */
+export function SyncChip() {
+  const [st, setSt] = useState<{ online: boolean; pending: number }>({ online: true, pending: 0 });
+  useEffect(() => {
+    if (!isDesktop && !isNativeMobile) return;
+    return onSyncState(setSt);
+  }, []);
+  if (!isDesktop && !isNativeMobile) return null;
+  if (st.online && st.pending === 0) return null;
+  return (
+    <div className="billing-banner warn">
+      <span>{st.online ? `Syncing ${st.pending} change${st.pending === 1 ? "" : "s"}…` : `Offline — ${st.pending} change${st.pending === 1 ? "" : "s"} will sync when you reconnect.`}</span>
     </div>
   );
 }

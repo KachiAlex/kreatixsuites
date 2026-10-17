@@ -13,7 +13,7 @@ import { SecurityDialog } from "./SecurityDialog";
 import { useToast, useSites, useMailEnabled, useMeetEnabled } from "../lib/hooks";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
-import { AnonBanner } from "./Desktop";
+import { AnonBanner, SyncChip, UpdateBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
@@ -76,6 +76,8 @@ export function Shell() {
       <main>
         <Topbar onPalette={() => setPalette(true)} onNav={() => setNavOpen(true)} />
         <AnonBanner />
+        <SyncChip />
+        <UpdateBanner />
         <BillingBanner />
         <Outlet />
       </main>

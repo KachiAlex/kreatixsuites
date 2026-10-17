@@ -4,6 +4,7 @@
 // it works fully offline, keeps fetch/IDB/cookie semantics, and stays versioned
 // with the app. REST/WS traffic goes to the production API origin.
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -199,6 +200,39 @@ ipcMain.handle("kx:pendingFiles", () => pendingFiles.splice(0));
 // event guaranteed to land. Flush anything queued from argv / protocol.
 ipcMain.on("kx:renderer-ready", () => { rendererReady = true; flushPendingFiles(); });
 
+// ---------- auto-update ----------
+// electron-updater checks the GitHub releases feed (build.publish in
+// package.json) for latest.yml; only active on packaged builds. Status is
+// relayed to the renderer so the shell can surface a restart affordance.
+type UpdateStatus =
+  | { state: "checking" | "available" | "none" }
+  | { state: "downloading"; percent: number }
+  | { state: "downloaded"; version: string }
+  | { state: "error"; message: string };
+let lastUpdate: UpdateStatus = { state: "none" };
+const sendUpdate = (s: UpdateStatus) => {
+  lastUpdate = s;
+  mainWindow?.webContents.send("kx:update", s);
+};
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("checking-for-update", () => sendUpdate({ state: "checking" }));
+autoUpdater.on("update-available", () => sendUpdate({ state: "available" }));
+autoUpdater.on("update-not-available", () => sendUpdate({ state: "none" }));
+autoUpdater.on("download-progress", (p) => sendUpdate({ state: "downloading", percent: Math.round(p.percent) }));
+autoUpdater.on("update-downloaded", (i) => sendUpdate({ state: "downloaded", version: i.version }));
+autoUpdater.on("error", (e) => sendUpdate({ state: "error", message: e?.message ?? String(e) }));
+
+ipcMain.handle("kx:update:status", () => lastUpdate);
+ipcMain.handle("kx:update:check", async () => {
+  if (!app.isPackaged) return { ok: false, error: "updates only run on packaged builds" };
+  try { await autoUpdater.checkForUpdates(); return { ok: true }; }
+  catch (err) { return { ok: false, error: String(err) }; }
+});
+ipcMain.handle("kx:update:install", () => {
+  if (lastUpdate.state === "downloaded") autoUpdater.quitAndInstall();
+});
+
 // entitlement persistence — encrypted with Windows DPAPI via safeStorage
 const entitlementPath = () => path.join(app.getPath("userData"), "entitlement.bin");
 ipcMain.handle("kx:entitlement:get", () => {
@@ -239,6 +273,12 @@ if (!gotLock) {
     app.setAsDefaultProtocolClient(SCHEME);
     for (const f of fileArgs(process.argv.slice(1))) pendingFiles.push(f);
     createWindow();
+    if (app.isPackaged) {
+      // launch check + hourly re-check; failures are silent in the renderer
+      // (state:"error") so an absent feed never interrupts the user
+      setTimeout(() => void autoUpdater.checkForUpdates().catch(() => {}), 8000);
+      setInterval(() => void autoUpdater.checkForUpdates().catch(() => {}), 3600_000);
+    }
     app.on("activate", () => { if (!mainWindow) createWindow(); });
   });
 

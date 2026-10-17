@@ -33,4 +33,16 @@ contextBridge.exposeInMainWorld("kxDesktop", {
     set: (token: string) => invoke<{ ok: boolean; error?: string }>("kx:entitlement:set", token),
     clear: () => invoke<{ ok: boolean }>("kx:entitlement:clear"),
   },
+
+  // auto-update — status relayed from main; check/install are user-driven
+  updates: {
+    status: () => invoke<unknown>("kx:update:status"),
+    check: () => invoke<{ ok: boolean; error?: string }>("kx:update:check"),
+    install: () => invoke<void>("kx:update:install"),
+    onStatus: (cb: (s: unknown) => void) => {
+      const l = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on("kx:update", l);
+      return () => ipcRenderer.off("kx:update", l);
+    },
+  },
 });

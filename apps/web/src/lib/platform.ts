@@ -16,7 +16,19 @@ export interface KxDesktop {
     set: (token: string) => Promise<{ ok: boolean; error?: string }>;
     clear: () => Promise<{ ok: boolean }>;
   };
+  updates: {
+    status: () => Promise<UpdateStatus>;
+    check: () => Promise<{ ok: boolean; error?: string }>;
+    install: () => Promise<void>;
+    onStatus: (cb: (s: UpdateStatus) => void) => () => void;
+  };
 }
+
+export type UpdateStatus =
+  | { state: "checking" | "available" | "none" }
+  | { state: "downloading"; percent: number }
+  | { state: "downloaded"; version: string }
+  | { state: "error"; message: string };
 
 export const desktop: KxDesktop | undefined =
   typeof window !== "undefined" ? (window as unknown as { kxDesktop?: KxDesktop }).kxDesktop : undefined;
