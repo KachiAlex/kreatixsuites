@@ -137,7 +137,19 @@ export function Home() {
     { cls: "sheets", name: "Kreatix Sheets", desc: t("apps.sheets.desc"), kind: "sheets" },
     { cls: "present", name: "Kreatix Present", desc: t("apps.present.desc"), kind: "present" },
     { cls: "pdf", name: "Kreatix PDF", desc: t("apps.pdf.desc"), kind: "pdf" },
-    { cls: "board", name: "Kreatix Board", desc: "Freehand whiteboard — sketch, brainstorm, export PNG", kind: "board" },
+    { cls: "board", name: "Kreatix Board", desc: t("apps.board.desc"), kind: "board" },
+  ];
+
+  // Workspace surfaces — navigation tiles (open the app, don't create a file)
+  const workApps = [
+    { cls: "meet", name: "Kreatix Meet", desc: t("apps.meet.desc"), to: "/meet" },
+    { cls: "chat", name: "Kreatix Chat", desc: t("apps.chat.desc"), to: "/chat" },
+    { cls: "mail", name: "Kreatix Mail", desc: t("apps.mail.desc"), to: "/mail" },
+    { cls: "calendar", name: "Calendar", desc: t("apps.calendar.desc"), to: "/calendar" },
+    { cls: "tasks", name: "Tasks", desc: t("apps.tasks.desc"), to: "/tasks" },
+    { cls: "notes", name: "Notes", desc: t("apps.notes.desc"), to: "/notes" },
+    { cls: "forms", name: "Forms", desc: t("apps.forms.desc"), to: "/forms" },
+    { cls: "sites", name: "Sites", desc: t("apps.sites.desc"), to: "/sites" },
   ];
 
   return (
@@ -165,6 +177,17 @@ export function Home() {
               const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[a.kind], kind: a.kind });
               navigate(`/edit/${r.item.id}`);
             }}>
+            <div className={`app-ico ${a.cls}`}><AppIcon kind={a.cls} /></div>
+            <div><h4>{a.name}</h4><p>{a.desc}</p></div>
+            <div className="launch">›</div>
+          </div>
+        ))}
+      </section>
+
+      <div className="section-head" style={{ marginTop: 22 }}><h2>{t("home.workApps")}</h2></div>
+      <section className="apps">
+        {workApps.map((a) => (
+          <div className="app-card" key={a.cls} onClick={() => navigate(a.to)}>
             <div className={`app-ico ${a.cls}`}><AppIcon kind={a.cls} /></div>
             <div><h4>{a.name}</h4><p>{a.desc}</p></div>
             <div className="launch">›</div>

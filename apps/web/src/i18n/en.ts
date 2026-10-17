@@ -162,6 +162,16 @@ export const en: Record<string, string> = {
   "apps.sheets.desc": "Data & analysis",
   "apps.present.desc": "Slides & storytelling",
   "apps.pdf.desc": "Read, edit & sign",
+  "apps.board.desc": "Freehand whiteboard",
+  "apps.meet.desc": "Meetings & calls",
+  "apps.chat.desc": "Team messaging",
+  "apps.mail.desc": "Email & inboxes",
+  "apps.calendar.desc": "Events & schedules",
+  "apps.tasks.desc": "To-dos & boards",
+  "apps.notes.desc": "Wiki & knowledge",
+  "apps.forms.desc": "Surveys & intake",
+  "apps.sites.desc": "Intranet & libraries",
+  "home.workApps": "Work together",
 
   // ---------- app chrome ----------
   "app.loading": "Loading workspace…",

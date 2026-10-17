@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "board" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "forms" | "notes" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "board" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "forms" | "notes" | "sites" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -16,6 +16,7 @@ const TILE: Record<AppKind, string> = {
   tasks: "#7B61A3",
   forms: "#0F7B6C",
   notes: "#7C3A8C",
+  sites: "#2C6E9B",
   file: "#727272",
   folder: "#B8AFA6",
 };
@@ -139,6 +140,16 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           <path d="M16 10h32v32l-10 12H16z" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinejoin="round" />
           <path d="M48 42l-10 12v-12z" fill="#fff" />
           <path d="M22 22h18M22 30h14" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
+        </g>
+      );
+    case "sites":
+      // Intranet globe — SharePoint-style hub
+      return (
+        <g fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round">
+          <circle cx="32" cy="32" r="20" />
+          <path d="M12 32h40" />
+          <path d="M32 12c-8 6-8 34 0 40M32 12c8 6 8 34 0 40" />
+          <path d="M17.5 21.5h29M17.5 42.5h29" opacity="0.55" />
         </g>
       );
     case "folder":
