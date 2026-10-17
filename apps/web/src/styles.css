@@ -3223,6 +3223,28 @@ html[data-theme="dark"]{
 
 .mail-ai-row{display:flex;gap:8px;margin-bottom:6px}
 .mail-ai-row input{flex:1}
+.mail-folder-row{display:flex;align-items:center;cursor:pointer}
+.mail-folder-name{flex:1}
+.mail-folder-tools{display:none;gap:4px;margin-left:auto}
+.mail-folder-row:hover .mail-folder-tools{display:flex}
+.mail-folder-tools i{font-style:normal;cursor:pointer;padding:0 3px;color:var(--muted)}
+.mail-folder-tools i:hover{color:var(--ink)}
+.mail-newfolder{display:flex;gap:4px;padding:4px 6px;margin-top:6px}
+.mail-newfolder input{flex:1;min-width:0;font-size:12px;padding:4px 8px}
+.mail-set-tabs{display:flex;gap:4px;padding:0 4px 10px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.mail-set-tab{border:0;background:none;padding:6px 12px;font:600 12.5px var(--font);color:var(--muted);cursor:pointer;border-radius:8px}
+.mail-set-tab.active{background:var(--subtle);color:var(--ink)}
+.mail-set-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mail-set-main{flex:1;display:flex;flex-direction:column;gap:2px}
+.mail-set-form{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
+.mail-set-grid{display:flex;gap:8px}
+.mail-set-grid input,.mail-set-grid select{flex:1;min-width:0}
+.mail-set-check{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.mail-toggle{width:32px;height:18px;border-radius:9px;border:1px solid var(--line);background:var(--subtle);position:relative;cursor:pointer;flex-shrink:0}
+.mail-toggle::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:all .15s}
+.mail-toggle.on{background:var(--k-orange);border-color:var(--k-orange)}
+.mail-toggle.on::after{left:16px;background:#fff}
+.mail-mbox{font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);max-width:280px}
 
 .meet-recs{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--subtle)}
 .meet-rec video{width:100%;max-width:480px;border-radius:8px;background:#000}

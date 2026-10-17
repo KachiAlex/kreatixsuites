@@ -108,6 +108,15 @@ export async function mailFetch(
   return res;
 }
 
+/** Fetch as another org member — used for delegate/shared mailbox access.
+ *  The caller must have already verified a mail_shares grant. */
+export async function mailFetchAs(
+  owner: { id: string; email: string; displayName: string; orgId: string },
+  path: string, init: { method?: string; body?: Buffer; contentType?: string } = {},
+): Promise<Response> {
+  return mailFetch(owner, path, init);
+}
+
 // ── Brevo sender-domain automation ─────────────────────────────────────
 // Outbound mail is sent by the kreatix-mail service's Brevo account, so
 // customer domains must be authenticated THERE. The suite uses a copy of

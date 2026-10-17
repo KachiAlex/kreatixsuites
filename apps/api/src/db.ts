@@ -678,6 +678,18 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reactions_msg ON chat_reactions(message_id)`);
 
+  // Shared/delegate mailboxes — owner grants a suite member full access to
+  // their mailbox; the suite mints the owner's mail JWT for the delegate.
+  await pool.query(`CREATE TABLE IF NOT EXISTS mail_shares (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    delegate_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (owner_user_id, delegate_user_id)
+  )`);
+
   // Kreatix Calendar — org events. Visibility = creator + attendees;
   // meeting_id links to a Kreatix Meet room when the event has a call.
   await pool.query(`CREATE TABLE IF NOT EXISTS calendar_events (

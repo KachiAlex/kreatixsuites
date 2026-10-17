@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
-import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailStatus } from "../mailBridge.js";
+import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailFetchAs, mailStatus } from "../mailBridge.js";
 import { q, one, run } from "../db.js";
 
 /** Paths the suite session may reach on the mail service — everything user-
@@ -170,6 +170,114 @@ export function mailRoutes(app: FastifyInstance) {
     const n = await run("DELETE FROM org_domains WHERE id = $1 AND org_id = $2", [id, user.orgId]);
     if (!n) return reply.code(404).send({ error: "not_found", message: "Domain not found" });
     return { ok: true };
+  });
+
+  // ── Shared/delegate mailboxes ────────────────────────────────────────
+  // Grants live in the suite DB; the delegate's calls proxy to the mail
+  // service with the *owner's* minted JWT (Exchange "Full Access" model).
+  // Every delegate call is audited so the owner/admin can see access.
+
+  app.get("/api/mail/shares", async (req) => {
+    const { user } = req as AuthedRequest;
+    const granted = await q<{ id: string; delegate_user_id: string; display_name: string; email: string }>(
+      `SELECT s.id, s.delegate_user_id, u.display_name, u.email
+       FROM mail_shares s JOIN users u ON u.id = s.delegate_user_id
+       WHERE s.owner_user_id = $1`, [user.id]);
+    const shared = await q<{ owner_user_id: string; display_name: string; email: string; mail_email: string | null }>(
+      `SELECT s.owner_user_id, u.display_name, u.email, u.mail_email
+       FROM mail_shares s JOIN users u ON u.id = s.owner_user_id
+       WHERE s.delegate_user_id = $1`, [user.id]);
+    return {
+      granted: granted.map((g) => ({ id: g.id, userId: g.delegate_user_id, name: g.display_name, email: g.email })),
+      sharedWithMe: shared.map((s) => ({ ownerId: s.owner_user_id, name: s.display_name, email: s.email, address: s.mail_email })),
+    };
+  });
+
+  app.post("/api/mail/shares", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const delegateId = z.string().min(1).safeParse((req.body as { userId?: string })?.userId);
+    if (!delegateId.success) return reply.code(400).send({ error: "invalid", message: "Pick a member" });
+    // mailbox owner or org admin can grant
+    const ownerId = (req.body as { ownerId?: string }).ownerId ?? user.id;
+    if (ownerId !== user.id && user.role !== "owner" && user.role !== "admin")
+      return reply.code(403).send({ error: "forbidden", message: "Only the mailbox owner or an admin can share it" });
+    const delegate = await one<{ id: string }>(
+      "SELECT id FROM users WHERE id = $1 AND org_id = $2 AND disabled = false", [delegateId.data, user.orgId]);
+    if (!delegate || delegate.id === ownerId)
+      return reply.code(400).send({ error: "invalid", message: "Pick another member of this workspace" });
+    const owner = await one<{ id: string }>(
+      "SELECT id FROM users WHERE id = $1 AND org_id = $2", [ownerId, user.orgId]);
+    if (!owner) return reply.code(404).send({ error: "not_found" });
+    await run(
+      `INSERT INTO mail_shares (id, org_id, owner_user_id, delegate_user_id, created_by)
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (owner_user_id, delegate_user_id) DO NOTHING`,
+      [randomUUID(), user.orgId, ownerId, delegate.id, user.id]);
+    return reply.code(201).send({ ok: true });
+  });
+
+  app.delete("/api/mail/shares/:id", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const share = await one<{ id: string; owner_user_id: string }>(
+      "SELECT id, owner_user_id FROM mail_shares WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId]);
+    if (!share) return reply.code(404).send({ error: "not_found" });
+    if (share.owner_user_id !== user.id && user.role !== "owner" && user.role !== "admin")
+      return reply.code(403).send({ error: "forbidden" });
+    await run("DELETE FROM mail_shares WHERE id = $1", [share.id]);
+    return { ok: true };
+  });
+
+  /** Delegate proxy: /api/mail/as/<ownerUserId>/<path> — same surface as
+   *  /api/mail/* but resolved against the owner's mailbox. */
+  app.route({
+    method: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    url: "/api/mail/as/:ownerId/*",
+    handler: async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      const { ownerId } = req.params as { ownerId: string };
+      const share = await one(
+        "SELECT 1 AS x FROM mail_shares WHERE owner_user_id = $1 AND delegate_user_id = $2 AND org_id = $3",
+        [ownerId, user.id, user.orgId]);
+      if (!share) return reply.code(403).send({ error: "forbidden", message: "That mailbox is not shared with you" });
+      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured" });
+      const owner = await one<{ id: string; email: string; display_name: string; org_id: string }>(
+        "SELECT id, email, display_name, org_id FROM users WHERE id = $1 AND org_id = $2", [ownerId, user.orgId]);
+      if (!owner) return reply.code(404).send({ error: "not_found" });
+
+      const rest = (req.params as { "*": string })["*"] ?? "";
+      if (BLOCKED.test(rest)) return reply.code(403).send({ error: "forbidden", message: "Not proxied" });
+      const qs = (req.raw.url ?? "").split("?")[1] ?? "";
+      const path = `/${rest}${qs ? `?${qs}` : ""}`;
+
+      let body: Buffer | undefined;
+      let contentType = req.headers["content-type"] as string | undefined;
+      if (req.body !== undefined && req.body !== null) {
+        body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+        contentType ??= "application/json";
+      } else if (req.headers["content-length"] || req.headers["transfer-encoding"]) {
+        const chunks: Buffer[] = [];
+        for await (const c of req.raw) chunks.push(c as Buffer);
+        if (chunks.length) body = Buffer.concat(chunks);
+      }
+
+      let upstream: Response;
+      try {
+        upstream = await mailFetchAs(
+          { id: owner.id, email: owner.email, displayName: owner.display_name, orgId: owner.org_id },
+          path, { method: req.method, body, contentType });
+      } catch {
+        return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
+      }
+      void run(
+        `INSERT INTO activity (id, org_id, actor_id, action, detail, created_at)
+         VALUES ($1,$2,$3,'mail.delegate',$4,now())`,
+        [randomUUID(), user.orgId, user.id, `${req.method} /as/${ownerId}${path}`.slice(0, 300)])
+        .catch(() => {});
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const ct = upstream.headers.get("content-type");
+      if (ct) reply.header("content-type", ct);
+      return reply.code(upstream.status).send(buf);
+    },
   });
 
   // Generic bridge: /api/mail/<path> → <mail>/api/<path> with a minted JWT.
