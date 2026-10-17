@@ -459,7 +459,7 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
       name TEXT NOT NULL,
       description TEXT,
       template_blob_key TEXT,
-      allowed_kinds JSONB NOT NULL DEFAULT '["writer","sheets","present","pdf","file"]'::jsonb,
+      allowed_kinds JSONB NOT NULL DEFAULT '["writer","sheets","present","pdf","board","file"]'::jsonb,
       is_default BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);

@@ -408,6 +408,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
             <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Kreatix Writer</button>
             <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>
             <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>
+            <button onClick={() => createFile("board")}><span className="cm-ico board"><AppIcon kind="board" /></span>Kreatix Board</button>
             <hr />
             <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>{t("nav.newFolder")}</button>
             <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>{t("nav.openFile")}</button>

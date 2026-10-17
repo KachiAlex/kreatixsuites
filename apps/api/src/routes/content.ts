@@ -388,7 +388,7 @@ export function contentRoutes(app: FastifyInstance) {
     // An uploaded native file (docx/xlsx/pptx) keeps its office mime until the
     // first canonical-JSON save — then it becomes a kreatix doc so opens stop
     // re-importing the original binary (which would clobber edits).
-    if (["writer", "sheets", "present"].includes(item.kind) && !item.mime.startsWith("application/x-kreatix-")) {
+    if (["writer", "sheets", "present", "board"].includes(item.kind) && !item.mime.startsWith("application/x-kreatix-")) {
       await run("UPDATE items SET mime = $2 WHERE id = $1", [item.id, `application/x-kreatix-${item.kind}`]);
     }
     void indexFile(item.id, item.kind, body.content).catch(() => { /* best-effort */ });

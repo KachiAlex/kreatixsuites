@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "forms" | "notes" | "file" | "folder";
+export type AppKind = "suites" | "writer" | "sheets" | "present" | "pdf" | "board" | "mail" | "meet" | "chat" | "calendar" | "tasks" | "forms" | "notes" | "file" | "folder";
 
 const TILE: Record<AppKind, string> = {
   suites: "#F2782E",
@@ -8,6 +8,7 @@ const TILE: Record<AppKind, string> = {
   sheets: "#1F9D66",
   present: "#7C5CD6",
   pdf: "#D84B57",
+  board: "#0E7C61",
   mail: "#0FA3A3",
   meet: "#6264A7",
   chat: "#0E7C61",
@@ -61,6 +62,15 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
           fontFamily="Inter, ui-sans-serif, system-ui, sans-serif" fontWeight="800" fontSize="19" letterSpacing="1">
           PDF
         </text>
+      );
+    case "board":
+      // Whiteboard — canvas with a drawn squiggle
+      return (
+        <g>
+          <rect x="12" y="14" width="40" height="36" rx="5" fill="none" stroke="#fff" strokeWidth="3.5" />
+          <path d="M20 40c4-10 8-12 12-6s8 4 12-4" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" />
+          <circle cx="44" cy="22" r="2.5" fill="#fff" />
+        </g>
       );
     case "mail":
       // Envelope

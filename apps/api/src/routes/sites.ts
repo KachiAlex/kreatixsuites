@@ -39,7 +39,7 @@ const contentTypeSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(500).nullable().optional(),
   // 'folder' is only meaningful on docSet types (the set itself is a folder)
-  allowedKinds: z.array(z.enum(["folder", "writer", "sheets", "present", "pdf", "file"])).default(["writer", "sheets", "present", "pdf", "file"]),
+  allowedKinds: z.array(z.enum(["folder", "writer", "sheets", "present", "pdf", "board", "file"])).default(["writer", "sheets", "present", "pdf", "board", "file"]),
   isDefault: z.boolean().default(false),
   /** Document-set type — applies to folders; shared columns propagate inside */
   docSet: z.boolean().default(false),
@@ -174,7 +174,7 @@ async function provisionBlueprint(orgId: string, siteId: string, bp: SiteBluepri
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [ctId, siteId, libId, encryptField(ct.name),
          ct.description ? encryptField(ct.description) : null,
-         JSON.stringify(ct.allowedKinds ?? ["writer", "sheets", "present", "pdf", "file"]),
+         JSON.stringify(ct.allowedKinds ?? ["writer", "sheets", "present", "pdf", "board", "file"]),
          ct.isDefault ?? false, ct.docSet ?? false, now()],
       );
       for (const [i, b] of (ct.columns ?? []).entries()) {

@@ -2,7 +2,7 @@
 
 export type UserRole = "owner" | "admin" | "member" | "guest";
 export type Permission = "owner" | "editor" | "reviewer" | "commenter" | "viewer";
-export type FileKind = "folder" | "writer" | "sheets" | "present" | "pdf" | "file";
+export type FileKind = "folder" | "writer" | "sheets" | "present" | "pdf" | "board" | "file";
 
 export interface User {
   id: string;
@@ -372,7 +372,7 @@ export interface ApiError {
   message: string;
 }
 
-export const FILE_KINDS: FileKind[] = ["writer", "sheets", "present", "pdf", "file"];
+export const FILE_KINDS: FileKind[] = ["writer", "sheets", "present", "pdf", "board", "file"];
 
 export const KIND_LABELS: Record<FileKind, string> = {
   folder: "Folder",
@@ -380,6 +380,7 @@ export const KIND_LABELS: Record<FileKind, string> = {
   sheets: "Kreatix Sheets",
   present: "Kreatix Present",
   pdf: "Kreatix PDF",
+  board: "Kreatix Board",
   file: "File",
 };
 
@@ -388,5 +389,6 @@ export const KIND_COLORS: Record<Exclude<FileKind, "folder">, string> = {
   sheets: "#1F9D66",
   present: "#E96A2C",
   pdf: "#D84B57",
+  board: "#0E7C61",
   file: "#727272",
 };

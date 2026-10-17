@@ -6,6 +6,7 @@ export const editorLoaders = {
   sheets: () => import("../sheets/SheetsEditor").then((m) => ({ default: m.SheetsEditor })),
   present: () => import("../present/PresentEditor").then((m) => ({ default: m.PresentEditor })),
   pdf: () => import("../pdf/PdfEditor").then((m) => ({ default: m.PdfEditor })),
+  board: () => import("../board/BoardEditor").then((m) => ({ default: m.BoardEditor })),
 } as const;
 
 export type EditorKind = keyof typeof editorLoaders;

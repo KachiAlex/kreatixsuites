@@ -13,6 +13,7 @@ const WriterEditor = lazy(editorLoaders.writer);
 const SheetsEditor = lazy(editorLoaders.sheets);
 const PresentEditor = lazy(editorLoaders.present);
 const PdfEditor = lazy(editorLoaders.pdf);
+const BoardEditor = lazy(editorLoaders.board);
 
 const Fallback = () => (
   <div className="auth-wrap"><div className="empty">Opening…</div></div>
@@ -114,6 +115,9 @@ export function Editor() {
     }
     if (item.kind === "pdf") {
       return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
+    }
+    if (item.kind === "board") {
+      return <BoardEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} />;
     }
 
     const meta = KIND_META[item.kind] ?? KIND_META.file;

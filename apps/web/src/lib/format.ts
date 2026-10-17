@@ -20,6 +20,7 @@ export const KIND_META: Record<string, { label: string; short: string; cls: stri
   sheets: { label: "Sheets", short: "S", cls: "sheets" },
   present: { label: "Present", short: "P", cls: "present" },
   pdf: { label: "PDF", short: "PDF", cls: "pdf" },
+  board: { label: "Board", short: "B", cls: "board" },
   file: { label: "File", short: "F", cls: "file-ico" },
   folder: { label: "Folder", short: "▣", cls: "folder-ico" },
 };

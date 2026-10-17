@@ -137,6 +137,7 @@ export function Home() {
     { cls: "sheets", name: "Kreatix Sheets", desc: t("apps.sheets.desc"), kind: "sheets" },
     { cls: "present", name: "Kreatix Present", desc: t("apps.present.desc"), kind: "present" },
     { cls: "pdf", name: "Kreatix PDF", desc: t("apps.pdf.desc"), kind: "pdf" },
+    { cls: "board", name: "Kreatix Board", desc: "Freehand whiteboard — sketch, brainstorm, export PNG", kind: "board" },
   ];
 
   return (
@@ -159,7 +160,7 @@ export function Home() {
         {apps.map((a) => (
           <div className="app-card" key={a.cls}
             onClick={async () => {
-              const names: Record<string, string> = { writer: t("home.untitledDoc"), sheets: t("home.untitledSheet"), present: t("home.untitledDeck") };
+              const names: Record<string, string> = { writer: t("home.untitledDoc"), sheets: t("home.untitledSheet"), present: t("home.untitledDeck"), board: "Untitled board" };
               if (a.kind === "pdf") return navigate("/drive/all");
               const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[a.kind], kind: a.kind });
               navigate(`/edit/${r.item.id}`);

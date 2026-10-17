@@ -17,7 +17,7 @@ import { encryptField, decryptField } from "../crypto.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(255),
-  kind: z.enum(["folder", "writer", "sheets", "present", "pdf", "file"]),
+  kind: z.enum(["folder", "writer", "sheets", "present", "pdf", "board", "file"]),
   parentId: z.string().nullable().optional(),
   libraryId: z.string().nullable().optional(),
   contentTypeId: z.string().nullable().optional(),
