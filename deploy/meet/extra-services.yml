@@ -1,0 +1,33 @@
+# Supplementary services for the Jitsi stack — appended to COMPOSE_FILE in
+# /opt/kreatix-meet/.env:
+#   COMPOSE_FILE=docker-compose.yml:jibri.yml:whiteboard.yml:transcriber.yml:extra-services.yml
+services:
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    command: [-c, /etc/coturn/turnserver.conf]
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      # UDP only — TCP 443 stays with nginx; published ports bypass ufw
+      # through the DOCKER-USER chain (same mechanism as JVB UDP 10000)
+      - '443:443/udp'
+      - '49160-49200:49160-49200/udp'
+    networks:
+      meet.jitsi: {}
+
+  vosk:
+    image: alphacep/kaldi-vosk-server:latest
+    restart: unless-stopped
+    command: [python3, /opt/vosk-server/websocket/asr_server.py]
+    environment:
+      - VOSK_MODEL_PATH=/opt/model
+      - VOSK_SAMPLE_RATE=16000
+    volumes:
+      # Download + extract https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+      # into ./cfg/vosk/ — the small model fits the 6GB box alongside Jibri
+      - ./cfg/vosk/vosk-model-small-en-us-0.15:/opt/model:ro
+    networks:
+      meet.jitsi:
+        aliases:
+          - vosk.meet.jitsi

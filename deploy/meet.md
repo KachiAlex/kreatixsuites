@@ -2,8 +2,9 @@
 
 Self-hosted Jitsi at `/opt/kreatix-meet` (clone of jitsi/docker-jitsi-meet
 `stable-11248`). Prosody runs `AUTH_TYPE=jwt` — only tokens minted by the
-suite API (`/api/meet/*/join`) can open rooms; guest links carry a 6h
-guest JWT in the URL.
+suite API (`/api/meet/*/join`) can open rooms. Guest links point at the
+`guest.meet.jitsi` VirtualHost (`ENABLE_GUESTS=1`): outsiders wait in the
+lobby until a moderator admits them — no JWT in the URL.
 
 ## Host layout
 
@@ -48,3 +49,33 @@ record button via `features.recording` in their Jitsi JWT; guests don't.
 Each Jibri instance is one concurrent recording and idles ~300MB; on the 6GB
 box keep it to one slot. Scale by adding Jibri containers (they self-register
 in the JibriBrewery muc).
+
+## Live captions (Jigasi transcriber + Vosk)
+
+`transcriber.yml` ships with docker-jitsi-meet; `extra-services.yml` adds a
+Vosk streaming-ASR backend (`alphacep/kaldi-vosk-server`, small English model
+mounted at `cfg/vosk/vosk-model-small-en-us-0.15` → `/opt/model`). `.env`:
+
+    ENABLE_TRANSCRIPTIONS=1
+    JIGASI_TRANSCRIBER_VOSK_URL=ws://vosk.meet.jitsi:2700
+    JIGASI_TRANSCRIBER_USER / JIGASI_TRANSCRIBER_PASSWORD   # generated
+
+The transcriber self-registers at prosody and joins `jigasibrewery`; web
+config gets `disableClosedCaptions: false`. Captions are in-call only —
+the post-call recording transcript is the separate Jibri pipeline above.
+
+## TURN relay (coturn)
+
+`extra-services.yml` runs coturn on UDP 443 (TCP 443 stays with nginx) with
+relay range 49160–49200/udp — published ports ride DOCKER-USER like the JVB.
+Prosody advertises it via `external_services` from `.env`:
+
+    TURN_HOST=turn.67-211-210-8.sslip.io
+    STUN_HOST=turn.67-211-210-8.sslip.io
+    STUN_PORT=443  TURN_PORT=443  TURN_TRANSPORT=udp  TURN_TTL=86400
+    TURN_CREDENTIALS=<shared secret, matches turnserver.conf static-auth-secret>
+
+`turnserver.conf` here is templated — substitute the secret. Clients on
+UDP-blocked networks get relay candidates automatically; verified with a
+raw ALLOCATE handshake (relay address in 49160–49200). TLS/DTLS TURN is
+deliberately off — no certs on the coturn container.
