@@ -744,7 +744,35 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     PRIMARY KEY (meeting_id, user_id)
   )`);
 
-  // Kreatix Forms — surveys/forms with a public share-token submit endpoint
+  // Calendar depth: occurrence exceptions, bookable resources, delegates
+  await pool.query(`CREATE TABLE IF NOT EXISTS calendar_exceptions (
+    event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+    occurrence_start TIMESTAMPTZ NOT NULL,
+    cancelled BOOLEAN NOT NULL DEFAULT false,
+    title TEXT, location TEXT, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (event_id, occurrence_start)
+  )`);
+  await pool.query(`ALTER TABLE calendar_exceptions ADD COLUMN IF NOT EXISTS created_by TEXT`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS calendar_resources (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'room',
+    capacity INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`ALTER TABLE calendar_resources ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'room'`);
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS resource_id TEXT REFERENCES calendar_resources(id) ON DELETE SET NULL`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS calendar_delegates (
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    delegate_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    can_edit BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner_id, delegate_id)
+  )`);
   await pool.query(`CREATE TABLE IF NOT EXISTS forms (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,

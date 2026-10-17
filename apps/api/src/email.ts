@@ -165,8 +165,10 @@ ${btn(publicUrl(), "Open Kreatix Suites")}
     };
   },
 
-  /** Calendar invite/cancel — accompanies a text/calendar .ics attachment. */
-  meetingInvite(organizer: string, title: string, when: string, location: string | null, meet: boolean, cancelled: boolean): Pick<Mail, "subject" | "html"> {
+  /** Calendar invite/cancel — accompanies a text/calendar .ics attachment.
+   *  `rsvp` adds one-click Accept/Maybe/Decline links (signed per-recipient). */
+  meetingInvite(organizer: string, title: string, when: string, location: string | null, meet: boolean, cancelled: boolean,
+    rsvp?: { accept: string; maybe: string; decline: string }): Pick<Mail, "subject" | "html"> {
     return {
       subject: `${cancelled ? "Cancelled: " : "Invitation: "}${title}`,
       html: shell(cancelled ? "Meeting cancelled" : "You're invited", `
@@ -177,6 +179,10 @@ ${location ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Where</td><td
 ${meet ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Call</td><td><b>Kreatix Meet</b> — join from the event</td></tr>` : ""}
 </table>
 ${cancelled ? `<p>This event has been removed from your calendar. Open the attached file to clear it in external calendars.</p>` : `<p>The attached <code>.ics</code> file adds this to Outlook/Apple/Google calendars — your Kreatix calendar already has it.</p>`}
+${!cancelled && rsvp ? `<p style="margin:18px 0 4px">Respond:
+  <a href="${rsvp.accept}" style="color:#16a34a;font-weight:600">Accept</a> ·
+  <a href="${rsvp.maybe}" style="color:#d97706;font-weight:600">Maybe</a> ·
+  <a href="${rsvp.decline}" style="color:#dc2626;font-weight:600">Decline</a></p>` : ""}
 ${btn(`${publicUrl()}/calendar`, "Open Calendar")}`),
     };
   },

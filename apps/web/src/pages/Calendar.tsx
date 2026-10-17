@@ -13,9 +13,12 @@ interface CalEvent {
   id: string; title: string | null; description: string | null; location: string | null;
   startsAt: string; endsAt: string; allDay: boolean; meetingId: string | null;
   createdBy: string; createdAt: string; rrule?: string | null; occurrenceOf?: string;
+  occurrenceKey?: string; resourceId?: string | null;
   attendees: { id: string; displayName: string; initials: string; status: string }[];
 }
 interface Person { id: string; displayName: string; email: string; initials: string }
+interface Resource { id: string; name: string; kind: string; capacity: number | null }
+interface Delegate { id: string; canEdit: boolean; displayName: string; email: string }
 
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const fmtTime = (iso: string) =>
@@ -52,6 +55,18 @@ export function Calendar() {
   const [fMeet, setFMeet] = useState(true);
   const [fAtt, setFAtt] = useState<Set<string>>(new Set());
   const [fRrule, setFRrule] = useState("");
+  const [fResource, setFResource] = useState("");
+  const [fScope, setFScope] = useState<"series" | "occurrence">("series");
+  const [resources, setResources] = useState<Resource[]>([]);
+  const [freebusy, setFreebusy] = useState<Record<string, { startsAt: string; endsAt: string }[]>>({});
+  const [delegates, setDelegates] = useState<Delegate[]>([]);
+  const [sharedWithMe, setSharedWithMe] = useState<Delegate[]>([]);
+  const [asId, setAsId] = useState("");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [resOpen, setResOpen] = useState(false);
+  const [resName, setResName] = useState("");
+  const [resKind, setResKind] = useState("room");
+  const [resCap, setResCap] = useState("");
 
   const range = useMemo(() => {
     const from = new Date(cursor.getFullYear(), cursor.getMonth(), 1 - 14);
@@ -62,12 +77,42 @@ export function Calendar() {
   const load = useCallback(async () => {
     try {
       const r = await api.get<{ events: CalEvent[] }>(
-        `/api/calendar?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`);
+        `/api/calendar?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}${asId ? `&as=${asId}` : ""}`);
       setEvents(r.events);
     } catch (e) { toast((e as Error).message); }
-  }, [range, toast]);
+  }, [range, toast, asId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // resources + delegate lists load once — resources for the room picker,
+  // sharedWithMe for the "viewing as" switcher, delegates for the share dialog
+  useEffect(() => {
+    void api.get<{ resources: Resource[] }>("/api/calendar/resources")
+      .then((r) => setResources(r.resources)).catch(() => {});
+    void api.get<{ delegates: Delegate[]; sharedWithMe: Delegate[] }>("/api/calendar/delegates")
+      .then((r) => { setDelegates(r.delegates); setSharedWithMe(r.sharedWithMe); }).catch(() => {});
+  }, []);
+
+  // free/busy: re-fetch attendees' busy spans whenever the picked people or
+  // the time window changes (1s debounce — the datetime input fires per key)
+  useEffect(() => {
+    if (!editOpen || !fAtt.size || !fStart || !fEnd) { setFreebusy({}); return; }
+    const t = setTimeout(() => {
+      const q = `/api/calendar/freebusy?users=${[...fAtt].join(",")}` +
+        `&from=${encodeURIComponent(new Date(fStart).toISOString())}` +
+        `&to=${encodeURIComponent(new Date(fEnd).toISOString())}`;
+      void api.get<{ busy: Record<string, { startsAt: string; endsAt: string }[]> }>(q)
+        .then((r) => setFreebusy(r.busy)).catch(() => setFreebusy({}));
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [editOpen, fAtt, fStart, fEnd]);
+
+  const isBusy = (id: string) => {
+    if (!fStart || !fEnd) return false;
+    const s = new Date(fStart).getTime(), e = new Date(fEnd).getTime();
+    return (freebusy[id] ?? []).some((b) =>
+      new Date(b.startsAt).getTime() < e && new Date(b.endsAt).getTime() > s);
+  };
 
   // deep link — /calendar?e=<eventId> selects the day + opens the detail
   const [search, setSearch] = useSearchParams();
@@ -127,7 +172,7 @@ export function Calendar() {
     const e = new Date(s.getTime() + 30 * 60_000);
     setEditing(null);
     setFTitle(""); setFLoc(""); setFDesc(""); setFMeet(true); setFRrule("");
-    setFAllDay(false); setFAtt(new Set());
+    setFAllDay(false); setFAtt(new Set()); setFResource(""); setFScope("series");
     setFStart(toLocalInput(s.toISOString())); setFEnd(toLocalInput(e.toISOString()));
     setEditOpen(true);
     if (!people.length) void api.get<{ people: Person[] }>("/api/chat/people").then((r) => setPeople(r.people)).catch(() => {});
@@ -138,6 +183,7 @@ export function Calendar() {
     setFTitle(e.title ?? ""); setFLoc(e.location ?? ""); setFDesc(e.description ?? "");
     setFAllDay(e.allDay); setFMeet(!!e.meetingId); setFRrule(e.rrule ?? "");
     setFAtt(new Set(e.attendees.map((a) => a.id)));
+    setFResource(e.resourceId ?? ""); setFScope("series");
     setFStart(toLocalInput(e.startsAt)); setFEnd(toLocalInput(e.endsAt));
     setDetail(null); setEditOpen(true);
     if (!people.length) void api.get<{ people: Person[] }>("/api/chat/people").then((r) => setPeople(r.people)).catch(() => {});
@@ -151,9 +197,17 @@ export function Calendar() {
         title: fTitle.trim(), description: fDesc.trim() || undefined, location: fLoc.trim() || undefined,
         startsAt: new Date(fStart).toISOString(), endsAt: new Date(fEnd).toISOString(),
         allDay: fAllDay, attendeeIds: [...fAtt], meet: meetOn && fMeet,
-        rrule: fRrule || null,
+        rrule: fRrule || null, resourceId: fResource || null,
       };
-      if (editing) await api.patch(`/api/calendar/${editing.id}`, body);
+      if (editing && editing.occurrenceOf && fScope === "occurrence") {
+        // edit just this occurrence — series keeps its pattern
+        await api.patch(`/api/calendar/${editing.id}/occurrence`, {
+          occurrenceStart: editing.occurrenceKey ?? editing.startsAt,
+          startsAt: body.startsAt, endsAt: body.endsAt,
+          title: body.title !== (editing.title ?? "") ? body.title : undefined,
+          location: fLoc.trim() !== (editing.location ?? "") ? fLoc.trim() : undefined,
+        });
+      } else if (editing) await api.patch(`/api/calendar/${editing.id}`, body);
       else await api.post("/api/calendar", body);
       setEditOpen(false);
       toast(editing ? "Event updated" : "Event created");
@@ -194,6 +248,44 @@ export function Calendar() {
     try { await api.del(`/api/calendar/${e.id}`); setDetail(null); void load(); }
     catch (err) { toast((err as Error).message); }
   };
+  const cancelOccurrence = async (e: CalEvent) => {
+    try {
+      await api.patch(`/api/calendar/${e.id}/occurrence`, {
+        occurrenceStart: e.occurrenceKey ?? e.startsAt, cancel: true,
+      });
+      setDetail(null); toast("Occurrence cancelled"); void load();
+    } catch (err) { toast((err as Error).message); }
+  };
+  const reloadDelegates = () =>
+    api.get<{ delegates: Delegate[]; sharedWithMe: Delegate[] }>("/api/calendar/delegates")
+      .then((r) => { setDelegates(r.delegates); setSharedWithMe(r.sharedWithMe); }).catch(() => {});
+  const addDelegate = async (id: string, canEdit: boolean) => {
+    try { await api.post("/api/calendar/delegates", { delegateId: id, canEdit }); void reloadDelegates(); }
+    catch (err) { toast((err as Error).message); }
+  };
+  const removeDelegate = async (id: string) => {
+    try { await api.del(`/api/calendar/delegates/${id}`); void reloadDelegates(); }
+    catch (err) { toast((err as Error).message); }
+  };
+  const addResource = async () => {
+    if (!resName.trim()) return;
+    try {
+      await api.post("/api/calendar/resources", {
+        name: resName.trim(), kind: resKind, capacity: resCap ? Number(resCap) : undefined,
+      });
+      setResName(""); setResCap("");
+      const r = await api.get<{ resources: Resource[] }>("/api/calendar/resources");
+      setResources(r.resources);
+      toast("Resource added");
+    } catch (err) { toast((err as Error).message); }
+  };
+  const delResource = async (id: string) => {
+    try {
+      await api.del(`/api/calendar/resources/${id}`);
+      const r = await api.get<{ resources: Resource[] }>("/api/calendar/resources");
+      setResources(r.resources);
+    } catch (err) { toast((err as Error).message); }
+  };
 
   const RSVP_COLORS: Record<string, string> = { accepted: "#3a7d44", declined: "#b3261e", tentative: "#b26a00", pending: "#6b6b6b" };
 
@@ -204,7 +296,18 @@ export function Calendar() {
         <span className="d-sub" style={{ marginLeft: 8 }}>
           {cursor.toLocaleString(undefined, { month: "long", year: "numeric" })}
         </span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          {sharedWithMe.length > 0 && (
+            <select className="btn-ghost btn-sm" value={asId} onChange={(e) => setAsId(e.target.value)}
+              title="View another calendar">
+              <option value="">My calendar</option>
+              {sharedWithMe.map((d) => (
+                <option key={d.id} value={d.id}>{d.displayName}{d.canEdit ? " (can edit)" : ""}</option>
+              ))}
+            </select>
+          )}
+          <button className="btn-ghost btn-sm" onClick={() => setShareOpen(true)}>Share</button>
+          <button className="btn-ghost btn-sm" onClick={() => setResOpen(true)}>Rooms</button>
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date())}>Today</button>
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button>
           <button className="btn-ghost btn-sm" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button>
@@ -273,6 +376,9 @@ export function Calendar() {
               </p>
             )}
             {detail.rrule && <p className="d-sub">🔁 Repeats ({detail.rrule.replace(/^RRULE:/i, "").toLowerCase().replace(/;/g, ", ")})</p>}
+            {detail.resourceId && (
+              <p className="d-sub">🚪 {resources.find((r) => r.id === detail.resourceId)?.name ?? "Resource booked"}</p>
+            )}
             <div className="dlg-actions" style={{ justifyContent: "flex-start" }}>
               {detail.meetingId && <button className="btn-primary btn-sm" onClick={() => joinMeet(detail)}>▶ Join Meet</button>}
               <button className="btn-ghost btn-sm" onClick={() => void exportIcs(detail)}>Export .ics</button>
@@ -286,6 +392,9 @@ export function Calendar() {
               {detail.createdBy === user?.id && (
                 <>
                   <button className="btn-ghost btn-sm" onClick={() => openEdit(detail)}>Edit</button>
+                  {detail.occurrenceOf && (
+                    <button className="btn-ghost btn-sm" onClick={() => void cancelOccurrence(detail)}>Cancel this occurrence</button>
+                  )}
                   <button className="btn-ghost btn-sm" onClick={() => void delEvent(detail)}>Delete</button>
                 </>
               )}
@@ -299,10 +408,34 @@ export function Calendar() {
           <div className="ob-body">
             <input placeholder="Title" value={fTitle} onChange={(e) => setFTitle(e.target.value)}
               style={{ width: "100%", marginBottom: 10 }} autoFocus />
+            {editing?.occurrenceOf && (
+              <div className="cal-formrow" style={{ marginBottom: 10 }}>
+                <label>Edit scope
+                  <select value={fScope} onChange={(e) => setFScope(e.target.value as "series" | "occurrence")}>
+                    <option value="series">This and all occurrences</option>
+                    <option value="occurrence">This occurrence only</option>
+                  </select>
+                </label>
+              </div>
+            )}
             <div className="cal-formrow">
               <label>Start<input type="datetime-local" value={fStart} onChange={(e) => setFStart(e.target.value)} /></label>
               <label>End<input type="datetime-local" value={fEnd} onChange={(e) => setFEnd(e.target.value)} /></label>
             </div>
+            {resources.length > 0 && fScope === "series" && (
+              <div className="cal-formrow" style={{ marginBottom: 10 }}>
+                <label>Room / resource
+                  <select value={fResource} onChange={(e) => setFResource(e.target.value)}>
+                    <option value="">None</option>
+                    {resources.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}{r.capacity ? ` (seats ${r.capacity})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
             <input placeholder="Location (optional)" value={fLoc} onChange={(e) => setFLoc(e.target.value)}
               style={{ width: "100%", marginBottom: 10 }} />
             <textarea placeholder="Description (optional)" value={fDesc} onChange={(e) => setFDesc(e.target.value)}
@@ -331,6 +464,9 @@ export function Calendar() {
                     onClick={() => setFAtt((s) => { const n = new Set(s); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })}>
                     <span className="chat-avatar">{p.initials}</span>
                     <span className="chat-item-main"><b>{p.displayName}</b><span className="d-sub">{p.email}</span></span>
+                    {fAtt.has(p.id) && isBusy(p.id) && (
+                      <span className="d-sub" title="Has another event in this window">busy</span>
+                    )}
                     {fAtt.has(p.id) && <span>✓</span>}
                   </button>
                 ))}
@@ -345,6 +481,79 @@ export function Calendar() {
           </div>
         </Modal>
       )}
+      {shareOpen && (
+        <Modal label="Share your calendar" onClose={() => setShareOpen(false)} style={{ width: 460 }}>
+          <div className="ob-body">
+            <p className="d-sub" style={{ marginTop: 0 }}>
+              Delegates can view your calendar — "can edit" also lets them manage events on your behalf.
+            </p>
+            {delegates.map((d) => (
+              <div key={d.id} className="chat-person" style={{ cursor: "default" }}>
+                <span className="chat-item-main"><b>{d.displayName}</b><span className="d-sub">{d.email}</span></span>
+                <label className="cal-check" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={d.canEdit}
+                    onChange={(e) => void addDelegate(d.id, e.target.checked)} /> can edit
+                </label>
+                <button className="btn-ghost btn-sm" onClick={() => void removeDelegate(d.id)}>✕</button>
+              </div>
+            ))}
+            {!delegates.length && <p className="d-sub">No delegates yet.</p>}
+            <div className="cal-formrow" style={{ marginTop: 12 }}>
+              <label style={{ flex: 1 }}>Add delegate
+                <select defaultValue="" onChange={(e) => { if (e.target.value) { void addDelegate(e.target.value, false); e.target.value = ""; } }}>
+                  <option value="" disabled>Pick a person…</option>
+                  {people.filter((p) => p.id !== user?.id && !delegates.some((d) => d.id === p.id))
+                    .map((p) => <option key={p.id} value={p.id}>{p.displayName}</option>)}
+                </select>
+              </label>
+            </div>
+            {!people.length && (
+              <button className="btn-ghost btn-sm" onClick={() =>
+                void api.get<{ people: Person[] }>("/api/chat/people").then((r) => setPeople(r.people)).catch(() => {})}>
+                Load people…
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {resOpen && (
+        <Modal label="Rooms &amp; resources" onClose={() => setResOpen(false)} style={{ width: 460 }}>
+          <div className="ob-body">
+            <p className="d-sub" style={{ marginTop: 0 }}>
+              Bookable rooms and equipment — events that pick one get conflict-checked.
+            </p>
+            {resources.map((r) => (
+              <div key={r.id} className="chat-person" style={{ cursor: "default" }}>
+                <span className="chat-item-main">
+                  <b>{r.name}</b>
+                  <span className="d-sub">{r.kind}{r.capacity ? ` · seats ${r.capacity}` : ""}</span>
+                </span>
+                <button className="btn-ghost btn-sm" onClick={() => void delResource(r.id)}>✕</button>
+              </div>
+            ))}
+            {!resources.length && <p className="d-sub">No resources defined.</p>}
+            <div className="cal-formrow" style={{ marginTop: 12, alignItems: "flex-end" }}>
+              <label style={{ flex: 2 }}>Name
+                <input value={resName} onChange={(e) => setResName(e.target.value)} placeholder="Boardroom A" />
+              </label>
+              <label>Kind
+                <select value={resKind} onChange={(e) => setResKind(e.target.value)}>
+                  <option value="room">Room</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label style={{ width: 80 }}>Capacity
+                <input type="number" min="0" value={resCap} onChange={(e) => setResCap(e.target.value)} />
+              </label>
+              <button className="btn-primary btn-sm" disabled={!resName.trim()} onClick={() => void addResource()}>Add</button>
+            </div>
+            <p className="d-sub" style={{ marginTop: 8 }}>Adding/removing requires the owner or admin role.</p>
+          </div>
+        </Modal>
+      )}
+
       {msg && <div className="toast" role="status">{msg}</div>}
     </>
   );
