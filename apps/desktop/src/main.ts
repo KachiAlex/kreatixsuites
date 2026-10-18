@@ -4,7 +4,7 @@
 // it works fully offline, keeps fetch/IDB/cookie semantics, and stays versioned
 // with the app. REST/WS traffic goes to the production API origin.
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -13,6 +13,9 @@ import { pathToFileURL } from "node:url";
 
 const API_BASE = "https://suites.kreatixtech.com";
 const SCHEME = "kx";
+// electron-updater is CJS — default-import + destructure (named ESM import
+// throws "Named export 'autoUpdater' not found" in the packaged app)
+const { autoUpdater } = electronUpdater;
 // Google OAuth "Desktop app" client — public identifier only; the secret
 // lives on the API (token exchange happens in /api/auth/google/code).
 const GOOGLE_DESKTOP_CLIENT_ID = "205418150362-e9nou2bj4b7lqi72s6bjb4fml99esedg.apps.googleusercontent.com";
