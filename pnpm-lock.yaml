@@ -125,6 +125,9 @@ importers:
       '@capacitor/share':
         specifier: ^7.0.4
         version: 7.0.4(@capacitor/core@7.6.9)
+      '@capgo/capacitor-social-login':
+        specifier: ^7.20.0
+        version: 7.20.0(@capacitor/core@7.6.9)
       '@fontsource/crimson-text':
         specifier: ^5.3.0
         version: 5.3.0
@@ -930,6 +933,11 @@ packages:
 
   '@capacitor/synapse@1.0.4':
     resolution: {integrity: sha512-/C1FUo8/OkKuAT4nCIu/34ny9siNHr9qtFezu4kxm6GY1wNFxrCFWjfYx5C1tUhVGz3fxBABegupkpjXvjCHrw==}
+
+  '@capgo/capacitor-social-login@7.20.0':
+    resolution: {integrity: sha512-rHlEALFUonLe4sDG+qybDowh2/XDiHJ4DK9pShe1aPTGSrmA5j7kz8VbHYGqgof5xdyeC7pAY3+8PASTW+qGKg==}
+    peerDependencies:
+      '@capacitor/core': '>=7.0.0'
 
   '@electron-internal/extract-zip@1.0.5':
     resolution: {integrity: sha512-+bqFCP98pLI0Tt0XQo1TmlXtwjWchISndDOxCkEcIuUgXWpBnLyRI+2DU+mesvnMMX6L1XDqYNA0lXNDHd/yiA==}
@@ -6236,6 +6244,10 @@ snapshots:
       '@capacitor/core': 7.6.9
 
   '@capacitor/synapse@1.0.4': {}
+
+  '@capgo/capacitor-social-login@7.20.0(@capacitor/core@7.6.9)':
+    dependencies:
+      '@capacitor/core': 7.6.9
 
   '@electron-internal/extract-zip@1.0.5': {}
 

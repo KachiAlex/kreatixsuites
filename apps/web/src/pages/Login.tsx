@@ -97,6 +97,24 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     }
   };
 
+  // Native shells can't run the GIS popup — use the Capacitor plugin, which
+  // returns the same id_token and reuses onGoogle → /api/auth/google.
+  const googleNative = async () => {
+    if (!googleClientId) return;
+    setError("");
+    try {
+      const { SocialLogin } = await import("@capgo/capacitor-social-login");
+      await SocialLogin.initialize({ google: { webClientId: googleClientId, mode: "online" } });
+      const r = await SocialLogin.login({ provider: "google", options: {} });
+      const idToken = (r.result as { idToken?: string | null }).idToken;
+      if (!idToken) throw new Error("Google sign-in failed");
+      await onGoogle(idToken);
+    } catch (err) {
+      if (err instanceof Error && /cancel/i.test(err.message)) return;
+      setError(err instanceof Error ? err.message : t("auth.genericError"));
+    }
+  };
+
   // "Sign in with Google" — load the GIS script once the backend reports a
   // client id, then render Google's own button into the placeholder div.
   useEffect(() => {
@@ -220,13 +238,14 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         </button>
           </>
         )}
-        {/* "Sign in with Google" — rendered by the GIS script into this div
-            when GOOGLE_CLIENT_ID is configured (hidden on native: the webview
-            can't run the GIS popup flow) */}
-        {googleClientId && !isNativeMobile && mode !== "forgot" && !mfaToken && (
+        {/* "Sign in with Google" — GIS-rendered button on web, Capacitor
+            plugin on native (webviews can't run the GIS popup flow) */}
+        {googleClientId && mode !== "forgot" && !mfaToken && (
           <>
             <div className="auth-or"><span>{t("auth.orContinue")}</span></div>
-            <div ref={googleBtnRef} className="google-btn" />
+            {isNativeMobile
+              ? <button type="button" className="btn-secondary sso-btn" onClick={() => void googleNative()}>{t("auth.googleContinue")}</button>
+              : <div ref={googleBtnRef} className="google-btn" />}
           </>
         )}
         {/* native shell: absolute API URL + client=mobile → IdP dance runs in

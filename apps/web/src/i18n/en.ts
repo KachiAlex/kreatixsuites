@@ -14,6 +14,7 @@ export const en: Record<string, string> = {
   "auth.familyName": "Family name (optional)",
   "auth.orgOptional": "Organization (optional)",
   "auth.orContinue": "or",
+  "auth.googleContinue": "Continue with Google",
   "auth.email": "Email",
   "auth.password": "Password",
   "auth.signIn": "Sign in",
