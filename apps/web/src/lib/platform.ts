@@ -4,6 +4,9 @@ export interface KxDesktop {
   isDesktop: true;
   platform: string;
   apiBase: () => Promise<string>;
+  /** System-browser Google sign-in — resolves with the auth code + PKCE
+   *  verifier + loopback redirectUri for POST /api/auth/google/code. */
+  googleSignIn: () => Promise<{ code: string; codeVerifier: string; redirectUri: string }>;
   readFile: (path: string) => Promise<{ ok: boolean; name?: string; data?: string; size?: number; error?: string }>;
   writeFile: (path: string, dataBase64: string) => Promise<{ ok: boolean; error?: string }>;
   openDialog: () => Promise<string | null>;

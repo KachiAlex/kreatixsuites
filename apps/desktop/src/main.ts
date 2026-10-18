@@ -6,11 +6,16 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const API_BASE = "https://suites.kreatixtech.com";
 const SCHEME = "kx";
+// Google OAuth "Desktop app" client — public identifier only; the secret
+// lives on the API (token exchange happens in /api/auth/google/code).
+const GOOGLE_DESKTOP_CLIENT_ID = "205418150362-e9nou2bj4b7lqi72s6bjb4fml99esedg.apps.googleusercontent.com";
 
 // The app manages its own theme via [data-theme] — Chromium's algorithmic
 // auto-dark (WebContentsForceDark) repaints light surfaces navy when the OS
@@ -153,6 +158,68 @@ const createWindow = () => {
 // ---------- IPC ----------
 
 ipcMain.handle("kx:apiBase", () => API_BASE);
+
+// ---------- Google sign-in (system browser + PKCE + loopback) ----------
+// The app can't host Google's consent in the embedded window, so we open the
+// user's default browser, catch the redirect on a throwaway 127.0.0.1
+// listener, and hand {code, verifier, redirectUri} back to the renderer —
+// the API does the actual token exchange with the desktop client secret.
+
+const b64url = (b: Buffer) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+ipcMain.handle("kx:googleSignIn", () => new Promise<{ code: string; codeVerifier: string; redirectUri: string }>((resolve, reject) => {
+  const verifier = b64url(randomBytes(32));
+  const challenge = createHash("sha256").update(verifier).digest("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const state = b64url(randomBytes(16));
+  let redirectUri = "";
+
+  const server = http.createServer((req, res) => {
+    try {
+      const u = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (u.pathname !== "/oauth") { res.writeHead(404); res.end(); return; }
+      const err = u.searchParams.get("error");
+      const code = u.searchParams.get("code");
+      const st = u.searchParams.get("state");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end("<html><body style='font-family:sans-serif;text-align:center;padding-top:60px'>"
+        + "<h2>Signed in — you can close this tab</h2><p>Return to Kreatix Suites.</p></body></html>");
+      clearTimeout(timer);
+      server.close();
+      if (err || !code || st !== state) {
+        reject(new Error(err === "access_denied" ? "cancelled" : "invalid_state"));
+      } else {
+        resolve({ code, codeVerifier: verifier, redirectUri });
+      }
+    } catch (e) {
+      clearTimeout(timer);
+      server.close();
+      reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+
+  const timer = setTimeout(() => {
+    server.close();
+    reject(new Error("Google sign-in timed out"));
+  }, 180_000);
+  // no response → also fail fast if the port can't bind at all
+  server.on("error", (e) => { clearTimeout(timer); reject(e); });
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    redirectUri = `http://127.0.0.1:${port}/oauth`;
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.search = new URLSearchParams({
+      client_id: GOOGLE_DESKTOP_CLIENT_ID,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    }).toString();
+    void shell.openExternal(url.toString());
+  });
+}));
 
 ipcMain.handle("kx:readFile", (_e, filePath: string) => {
   try {

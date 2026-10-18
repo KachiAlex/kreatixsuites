@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld("kxDesktop", {
   platform: process.platform,
   apiBase: () => invoke<string>("kx:apiBase"),
 
+  // Google sign-in — opens the system browser, returns the auth code + PKCE
+  // verifier + loopback redirectUri for /api/auth/google/code
+  googleSignIn: () => invoke<{ code: string; codeVerifier: string; redirectUri: string }>("kx:googleSignIn"),
+
   // filesystem (used by file-association opens + save-write-back)
   readFile: (path: string) => invoke<{ ok: boolean; name?: string; data?: string; size?: number; error?: string }>("kx:readFile", path),
   writeFile: (path: string, dataBase64: string) => invoke<{ ok: boolean; error?: string }>("kx:writeFile", path, dataBase64),

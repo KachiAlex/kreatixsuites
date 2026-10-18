@@ -100,7 +100,68 @@ async function grantFamilyFolderShare(orgId: string, userId: string): Promise<vo
 }
 
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
+// Desktop OAuth client — the installed-app flow exchanges auth codes through
+// this backend so the client secret never ships inside the installer.
+const GOOGLE_DESKTOP_CLIENT_ID = (process.env.GOOGLE_DESKTOP_CLIENT_ID ?? "").trim();
+const GOOGLE_DESKTOP_CLIENT_SECRET = (process.env.GOOGLE_DESKTOP_CLIENT_SECRET ?? "").trim();
 const GOOGLE_JWKS = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
+
+interface GoogleClaims { email?: string; email_verified?: boolean; name?: string }
+
+/** Shared sign-in tail for both Google flows (web/Android id_token, desktop
+ *  auth-code): verified claims → existing session, MFA challenge, or a
+ *  find-or-create pass through the normal invite/no-invite registration. */
+async function googleSignInComplete(
+  claims: GoogleClaims,
+  ctx: { invite?: string; kind?: OrgKind; orgName?: string },
+  log: { warn: (o: unknown, m: string) => void },
+  reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+): Promise<unknown> {
+  const email = claims.email?.trim();
+  if (!email || claims.email_verified !== true) {
+    return reply.code(401).send({ error: "bad_token", message: "Google account has no verified email" });
+  }
+  const displayName = (claims.name?.trim() || email.split("@")[0]).slice(0, 80);
+
+  const existing = await one<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
+  if (existing) {
+    if (existing.disabled) return reply.code(401).send({ error: "unauthorized", message: "Account is disabled" });
+    if (existing.totp_secret) {
+      return { mfaRequired: true, mfaToken: await signMfaToken(existing.id) };
+    }
+    return { token: await signToken(existing.id), user: toUser(existing) };
+  }
+
+  // new account — same invite/no-invite split as password registration;
+  // passwordless accounts carry a non-hash marker (same convention as SSO)
+  const kind: OrgKind = ctx.kind ?? "personal";
+  let orgId: string;
+  let role = "owner";
+  let orgName = ctx.orgName ?? defaultOrgName(kind, displayName);
+  if (ctx.invite) {
+    const j = await resolveInviteJoin(ctx.invite);
+    if (!j.ok) return reply.code(j.code).send({ error: j.error, message: j.message });
+    orgId = j.orgId;
+    orgName = j.orgName;
+    role = "member";
+  } else {
+    orgId = randomUUID();
+    await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)",
+      [orgId, orgName, kind, now()]);
+  }
+  const userId = randomUUID();
+  await run(
+    `INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, email_verified, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
+    [userId, orgId, email, `sso:${randomUUID()}`, displayName, initials(displayName), role, now()]);
+  if (!ctx.invite && kind === "family") await createFamilyFolder(orgId, userId);
+  if (ctx.invite) await grantFamilyFolderShare(orgId, userId);
+
+  const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
+  const t = ctx.invite ? tpl.joinedWorkspace(displayName, orgName) : tpl.welcome(displayName, orgName, kind);
+  sendMailSafe(log, { to: email, toName: displayName, ...t });
+  return { token: await signToken(userId), user };
+}
 
 export function authRoutes(app: FastifyInstance) {
   /** Google sign-in availability — the login page shows the button only when
@@ -108,6 +169,7 @@ export function authRoutes(app: FastifyInstance) {
   app.get("/api/auth/google/status", { config: { rateLimit: RL_AUTH } }, async () => ({
     enabled: !!GOOGLE_CLIENT_ID,
     clientId: GOOGLE_CLIENT_ID || null,
+    desktopEnabled: !!(GOOGLE_DESKTOP_CLIENT_ID && GOOGLE_DESKTOP_CLIENT_SECRET),
   }));
 
   /**
@@ -127,60 +189,68 @@ export function authRoutes(app: FastifyInstance) {
       orgName: z.string().max(80).optional(),
     }).parse(req.body);
 
-    let claims: { email?: string; email_verified?: boolean; name?: string };
+    let claims: GoogleClaims;
     try {
       const { payload } = await jwtVerify(body.idToken, GOOGLE_JWKS, {
         issuer: ["https://accounts.google.com", "accounts.google.com"],
         audience: GOOGLE_CLIENT_ID,
       });
-      claims = payload as typeof claims;
+      claims = payload as GoogleClaims;
     } catch {
       return reply.code(401).send({ error: "bad_token", message: "Google sign-in failed" });
     }
-    const email = claims.email?.trim();
-    if (!email || claims.email_verified !== true) {
-      return reply.code(401).send({ error: "bad_token", message: "Google account has no verified email" });
-    }
-    const displayName = (claims.name?.trim() || email.split("@")[0]).slice(0, 80);
+    return googleSignInComplete(claims, body, app.log, reply);
+  });
 
-    const existing = await one<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
-    if (existing) {
-      if (existing.disabled) return reply.code(401).send({ error: "unauthorized", message: "Account is disabled" });
-      if (existing.totp_secret) {
-        return { mfaRequired: true, mfaToken: await signMfaToken(existing.id) };
-      }
-      return { token: await signToken(existing.id), user: toUser(existing) };
+  /**
+   * POST /api/auth/google/code — desktop OAuth. The Electron app drives a
+   * system-browser + loopback-listener flow and posts the code + PKCE
+   * verifier here; we exchange it at Google's token endpoint with the
+   * DESKTOP client id/secret (kept server-side, never in the binary), then
+   * verify the returned id_token against the desktop audience.
+   */
+  app.post("/api/auth/google/code", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    if (!GOOGLE_DESKTOP_CLIENT_ID || !GOOGLE_DESKTOP_CLIENT_SECRET) {
+      return reply.code(501).send({ error: "not_configured" });
     }
+    const body = z.object({
+      code: z.string().min(10),
+      codeVerifier: z.string().min(20).max(200),
+      redirectUri: z.string().url().max(300),
+      invite: z.string().max(64).optional(),
+      kind: orgKindSchema.optional(),
+      orgName: z.string().max(80).optional(),
+    }).parse(req.body);
 
-    // new account — same invite/no-invite split as password registration;
-    // passwordless accounts carry a non-hash marker (same convention as SSO)
-    const kind: OrgKind = body.kind ?? "personal";
-    let orgId: string;
-    let role = "owner";
-    let orgName = body.orgName ?? defaultOrgName(kind, displayName);
-    if (body.invite) {
-      const j = await resolveInviteJoin(body.invite);
-      if (!j.ok) return reply.code(j.code).send({ error: j.error, message: j.message });
-      orgId = j.orgId;
-      orgName = j.orgName;
-      role = "member";
-    } else {
-      orgId = randomUUID();
-      await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)",
-        [orgId, orgName, kind, now()]);
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: body.code,
+        redirect_uri: body.redirectUri,
+        client_id: GOOGLE_DESKTOP_CLIENT_ID,
+        client_secret: GOOGLE_DESKTOP_CLIENT_SECRET,
+        code_verifier: body.codeVerifier,
+      }),
+    });
+    if (!tokenRes.ok) {
+      return reply.code(401).send({ error: "bad_code", message: "Google sign-in failed — try again" });
     }
-    const userId = randomUUID();
-    await run(
-      `INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, email_verified, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
-      [userId, orgId, email, `sso:${randomUUID()}`, displayName, initials(displayName), role, now()]);
-    if (!body.invite && kind === "family") await createFamilyFolder(orgId, userId);
-    if (body.invite) await grantFamilyFolderShare(orgId, userId);
+    const tokens = await tokenRes.json() as { id_token?: string };
+    if (!tokens.id_token) return reply.code(401).send({ error: "bad_code", message: "Google sign-in failed" });
 
-    const t = body.invite ? tpl.joinedWorkspace(displayName, orgName) : tpl.welcome(displayName, orgName, kind);
-    const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
-    sendMailSafe(app.log, { to: email, toName: displayName, ...t });
-    return { token: await signToken(userId), user };
+    let claims: GoogleClaims;
+    try {
+      const { payload } = await jwtVerify(tokens.id_token, GOOGLE_JWKS, {
+        issuer: ["https://accounts.google.com", "accounts.google.com"],
+        audience: GOOGLE_DESKTOP_CLIENT_ID,
+      });
+      claims = payload as GoogleClaims;
+    } catch {
+      return reply.code(401).send({ error: "bad_token", message: "Google sign-in failed" });
+    }
+    return googleSignInComplete(claims, body, app.log, reply);
   });
 
   /** Invite-link preview — name + branding of the workspace you're joining. */

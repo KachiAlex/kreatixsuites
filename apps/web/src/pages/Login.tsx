@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { API_BASE, isNativeMobile } from "../lib/platform";
+import { API_BASE, desktop, isDesktop, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
 
@@ -37,6 +37,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [forgotSent, setForgotSent] = useState(false);
   const [kind, setKind] = useState<"personal" | "family" | "business">("personal");
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
+  const [googleDesktop, setGoogleDesktop] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const invite = params.get("invite") ?? undefined;
   // latest signup context for the GIS callback (initialize runs once)
@@ -70,8 +71,11 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     api.get<{ enabled: boolean }>("/api/auth/saml/status")
       .then((r) => setSaml(r.enabled))
       .catch(() => setSaml(false));
-    api.get<{ enabled: boolean; clientId: string | null }>("/api/auth/google/status")
-      .then((r) => setGoogleClientId(r.enabled ? r.clientId : null))
+    api.get<{ enabled: boolean; clientId: string | null; desktopEnabled?: boolean }>("/api/auth/google/status")
+      .then((r) => {
+        setGoogleClientId(r.enabled ? r.clientId : null);
+        setGoogleDesktop(!!r.desktopEnabled);
+      })
       .catch(() => setGoogleClientId(null));
     if (invite) {
       api.get<{ orgName: string; brand?: { name: string; logoUrl: string | null } }>(`/api/auth/invite/${invite}`)
@@ -93,6 +97,26 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       prefetchAppShell();
       navigate("/");
     } catch (err) {
+      setError(err instanceof Error ? err.message : t("auth.genericError"));
+    }
+  };
+
+  // Desktop shell — Electron drives a system-browser + loopback flow and
+  // returns the auth code; the API exchanges it with the desktop secret.
+  const googleDesktopSignIn = async () => {
+    if (!desktop) return;
+    setError("");
+    try {
+      const r = await desktop.googleSignIn();
+      const resp = await api.post<{ token?: string; mfaRequired?: boolean; mfaToken?: string }>(
+        "/api/auth/google/code",
+        { ...r, invite: gParams.current.invite, kind: gParams.current.kind, orgName: gParams.current.org || undefined });
+      if (resp.mfaRequired) { setMfaToken(resp.mfaToken ?? null); return; }
+      await loginWithToken(resp.token!);
+      prefetchAppShell();
+      navigate("/");
+    } catch (err) {
+      if (err instanceof Error && /cancel/i.test(err.message)) return;
       setError(err instanceof Error ? err.message : t("auth.genericError"));
     }
   };
@@ -239,13 +263,16 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
           </>
         )}
         {/* "Sign in with Google" — GIS-rendered button on web, Capacitor
-            plugin on native (webviews can't run the GIS popup flow) */}
-        {googleClientId && mode !== "forgot" && !mfaToken && (
+            plugin on Android, Electron loopback flow on desktop (embedded
+            shells can't run Google's consent UI) */}
+        {(googleClientId || (isDesktop && googleDesktop)) && mode !== "forgot" && !mfaToken && (
           <>
             <div className="auth-or"><span>{t("auth.orContinue")}</span></div>
-            {isNativeMobile
-              ? <button type="button" className="btn-secondary sso-btn" onClick={() => void googleNative()}>{t("auth.googleContinue")}</button>
-              : <div ref={googleBtnRef} className="google-btn" />}
+            {isDesktop
+              ? <button type="button" className="btn-secondary sso-btn" onClick={() => void googleDesktopSignIn()}>{t("auth.googleContinue")}</button>
+              : isNativeMobile
+                ? <button type="button" className="btn-secondary sso-btn" onClick={() => void googleNative()}>{t("auth.googleContinue")}</button>
+                : <div ref={googleBtnRef} className="google-btn" />}
           </>
         )}
         {/* native shell: absolute API URL + client=mobile → IdP dance runs in
