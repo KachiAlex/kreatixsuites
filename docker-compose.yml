@@ -73,6 +73,8 @@ services:
       - KREATIX_OIDC_ISSUER=${KREATIX_OIDC_ISSUER:-}
       - KREATIX_OIDC_CLIENT_ID=${KREATIX_OIDC_CLIENT_ID:-}
       - KREATIX_OIDC_CLIENT_SECRET=${KREATIX_OIDC_CLIENT_SECRET:-}
+      # "Sign in with Google" button (GIS web client id — no secret needed)
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       # Kreatix Mail bridge (webmail module) — empty = Mail stays hidden
       - KREATIX_MAIL_BASE=${KREATIX_MAIL_BASE:-}
       - KREATIX_MAIL_DOMAIN=${KREATIX_MAIL_DOMAIN:-}
