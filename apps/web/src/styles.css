@@ -181,6 +181,14 @@ main{padding:19px 28px 50px;min-width:0}
 .prompt-footer{display:flex;align-items:center;justify-content:space-between}
 .add{font-size:10px;color:var(--muted)}
 .send{width:31px;height:31px;border:0;border-radius:9px;background:#191919;color:#fff;cursor:pointer}
+/* signup kind picker + google button */
+.kind-pick{display:flex;gap:8px}
+.kind-chip{flex:1;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 6px;font-size:12px;font-weight:600;color:var(--ink);cursor:pointer}
+.kind-chip.on{border-color:var(--k-orange);background:var(--k-orange-soft);color:var(--k-orange-dark)}
+.auth-or{display:flex;align-items:center;gap:10px;margin:14px 0 10px;color:var(--sub);font-size:11px}
+.auth-or::before,.auth-or::after{content:"";flex:1;height:1px;background:var(--line)}
+.google-btn{display:flex;justify-content:center;min-height:40px}
+
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
 .chip{font-size:9px;color:var(--k-orange-dark);background:var(--k-orange-soft);border:1px solid var(--k-orange);padding:6px 8px;border-radius:999px;font-weight:700;cursor:pointer}
 .templates{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}

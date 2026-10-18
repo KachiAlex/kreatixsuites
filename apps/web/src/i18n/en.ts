@@ -2,10 +2,18 @@ export const en: Record<string, string> = {
   // ---------- auth / login ----------
   "auth.welcomeBack": "Welcome back",
   "auth.createWorkspace": "Create your workspace",
+  "auth.createAccount2": "Create your account",
+  "auth.createFamily": "Create your family space",
   "auth.joinOrg": "Join {org}",
   "auth.tagline": "Kreatix Suites · Writer · Sheets · Present · PDF",
   "auth.fullName": "Full name",
+  "auth.forWho": "This is for…",
+  "auth.kind.personal": "Just me",
+  "auth.kind.family": "My family",
+  "auth.kind.business": "A team / business",
+  "auth.familyName": "Family name (optional)",
   "auth.orgOptional": "Organization (optional)",
+  "auth.orContinue": "or",
   "auth.email": "Email",
   "auth.password": "Password",
   "auth.signIn": "Sign in",
@@ -31,6 +39,8 @@ export const en: Record<string, string> = {
 
   // ---------- navigation / shell ----------
   "nav.workspace": "Workspace",
+  "nav.family": "Family",
+  "nav.familyTools": "Family tools",
   "nav.home": "Home",
   "nav.recent": "Recent",
   "nav.drive": "Kreatix Drive",

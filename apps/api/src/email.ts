@@ -95,14 +95,15 @@ ${btn(`${publicUrl()}/admin`, "Open Admin → Health")}
     };
   },
 
-  welcome(name: string, workspace: string): Pick<Mail, "subject" | "html"> {
+  welcome(name: string, workspace: string, kind = "business"): Pick<Mail, "subject" | "html"> {
+    const space = kind === "family" ? "family space" : kind === "personal" ? "account" : "workspace";
     return {
       subject: "Welcome to Kreatix Suites",
       html: shell("Welcome aboard", `
 <p>Hi ${esc(name)},</p>
-<p>Your workspace <b>${esc(workspace)}</b> is ready — Writer, Sheets, Present, PDF, Drive and Kreatix AI, all in one place. Your <b>3-month free trial</b> starts now.</p>
-${btn(publicUrl(), "Open your workspace")}
-<p style="color:#8a8a90;font-size:12px;margin-top:22px">Invite your team anytime from Admin → Members.</p>`),
+<p>Your ${space} <b>${esc(workspace)}</b> is ready — Writer, Sheets, Present, PDF, Drive and Kreatix AI, all in one place. Your <b>3-month free trial</b> starts now.</p>
+${btn(publicUrl(), "Open Kreatix Suites")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">${kind === "family" ? "Invite your family anytime from Admin → Members." : "Invite your team anytime from Admin → Members."}</p>`),
     };
   },
 

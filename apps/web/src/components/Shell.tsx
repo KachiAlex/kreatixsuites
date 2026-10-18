@@ -352,7 +352,7 @@ function OrgBrand() {
 
 function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => void; open: boolean; onClose: () => void; toast: (m: string) => void }) {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, org } = useAuth();
   const t = useI18n().t;
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -453,7 +453,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         </button>
       </div>
 
-      <div className="section-label">{t("nav.workspace")}</div>
+      <div className="section-label">{t(org?.kind === "family" ? "nav.family" : "nav.workspace")}</div>
       <NavLink to="/home" end className={navCls}><span className="dot" />{t("nav.home")}</NavLink>
       <NavLink to="/drive" className={navCls}><span className="dot" />{t("nav.recent")}</NavLink>
       <NavLink to="/drive/starred" className={navCls}><span className="dot" />{t("nav.starred")}</NavLink>
@@ -484,7 +484,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         <NavLink key={s.id} to={`/sites/${s.id}`} className={navCls}><span className="dot" />{s.name}</NavLink>
       ))}
 
-      <div className="section-label">{t("nav.workspaceTools")}</div>
+      <div className="section-label">{t(org?.kind === "family" ? "nav.familyTools" : "nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
       <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>
       {(user?.role === "owner" || user?.role === "admin") && (

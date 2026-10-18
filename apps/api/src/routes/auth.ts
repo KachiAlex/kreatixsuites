@@ -7,6 +7,7 @@ import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 // Brute-force ceilings — the in-memory limiter is per-IP; pair with real
 // TLS-terminating rate control at the edge for distributed attacks.
@@ -35,15 +36,153 @@ async function consumeAuthToken(purpose: string, token: string): Promise<{ id: s
   return row;
 }
 
+const orgKindSchema = z.enum(["personal", "family", "business"]);
+type OrgKind = z.infer<typeof orgKindSchema>;
+
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   displayName: z.string().min(1).max(80),
   orgName: z.string().max(80).optional(),
+  kind: orgKindSchema.optional(),
   invite: z.string().max(64).optional(),
 });
 
+/** Default tenant name for a new signup — consumer kinds avoid "workspace"
+ *  language (a Gmail user creating a family account shouldn't land in
+ *  something branded as a business workspace). */
+function defaultOrgName(kind: OrgKind, displayName: string): string {
+  if (kind === "family") return `${displayName}'s family`;
+  if (kind === "personal") return displayName;
+  return `${displayName}'s workspace`;
+}
+
+/** Invite token → org join. Shared by password + Google registration paths. */
+async function resolveInviteJoin(token: string):
+  Promise<{ ok: true; orgId: string; orgName: string } | { ok: false; code: number; error: string; message: string }> {
+  const inv = await one<{ id: string; org_id: string; name: string }>(
+    `SELECT i.id, i.org_id, o.name FROM org_invites i JOIN orgs o ON o.id = i.org_id
+     WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
+    [token, now()]);
+  if (!inv) return { ok: false, code: 400, error: "bad_invite", message: "Invite link is expired or invalid" };
+  // plan seat cap — free/pro/family plans have a member ceiling (0 = unlimited)
+  const sub = await ensureSubscription(inv.org_id);
+  const maxMembers = planLimit(await effectivePlan(sub), "max_members", 0);
+  if (maxMembers > 0 && (await seatCount(inv.org_id)) >= maxMembers) {
+    return { ok: false, code: 402, error: "seat_limit", message: "This space is full — its plan's member limit has been reached" };
+  }
+  await run("UPDATE org_invites SET uses = uses + 1 WHERE id = $1", [inv.id]);
+  return { ok: true, orgId: inv.org_id, orgName: inv.name };
+}
+
+/** The shared Family Drive folder — every member gets an editor share, so
+ *  anything dropped inside is visible to the whole family (share rows are
+ *  per-user; new members get theirs at join time). */
+async function createFamilyFolder(orgId: string, ownerId: string): Promise<void> {
+  const id = randomUUID();
+  await run(
+    `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, created_at, updated_at)
+     VALUES ($1,$2,NULL,$3,$4,'folder','application/x-kreatix-folder',$5,$5)`,
+    [id, orgId, ownerId, encryptField("Family"), now()]);
+  await run("UPDATE orgs SET family_folder_id = $1 WHERE id = $2", [id, orgId]);
+}
+
+/** Grant a user an editor share on the org's Family folder (no-op unless
+ *  the org is kind='family' and the folder exists). */
+async function grantFamilyFolderShare(orgId: string, userId: string): Promise<void> {
+  const org = await one<{ kind: string; family_folder_id: string | null }>(
+    "SELECT kind, family_folder_id FROM orgs WHERE id = $1", [orgId]);
+  if (org?.kind !== "family" || !org.family_folder_id) return;
+  await run(
+    `INSERT INTO shares (id, file_id, user_id, permission, created_at) VALUES ($1,$2,$3,'editor',$4)
+     ON CONFLICT (file_id, user_id) DO NOTHING`,
+    [randomUUID(), org.family_folder_id, userId, now()]);
+}
+
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
+const GOOGLE_JWKS = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
+
 export function authRoutes(app: FastifyInstance) {
+  /** Google sign-in availability — the login page shows the button only when
+   *  a client id is configured (also hands the client id to the GIS script). */
+  app.get("/api/auth/google/status", { config: { rateLimit: RL_AUTH } }, async () => ({
+    enabled: !!GOOGLE_CLIENT_ID,
+    clientId: GOOGLE_CLIENT_ID || null,
+  }));
+
+  /**
+   * POST /api/auth/google — "Sign in with Google". The browser sends the GIS
+   * ID token; we verify it against Google's tokeninfo endpoint and require
+   * aud === our client id. Existing accounts sign straight in (MFA-enabled
+   * accounts get the normal second-factor challenge instead of a bypass);
+   * new accounts go through the same invite/no-invite split as password
+   * registration, with the Google-verified email marked verified.
+   */
+  app.post("/api/auth/google", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    if (!GOOGLE_CLIENT_ID) return reply.code(501).send({ error: "not_configured" });
+    const body = z.object({
+      idToken: z.string().min(20),
+      invite: z.string().max(64).optional(),
+      kind: orgKindSchema.optional(),
+      orgName: z.string().max(80).optional(),
+    }).parse(req.body);
+
+    let claims: { email?: string; email_verified?: boolean; name?: string };
+    try {
+      const { payload } = await jwtVerify(body.idToken, GOOGLE_JWKS, {
+        issuer: ["https://accounts.google.com", "accounts.google.com"],
+        audience: GOOGLE_CLIENT_ID,
+      });
+      claims = payload as typeof claims;
+    } catch {
+      return reply.code(401).send({ error: "bad_token", message: "Google sign-in failed" });
+    }
+    const email = claims.email?.trim();
+    if (!email || claims.email_verified !== true) {
+      return reply.code(401).send({ error: "bad_token", message: "Google account has no verified email" });
+    }
+    const displayName = (claims.name?.trim() || email.split("@")[0]).slice(0, 80);
+
+    const existing = await one<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
+    if (existing) {
+      if (existing.disabled) return reply.code(401).send({ error: "unauthorized", message: "Account is disabled" });
+      if (existing.totp_secret) {
+        return { mfaRequired: true, mfaToken: await signMfaToken(existing.id) };
+      }
+      return { token: await signToken(existing.id), user: toUser(existing) };
+    }
+
+    // new account — same invite/no-invite split as password registration;
+    // passwordless accounts carry a non-hash marker (same convention as SSO)
+    const kind: OrgKind = body.kind ?? "personal";
+    let orgId: string;
+    let role = "owner";
+    let orgName = body.orgName ?? defaultOrgName(kind, displayName);
+    if (body.invite) {
+      const j = await resolveInviteJoin(body.invite);
+      if (!j.ok) return reply.code(j.code).send({ error: j.error, message: j.message });
+      orgId = j.orgId;
+      orgName = j.orgName;
+      role = "member";
+    } else {
+      orgId = randomUUID();
+      await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)",
+        [orgId, orgName, kind, now()]);
+    }
+    const userId = randomUUID();
+    await run(
+      `INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, email_verified, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
+      [userId, orgId, email, `sso:${randomUUID()}`, displayName, initials(displayName), role, now()]);
+    if (!body.invite && kind === "family") await createFamilyFolder(orgId, userId);
+    if (body.invite) await grantFamilyFolderShare(orgId, userId);
+
+    const t = body.invite ? tpl.joinedWorkspace(displayName, orgName) : tpl.welcome(displayName, orgName, kind);
+    const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
+    sendMailSafe(app.log, { to: email, toName: displayName, ...t });
+    return { token: await signToken(userId), user };
+  });
+
   /** Invite-link preview — name + branding of the workspace you're joining. */
   app.get("/api/auth/invite/:token", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const inv = await one<{ org_id: string; name: string; brand_name: string | null; brand_logo: string | null }>(
@@ -83,37 +222,30 @@ export function authRoutes(app: FastifyInstance) {
     const existing = await one("SELECT id FROM users WHERE email = $1", [body.email]);
     if (existing) return reply.code(409).send({ error: "conflict", message: "Email already registered" });
 
-    // invite → join an existing workspace as a member; no invite → new workspace + owner
+    // invite → join an existing tenant as a member; no invite → new tenant + owner
+    const kind: OrgKind = body.kind ?? "personal";
     let orgId: string;
     let role = "owner";
-    let orgName = body.orgName ?? `${body.displayName}'s workspace`;
+    let orgName = body.orgName ?? defaultOrgName(kind, body.displayName);
     if (body.invite) {
-      const inv = await one<{ id: string; org_id: string; name: string }>(
-        `SELECT i.id, i.org_id, o.name FROM org_invites i JOIN orgs o ON o.id = i.org_id
-         WHERE i.token = $1 AND (i.expires_at IS NULL OR i.expires_at > $2) AND i.uses < i.max_uses`,
-        [body.invite, now()]);
-      if (!inv) return reply.code(400).send({ error: "bad_invite", message: "Invite link is expired or invalid" });
-      // plan seat cap — free/pro workspaces have a member ceiling (0 = unlimited)
-      const sub = await ensureSubscription(inv.org_id);
-      const maxMembers = planLimit(await effectivePlan(sub), "max_members", 0);
-      if (maxMembers > 0 && (await seatCount(inv.org_id)) >= maxMembers) {
-        return reply.code(402).send({ error: "seat_limit", message: "This workspace is full — its plan's member limit has been reached" });
-      }
-      await run("UPDATE org_invites SET uses = uses + 1 WHERE id = $1", [inv.id]);
-      orgId = inv.org_id;
-      orgName = inv.name;
+      const j = await resolveInviteJoin(body.invite);
+      if (!j.ok) return reply.code(j.code).send({ error: j.error, message: j.message });
+      orgId = j.orgId;
+      orgName = j.orgName;
       role = "member";
     } else {
       orgId = randomUUID();
-      await run("INSERT INTO orgs (id, name, created_at) VALUES ($1,$2,$3)", [orgId, orgName, now()]);
+      await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)", [orgId, orgName, kind, now()]);
     }
     const userId = randomUUID();
     await run(
       "INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
       [userId, orgId, body.email, hashPassword(body.password), body.displayName, initials(body.displayName), role, now()],
     );
+    if (!body.invite && kind === "family") await createFamilyFolder(orgId, userId);
+    if (body.invite) await grantFamilyFolderShare(orgId, userId);
 
-    const t = body.invite ? tpl.joinedWorkspace(body.displayName, orgName) : tpl.welcome(body.displayName, orgName);
+    const t = body.invite ? tpl.joinedWorkspace(body.displayName, orgName) : tpl.welcome(body.displayName, orgName, kind);
     sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...t });
     // email verification — unverified logins still work for now; the flag
     // surfaces in /api/auth/me so the UI can nag
@@ -259,12 +391,12 @@ export function authRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     const sub = await ensureSubscription(user.orgId);
     const plan = await effectivePlan(sub);
-    const org = await one<{ name: string; onboarded_at: string | null; brand_name: string | null; brand_logo: string | null }>(
-      "SELECT name, onboarded_at, brand_name, brand_logo FROM orgs WHERE id = $1", [user.orgId]);
+    const org = await one<{ name: string; onboarded_at: string | null; brand_name: string | null; brand_logo: string | null; kind: string }>(
+      "SELECT name, onboarded_at, brand_name, brand_logo, kind FROM orgs WHERE id = $1", [user.orgId]);
     return {
       user,
       org: {
-        name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null,
+        name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null, kind: org?.kind ?? "business",
         brandName: org?.brand_name ?? null,
         logoUrl: org?.brand_logo ? `/api/org/brand/${user.orgId}/logo` : null,
       },

@@ -88,7 +88,8 @@ const fmtNgn = (n: number, cur = "₦") =>
 
 export function Admin() {
   const { msg, toast } = useToast();
-  const { user } = useAuth();
+  const { user, org } = useAuth();
+  const isFamily = org?.kind === "family";
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -892,7 +893,7 @@ export function Admin() {
                           <td>{timeAgo(p.created_at)}</td>
                           <td>{fmtNgn(p.amount_ngn, "₦")}</td>
                           <td>{p.seats}</td>
-                          <td>{p.method}{p.plan === "business" ? " · Business" : ""}</td>
+                          <td>{p.method}{p.plan && p.plan !== "free" ? ` · ${p.plan[0].toUpperCase()}${p.plan.slice(1)}` : ""}</td>
                           <td><span className={`role-badge ${p.status === "confirmed" ? "owner" : ""}`}>{p.status}</span></td>
                         </tr>
                       ))}
@@ -982,10 +983,11 @@ export function Admin() {
       )}
 
       <section className="admin-card">
-        <h2>Members</h2>
+        <h2>{isFamily ? "Family members" : "Members"}</h2>
         <div className="audit-bar" style={{ marginBottom: 10 }}>
-          <button className="btn-secondary" onClick={() => void createInvite()}>+ Invite link</button>
-          <input style={{ width: 220 }} placeholder="invite by email…"
+          <button className="btn-secondary" onClick={() => void createInvite()}>
+            {isFamily ? "+ Invite family member" : "+ Invite link"}</button>
+          <input style={{ width: 220 }} placeholder={isFamily ? "invite family by email…" : "invite by email…"}
             value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && inviteEmail.trim()) void createInvite(inviteEmail.trim()); }} />
           <button className="btn-secondary" disabled={!inviteEmail.trim()}

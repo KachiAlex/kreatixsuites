@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
@@ -6,8 +6,19 @@ import { API_BASE, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
 
+/** Minimal Google Identity Services surface used by the sign-in button. */
+interface GoogleGsi {
+  accounts: {
+    id: {
+      initialize: (cfg: { client_id: string; callback: (r: { credential: string }) => void }) => void;
+      renderButton: (el: HTMLElement, opts: Record<string, unknown>) => void;
+    };
+  };
+}
+const gis = () => (window as unknown as { google?: GoogleGsi }).google;
+
 export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
-  const { login, register, loginWithToken, enterAnonymous, completeMfaLogin } = useAuth();
+  const { login, register, loginWithGoogle, loginWithToken, enterAnonymous, completeMfaLogin } = useAuth();
   const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -24,7 +35,13 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [forgotSent, setForgotSent] = useState(false);
+  const [kind, setKind] = useState<"personal" | "family" | "business">("personal");
+  const [googleClientId, setGoogleClientId] = useState<string | null>(null);
+  const googleBtnRef = useRef<HTMLDivElement>(null);
   const invite = params.get("invite") ?? undefined;
+  // latest signup context for the GIS callback (initialize runs once)
+  const gParams = useRef({ invite, kind, org });
+  gParams.current = { invite, kind, org };
 
   // warm the app-shell chunks while auth state settles — the /home
   // navigation then renders instantly instead of hitting a lazy boundary
@@ -53,6 +70,9 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     api.get<{ enabled: boolean }>("/api/auth/saml/status")
       .then((r) => setSaml(r.enabled))
       .catch(() => setSaml(false));
+    api.get<{ enabled: boolean; clientId: string | null }>("/api/auth/google/status")
+      .then((r) => setGoogleClientId(r.enabled ? r.clientId : null))
+      .catch(() => setGoogleClientId(null));
     if (invite) {
       api.get<{ orgName: string; brand?: { name: string; logoUrl: string | null } }>(`/api/auth/invite/${invite}`)
         .then((r) => { setInviteOrg(r.orgName); setInviteBrand(r.brand ?? null); })
@@ -60,6 +80,43 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const onGoogle = async (credential: string) => {
+    setError("");
+    try {
+      const mfa = await loginWithGoogle(credential, {
+        invite: gParams.current.invite,
+        kind: gParams.current.kind,
+        orgName: gParams.current.org || undefined,
+      });
+      if (mfa) { setMfaToken(mfa); return; }
+      prefetchAppShell();
+      navigate("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("auth.genericError"));
+    }
+  };
+
+  // "Sign in with Google" — load the GIS script once the backend reports a
+  // client id, then render Google's own button into the placeholder div.
+  useEffect(() => {
+    if (!googleClientId || isNativeMobile) return;
+    const init = () => {
+      const g = gis();
+      if (!g || !googleBtnRef.current || googleBtnRef.current.hasChildNodes()) return;
+      g.accounts.id.initialize({ client_id: googleClientId, callback: (r) => void onGoogle(r.credential) });
+      g.accounts.id.renderButton(googleBtnRef.current, { theme: "outline", size: "large", width: 320, text: "continue_with" });
+    };
+    if (gis()) init();
+    else {
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client";
+      s.async = true;
+      s.onload = init;
+      document.head.appendChild(s);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleClientId, mode, mfaToken]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -77,7 +134,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         const pending = await login(email, password);
         if (pending) { setMfaToken(pending); setBusy(false); return; }
       } else {
-        await register(email, password, name, org || undefined, invite);
+        await register(email, password, name, org || undefined, invite, kind);
       }
       prefetchAppShell();
       navigate("/");
@@ -106,7 +163,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
               : <BrandLockup light size={64} />}
         </div>
         <form className="auth-card" onSubmit={submit}>
-        <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : mode === "forgot" ? "Reset password" : inviteOrg ? t("auth.joinOrg", { org: inviteOrg }) : t("auth.createWorkspace")}</h1>
+        <h1>{mfaToken ? t("auth.mfaTitle") : mode === "login" ? t("auth.welcomeBack") : mode === "forgot" ? "Reset password" : inviteOrg ? t("auth.joinOrg", { org: inviteOrg })
+          : kind === "family" ? t("auth.createFamily") : kind === "personal" ? t("auth.createAccount2") : t("auth.createWorkspace")}</h1>
         <p>{mfaToken ? t("auth.mfaPrompt") : mode === "forgot" ? "We'll email you a reset link." : t("auth.tagline")}</p>
         {error && <div className="auth-error">{error}</div>}
         {mode === "forgot" ? (
@@ -135,8 +193,21 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
             <div className="field"><label>{t("auth.fullName")}</label>
               <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Bolanle Johnson" /></div>
             {!invite && (
-              <div className="field"><label>{t("auth.orgOptional")}</label>
-                <input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="Kreatix Technologies" /></div>
+              <>
+                <div className="field"><label>{t("auth.forWho")}</label>
+                  <div className="kind-pick">
+                    {(["personal", "family", "business"] as const).map((k) => (
+                      <button type="button" key={k} className={`kind-chip${kind === k ? " on" : ""}`}
+                        onClick={() => setKind(k)}>{t(`auth.kind.${k}`)}</button>
+                    ))}
+                  </div>
+                </div>
+                {kind !== "personal" && (
+                  <div className="field"><label>{kind === "family" ? t("auth.familyName") : t("auth.orgOptional")}</label>
+                    <input value={org} onChange={(e) => setOrg(e.target.value)}
+                      placeholder={kind === "family" ? "The Adebayos" : "Kreatix Technologies"} /></div>
+                )}
+              </>
             )}
           </>
         )}
@@ -147,6 +218,15 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         <button className="btn-primary" disabled={busy}>
           {busy ? t("auth.pleaseWait") : mode === "login" ? t("auth.signIn") : t("auth.createAccount")}
         </button>
+          </>
+        )}
+        {/* "Sign in with Google" — rendered by the GIS script into this div
+            when GOOGLE_CLIENT_ID is configured (hidden on native: the webview
+            can't run the GIS popup flow) */}
+        {googleClientId && !isNativeMobile && mode !== "forgot" && !mfaToken && (
+          <>
+            <div className="auth-or"><span>{t("auth.orContinue")}</span></div>
+            <div ref={googleBtnRef} className="google-btn" />
           </>
         )}
         {/* native shell: absolute API URL + client=mobile → IdP dance runs in

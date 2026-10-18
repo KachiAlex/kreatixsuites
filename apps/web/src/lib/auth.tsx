@@ -17,6 +17,9 @@ export interface SessionPlan {
 export interface SessionOrg {
   name: string;
   onboardedAt: string | null;
+  /** Tenant type — 'business' | 'family' | 'personal'. Drives consumer
+   *  labeling (family orgs say "Family" instead of "Workspace"). */
+  kind?: string;
   /** White-label — org display name/logo override (nulls = Kreatix brand). */
   brandName?: string | null;
   logoUrl?: string | null;
@@ -37,7 +40,10 @@ interface AuthState {
    *  requires a second factor — the caller then completes via completeMfaLogin. */
   login: (email: string, password: string) => Promise<string | null>;
   completeMfaLogin: (mfaToken: string, code: string) => Promise<void>;
-  register: (email: string, password: string, displayName: string, orgName?: string, invite?: string) => Promise<void>;
+  register: (email: string, password: string, displayName: string, orgName?: string, invite?: string, kind?: string) => Promise<void>;
+  /** "Sign in with Google" — sends the GIS ID token; resolves null on success
+   *  or the mfaToken when the account has a second factor enrolled. */
+  loginWithGoogle: (idToken: string, opts?: { invite?: string; kind?: string; orgName?: string }) => Promise<string | null>;
   loginWithToken: (token: string) => Promise<void>;
   /** Re-fetch /api/auth/me — e.g. after changing security settings. */
   refreshUser: () => Promise<void>;
@@ -103,16 +109,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void convertAnonymous(wasAnon);
   };
 
-  const register = async (email: string, password: string, displayName: string, orgName?: string, invite?: string) => {
+  const register = async (email: string, password: string, displayName: string, orgName?: string, invite?: string, kind?: string) => {
     const wasAnon = localStorage.getItem("kx.anon") === "1";
     const r = await api.post<{ token: string; user: User }>("/api/auth/register", {
-      email, password, displayName, orgName, invite,
+      email, password, displayName, orgName, invite, kind,
     });
     setToken(r.token);
     setUser(r.user);
     void refreshUser();
     if (isDesktop) void refreshEntitlement();
     void convertAnonymous(wasAnon);
+  };
+
+  const loginWithGoogle = async (idToken: string, opts?: { invite?: string; kind?: string; orgName?: string }): Promise<string | null> => {
+    const wasAnon = localStorage.getItem("kx.anon") === "1";
+    const r = await api.post<{ token?: string; user?: User; mfaRequired?: boolean; mfaToken?: string }>("/api/auth/google",
+      { idToken, ...opts, ...(isDesktop ? { client: "desktop" } : {}) });
+    if (r.mfaRequired) return r.mfaToken ?? null;
+    setToken(r.token!);
+    setUser(r.user!);
+    void refreshUser();
+    if (isDesktop) void refreshEntitlement();
+    void convertAnonymous(wasAnon);
+    return null;
   };
 
   /** SSO: server already issued a token — store it and resolve the user. */
@@ -153,7 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasFeature = (key: string) => (plan ? plan.features?.[key] === true : true);
   const markOnboarded = () => setOrg((o) => (o ? { ...o, onboardedAt: new Date().toISOString() } : o));
-  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithGoogle, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

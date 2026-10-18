@@ -592,6 +592,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS scim_external_id TEXT`);
   // onboarding wizard — null until an owner/admin finishes or skips setup
   await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ`);
+  // consumer tenancies — 'business' (default, everything pre-existing) |
+  // 'family' | 'personal'. Drives UI labels + the shared Family folder.
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'business'`);
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS family_folder_id TEXT`);
 
   // Custom mail domains per org — DNS-TXT verified before mailboxes use them
   await pool.query(`CREATE TABLE IF NOT EXISTS org_domains (
@@ -1091,9 +1095,12 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     ('pro', 'Pro', 1000, 0,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":true,"docmgmt":true}',
       '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":51200,"max_members":5,"version_days":0,"sites":10}', 1),
+    ('family', 'Family', 2000, 0,
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":false,"docmgmt":true}',
+      '{"ai_daily":500,"ai_per_min":20,"ai_tokens_base":6000000,"ai_tokens_per_seat":1000000,"storage_mb":204800,"max_members":6,"version_days":0,"sites":5}', 2),
     ('business', 'Business', 2000, 500,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true,"docmgmt":true}',
-      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0,"sites":0}', 2)
+      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0,"sites":0}', 3)
     -- stored values win on shared keys; newly introduced seed keys get added
     ON CONFLICT (slug) DO UPDATE SET features = EXCLUDED.features || plans.features,
       limits = EXCLUDED.limits || plans.limits`);
