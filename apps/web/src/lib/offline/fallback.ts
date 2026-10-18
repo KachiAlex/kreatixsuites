@@ -10,6 +10,13 @@ const fileIdOf = (path: string, re: RegExp) => re.exec(path)?.[1];
 
 const localId = () => `local:${crypto.randomUUID()}`;
 
+/** sub of the stored JWT — avoids importing ../api (which imports this file). */
+const tokenSub = (): string | null => {
+  const t = localStorage.getItem("kreatix.token");
+  try { return (JSON.parse(atob(t!.split(".")[1])) as { sub?: string }).sub ?? null; }
+  catch { return null; }
+};
+
 /**
  * Handle a failed network request offline. Returns a synthetic result matching
  * the endpoint's shape, or rethrows when the path isn't mirrorable.
@@ -59,8 +66,11 @@ export async function offlineFallback<T>(path: string, init: RequestInit, cause:
       return new Blob([b64.from(b.data)], { type: b.mime ?? "application/octet-stream" }) as T;
     }
     if (path.startsWith("/api/auth/me")) {
-      const user = await store.meta.get("me");
-      if (!user) throw cause;
+      const user = await store.meta.get<{ id?: string }>("me");
+      // never serve a previous account's identity — a different stored token
+      // offline must fail to login, not silently show the old user
+      const sub = tokenSub();
+      if (!user || (sub && user.id !== sub)) throw cause;
       return { user } as T;
     }
     if (path.startsWith("/api/billing/summary")) {

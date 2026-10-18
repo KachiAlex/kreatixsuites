@@ -58,6 +58,7 @@ function corsOrigins(): string[] {
   const out = new Set<string>([
     "http://localhost:5173", "http://127.0.0.1:5173", // vite dev
     "capacitor://localhost", "http://localhost", "https://localhost", // Capacitor shells
+    "kx://app", // Electron desktop shell — custom privileged scheme
   ]);
   for (const v of [process.env.KREATIX_PUBLIC_URL, process.env.KREATIX_CORS_ORIGINS]) {
     for (const o of (v ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
