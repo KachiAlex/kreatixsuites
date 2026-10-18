@@ -59,7 +59,7 @@ import { RichImage, IMG_MULTI, WRAP_LABELS, effectiveWrap, imagePreset, type Ima
 import { ImageLayoutDialog } from "./ImageDialogs";
 import { measureBands } from "./banding";
 import { LinkPopover } from "./LinkPopover";
-import { safeUrl } from "../lib/sanitize";
+import { safeUrl, sanitizeHtml } from "../lib/sanitize";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup, type PageSetup } from "./PageSetup";
 import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry, Redact, scrubRedactions } from "./extensions/extras";
@@ -910,7 +910,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       if (ext === "docx") {
         const res = await (await docxMod()).importDocx(f);
         const d = document.createElement("div");
-        d.innerHTML = res.html;
+        d.innerHTML = sanitizeHtml(res.html);
         other = d.innerText;
       } else {
         other = await f.text();
@@ -1149,7 +1149,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     try {
       const { importDocx, applyDocxImport } = await docxMod();
       const res = await importDocx(f);
-      editor?.commands.setContent(res.html);
+      editor?.commands.setContent(sanitizeHtml(res.html));
       editor?.commands.fixTables(); // repair any malformed table geometry post-import
       editor?.commands.flattenVMerges(); // rowspan cells → row-splittable ghosts
       if (editor) applyDocxImport(editor, res); // named styles from styles.xml
@@ -1178,19 +1178,18 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     try {
       const text = await f.text();
       const ext = f.name.split(".").pop()?.toLowerCase();
-      if (ext === "md") {
+      if (ext === "md" || ext === "markdown") {
         const { mdToHtml } = await import("./export/markdown");
-        editor?.commands.setContent(mdToHtml(text));
+        editor?.commands.setContent(sanitizeHtml(mdToHtml(text)));
       } else if (ext === "html" || ext === "htm") {
-        editor?.commands.setContent(text);
+        editor?.commands.setContent(sanitizeHtml(text));
       } else {
         editor?.commands.setContent(`<p>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p>`);
       }
       toast(`Imported ${f.name}`);
     } catch (e) {
       if (e instanceof OpenCancelledError) return;
-      toast(e instanceof Error && /encryption|RC4/i.test(e.message)
-        ? e.message : "Could not import that file");
+      toast(e instanceof Error && e.message ? e.message : "Could not import that file");
     }
   };
 
@@ -1390,7 +1389,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       for (const it of items) {
         if (it.types.includes("text/html")) {
           const html = await (await it.getType("text/html")).text();
-          editor.chain().focus().insertContent(html).run();
+          editor.chain().focus().insertContent(sanitizeHtml(html)).run();
           return;
         }
       }
@@ -1424,7 +1423,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           });
           html = d.body.innerHTML;
         }
-        editor.chain().focus().insertContent(html).run();
+        editor.chain().focus().insertContent(sanitizeHtml(html)).run();
         return;
       }
       const t = await navigator.clipboard.readText();

@@ -106,7 +106,9 @@ async function warmMirror<T>(path: string, data: Promise<T>): Promise<void> {
   else if (path.startsWith("/api/auth/me")) await store.meta.set("me", (d as { user: unknown }).user);
   else if (path.startsWith("/api/billing/summary")) await store.meta.set("billingSummary", d);
   else if (d instanceof Blob) {
-    const id = /^\/api\/files\/([^/]+)\/(raw|pdf-bytes)/.exec(path)?.[1];
+    // /content also hands back a Blob when the item is an unconverted binary
+    // (a freshly uploaded .docx) — cache it so offline open can re-import.
+    const id = /^\/api\/files\/([^/]+)\/(raw|pdf-bytes|content)/.exec(path)?.[1];
     if (id) await cacheBlob(id, b64encode(await d.arrayBuffer()), true, d.type);
   } else if (d && typeof d === "object" && "content" in d) {
     const id = /^\/api\/files\/([^/]+)\/content/.exec(path)?.[1];

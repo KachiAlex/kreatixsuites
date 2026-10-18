@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
 import { KIND_META, timeAgo } from "../lib/format";
 import { AppIcon, BrandLockup } from "../components/AppIcon";
@@ -41,7 +41,14 @@ export function Editor() {
         setItem(meta.item);
         if (meta.item.kind === "folder") { setReady(true); return; }
         const [c, d] = await Promise.all([
-          api.get<{ content: unknown } | Blob>(`/api/files/${id}/content`).catch(() => null),
+          api.get<{ content: unknown } | Blob>(`/api/files/${id}/content`).catch((e) => {
+            // Only a real "nothing published" absence may degrade to an empty
+            // doc — a network/server failure must surface as an error instead
+            // of silently opening an empty editor whose next autosave would
+            // overwrite the head version.
+            if (e instanceof ApiError && e.status === 404) return null;
+            throw e;
+          }),
           getDraft(id!),
         ]);
         // Native binary upload (docx/xlsx/pptx — mime isn't x-kreatix-*):

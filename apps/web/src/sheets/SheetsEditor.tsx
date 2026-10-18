@@ -1402,9 +1402,18 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}`);
     } catch (e) {
       if (e instanceof OpenCancelledError) return;
-      toast(e instanceof Error && /encryption|RC4/i.test(e.message)
-        ? e.message : "Could not read that workbook");
+      toast(e instanceof Error && e.message ? e.message : "Could not read that workbook");
     }
+  };
+  // a Drive-stored .csv/.tsv replaces the empty workbook (unlike the manual
+  // CSV import, which appends a sheet to the current one)
+  const onDelimitedImport = async (f: File) => {
+    const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
+    const imported = csvToSheet(
+      f.name.replace(/\.[^.]+$/, ""), await f.text(), ext === "tsv" ? "\t" : ",");
+    mutate((w) => { w.sheets = [imported]; });
+    setActive(0);
+    toast(`Imported ${f.name}`);
   };
   // Native-binary item opened from Drive/desktop — run the import once so the
   // docx/xlsx a user double-clicks opens as a real workbook, not a blank grid.
@@ -1412,7 +1421,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   useEffect(() => {
     if (!sourceFile || autoImported.current) return;
     autoImported.current = true;
-    void onXlsxImport(sourceFile);
+    const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
+    void (ext === "csv" || ext === "tsv" ? onDelimitedImport(sourceFile) : onXlsxImport(sourceFile));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFile]);
   // S17.3 — external workbook links: a file becomes a cached snapshot under

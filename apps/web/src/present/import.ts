@@ -1,6 +1,7 @@
 import type { Deck, Slide, SlideObject, Theme } from "./model";
 import { newId } from "./model";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
+import { assertImportSize } from "../lib/importLimits";
 
 // OOXML DrawingML units → px (960×540 deck, 96dpi)
 const EMU = 1 / 9525;
@@ -663,13 +664,19 @@ async function parsePhGeom(zip: import("jszip"), parser: DOMParser, path: string
 export async function importPptx(file: File): Promise<Deck> {
   const JSZip = (await import("jszip")).default;
   file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
+  assertImportSize(file);
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const parser = new DOMParser();
   const { theme: importedTheme, scheme } = await parseTheme(zip);
   const ink = importedTheme?.ink ?? "#171717";
 
   // slide order from presentation.xml + its rels
-  const presDoc = parser.parseFromString(await zip.file("ppt/presentation.xml")!.async("text"), "text/xml");
+  const presXml = zip.file("ppt/presentation.xml");
+  if (!presXml)
+    throw new Error(/\.ppt$/i.test(file.name)
+      ? "This is a legacy .ppt file — save it as .pptx and open it again"
+      : "This file isn't a PowerPoint .pptx presentation");
+  const presDoc = parser.parseFromString(await presXml.async("text"), "text/xml");
   const presRels = await parseRels(zip, "ppt/_rels/presentation.xml.rels", "ppt");
   const slidePaths: string[] = [];
   for (const sldId of [...presDoc.getElementsByTagName("p:sldId")]) {
@@ -871,6 +878,7 @@ async function odpChart(zip: import("jszip"), href: string): Promise<SlideObject
 /** Import an .odp file into a Deck (best-effort ODF mapping) */
 export async function importOdp(file: File): Promise<Deck> {
   const JSZip = (await import("jszip")).default;
+  assertImportSize(file);
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const parser = new DOMParser();
   const contentFile = zip.file("content.xml");

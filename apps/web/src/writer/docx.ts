@@ -17,6 +17,7 @@ import { DEFAULT_STYLES, cssFor, loadStyleDefs, styleDefsOf, type StyleDef } fro
 import type { DocProps } from "./DocProps";
 import { applyPageSetup, readPageSetup, type PageSetup } from "./PageSetup";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
+import { assertImportSize } from "../lib/importLimits";
 import { saveFile } from "../lib/saveFile";
 
 type Json = Record<string, unknown>;
@@ -1362,6 +1363,14 @@ function firstSectionPn(docXml: string): DocxSettings["pn"] {
 const sentinel = (text: string) =>
   `<w:r><w:t xml:space="preserve">⟦${text}⟧</w:t></w:r>`;
 
+/** Sentinel payloads ride inside document text — a literal ⟦KX..⟧ in user
+ *  content or a truncated payload must degrade to "no marker" rather than
+ *  throwing and killing the whole import. */
+const tryB64Json = <T>(b64: string | undefined | null): T | null => {
+  if (!b64) return null;
+  try { return JSON.parse(b64dec(b64)) as T; } catch { return null; }
+};
+
 /** Rewrite math zones + break constructs in document.xml as sentinel text
  *  runs; returns the (possibly rewritten) package and the rewritten xml. */
 async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: ArrayBuffer; docXml: string; meta: DocxMeta }> {
@@ -1385,6 +1394,8 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
       throw new Error("ODF files (.odt) can't be imported yet — save as .docx and try again");
     throw new Error("This file isn't a Word .docx document");
   }
+  if (docXml.length > MAX_DOCXML_CHARS)
+    throw new Error("This document is too complex to import in the browser");
   const original = docXml;
   meta.settings.page = firstSectionPage(docXml);
   meta.settings.pn = firstSectionPn(docXml);
@@ -1788,7 +1799,7 @@ function breakMarkersToHtml(html: string): string {
     const [tok, openP, b64, closeP] = m;
     out += html.slice(pos, m.index);
     pos = (m.index ?? 0) + tok.length;
-    const p: SectMarkerProps = b64 ? JSON.parse(b64dec(b64)) : {};
+    const p: SectMarkerProps = tryB64Json<SectMarkerProps>(b64) ?? {};
     closeCols();
     const wholePara = Boolean(openP && closeP);
     const hasCols = (p.cols ?? 0) > 1;
@@ -2192,8 +2203,7 @@ function trackMarkersToHtml(html: string): string {
   html = html.replace(
     /⟦KXT([ID]):([A-Za-z0-9+/=]*)⟧([\s\S]*?)⟦KXTE⟧/g,
     (_m, kind: string, b64: string, body: string) => {
-      const meta = JSON.parse(b64dec(b64) || "{}") as
-        { id?: string; author?: string; date?: string };
+      const meta = tryB64Json<{ id?: string; author?: string; date?: string }>(b64) ?? {};
       const tag = kind === "I" ? "ins" : "del";
       const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
       const attrs = ` data-change-id="imp-${esc(meta.id || `${Math.random().toString(36).slice(2)}`)}"`
@@ -2460,7 +2470,8 @@ function runPropsCss(p: Record<string, unknown>): string {
 function runFmtMarkersToHtml(html: string): string {
   return html
     .replace(/⟦KXRF:([A-Za-z0-9+/=]*)⟧([\s\S]*?)⟦KXRF:⟧/g, (_m, b, body) => {
-      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      const p = tryB64Json<Record<string, unknown>>(b);
+      if (!p) return body; // corrupt payload — keep the text, drop the marker
       const css = runPropsCss(p);
       const hid = p.hid ? ` data-hidden="1"` : "";
       return `<span style="${css}"${hid}>${body}</span>`;
@@ -2474,7 +2485,8 @@ function paraFmtMarkersToHtml(html: string): string {
   html = html.replace(
     /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?:<[^>]+>)|⟦KX[A-Z]+(?::[^⟧]*)?⟧)*)⟦KXPF:([A-Za-z0-9+/=]*)⟧/g,
     (_m, tag, attrs: string, lead: string, b: string) => {
-      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      const p = tryB64Json<Record<string, unknown>>(b);
+      if (!p) return `<${tag}${attrs}>${lead}`;
       let style = "";
       if (p.a) style += `text-align:${p.a};`;
       if (p.sb != null) style += `margin-top:${p.sb}px;`;
@@ -2513,8 +2525,8 @@ function firstSectionMarkerToHtml(html: string): string {
   const m = html.match(/⟦KXSA:([A-Za-z0-9+/=]*)⟧/);
   if (!m) return html;
   html = html.replace(m[0], "");
-  const p = JSON.parse(b64dec(m[1])) as { vAlign?: string };
-  if (p.vAlign && p.vAlign !== "top") {
+  const p = tryB64Json<{ vAlign?: string }>(m[1]);
+  if (p?.vAlign && p.vAlign !== "top") {
     html = html.replace(
       /<(p|h[1-6]|table|ul|ol|blockquote|div)\b([^>]*)>/,
       `<$1$2 data-v-align="${p.vAlign}">`,
@@ -2532,8 +2544,10 @@ function floatMarkersToHtml(html: string): string {
     return "";
   });
   const tb = (b: string) => {
-    const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+    const p = tryB64Json<Record<string, unknown>>(b);
+    if (!p) return ""; // corrupt payload — staged body is appended unclaimed below
     const inner = bodies.get(String(p.i)) ?? "";
+    bodies.delete(String(p.i));
     const a = [`data-type="kx-textbox"`];
     if (p.align) a.push(`data-align="${p.align}"`);
     if (p.w) a.push(`data-w="${p.w}"`);
@@ -2552,7 +2566,8 @@ function floatMarkersToHtml(html: string): string {
   html = html.replace(
     /⟦KXFO:([A-Za-z0-9+/=]*)⟧((?:<[^>]+>)*)<img\b([^>]*?)\/?>/g,
     (_m, b, mid: string, attrs: string) => {
-      const p = JSON.parse(b64dec(b)) as Record<string, unknown>;
+      const p = tryB64Json<Record<string, unknown>>(b);
+      if (!p) return `${mid}<img${attrs}>`;
       let a = attrs;
       if (p.w && !/\bwidth="/.test(a)) a += ` width="${p.w}"`;
       if (p.h && !/\bheight="/.test(a)) a += ` height="${p.h}"`;
@@ -2560,6 +2575,9 @@ function floatMarkersToHtml(html: string): string {
       return `${mid}<figure data-wrap="${p.wrap}" data-align="${p.align ?? "none"}" data-posx="${p.posX ?? 0}" data-posy="${p.posY ?? 0}"><img${a}></figure>`;
     },
   );
+  // unclaimed staged text-box bodies (corrupt markers) — keep the content
+  // rather than dropping it silently
+  if (bodies.size) html += [...bodies.values()].join("");
   return html.replace(/⟦KX(?:FO|TB|TBBOX)[^⟧]*⟧/g, "");
 }
 
@@ -2591,9 +2609,14 @@ function salvageDocxText(docXml: string): string {
     .join("");
 }
 
+/** Inflated document.xml ceiling — a small zip can expand into a multi-GB
+ *  text payload; refuse before the regex passes stall the tab. */
+const MAX_DOCXML_CHARS = 250 * 1024 * 1024;
+
 /** .docx file → editor HTML + recovered package metadata. */
 export async function importDocx(file: File): Promise<DocxImportResult> {
   file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
+  assertImportSize(file);
   const arrayBuffer = await file.arrayBuffer();
   sniffDocxFormat(arrayBuffer);
   const { buffer, docXml, meta } = await preprocessDocx(arrayBuffer);

@@ -12,6 +12,7 @@ import { ensureDecryptedFile } from "../lib/passwordPrompt";
 import { saveFile } from "../lib/saveFile";
 import { printHtmlFrame } from "../lib/printFrame";
 import { isNativeMobile } from "../lib/platform";
+import { assertImportSize } from "../lib/importLimits";
 
 const evalsFor = (sheet: SheetData, wb?: Workbook) =>
   wb ? evaluateSheetIn(wb, sheet.name) : evaluateSheet(sheet.cells);
@@ -34,7 +35,11 @@ export function sheetToCSV(sheet: SheetData, wb?: Workbook): string {
       const raw = cell?.f ? res?.value : cell ? cell.v : res?.value;
       const v = Array.isArray(raw) ? (raw as unknown[][])[0]?.[0] : raw;
       const s = v === null || v === undefined ? "" : String(v);
-      row.push(/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+      // CSV formula injection: a string that opens with = + - @ or a control
+      // char executes as a formula when the file is opened in Excel/Sheets.
+      // Prefix with ' so it stays literal text (numbers are untouched).
+      const safe = typeof v === "string" && /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+      row.push(/[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe);
     }
     rows.push(row.join(","));
   }
@@ -43,7 +48,7 @@ export function sheetToCSV(sheet: SheetData, wb?: Workbook): string {
 
 /** RFC-4180 CSV parse — handles quoted fields, escaped quotes, embedded
  *  newlines. Shared by sheet import and Writer mail merge. */
-export function parseCsv(text: string): string[][] {
+export function parseCsv(text: string, delim = ","): string[][] {
   const rows: string[][] = [];
   let cur: string[] = [], field = "", inQ = false;
   for (let i = 0; i <= text.length; i++) {
@@ -53,7 +58,7 @@ export function parseCsv(text: string): string[][] {
       else if (ch === '"') inQ = false;
       else field += ch;
     } else if (ch === '"') inQ = true;
-    else if (ch === ",") { cur.push(field); field = ""; }
+    else if (ch === delim) { cur.push(field); field = ""; }
     else if (ch === "\n" || ch === "\r" || i === text.length) {
       if (ch === "\r" && text[i + 1] === "\n") i++;
       cur.push(field); field = "";
@@ -63,10 +68,10 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-export function csvToSheet(name: string, text: string): SheetData {
+export function csvToSheet(name: string, text: string, delim = ","): SheetData {
   const cells: Record<string, CellData> = {};
   // parseInput types values like manual entry does — numbers/percent/bool/=
-  parseCsv(text.replace(/^\uFEFF/, "")).forEach((cols, r) => cols.forEach((raw, c) => {
+  parseCsv(text.replace(/^\uFEFF/, ""), delim).forEach((cols, r) => cols.forEach((raw, c) => {
     if (raw !== "") cells[toA1(c, r)] = parseInput(raw);
   }));
   return { name, cells };
@@ -995,6 +1000,7 @@ export function richRunsFromHtml(html: string): RichRun[] | undefined {
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const XLSX = await xlsxLib();
   file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
+  assertImportSize(file);
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { cellFormula: true, cellStyles: true, cellHTML: true, cellComments: true } as XLSX.ParsingOptions);
   // raw package side-channel — styles.xml + sheet XML (styles, freeze, tabColor)
