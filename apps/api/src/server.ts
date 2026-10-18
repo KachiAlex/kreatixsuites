@@ -88,6 +88,10 @@ async function main() {
   await app.register(cors, {
     origin: (origin, cb) => cb(null, !origin || corsOrigins().includes(origin)),
     credentials: true,
+    // explicit — a bare GET,HEAD,POST list blocks every mutating API call
+    // (PUT content saves, PATCH renames, DELETE trash) from browser shells
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["authorization", "content-type", "if-match", "if-none-match", "x-requested-with"],
   });
   // Opt-in per-route limits (auth brute-force, share-link password, etc.) —
   // registered globally but disabled unless a route sets config.rateLimit.
