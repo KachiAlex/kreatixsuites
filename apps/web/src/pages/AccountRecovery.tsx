@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { BrandLockup } from "../components/AppIcon";
+import { PasswordInput } from "../components/PasswordInput";
 
 /** /reset-password?token=… — consumes the emailed single-use token. */
 export function ResetPassword() {
@@ -40,9 +41,9 @@ export function ResetPassword() {
           ? <p>Password updated — taking you to sign in…</p>
           : <>
               <div className="field"><label>New password</label>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} /></div>
+                <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} /></div>
               <div className="field"><label>Confirm password</label>
-                <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} /></div>
+                <PasswordInput value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} /></div>
               <button className="btn-primary" disabled={busy || !token}>{busy ? "Saving…" : "Reset password"}</button>
             </>}
         <div className="auth-switch"><Link to="/login">Back to sign in</Link></div>

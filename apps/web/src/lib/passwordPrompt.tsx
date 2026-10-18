@@ -5,6 +5,7 @@ import { createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { decryptOoxml, ooxmlEncScheme, WrongPasswordError } from "./ooxmlCrypto";
+import { PasswordInput } from "../components/PasswordInput";
 import { Modal } from "../components/Modal";
 
 export class OpenCancelledError extends Error {
@@ -24,9 +25,9 @@ function PasswordForm({ fileName, wrong, onSubmit, onCancel }: {
             : <><b>{fileName}</b> is password-protected. Enter the password to open it.</>}
         </p>
         <form onSubmit={(e) => { e.preventDefault(); onSubmit(pw); }}>
-          <input type="password" autoFocus value={pw} placeholder="Password" aria-label="File password"
+          <PasswordInput autoFocus value={pw} placeholder="Password" aria-label="File password"
             onChange={(e) => setPw(e.target.value)}
-            style={{ width: "100%", height: 40, border: "1px solid var(--line)", borderRadius: 11, padding: "0 11px", fontSize: 12, background: "#FBFAF9", boxSizing: "border-box" }} />
+            style={{ width: "100%", height: 40, border: "1px solid var(--line)", borderRadius: 11, fontSize: 12, background: "#FBFAF9", boxSizing: "border-box", paddingLeft: 11, paddingRight: 40 }} />
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
             <button type="button" className="btn" style={{ height: 34, padding: "0 14px" }} onClick={onCancel}>Cancel</button>
             <button type="submit" className="btn-primary" style={{ height: 34, padding: "0 18px" }}>Open</button>

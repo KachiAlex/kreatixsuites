@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { PUBLIC_ORIGIN } from "../lib/platform";
 import { Modal } from "./Modal";
+import { PasswordInput } from "./PasswordInput";
 
 export function ShareDialog({ item, onClose, toast }: {
   item: DriveItem; onClose: () => void; toast: (m: string) => void;
@@ -101,9 +102,9 @@ export function ShareDialog({ item, onClose, toast }: {
             <button className="btn-ghost btn-sm" onClick={createLink}>Create link</button>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-            <input type="password" placeholder={canProtect ? "Password (optional)" : "Password — Pro"}
+            <PasswordInput placeholder={canProtect ? "Password (optional)" : "Password — Pro"}
               value={linkPw} onChange={(e) => setLinkPw(e.target.value)}
-              disabled={!canProtect} style={{ flex: 1 }}
+              disabled={!canProtect} wrapperStyle={{ flex: 1 }}
               title={canProtect ? "Require this password to open the link" : "Password-protected links need a paid plan"} />
             <input type="number" min={1} placeholder={canProtect ? "Expires in days" : "Expiry — Pro"}
               value={linkDays} onChange={(e) => setLinkDays(e.target.value)}

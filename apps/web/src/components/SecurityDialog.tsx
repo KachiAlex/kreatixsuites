@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { saveFile } from "../lib/saveFile";
 import { useAuth } from "../lib/auth";
 import { Modal } from "./Modal";
+import { PasswordInput } from "./PasswordInput";
 
 type View = "status" | "enroll" | "codes" | "disable" | "regen" | "delete";
 
@@ -176,7 +177,7 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
             </p>
             <div className="field">
               <label>Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+              <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
             </div>
             {user?.mfaEnabled && (
               <div className="field">
@@ -201,7 +202,7 @@ export function SecurityDialog({ onClose, toast }: { onClose: () => void; toast:
             {view === "disable" && (
               <div className="field">
                 <label>Password</label>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+                <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
               </div>
             )}
             <div className="field">

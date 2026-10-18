@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { API_BASE, desktop, isDesktop, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
+import { PasswordInput } from "../components/PasswordInput";
 
 /** Minimal Google Identity Services surface used by the sign-in button. */
 interface GoogleGsi {
@@ -256,7 +257,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         <div className="field"><label>{t("auth.email")}</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@company.com" /></div>
         <div className="field"><label>{t("auth.password")}</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="••••••••" /></div>
+          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="••••••••" /></div>
         <button className="btn-primary" disabled={busy}>
           {busy ? t("auth.pleaseWait") : mode === "login" ? t("auth.signIn") : t("auth.createAccount")}
         </button>
