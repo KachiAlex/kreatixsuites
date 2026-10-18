@@ -46,18 +46,38 @@ export function downloadRoutes(app: FastifyInstance) {
     return { desktop, android };
   });
 
-  /** Stream the newest installer for a platform. */
+  /** Stream the newest installer for a platform. Supports HTTP Range so
+   *  browsers/download managers can resume a dropped 100MB+ download instead
+   *  of restarting from zero. */
   app.get("/api/downloads/:platform", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const platform = (req.params as { platform: string }).platform as Platform;
     const cfg = PLATFORMS[platform];
     if (!cfg) return reply.code(404).send({ error: "not_found" });
     const entry = await latest(cfg.rx);
     if (!entry) return reply.code(404).send({ error: "not_found", message: "No installer published yet" });
-    return reply
+    const file = join(DIR, entry.name);
+
+    const base = reply
       .header("content-type", cfg.mime)
       .header("content-disposition", `attachment; filename="${entry.name}"`)
+      .header("accept-ranges", "bytes")
+      .header("cache-control", "public, max-age=300");
+
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+    if (range && (range[1] !== "" || range[2] !== "")) {
+      const start = range[1] === "" ? Math.max(0, entry.size - Number(range[2])) : Number(range[1]);
+      const end = range[1] !== "" && range[2] !== "" ? Math.min(Number(range[2]), entry.size - 1) : entry.size - 1;
+      if (start >= entry.size || start > end) {
+        return reply.code(416).header("content-range", `bytes */${entry.size}`).send();
+      }
+      return base
+        .code(206)
+        .header("content-range", `bytes ${start}-${end}/${entry.size}`)
+        .header("content-length", String(end - start + 1))
+        .send(createReadStream(file, { start, end }));
+    }
+    return base
       .header("content-length", String(entry.size))
-      .header("cache-control", "public, max-age=300")
-      .send(createReadStream(join(DIR, entry.name)));
+      .send(createReadStream(file));
   });
 }
