@@ -287,6 +287,30 @@ export function authRoutes(app: FastifyInstance) {
       .send(buf);
   });
 
+  /** Pre-register "does this workspace already exist?" check — powers the
+   *  join-vs-create hint on the signup form. POST (not GET) so names and
+   *  domains stay out of access logs. Two signals:
+   *    nameTaken  — exact (case-insensitive) org-name match; names are
+   *                 display-only so a match never blocks, just informs
+   *    domainOrg  — the email's domain is DNS-verified on an existing org
+   *                 (the strong "you probably meant to JOIN it" signal)
+   *  Deliberately boolean/name-only — no org ids, no counts, rate-limited
+   *  like the rest of the auth surface to limit name enumeration. */
+  app.post("/api/auth/workspace-lookup", { config: { rateLimit: RL_AUTH } }, async (req) => {
+    const b = (req.body ?? {}) as { name?: string; domain?: string };
+    const name = (b.name ?? "").trim().slice(0, 80);
+    const domain = (b.domain ?? "").trim().toLowerCase();
+    const [hit, dOrg] = await Promise.all([
+      name ? one("SELECT 1 AS x FROM orgs WHERE lower(name) = lower($1) LIMIT 1", [name]) : null,
+      domain.includes(".")
+        ? one<{ name: string }>(
+            `SELECT o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id
+             WHERE d.domain = $1 AND d.status = 'verified' LIMIT 1`, [domain])
+        : null,
+    ]);
+    return { nameTaken: !!hit, domainOrg: dOrg?.name ?? null };
+  });
+
   app.post("/api/auth/register", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
     const body = registerSchema.parse(req.body);
     const existing = await one("SELECT id FROM users WHERE email = $1", [body.email]);

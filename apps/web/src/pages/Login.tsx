@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { API_BASE, desktop, isDesktop, isNativeMobile } from "../lib/platform";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { BrandLockup } from "../components/AppIcon";
@@ -37,6 +37,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [mfaCode, setMfaCode] = useState("");
   const [forgotSent, setForgotSent] = useState(false);
   const [kind, setKind] = useState<"personal" | "family" | "business">("personal");
+  const [wsHint, setWsHint] = useState<{ nameTaken: boolean; domainOrg: string | null } | null>(null);
+  const [emailTaken, setEmailTaken] = useState(false);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [googleDesktop, setGoogleDesktop] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
@@ -44,6 +46,23 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   // latest signup context for the GIS callback (initialize runs once)
   const gParams = useRef({ invite, kind, org });
   gParams.current = { invite, kind, org };
+
+  // Join-vs-create hint: as they type the workspace name/email, check whether
+  // a workspace already exists (exact name) or their email domain is claimed
+  // by a verified org — the people who hit this almost always meant to JOIN.
+  useEffect(() => {
+    if (mode !== "register" || invite) { setWsHint(null); return; }
+    const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+    const body: { name?: string; domain?: string } = {};
+    if (kind === "business" && org.trim().length >= 2) body.name = org.trim();
+    if (domain.includes(".")) body.domain = domain;
+    if (!body.name && !body.domain) { setWsHint(null); return; }
+    const id = setTimeout(() => {
+      api.post<{ nameTaken: boolean; domainOrg: string | null }>("/api/auth/workspace-lookup", body)
+        .then(setWsHint).catch(() => setWsHint(null));
+    }, 400);
+    return () => clearTimeout(id);
+  }, [org, email, kind, mode, invite]);
 
   // warm the app-shell chunks while auth state settles — the /home
   // navigation then renders instantly instead of hitting a lazy boundary
@@ -182,9 +201,14 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       prefetchAppShell();
       navigate("/");
     } catch (err) {
+      // duplicate email → actionable notice with sign-in/reset links, not a
+      // dead-end "already registered" string
+      if (err instanceof ApiError && err.status === 409) {
+        setEmailTaken(true);
+        setError("");
       // a dead connection surfaces as TypeError("Failed to fetch") — say so
       // plainly instead of dumping the raw network error on the user
-      if (!navigator.onLine || (err instanceof TypeError && /fetch|network|resolve/i.test(err.message))) {
+      } else if (!navigator.onLine || (err instanceof TypeError && /fetch|network|resolve/i.test(err.message))) {
         setError(t("auth.offline"));
       } else {
         setError(err instanceof Error ? err.message : t("auth.genericError"));
@@ -248,14 +272,27 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
                 {kind !== "personal" && (
                   <div className="field"><label>{kind === "family" ? t("auth.familyName") : t("auth.orgOptional")}</label>
                     <input value={org} onChange={(e) => setOrg(e.target.value)}
-                      placeholder={kind === "family" ? "The Adebayos" : "Kreatix Technologies"} /></div>
+                      placeholder={kind === "family" ? "The Adebayos" : "Kreatix Technologies"} />
+                    {kind === "business" && wsHint?.nameTaken && (
+                      <div className="ws-hint">{t("auth.wsExists", { org: org.trim() })}</div>
+                    )}
+                  </div>
                 )}
               </>
             )}
           </>
         )}
         <div className="field"><label>{t("auth.email")}</label>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@company.com" /></div>
+          <input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setEmailTaken(false); }} required placeholder="you@company.com" /></div>
+        {mode === "register" && !invite && wsHint?.domainOrg && (
+          <div className="ws-hint">{t("auth.wsDomain", { org: wsHint.domainOrg })}</div>
+        )}
+        {mode === "register" && emailTaken && (
+          <div className="auth-error">
+            {t("auth.emailTaken")}{" "}
+            <Link to="/login">{t("auth.signInLink")}</Link> · <Link to="/forgot">{t("auth.resetLink")}</Link>
+          </div>
+        )}
         <div className="field"><label>{t("auth.password")}</label>
           <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="••••••••" /></div>
         <button className="btn-primary" disabled={busy}>
