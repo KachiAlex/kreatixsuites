@@ -128,6 +128,51 @@ ${btn(link, "Accept invitation")}
     };
   },
 
+  /** A public "request to join" landed — sent to the org's owners/admins. */
+  joinRequestAdmin(workspace: string, requesterName: string, requesterEmail: string): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `Join request — ${requesterName} wants to join ${workspace}`,
+      html: shell("Join request", `
+<p><b>${esc(requesterName)}</b> (${esc(requesterEmail)}) asked to join <b>${esc(workspace)}</b> on Kreatix Suites.</p>
+${btn(`${publicUrl()}/admin`, "Review in Admin → Members")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Approve to send them an invite link, or decline to dismiss the request.</p>`),
+    };
+  },
+
+  /** Join request approved — fresh accounts get a one-time invite link. */
+  joinApprovedInvite(workspace: string, token: string): Pick<Mail, "subject" | "html"> {
+    const link = `${publicUrl()}/register?invite=${encodeURIComponent(token)}`;
+    return {
+      subject: `You're in — create your ${workspace} account`,
+      html: shell(`Welcome to ${esc(workspace)}`, `
+<p>Your request to join <b>${esc(workspace)}</b> was approved.</p>
+${btn(link, "Create your account")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Or paste this link: ${link}<br>This is a one-time link — create your account to join ${esc(workspace)}.</p>`),
+    };
+  },
+
+  /** Approved, but the requester's existing account has files — a silent org
+   *  move would strand them, so we ask the admin to coordinate. */
+  joinRequestNeedsTransfer(workspace: string): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `Your request to join ${workspace} was approved`,
+      html: shell(`Welcome to ${esc(workspace)}`, `
+<p>Your request to join <b>${esc(workspace)}</b> was approved.</p>
+<p>You already have a Kreatix account with files in another space, so your admin will arrange the transfer — keep an eye out for their invite.</p>
+${btn(publicUrl(), "Open Kreatix Suites")}`),
+    };
+  },
+
+  /** Join request approved and the existing account was moved in directly. */
+  joinApprovedMember(workspace: string): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `You're now a member of ${workspace}`,
+      html: shell(`Welcome to ${esc(workspace)}`, `
+<p>Your request to join <b>${esc(workspace)}</b> was approved and your account is now part of the workspace.</p>
+${btn(publicUrl(), "Open Kreatix Suites")}`),
+    };
+  },
+
   paymentReceipt(workspace: string, amountNgn: number, seats: number, months: number, periodEnd: string): Pick<Mail, "subject" | "html"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {

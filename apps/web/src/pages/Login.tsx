@@ -37,7 +37,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [mfaCode, setMfaCode] = useState("");
   const [forgotSent, setForgotSent] = useState(false);
   const [kind, setKind] = useState<"personal" | "family" | "business">("personal");
-  const [wsHint, setWsHint] = useState<{ nameTaken: boolean; domainOrg: string | null } | null>(null);
+  const [wsHint, setWsHint] = useState<{ nameTaken: boolean; domainOrg: string | null; domain: string | null } | null>(null);
+  const [jrState, setJrState] = useState<"idle" | "sending" | "sent" | "err">("idle");
   const [emailTaken, setEmailTaken] = useState(false);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [googleDesktop, setGoogleDesktop] = useState(false);
@@ -59,7 +60,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     if (!body.name && !body.domain) { setWsHint(null); return; }
     const id = setTimeout(() => {
       api.post<{ nameTaken: boolean; domainOrg: string | null }>("/api/auth/workspace-lookup", body)
-        .then(setWsHint).catch(() => setWsHint(null));
+        .then((r) => setWsHint({ ...r, domain: r.domainOrg ? domain : null }))
+        .catch(() => setWsHint(null));
     }, 400);
     return () => clearTimeout(id);
   }, [org, email, kind, mode, invite]);
@@ -283,9 +285,29 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
           </>
         )}
         <div className="field"><label>{t("auth.email")}</label>
-          <input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setEmailTaken(false); }} required placeholder="you@company.com" /></div>
+          <input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setEmailTaken(false); setJrState("idle"); }} required placeholder="you@company.com" /></div>
         {mode === "register" && !invite && wsHint?.domainOrg && (
-          <div className="ws-hint">{t("auth.wsDomain", { org: wsHint.domainOrg })}</div>
+          <div className="ws-hint">
+            <div>{t("auth.wsDomain", { org: wsHint.domainOrg })}</div>
+            {jrState === "sent" ? (
+              <div className="ws-hint-ok">{t("auth.wsRequestSent", { org: wsHint.domainOrg })}</div>
+            ) : (
+              <button type="button" className="ws-hint-btn"
+                disabled={jrState === "sending" || !name.trim()}
+                title={!name.trim() ? t("auth.wsRequestNeedsName") : undefined}
+                onClick={() => {
+                  setJrState("sending");
+                  api.post("/api/auth/join-request", {
+                    email: email.trim(), displayName: name.trim(), domain: wsHint.domain,
+                  }).then(() => setJrState("sent")).catch((e) => {
+                    setJrState("err");
+                    setError(e instanceof Error ? e.message : t("auth.wsRequestErr"));
+                  });
+                }}>
+                {jrState === "sending" ? t("auth.pleaseWait") : t("auth.wsRequestJoin", { org: wsHint.domainOrg })}
+              </button>
+            )}
+          </div>
         )}
         {mode === "register" && emailTaken && (
           <div className="auth-error">

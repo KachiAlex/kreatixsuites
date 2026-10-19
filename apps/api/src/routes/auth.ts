@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { one, run, now } from "../db.js";
+import { one, q as dbq, run, now } from "../db.js";
 import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
 import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
@@ -309,6 +309,51 @@ export function authRoutes(app: FastifyInstance) {
         : null,
     ]);
     return { nameTaken: !!hit, domainOrg: dOrg?.name ?? null };
+  });
+
+  /** "Request to join" — the join-vs-create flow's other half. Resolves the
+   *  org by VERIFIED domain (never by id — keeps org ids private), queues a
+   *  pending request, and emails the org's owners/admins. Idempotent: a
+   *  repeat pending request just confirms. */
+  app.post("/api/auth/join-request", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    const b = z.object({
+      email: z.string().email().max(160),
+      displayName: z.string().min(1).max(80),
+      domain: z.string().min(3).max(255),
+    }).parse(req.body ?? {});
+    const domain = b.domain.trim().toLowerCase();
+    const email = b.email.trim().toLowerCase();
+    const org = await one<{ id: string; name: string }>(
+      `SELECT o.id, o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id
+       WHERE d.domain = $1 AND d.status = 'verified'`, [domain]);
+    if (!org) return reply.code(404).send({ error: "not_found", message: "No workspace found for that domain" });
+    if (!email.endsWith(`@${domain}`))
+      return reply.code(400).send({ error: "bad_email", message: `Use your @${domain} email to request access` });
+    if (await one("SELECT 1 AS x FROM users WHERE org_id = $1 AND lower(email) = $2", [org.id, email]))
+      return reply.code(409).send({ error: "conflict", message: `You already have an account in ${org.name} — sign in instead` });
+    const last = await one<{ status: string }>(
+      `SELECT status FROM join_requests WHERE org_id = $1 AND lower(email) = $2
+       ORDER BY created_at DESC LIMIT 1`, [org.id, email]);
+    if (last?.status === "pending") return { ok: true, already: true };
+    if (last?.status === "approved")
+      return reply.code(409).send({ error: "conflict", message: "Your request was already approved — check your inbox for the invite link" });
+    try {
+      await run(
+        "INSERT INTO join_requests (id, org_id, email, display_name, created_at) VALUES ($1,$2,$3,$4,$5)",
+        [randomUUID(), org.id, email, b.displayName.trim(), now()]);
+    } catch {
+      return { ok: true, already: true }; // concurrent duplicate — unique index won
+    }
+    const admins = await dbq<{ email: string }>(
+      "SELECT email FROM users WHERE org_id = $1 AND role IN ('owner','admin') AND NOT disabled",
+      [org.id]);
+    for (const a of admins) {
+      sendMailSafe(app.log, {
+        to: a.email,
+        ...tpl.joinRequestAdmin(org.name, b.displayName.trim(), email),
+      });
+    }
+    return { ok: true };
   });
 
   app.post("/api/auth/register", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {

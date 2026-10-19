@@ -38,7 +38,11 @@ export const en: Record<string, string> = {
   "auth.offline": "Can't reach the server — check your connection and try again.",
   "auth.genericError": "Something went wrong",
   "auth.wsExists": "A workspace named \"{org}\" already exists — if you meant to join it, ask its admin for an invite link. Continuing creates a separate workspace.",
-  "auth.wsDomain": "{org} already uses Kreatix with your email domain — ask your admin for an invite link, or continue to create a separate workspace.",
+  "auth.wsDomain": "{org} already uses Kreatix with your email domain — request to join it, or continue to create a separate workspace.",
+  "auth.wsRequestJoin": "Request to join {org}",
+  "auth.wsRequestSent": "Request sent — the {org} admin will review it and email you.",
+  "auth.wsRequestErr": "Couldn't send the request — try again.",
+  "auth.wsRequestNeedsName": "Enter your name first",
   "auth.emailTaken": "This email already has an account —",
   "auth.resetLink": "reset your password",
 

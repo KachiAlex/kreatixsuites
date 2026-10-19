@@ -13,6 +13,7 @@ import { ssoEnabled } from "./sso.js";
 import { samlEnabled } from "./saml.js";
 import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../billing.js";
+import { logActivity } from "../items.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -144,6 +145,93 @@ export function adminRoutes(app: FastifyInstance) {
   app.delete("/api/admin/invites/:id", async (req) => {
     const { user } = req as AuthedRequest;
     await run("DELETE FROM org_invites WHERE id = $1 AND org_id = $2", [(req.params as { id: string }).id, user.orgId]);
+    return { ok: true };
+  });
+
+  /** Join requests — people who found this workspace via its verified domain.
+   *  Pending first, then the most recent decisions for context. */
+  app.get("/api/admin/join-requests", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await dbq(
+      `SELECT j.id, j.email, j.display_name, j.status, j.decided_at, j.created_at,
+              u.display_name AS decided_by_name
+       FROM join_requests j LEFT JOIN users u ON u.id = j.decided_by
+       WHERE j.org_id = $1
+       ORDER BY (j.status = 'pending') DESC, j.created_at DESC LIMIT 100`,
+      [user.orgId]);
+    return { requests: rows };
+  });
+
+  /** Approve → the requester joins. Fresh emails get a one-time invite link
+   *  (they register straight into the org); an existing account is moved in
+   *  directly only when its old workspace is empty — never strand files. */
+  app.post("/api/admin/join-requests/:id/approve", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const jr = await one<{ id: string; org_id: string; email: string; display_name: string; status: string }>(
+      "SELECT id, org_id, email, display_name, status FROM join_requests WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId]);
+    if (!jr) return reply.code(404).send({ error: "not_found", message: "Join request not found" });
+    if (jr.status !== "pending")
+      return reply.code(409).send({ error: "conflict", message: `Request already ${jr.status}` });
+    const maxMembers = planLimit(await effectivePlan(await ensureSubscription(user.orgId)), "max_members", 0);
+    if (maxMembers > 0 && (await seatCount(user.orgId)) >= maxMembers) {
+      return reply.code(402).send({
+        error: "seat_limit",
+        message: "This workspace is at its plan's member limit — upgrade to add more people",
+      });
+    }
+    const org = await one<{ name: string }>("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
+    const orgName = org?.name ?? "the workspace";
+    // claim the decision first — concurrent approves lose the CAS and 409
+    const claimed = await run(
+      "UPDATE join_requests SET status = 'approved', decided_by = $1, decided_at = $2 WHERE id = $3 AND status = 'pending'",
+      [user.id, now(), jr.id]);
+    if (!claimed)
+      return reply.code(409).send({ error: "conflict", message: "Request already decided" });
+
+    const existing = await one<{ id: string; org_id: string }>(
+      "SELECT id, org_id FROM users WHERE lower(email) = $1", [jr.email]);
+    if (existing) {
+      // move them in only when their current workspace is an empty solo shell
+      const hasItems = await one(
+        "SELECT 1 AS x FROM items WHERE org_id = $1 AND owner_id = $2 LIMIT 1", [existing.org_id, existing.id]);
+      const hasMates = await one(
+        "SELECT 1 AS x FROM users WHERE org_id = $1 AND id <> $2 LIMIT 1", [existing.org_id, existing.id]);
+      if (!hasItems && !hasMates) {
+        await run("UPDATE users SET org_id = $1, role = 'member' WHERE id = $2", [user.orgId, existing.id]);
+        void logActivity(user.orgId, user.id, null, "join-request.approved",
+          `${jr.display_name} <${jr.email}> — existing account moved in`);
+        sendMailSafe(app.log, { to: jr.email, ...tpl.joinApprovedMember(orgName) });
+        return { ok: true, moved: true };
+      }
+      // account with real data — an org move would strand their files
+      void logActivity(user.orgId, user.id, null, "join-request.approved",
+        `${jr.display_name} <${jr.email}> — existing account, needs manual transfer`);
+      sendMailSafe(app.log, {
+        to: jr.email,
+        ...tpl.joinRequestNeedsTransfer(orgName),
+      });
+      return { ok: true, moved: false, existingAccount: true };
+    }
+    // no account — one-time invite, 30 days
+    const token = randomBytes(18).toString("base64url");
+    await run(
+      "INSERT INTO org_invites (id, org_id, token, created_by, max_uses, expires_at, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [randomUUID(), user.orgId, token, user.id, 1,
+        new Date(Date.now() + 30 * 86400000).toISOString(), now()]);
+    void logActivity(user.orgId, user.id, null, "join-request.approved",
+      `${jr.display_name} <${jr.email}> — invite sent`);
+    sendMailSafe(app.log, { to: jr.email, ...tpl.joinApprovedInvite(orgName, token) });
+    return { ok: true, invited: true };
+  });
+
+  app.post("/api/admin/join-requests/:id/decline", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const claimed = await run(
+      "UPDATE join_requests SET status = 'declined', decided_by = $1, decided_at = $2 WHERE id = $3 AND org_id = $4 AND status = 'pending'",
+      [user.id, now(), (req.params as { id: string }).id, user.orgId]);
+    if (!claimed)
+      return reply.code(404).send({ error: "not_found", message: "Join request not found or already decided" });
     return { ok: true };
   });
 

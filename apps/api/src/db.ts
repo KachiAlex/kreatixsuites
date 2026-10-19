@@ -258,6 +258,21 @@ CREATE TABLE IF NOT EXISTS org_invites (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- join requests — "I meant to join, not create" — requester asks, org
+-- admin approves → single-use invite or direct member move
+CREATE TABLE IF NOT EXISTS join_requests (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',      -- pending | approved | declined
+  decided_by TEXT REFERENCES users(id),
+  decided_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_join_requests_pending
+  ON join_requests(org_id, lower(email)) WHERE status = 'pending';
+
 -- superadmin-editable plan/pricing — a single row ('default'), one plan per workspace
 CREATE TABLE IF NOT EXISTS billing_config (
   id TEXT PRIMARY KEY,

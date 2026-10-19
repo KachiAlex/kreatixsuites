@@ -16,6 +16,10 @@ interface Invite {
   id: string; token: string; max_uses: number; uses: number;
   expires_at: string | null; created_at: string; created_by_name: string;
 }
+interface JoinRequest {
+  id: string; email: string; display_name: string; status: string;
+  decided_at: string | null; decided_by_name: string | null; created_at: string;
+}
 interface PlanPub {
   slug: string; name: string; priceNgn: number; memberPriceNgn: number; amountNgn: number;
   features: Record<string, boolean>; limits: Record<string, number>;
@@ -92,6 +96,8 @@ export function Admin() {
   const isFamily = org?.kind === "family";
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [joinReqs, setJoinReqs] = useState<JoinRequest[]>([]);
+  const [jrBusy, setJrBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [billing, setBilling] = useState<{ subscription: BillingSub; payments: Payment[] } | null>(null);
   const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
@@ -157,6 +163,7 @@ export function Admin() {
         api.get<{ actions: string[] }>("/api/admin/audit/actions"),
         api.get<Metrics>("/api/admin/metrics"),
         api.get<{ invites: Invite[] }>("/api/admin/invites"),
+        api.get<{ requests: JoinRequest[] }>("/api/admin/join-requests"),
         api.get<{ subscription: BillingSub; payments: Payment[] }>("/api/billing"),
         api.get<{ tokens: { id: string; label: string | null; created_at: string }[] }>("/api/admin/scim/tokens"),
         api.get<AiUsage>("/api/billing/ai-usage"),
@@ -170,13 +177,14 @@ export function Admin() {
         api.get<{ keys: typeof apiKeys }>("/api/admin/api-keys"),
         api.get<{ hooks: typeof webhooks }>("/api/admin/webhooks"),
       ];
-      const [m, p, a, acts, mx, inv, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
         { actions: string[] },
         Metrics,
         { invites: Invite[] },
+        { requests: JoinRequest[] },
         { subscription: BillingSub; payments: Payment[] },
         { tokens: { id: string; label: string | null; created_at: string }[] },
         AiUsage,
@@ -198,6 +206,7 @@ export function Admin() {
       setAuditActions(acts.actions);
       setMetrics(mx);
       setInvites(inv.invites);
+      setJoinReqs(jreq.requests);
       setBilling(bill);
       setScimTokens(scim.tokens);
       setAiUsage(ai);
@@ -258,6 +267,26 @@ export function Admin() {
   const revokeInvite = async (id: string) => {
     await api.del(`/api/admin/invites/${id}`).catch(() => {});
     setInvites((xs) => xs.filter((i) => i.id !== id));
+  };
+
+  const decideJoin = async (id: string, approve: boolean) => {
+    setJrBusy(id);
+    try {
+      const r = await api.post<{ ok: boolean; moved?: boolean; invited?: boolean; existingAccount?: boolean }>(
+        `/api/admin/join-requests/${id}/${approve ? "approve" : "decline"}`, {});
+      if (approve) {
+        toast(r.moved ? "Approved — account moved into the workspace"
+          : r.existingAccount ? "Approved — they have an account with files; they'll contact you to transfer"
+          : "Approved — one-time invite link emailed");
+      } else {
+        toast("Request declined");
+      }
+      void load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setJrBusy(null);
+    }
   };
 
   const createScimToken = async () => {
@@ -1000,6 +1029,26 @@ export function Admin() {
             </span>
           ))}
         </div>
+        {joinReqs.some((j) => j.status === "pending") && (
+          <div className="jr-panel">
+            <div className="jr-title">Join requests</div>
+            {joinReqs.filter((j) => j.status === "pending").map((j) => (
+              <div key={j.id} className="jr-row">
+                <div className="jr-who">
+                  <b>{j.display_name}</b>
+                  <span>{j.email}</span>
+                </div>
+                <span className="jr-when">{timeAgo(j.created_at)}</span>
+                <div className="jr-actions">
+                  <button className="btn-primary" disabled={jrBusy === j.id}
+                    onClick={() => void decideJoin(j.id, true)}>Approve</button>
+                  <button className="btn-secondary" disabled={jrBusy === j.id}
+                    onClick={() => void decideJoin(j.id, false)}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="tbl-scroll"><table className="admin-table">
           <thead><tr><th></th><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
           <tbody>
