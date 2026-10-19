@@ -272,11 +272,11 @@ export function Admin() {
   const decideJoin = async (id: string, approve: boolean) => {
     setJrBusy(id);
     try {
-      const r = await api.post<{ ok: boolean; moved?: boolean; invited?: boolean; existingAccount?: boolean }>(
+      const r = await api.post<{ ok: boolean; moved?: boolean; filesMoved?: number; existingAccount?: boolean }>(
         `/api/admin/join-requests/${id}/${approve ? "approve" : "decline"}`, {});
       if (approve) {
-        toast(r.moved ? "Approved — account moved into the workspace"
-          : r.existingAccount ? "Approved — they have an account with files; they'll contact you to transfer"
+        toast(r.moved ? `Approved — account moved in with ${r.filesMoved ?? 0} file${r.filesMoved === 1 ? "" : "s"}`
+          : r.existingAccount ? "Approved — but their account can't auto-transfer (org owner or legal hold); they'll contact you"
           : "Approved — one-time invite link emailed");
       } else {
         toast("Request declined");

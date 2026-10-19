@@ -3,7 +3,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import { q as dbq, one, run, now } from "../db.js";
+import { q as dbq, one, run, now, tx } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies, dlpRules, isSafePattern, type DlpRule } from "../policies.js";
 import { encryptionEnabled, decryptField } from "../crypto.js";
@@ -189,29 +189,84 @@ export function adminRoutes(app: FastifyInstance) {
     if (!claimed)
       return reply.code(409).send({ error: "conflict", message: "Request already decided" });
 
-    const existing = await one<{ id: string; org_id: string }>(
-      "SELECT id, org_id FROM users WHERE lower(email) = $1", [jr.email]);
+    const existing = await one<{ id: string; org_id: string; role: string }>(
+      "SELECT id, org_id, role FROM users WHERE lower(email) = $1", [jr.email]);
     if (existing) {
-      // move them in only when their current workspace is an empty solo shell
-      const hasItems = await one(
-        "SELECT 1 AS x FROM items WHERE org_id = $1 AND owner_id = $2 LIMIT 1", [existing.org_id, existing.id]);
-      const hasMates = await one(
-        "SELECT 1 AS x FROM users WHERE org_id = $1 AND id <> $2 LIMIT 1", [existing.org_id, existing.id]);
-      if (!hasItems && !hasMates) {
-        await run("UPDATE users SET org_id = $1, role = 'member' WHERE id = $2", [user.orgId, existing.id]);
+      const old = existing.org_id;
+      const uid = existing.id;
+      // Can't pull the owner out of a populated org — the workspace would be
+      // orphaned. They must hand off ownership or delete it first.
+      const blocked = await one<{ mates: number; held: number }>(
+        `SELECT
+          (SELECT count(*) FROM users WHERE org_id = $1 AND id <> $2) AS mates,
+          (SELECT count(*) FROM legal_hold_items li
+             JOIN legal_holds h ON h.id = li.hold_id
+             WHERE h.org_id = $1 AND h.active
+               AND (li.item_id IN (SELECT id FROM items WHERE owner_id = $2 AND org_id = $1)
+                 OR $2 IN (SELECT c.user_id FROM legal_hold_custodians c WHERE c.hold_id = h.id))) AS held`,
+        [old, uid]);
+      const heldBlocked = Number(blocked?.held) > 0;
+      if ((Number(blocked?.mates) > 0 && existing.role === "owner") || heldBlocked) {
         void logActivity(user.orgId, user.id, null, "join-request.approved",
-          `${jr.display_name} <${jr.email}> — existing account moved in`);
-        sendMailSafe(app.log, { to: jr.email, ...tpl.joinApprovedMember(orgName) });
-        return { ok: true, moved: true };
+          `${jr.display_name} <${jr.email}> — approved, blocked: ${heldBlocked ? "legal hold" : "org owner"} — manual transfer`);
+        sendMailSafe(app.log, { to: jr.email, ...tpl.joinRequestNeedsTransfer(orgName) });
+        return { ok: true, moved: false, existingAccount: true };
       }
-      // account with real data — an org move would strand their files
-      void logActivity(user.orgId, user.id, null, "join-request.approved",
-        `${jr.display_name} <${jr.email}> — existing account, needs manual transfer`);
-      sendMailSafe(app.log, {
-        to: jr.email,
-        ...tpl.joinRequestNeedsTransfer(orgName),
+      // Full transfer: account + everything they own. Item-linked rows
+      // (versions/shares/comments/mentions) ride on file_id, so the items
+      // UPDATE moves the whole corpus. Old-org access grants are severed.
+      const filesMoved = await tx(async (c) => {
+        // co-members' children inside the mover's folders go back to root
+        await c.query(
+          `UPDATE items SET parent_id = NULL WHERE org_id = $1 AND owner_id <> $2
+             AND parent_id IN (SELECT id FROM items WHERE owner_id = $2 AND org_id = $1)`, [old, uid]);
+        // sever share access in both directions — old org only
+        await c.query(
+          `DELETE FROM shares WHERE user_id = $1
+             AND file_id IN (SELECT id FROM items WHERE org_id = $2 AND owner_id <> $1)`, [uid, old]);
+        await c.query(
+          `DELETE FROM shares WHERE file_id IN (SELECT id FROM items WHERE owner_id = $1 AND org_id = $2)
+             AND user_id IN (SELECT id FROM users WHERE org_id = $2)`, [uid, old]);
+        // the corpus: files move orgs, detached from old-org libraries
+        const mv = await c.query(
+          "UPDATE items SET org_id = $1, library_id = NULL WHERE owner_id = $2 AND org_id = $3",
+          [user.orgId, uid, old]);
+        // events they created come along; their seat in other people's
+        // old-org events is dropped
+        await c.query(
+          `DELETE FROM calendar_attendees WHERE user_id = $1
+             AND event_id IN (SELECT id FROM calendar_events WHERE org_id = $2 AND created_by <> $1)`, [uid, old]);
+        await c.query(
+          "UPDATE calendar_events SET org_id = $1 WHERE org_id = $2 AND created_by = $3", [user.orgId, old, uid]);
+        await c.query(
+          `DELETE FROM calendar_attendees WHERE event_id IN (SELECT id FROM calendar_events WHERE org_id = $1)
+             AND user_id IN (SELECT id FROM users WHERE org_id = $2)`, [user.orgId, old]);
+        // every old-org access grant: sites, libraries, groups, chat,
+        // delegated mail/calendar
+        await c.query(
+          "DELETE FROM site_members WHERE user_id = $1 AND site_id IN (SELECT id FROM sites WHERE org_id = $2)", [uid, old]);
+        await c.query(
+          `DELETE FROM library_subscriptions WHERE user_id = $1
+             AND library_id IN (SELECT l.id FROM libraries l JOIN sites s ON s.id = l.site_id WHERE s.org_id = $2)`, [uid, old]);
+        await c.query(
+          `DELETE FROM library_permissions WHERE user_id = $1
+             AND library_id IN (SELECT l.id FROM libraries l JOIN sites s ON s.id = l.site_id WHERE s.org_id = $2)`, [uid, old]);
+        await c.query(
+          "DELETE FROM group_members WHERE user_id = $1 AND group_id IN (SELECT id FROM groups WHERE org_id = $2)", [uid, old]);
+        await c.query(
+          "DELETE FROM chat_members WHERE user_id = $1 AND channel_id IN (SELECT id FROM chat_channels WHERE org_id = $2)", [uid, old]);
+        await c.query(
+          "DELETE FROM mail_shares WHERE org_id = $1 AND (owner_user_id = $2 OR delegate_user_id = $2)", [old, uid]);
+        await c.query(
+          "DELETE FROM calendar_delegates WHERE org_id = $1 AND (owner_id = $2 OR delegate_id = $2)", [old, uid]);
+        await c.query(
+          "UPDATE users SET org_id = $1, role = 'member' WHERE id = $2", [user.orgId, uid]);
+        return mv.rowCount ?? 0;
       });
-      return { ok: true, moved: false, existingAccount: true };
+      void logActivity(user.orgId, user.id, null, "join-request.approved",
+        `${jr.display_name} <${jr.email}> — account + ${filesMoved} file${filesMoved === 1 ? "" : "s"} transferred`);
+      sendMailSafe(app.log, { to: jr.email, ...tpl.joinApprovedMember(orgName) });
+      return { ok: true, moved: true, filesMoved };
     }
     // no account — one-time invite, 30 days
     const token = randomBytes(18).toString("base64url");
