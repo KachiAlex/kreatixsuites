@@ -530,7 +530,12 @@ export function driveRoutes(app: FastifyInstance) {
   });
 
   /** Binary upload (PDFs, office files, media): raw body + ?name=&parent= */
-  app.post("/api/drive/upload", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/api/drive/upload", {
+    // the global 50MB bodyLimit is below the client's 150MB import ceiling —
+    // office files this route legitimately receives would 413 mid-upload
+    bodyLimit: 170 * 1024 * 1024,
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { name, parent, kind, mediaFor, library } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string; library?: string };
     // text/* content-types hit Fastify's built-in parser (string body) before

@@ -60,6 +60,7 @@ import { ImageLayoutDialog } from "./ImageDialogs";
 import { measureBands } from "./banding";
 import { LinkPopover } from "./LinkPopover";
 import { safeUrl, sanitizeHtml } from "../lib/sanitize";
+import { readTextAuto } from "../lib/importLimits";
 import { SpecialChars } from "./SpecialChars";
 import { PageSetupDialog, PageNumbersDialog, PageSetupSync, SectionGeometry, readPageSetup, applyPageSetup, type PageSetup } from "./PageSetup";
 import { KxTextStyle, DropCap, MultiList, Chart, Shape, TextBox, WordArt, Citation, IndexEntry, Redact, scrubRedactions } from "./extensions/extras";
@@ -334,6 +335,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     onUpdate: ({ editor }) => {
       // never serialize the pre-sync empty collab doc over the canonical head
       if (sessionRef.current && !collabReady.current) return;
+      // viewers still run auto-import into the doc, but nothing they do may
+      // queue a save — the server would 403 every attempt anyway
+      if (!canMutate) return;
       pendingJson.current = () => ({ kind: "writer", doc: editor.getJSON(), pageSetup: readPageSetup(editor), styles: serializeStyles(editor), docProps: docPropsRef.current });
       setSaveState("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -913,7 +917,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         d.innerHTML = sanitizeHtml(res.html);
         other = d.innerText;
       } else {
-        other = await f.text();
+        other = await readTextAuto(f);
       }
       const marked = diffDocs(docText(editor.state.doc), other);
       editor.commands.setContent(marked);
@@ -1144,8 +1148,10 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   }, [editor, canMutate, state?.trackMode, user]);
 
   // ---- imports/exports ----
-  const onImport = async (f: File) => {
-    if (!canMutate) { toast("You don't have edit access"); return; }
+  // applyImport/applyTextImport run the conversion only — no permission gate.
+  // Viewers get this too (a .docx must render even when opening read-only);
+  // the onUpdate guard above keeps their view from queueing saves.
+  const applyImport = async (f: File) => {
     try {
       const { importDocx, applyDocxImport } = await docxMod();
       const res = await importDocx(f);
@@ -1155,15 +1161,17 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       if (editor) applyDocxImport(editor, res); // named styles from styles.xml
       if (Object.values(res.docProps).some(Boolean))
         setDocProps({ ...docPropsRef.current, ...res.docProps });
-      const imported = res.comments.filter((c) => c.body.trim());
-      if (imported.length) {
-        for (const c of imported) {
-          await api.post(`/api/files/${item.id}/comments`, {
-            anchor: c.anchor,
-            body: c.author ? `${c.author}: ${c.body}` : c.body,
-          }).catch(() => {});
+      if (canMutate) {
+        const imported = res.comments.filter((c) => c.body.trim());
+        if (imported.length) {
+          for (const c of imported) {
+            await api.post(`/api/files/${item.id}/comments`, {
+              anchor: c.anchor,
+              body: c.author ? `${c.author}: ${c.body}` : c.body,
+            }).catch(() => {});
+          }
+          loadComments();
         }
-        loadComments();
       }
       toast(res.degraded
         ? `Imported ${f.name} — some content was recovered as plain text`
@@ -1172,11 +1180,14 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       toast(e instanceof Error && e.message ? e.message : "Could not import that file");
     }
   };
-
-  const onTextImport = async (f: File) => {
+  const onImport = async (f: File) => {
     if (!canMutate) { toast("You don't have edit access"); return; }
+    await applyImport(f);
+  };
+
+  const applyTextImport = async (f: File) => {
     try {
-      const text = await f.text();
+      const text = await readTextAuto(f);
       const ext = f.name.split(".").pop()?.toLowerCase();
       if (ext === "md" || ext === "markdown") {
         const { mdToHtml } = await import("./export/markdown");
@@ -1192,6 +1203,10 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       toast(e instanceof Error && e.message ? e.message : "Could not import that file");
     }
   };
+  const onTextImport = async (f: File) => {
+    if (!canMutate) { toast("You don't have edit access"); return; }
+    await applyTextImport(f);
+  };
 
   // Native-binary item opened from Drive/desktop — run the import once so a
   // double-clicked .docx opens as a real document, not a blank page.
@@ -1202,7 +1217,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!editor || !sourceFile || autoImported.current === editor) return;
     autoImported.current = editor;
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
-    void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? onTextImport(sourceFile) : onImport(sourceFile));
+    void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, sourceFile]);
 

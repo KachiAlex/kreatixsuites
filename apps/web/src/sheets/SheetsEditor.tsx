@@ -13,6 +13,7 @@ import { RibbonTabs } from "../components/RibbonTabs";
 import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
 import { OpenCancelledError } from "../lib/passwordPrompt";
+import { readTextAuto } from "../lib/importLimits";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CommentsPanel } from "../components/CommentsPanel";
 import { useToast } from "../lib/hooks";
@@ -1389,7 +1390,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
     void saveFile(blob, `${title}-${sheet.name}.csv`);
   };
   const onCsvImport = async (f: File) => {
-    const imported = csvToSheet(f.name.replace(/\.[^.]+$/, ""), await f.text());
+    const imported = csvToSheet(f.name.replace(/\.[^.]+$/, ""), await readTextAuto(f));
     mutate((w) => w.sheets.push(imported));
     setActive(wb.sheets.length);
     toast(`Imported ${f.name}`);
@@ -1397,7 +1398,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const onXlsxImport = async (f: File) => {
     try {
       const imported = await xlsxToWorkbook(f);
-      mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); });
+      mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); }, canEdit);
       setActive(0);
       toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}`);
     } catch (e) {
@@ -1410,8 +1411,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const onDelimitedImport = async (f: File) => {
     const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
     const imported = csvToSheet(
-      f.name.replace(/\.[^.]+$/, ""), await f.text(), ext === "tsv" ? "\t" : ",");
-    mutate((w) => { w.sheets = [imported]; });
+      f.name.replace(/\.[^.]+$/, ""), await readTextAuto(f), ext === "tsv" ? "\t" : ",");
+    mutate((w) => { w.sheets = [imported]; }, canEdit);
     setActive(0);
     toast(`Imported ${f.name}`);
   };

@@ -5,6 +5,7 @@ import { SHAPES, type ShapeKind, type ChartAttrs, parseChartAttrs, chartSvg, sha
 import { collectTargets, pageOfPos } from "./extensions/field";
 import type { PageSetup } from "./PageSetup";
 import { parseCsv } from "../sheets/io";
+import { readTextAuto } from "../lib/importLimits";
 import { saveFile } from "../lib/saveFile";
 
 const Overlay = ({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) => (
@@ -664,7 +665,7 @@ export function MergeDialog({ editor, initialCsv, onSaveCsv, onClose }:
       <div className="dlg-inline">
         <button className="btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>Load .csv…</button>
         <input ref={fileRef} type="file" accept=".csv,.txt" hidden
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setCsv); e.target.value = ""; }} />
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void readTextAuto(f).then(setCsv); e.target.value = ""; }} />
         <span className="dlg-note">{data.rows.length} record(s)</span>
       </div>
       {data.fields.length > 0 && (

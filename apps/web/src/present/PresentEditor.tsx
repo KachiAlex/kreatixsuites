@@ -189,7 +189,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
     saveTimer.current = setTimeout(flushSave, 1200);
   };
 
-  const mutate = useCallback((fn: (d: Deck) => void, actionKey?: string) => {
+  const mutate = useCallback((fn: (d: Deck) => void, actionKey?: string, save = true) => {
     setDeck((prev) => {
       const next = structuredClone(prev);
       fn(next);
@@ -201,7 +201,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
       redoStack.current = [];
       return next;
     });
-    scheduleSave();
+    // viewers import into local state only — queueing a save would just 403
+    if (save) scheduleSave();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -465,7 +466,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
         // clear import-owned fields that may be absent this time
         for (const k of ["theme", "customTheme", "slideW", "slideH", "master", "layouts"] as const) delete deck[k];
         Object.assign(deck, d);
-      });
+      }, undefined, canEdit);
       setSlideIdx(0);
       setSelection(new Set());
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);

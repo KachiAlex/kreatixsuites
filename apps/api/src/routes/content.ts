@@ -261,7 +261,7 @@ export function contentRoutes(app: FastifyInstance) {
 
   /** PUT new PDF bytes (page-organization output) — stores an immutable raw
    *  version that /raw will serve; the annotation JSON stays the head content. */
-  app.put("/api/files/:id/pdf-bytes", async (req, reply) => {
+  app.put("/api/files/:id/pdf-bytes", { bodyLimit: 170 * 1024 * 1024 }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
@@ -401,6 +401,15 @@ export function contentRoutes(app: FastifyInstance) {
     // re-importing the original binary (which would clobber edits).
     if (["writer", "sheets", "present", "board"].includes(item.kind) && !item.mime.startsWith("application/x-kreatix-")) {
       await run("UPDATE items SET mime = $2 WHERE id = $1", [item.id, `application/x-kreatix-${item.kind}`]);
+    }
+    // Unstamped binaries (kind 'file' — chat uploads, legacy items) upgrade to
+    // their real editor kind when the first canonical save lands, so lists
+    // show the right icon and opens route without the extension fallback.
+    const savedKind = (body.content as { kind?: unknown })?.kind;
+    if (item.kind === "file" && typeof savedKind === "string" &&
+        ["writer", "sheets", "present", "board"].includes(savedKind)) {
+      await run("UPDATE items SET kind = $2, mime = $3 WHERE id = $1",
+        [item.id, savedKind, `application/x-kreatix-${savedKind}`]);
     }
     void indexFile(item.id, item.kind, body.content).catch(() => { /* best-effort */ });
     void touchItem(item.id);

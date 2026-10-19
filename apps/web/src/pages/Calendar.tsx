@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useToast, useMeetEnabled } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 import { Modal } from "../components/Modal";
+import { readTextAuto } from "../lib/importLimits";
 
 // Kreatix Calendar — month grid + day agenda + event composer. Events are
 // org-scoped and visible to creator + attendees; "Add Meet" creates a linked
@@ -268,7 +269,7 @@ export function Calendar() {
   };
   const importIcs = async (file: File) => {
     try {
-      const ics = await file.text();
+      const ics = await readTextAuto(file);
       const r = await api.post<{ imported: number }>("/api/calendar/import", { ics });
       toast(`Imported ${r.imported} event${r.imported === 1 ? "" : "s"}`);
       void load();

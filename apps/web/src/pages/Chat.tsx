@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, getToken } from "../lib/api";
+import { kindForPath } from "../lib/offline/openLocal";
 import { API_BASE } from "../lib/platform";
 import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
@@ -294,8 +295,10 @@ export function Chat() {
    *  returned item id on the message. */
   const attachFile = async (f: File) => {
     try {
+      // stamp the editor kind so office attachments open in Writer/Sheets/etc.
+      const kind = kindForPath(f.name) ?? (f.type === "application/pdf" ? "pdf" : "file");
       const r = await api.upload<{ item: { id: string; name: string } }>(
-        `/api/drive/upload?name=${encodeURIComponent(f.name)}`, f);
+        `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
       setAttach({ id: r.item.id, name: r.item.name });
       draftRef.current?.focus();
     } catch (e) { toast((e as Error).message); }

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import type { DriveItem } from "@kreatix/shared";
 import { api, ApiError } from "../lib/api";
+import { kindForPath } from "../lib/offline/openLocal";
 import { getDraft, clearDraft, saveContent, type Draft } from "../lib/drafts";
 import { KIND_META, timeAgo } from "../lib/format";
 import { AppIcon, BrandLockup } from "../components/AppIcon";
@@ -110,17 +111,32 @@ export function Editor() {
     </div>
   );
 
+  // Unstamped binaries (kind "file" — chat uploads, anything that skipped
+  // kind-stamping) still open in their editor: extension decides, then mime.
+  const OFFICE_MIME: Record<string, string> = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "writer",
+    "application/vnd.ms-word.document.macroEnabled.12": "writer",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "sheets",
+    "application/vnd.ms-excel.sheet.macroEnabled.12": "sheets",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "present",
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.12": "present",
+    "application/pdf": "pdf",
+  };
+  const effectiveKind = item.kind === "file"
+    ? (kindForPath(item.name) ?? OFFICE_MIME[item.mimeType] ?? item.kind)
+    : item.kind;
+
   const inner = (() => {
-    if (item.kind === "writer") {
+    if (effectiveKind === "writer") {
       return <WriterEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
-    if (item.kind === "sheets") {
+    if (effectiveKind === "sheets") {
       return <SheetsEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
-    if (item.kind === "present") {
+    if (effectiveKind === "present") {
       return <PresentEditor item={item} initialDoc={content} sourceFile={sourceFile} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
-    if (item.kind === "pdf") {
+    if (effectiveKind === "pdf") {
       return <PdfEditor item={item} initialDoc={content} permission={item.permission ?? "owner"} aiPrompt={aiPrompt} />;
     }
     if (item.kind === "board") {

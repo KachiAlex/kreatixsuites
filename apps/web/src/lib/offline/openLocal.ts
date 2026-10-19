@@ -5,6 +5,7 @@
 // upload falls through to the mirror + outbox and still opens locally.
 import { api } from "../api";
 import { desktop } from "../platform";
+import { assertImportSize } from "../importLimits";
 import { b64, store } from "./store";
 
 const KIND_BY_EXT: Record<string, string> = {
@@ -42,6 +43,7 @@ const ALL_EXTS =
 export async function importLocalFile(f: File): Promise<string> {
   const kind = kindForPath(f.name);
   if (!kind) throw new Error(`Kreatix can't open .${f.name.split(".").pop() ?? "?"} files`);
+  assertImportSize(f); // fail fast with a readable reason, before the upload
   const up = await api.upload<{ item?: { id: string } }>(
     `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}`, f);
   if (!up?.item?.id) throw new Error("Upload failed — the file wasn't stored in Drive");
@@ -91,6 +93,7 @@ export async function importLocalPath(filePath: string): Promise<string> {
   const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
   const blob = new Blob([b64.from(r.data)], { type: MIME_BY_EXT[ext] ?? "application/octet-stream" });
   const name = r.name ?? filePath.split(/[\\/]/).pop() ?? "document";
+  assertImportSize(blob);
 
   const up = await api.upload<{ item?: { id: string } }>(
     `/api/drive/upload?name=${encodeURIComponent(name)}&kind=${kind}`, blob);
