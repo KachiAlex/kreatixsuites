@@ -123,6 +123,28 @@ public class KxDocOpenPlugin extends Plugin {
         }
     }
 
+    /** In-app update — wrap a downloaded APK (cache dir) in a FileProvider
+     *  URI and hand it to the system package installer. */
+    @PluginMethod
+    public void installApk(PluginCall call) {
+        String raw = call.getString("path");
+        if (raw == null) { call.reject("path required"); return; }
+        try {
+            String path = raw.startsWith("file://") ? Uri.parse(raw).getPath() : raw;
+            File apk = new File(path);
+            if (!apk.exists()) { call.reject("file not found"); return; }
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                getContext(), getContext().getPackageName() + ".fileprovider", apk);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "application/vnd.android.package-archive");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Couldn't launch the installer — " + e.getMessage());
+        }
+    }
+
     private String displayName(ContentResolver cr, Uri uri) {
         if (!"content".equals(uri.getScheme())) return null;
         try (Cursor c = cr.query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {

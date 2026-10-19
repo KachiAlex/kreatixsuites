@@ -41,9 +41,10 @@ export const isDesktop = !!desktop?.isDesktop;
 /** Capacitor WebView (Android/iOS shells) — no kxDesktop bridge, but the app is
  *  still served from a local origin so API traffic needs the absolute host. */
 const capacitor = typeof window !== "undefined"
-  ? (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
+  ? (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean; getPlatform?: () => string } }).Capacitor
   : undefined;
 export const isNativeMobile = !!capacitor?.isNativePlatform?.();
+export const isAndroid = isNativeMobile && capacitor?.getPlatform?.() === "android";
 
 /** Origin for API/WS traffic. The desktop bundle runs on the kx:// scheme and
  *  the Android shell on https://localhost, so both must call the production

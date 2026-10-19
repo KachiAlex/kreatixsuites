@@ -13,7 +13,7 @@ import { SecurityDialog } from "./SecurityDialog";
 import { useToast, useSites, useMailEnabled, useMeetEnabled } from "../lib/hooks";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
-import { AnonBanner, SyncChip, UpdateBanner } from "./Desktop";
+import { AnonBanner, SyncChip, UpdateBanner, MobileUpdateBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
@@ -78,6 +78,7 @@ export function Shell() {
         <AnonBanner />
         <SyncChip />
         <UpdateBanner />
+        <MobileUpdateBanner />
         <VerifyBanner />
         <BillingBanner />
         <Outlet />

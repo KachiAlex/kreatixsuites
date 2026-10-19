@@ -5,7 +5,7 @@
 // (kreatix:toast — file saves in the WebView can't use <a download>).
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { desktop, isDesktop, isNativeMobile, type UpdateStatus } from "../lib/platform";
+import { desktop, isDesktop, isNativeMobile, isAndroid, API_BASE, type UpdateStatus } from "../lib/platform";
 import { api } from "../lib/api";
 import { onSyncState, startSyncLoop } from "../lib/offline/sync";
 import { canEditOffline, entitlement, refreshEntitlement } from "../lib/offline/license";
@@ -216,6 +216,103 @@ export function UpdateBanner() {
   return (
     <div className="billing-banner">
       <span>{s.state === "downloading" ? `Downloading update… ${s.percent}%` : "Downloading update…"}</span>
+    </div>
+  );
+}
+
+/** Numeric semver compare — "0.1.10" > "0.1.8". Only matches the release
+ *  filename scheme (x.y.z); anything else counts as "not newer". */
+const versionNewer = (a: string, b: string): boolean => {
+  const pa = a.split(".").map((n) => parseInt(n, 10));
+  const pb = b.split(".").map((n) => parseInt(n, 10));
+  if (pa.some(Number.isNaN) || pb.some(Number.isNaN)) return false;
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+  }
+  return false;
+};
+
+type MobileUpdate =
+  | { state: "none" | "error" }
+  | { state: "available"; version: string }
+  | { state: "downloading"; percent: number }
+  | { state: "installing" };
+
+/** Android in-app update — the APK is sideloaded, so compare the installed
+ *  versionName with the newest published APK, download into the app cache
+ *  with progress, and hand it to the system package installer via the
+ *  KxDocOpen plugin's installApk(). */
+export function MobileUpdateBanner() {
+  const [s, setS] = useState<MobileUpdate>({ state: "none" });
+
+  useEffect(() => {
+    if (!isAndroid) return;
+    void (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const { version } = await App.getInfo();
+        const m = await api.get<{ android?: { version: string | null } }>("/api/downloads");
+        const latest = m?.android?.version;
+        if (latest && versionNewer(latest, version)) setS({ state: "available", version: latest });
+      } catch { /* update check is best-effort — never block the app */ }
+    })();
+  }, []);
+
+  const install = async (version: string) => {
+    try {
+      setS({ state: "downloading", percent: 0 });
+      const res = await fetch(`${API_BASE}/api/downloads/android`);
+      if (!res.ok || !res.body) throw new Error("download failed");
+      const total = Number(res.headers.get("content-length") ?? 0);
+      const reader = res.body.getReader();
+      const parts: Uint8Array[] = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got += value.length;
+        if (total) setS({ state: "downloading", percent: Math.round((got / total) * 100) });
+      }
+      const buf = new Uint8Array(got);
+      let off = 0;
+      for (const p of parts) { buf.set(p, off); off += p.length; }
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode(...buf.subarray(i, i + 8192));
+      const { Filesystem, Directory } = await import("@capacitor/filesystem");
+      const w = await Filesystem.writeFile({
+        path: `updates/kreatix-${version}.apk`, data: btoa(bin),
+        directory: Directory.Cache, recursive: true,
+      });
+      const { registerPlugin } = await import("@capacitor/core");
+      const Kx = registerPlugin<{ installApk(o: { path: string }): Promise<void> }>("KxDocOpen");
+      setS({ state: "installing" });
+      await Kx.installApk({ path: w.uri });
+      // installer can be dismissed — back to the prompt rather than a stuck state
+      setS({ state: "available", version });
+    } catch {
+      setS({ state: "error" });
+    }
+  };
+
+  if (s.state === "none" || s.state === "error") return null;
+  if (s.state === "available")
+    return (
+      <div className="billing-banner">
+        <span>Kreatix Suites {s.version} is available.</span>
+        <button onClick={() => void install(s.version)}>Update</button>
+        <button style={{ marginLeft: 0 }} onClick={() => setS({ state: "none" })}>Later</button>
+      </div>
+    );
+  if (s.state === "downloading")
+    return (
+      <div className="billing-banner">
+        <span>Downloading update… {s.percent}%</span>
+      </div>
+    );
+  return (
+    <div className="billing-banner">
+      <span>Opening installer…</span>
     </div>
   );
 }
