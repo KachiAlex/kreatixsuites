@@ -301,7 +301,7 @@ export function authRoutes(app: FastifyInstance) {
     const name = (b.name ?? "").trim().slice(0, 80);
     const domain = (b.domain ?? "").trim().toLowerCase();
     const [hit, dOrg] = await Promise.all([
-      name ? one("SELECT 1 AS x FROM orgs WHERE lower(name) = lower($1) LIMIT 1", [name]) : null,
+      name ? one("SELECT 1 AS x FROM orgs WHERE lower(btrim(name)) = lower($1) LIMIT 1", [name]) : null,
       domain.includes(".")
         ? one<{ name: string }>(
             `SELECT o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id
