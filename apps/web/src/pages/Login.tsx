@@ -38,7 +38,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [forgotSent, setForgotSent] = useState(false);
   const [kind, setKind] = useState<"personal" | "family" | "business">("personal");
   const [wsHint, setWsHint] = useState<{ nameTaken: boolean; domainOrg: string | null; domain: string | null } | null>(null);
-  const [jrState, setJrState] = useState<"idle" | "sending" | "sent" | "err">("idle");
+  const [jrState, setJrState] = useState<"idle" | "sending" | "code" | "verifying" | "sent" | "err">("idle");
+  const [jrCode, setJrCode] = useState("");
   const [emailTaken, setEmailTaken] = useState(false);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [googleDesktop, setGoogleDesktop] = useState(false);
@@ -65,6 +66,34 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     }, 400);
     return () => clearTimeout(id);
   }, [org, email, kind, mode, invite]);
+
+  // Join-request flow: step 1 emails a 6-digit ownership code to the
+  // requester; step 2 submits it. Once queued (or already pending) the
+  // server answers idempotently — no repeat requests.
+  const requestJoinCode = () => {
+    if (!wsHint?.domain) return;
+    setJrState("sending");
+    api.post<{ ok: boolean; already?: boolean }>("/api/auth/join-request/code", {
+      email: email.trim(), displayName: name.trim(), domain: wsHint.domain,
+    }).then((r) => {
+      if (r?.already) setJrState("sent");
+      else setJrState("code");
+    }).catch((e) => {
+      setJrState("idle");
+      setError(e instanceof Error ? e.message : t("auth.wsRequestErr"));
+    });
+  };
+
+  const submitJoinCode = () => {
+    if (!wsHint?.domain || jrCode.length !== 6) return;
+    setJrState("verifying");
+    api.post("/api/auth/join-request", {
+      email: email.trim(), displayName: name.trim(), domain: wsHint.domain, code: jrCode,
+    }).then(() => setJrState("sent")).catch((e) => {
+      setJrState("code");
+      setError(e instanceof Error ? e.message : t("auth.wsRequestErr"));
+    });
+  };
 
   // warm the app-shell chunks while auth state settles — the /home
   // navigation then renders instantly instead of hitting a lazy boundary
@@ -291,19 +320,29 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
             <div>{t("auth.wsDomain", { org: wsHint.domainOrg })}</div>
             {jrState === "sent" ? (
               <div className="ws-hint-ok">{t("auth.wsRequestSent", { org: wsHint.domainOrg })}</div>
+            ) : jrState === "code" || jrState === "verifying" ? (
+              <div className="ws-code">
+                <div className="ws-code-msg">{t("auth.wsCodeSent", { email: email.trim() })}</div>
+                <div className="ws-code-row">
+                  <input value={jrCode} inputMode="numeric" autoComplete="one-time-code"
+                    placeholder="000000" maxLength={6}
+                    onChange={(e) => setJrCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    onKeyDown={(e) => { if (e.key === "Enter" && jrCode.length === 6) { e.preventDefault(); submitJoinCode(); } }} />
+                  <button type="button" className="ws-hint-btn"
+                    disabled={jrState === "verifying" || jrCode.length !== 6}
+                    onClick={submitJoinCode}>
+                    {jrState === "verifying" ? t("auth.pleaseWait") : t("auth.wsVerifySend")}
+                  </button>
+                </div>
+                <button type="button" className="ws-code-resend" onClick={() => requestJoinCode()}>
+                  {t("auth.wsResendCode")}
+                </button>
+              </div>
             ) : (
               <button type="button" className="ws-hint-btn"
                 disabled={jrState === "sending" || !name.trim()}
                 title={!name.trim() ? t("auth.wsRequestNeedsName") : undefined}
-                onClick={() => {
-                  setJrState("sending");
-                  api.post("/api/auth/join-request", {
-                    email: email.trim(), displayName: name.trim(), domain: wsHint.domain,
-                  }).then(() => setJrState("sent")).catch((e) => {
-                    setJrState("err");
-                    setError(e instanceof Error ? e.message : t("auth.wsRequestErr"));
-                  });
-                }}>
+                onClick={requestJoinCode}>
                 {jrState === "sending" ? t("auth.pleaseWait") : t("auth.wsRequestJoin", { org: wsHint.domainOrg })}
               </button>
             )}

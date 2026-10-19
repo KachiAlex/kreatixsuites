@@ -273,6 +273,20 @@ CREATE TABLE IF NOT EXISTS join_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_join_requests_pending
   ON join_requests(org_id, lower(email)) WHERE status = 'pending';
 
+-- verification codes for the join-request flow — the requester has no
+-- account, so they prove email ownership with a 6-digit code before a
+-- request is queued. Only the HMAC of the code is stored.
+CREATE TABLE IF NOT EXISTS join_request_codes (
+  email TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (email, domain)
+);
+
 -- superadmin-editable plan/pricing — a single row ('default'), one plan per workspace
 CREATE TABLE IF NOT EXISTS billing_config (
   id TEXT PRIMARY KEY,

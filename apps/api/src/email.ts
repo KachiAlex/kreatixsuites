@@ -128,6 +128,19 @@ ${btn(link, "Accept invitation")}
     };
   },
 
+  /** Ownership proof before a join request is queued — the requester has
+   *  no account, so a 6-digit code stands in for password verification. */
+  joinRequestCode(requesterName: string, workspace: string, code: string): Pick<Mail, "subject" | "html"> {
+    return {
+      subject: `${code} — your code to request joining ${workspace}`,
+      html: shell("Your join-request code", `
+<p>Hi ${esc(requesterName)},</p>
+<p>You asked to join <b>${esc(workspace)}</b> on Kreatix Suites. Enter this code to send the request:</p>
+<p style="font-size:30px;font-weight:700;letter-spacing:8px;margin:18px 0">${esc(code)}</p>
+<p style="color:#8a8a90;font-size:12px">It expires in 15 minutes. If you didn't request this, ignore it — no request was sent.</p>`),
+    };
+  },
+
   /** A public "request to join" landed — sent to the org's owners/admins. */
   joinRequestAdmin(workspace: string, requesterName: string, requesterEmail: string): Pick<Mail, "subject" | "html"> {
     return {

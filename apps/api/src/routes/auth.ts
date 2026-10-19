@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { one, q as dbq, run, now } from "../db.js";
 import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
@@ -311,32 +311,96 @@ export function authRoutes(app: FastifyInstance) {
     return { nameTaken: !!hit, domainOrg: dOrg?.name ?? null };
   });
 
-  /** "Request to join" — the join-vs-create flow's other half. Resolves the
-   *  org by VERIFIED domain (never by id — keeps org ids private), queues a
-   *  pending request, and emails the org's owners/admins. Idempotent: a
-   *  repeat pending request just confirms. */
-  app.post("/api/auth/join-request", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
-    const b = z.object({
-      email: z.string().email().max(160),
-      displayName: z.string().min(1).max(80),
-      domain: z.string().min(3).max(255),
-    }).parse(req.body ?? {});
-    const domain = b.domain.trim().toLowerCase();
-    const email = b.email.trim().toLowerCase();
+  /** "Request to join" — the join-vs-create flow's other half, in two steps:
+   *  POST …/join-request/code emails a 6-digit ownership proof (the requester
+   *  has no account yet), then POST …/join-request consumes it and queues
+   *  the request. The org is resolved by VERIFIED domain only — no id
+   *  leakage — and a pending request makes every step idempotent. */
+  const jrSchema = z.object({
+    email: z.string().email().max(160),
+    displayName: z.string().min(1).max(80),
+    domain: z.string().min(3).max(255),
+    code: z.string().max(12).optional(),
+  });
+  const jrCodeHash = (email: string, domain: string, code: string) =>
+    createHmac("sha256", process.env.JWT_SECRET ?? "kreatix-dev-secret-change-in-production")
+      .update(`jr|${email}|${domain}|${code}`).digest("hex");
+
+  /** Shared guard for both steps. Returns the org, a "quiet" early response
+   *  (member / pending / approved — no mail, no error), or throws a shaped
+   *  error for the caller to send. */
+  async function jrPreflight(email: string, domain: string) {
     const org = await one<{ id: string; name: string }>(
       `SELECT o.id, o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id
        WHERE d.domain = $1 AND d.status = 'verified'`, [domain]);
-    if (!org) return reply.code(404).send({ error: "not_found", message: "No workspace found for that domain" });
+    if (!org) return { error: { status: 404, error: "not_found", message: "No workspace found for that domain" } } as const;
     if (!email.endsWith(`@${domain}`))
-      return reply.code(400).send({ error: "bad_email", message: `Use your @${domain} email to request access` });
+      return { error: { status: 400, error: "bad_email", message: `Use your @${domain} email to request access` } } as const;
     if (await one("SELECT 1 AS x FROM users WHERE org_id = $1 AND lower(email) = $2", [org.id, email]))
-      return reply.code(409).send({ error: "conflict", message: `You already have an account in ${org.name} — sign in instead` });
+      return { error: { status: 409, error: "conflict", message: `You already have an account in ${org.name} — sign in instead` } } as const;
     const last = await one<{ status: string }>(
       `SELECT status FROM join_requests WHERE org_id = $1 AND lower(email) = $2
        ORDER BY created_at DESC LIMIT 1`, [org.id, email]);
-    if (last?.status === "pending") return { ok: true, already: true };
+    if (last?.status === "pending") return { quiet: { ok: true, already: true } } as const;
     if (last?.status === "approved")
-      return reply.code(409).send({ error: "conflict", message: "Your request was already approved — check your inbox for the invite link" });
+      return { error: { status: 409, error: "conflict", message: "Your request was already approved — check your inbox for the invite link" } } as const;
+    return { org } as const;
+  }
+
+  /** Step 1 — email the requester a 6-digit code. No code is issued (and no
+   *  mail sent) while a request is already pending — verified once, queued
+   *  once, no repeat requests. */
+  app.post("/api/auth/join-request/code", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    const b = jrSchema.parse(req.body ?? {});
+    const domain = b.domain.trim().toLowerCase();
+    const email = b.email.trim().toLowerCase();
+    const pre = await jrPreflight(email, domain);
+    if ("error" in pre && pre.error) return reply.code(pre.error.status).send(pre.error);
+    if ("quiet" in pre && pre.quiet) return pre.quiet;
+    const { org } = pre as { org: { id: string; name: string } };
+    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+    await run(
+      `INSERT INTO join_request_codes (email, domain, display_name, code_hash, attempts, expires_at, created_at)
+       VALUES ($1,$2,$3,$4,0,$5,$6)
+       ON CONFLICT (email, domain) DO UPDATE SET
+         display_name = EXCLUDED.display_name, code_hash = EXCLUDED.code_hash,
+         attempts = 0, expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at`,
+      [email, domain, b.displayName.trim(), jrCodeHash(email, domain, code),
+        new Date(Date.now() + 15 * 60_000).toISOString(), now()]);
+    sendMailSafe(app.log, {
+      to: email, toName: b.displayName.trim(),
+      ...tpl.joinRequestCode(b.displayName.trim(), org.name, code),
+    });
+    return { ok: true };
+  });
+
+  /** Step 2 — consume the code and queue the request. */
+  app.post("/api/auth/join-request", { config: { rateLimit: RL_AUTH } }, async (req, reply) => {
+    const b = jrSchema.parse(req.body ?? {});
+    const domain = b.domain.trim().toLowerCase();
+    const email = b.email.trim().toLowerCase();
+    const pre = await jrPreflight(email, domain);
+    if ("error" in pre && pre.error) return reply.code(pre.error.status).send(pre.error);
+    if ("quiet" in pre && pre.quiet) return pre.quiet;
+    const { org } = pre as { org: { id: string; name: string } };
+    // ownership proof — 5 wrong tries burns the code
+    const vc = await one<{ code_hash: string; attempts: number; expires_at: string }>(
+      "SELECT code_hash, attempts, expires_at FROM join_request_codes WHERE email = $1 AND domain = $2",
+      [email, domain]);
+    const badCode = (message: string) =>
+      reply.code(400).send({ error: "bad_code", message });
+    if (!vc || new Date(vc.expires_at).getTime() < Date.now())
+      return badCode("Code expired — request a new one");
+    const code = (b.code ?? "").trim();
+    if (vc.code_hash !== jrCodeHash(email, domain, code)) {
+      if (vc.attempts + 1 >= 5) {
+        await run("DELETE FROM join_request_codes WHERE email = $1 AND domain = $2", [email, domain]);
+        return badCode("Too many wrong codes — request a new one");
+      }
+      await run("UPDATE join_request_codes SET attempts = attempts + 1 WHERE email = $1 AND domain = $2", [email, domain]);
+      return badCode("Wrong code — check the email and try again");
+    }
+    await run("DELETE FROM join_request_codes WHERE email = $1 AND domain = $2", [email, domain]);
     try {
       await run(
         "INSERT INTO join_requests (id, org_id, email, display_name, created_at) VALUES ($1,$2,$3,$4,$5)",
