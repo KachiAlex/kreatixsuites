@@ -1187,7 +1187,7 @@ async function isAncestorOf(ancestorId: string, itemId: string): Promise<boolean
   return false;
 }
 
-async function buffer(req: { raw: NodeJS.ReadableStream }): Promise<Buffer> {
+export async function buffer(req: { raw: NodeJS.ReadableStream }): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const c of req.raw) chunks.push(c as Buffer);
   return Buffer.concat(chunks);

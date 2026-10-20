@@ -12,7 +12,7 @@ import { fireTrigger } from "../rules.js";
 import { storageQuota } from "../billing.js";
 import { putBlob } from "../blobs.js";
 import { scanDlp } from "../policies.js";
-import { BLOCKED_EXTS, sniffReject, scanBuffer } from "./drive.js";
+import { BLOCKED_EXTS, sniffReject, scanBuffer, buffer } from "./drive.js";
 import { logActivity } from "../items.js";
 
 export const FIELD_TYPES = [
@@ -509,7 +509,13 @@ export function formPublicRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "forbidden", message: "Members of that workspace only" });
     }
     const name = String((req.query as { name?: string }).name ?? "upload").slice(0, 300);
-    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    // text/* hits Fastify's built-in string parser before the wildcard buffer
+    // parser — accept Buffer, string, or raw stream (same shape as Drive)
+    const buf = Buffer.isBuffer(req.body)
+      ? req.body
+      : typeof req.body === "string" && req.body.length
+        ? Buffer.from(req.body)
+        : await buffer(req);
     if (!buf.length) return reply.code(400).send({ error: "bad_request", message: "Empty upload" });
     if (buf.length > 25 * 1024 * 1024)
       return reply.code(413).send({ error: "too_large", message: "Files over 25 MB aren't accepted" });
