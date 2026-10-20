@@ -61,6 +61,8 @@ const settingsSchema = z.object({
   shuffleOptions: z.boolean().optional(),
   editAfterSubmit: z.boolean().optional(),                     // respondent can edit via editToken
   syncSheet: z.string().max(64).optional(),                    // Drive sheets item — live row sync
+  requireSignature: z.boolean().optional(),                    // responses hold until signed
+  signatories: z.array(z.string().max(64)).max(20).optional(), // user ids authorized to sign
 });
 
 const formSchema = z.object({
@@ -367,6 +369,25 @@ export function formRoutes(app: FastifyInstance) {
     reply.code(403).send({ error: "forbidden", message: "Only the creator can do that" });
   const canManage = (f: FormRow, user: AuthedRequest["user"]) =>
     f.created_by === user.id || user.role === "owner" || user.role === "admin";
+  const canSign = (f: FormRow, user: AuthedRequest["user"]) =>
+    canManage(f, user) || (settingsOf(f).signatories ?? []).includes(user.id);
+  /** Signatories must be active members of the org. */
+  const signatoriesOk = async (ids: string[] | undefined, orgId: string) => {
+    if (!ids?.length) return true;
+    const rows = await q<{ id: string }>(
+      "SELECT id FROM users WHERE org_id = $1 AND disabled = false AND id = ANY($2)", [orgId, ids]);
+    return rows.length === new Set(ids).size;
+  };
+
+  /** Org member roster for the signatory picker — names + roles only (no
+   *  emails), available to any member since form creators aren't admins. */
+  app.get("/api/forms/members", async (req) => {
+    const { user } = req as AuthedRequest;
+    const rows = await q<{ id: string; display_name: string; initials: string | null; role: string }>(
+      "SELECT id, display_name, initials, role FROM users WHERE org_id = $1 AND disabled = false ORDER BY display_name",
+      [user.orgId]);
+    return { members: rows.map((r) => ({ id: r.id, name: r.display_name, initials: r.initials, role: r.role })) };
+  });
 
   app.get("/api/forms", async (req) => {
     const { user } = req as AuthedRequest;
@@ -379,6 +400,8 @@ export function formRoutes(app: FastifyInstance) {
     const parsed = formSchema.safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid form" });
     const d = parsed.data;
+    if (!await signatoriesOk(d.settings?.signatories, user.orgId))
+      return reply.code(400).send({ error: "invalid", message: "Signatories must be workspace members" });
     const row = await one<FormRow>(
       `INSERT INTO forms (id, org_id, title, description, schema, settings, open, token, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
@@ -398,6 +421,8 @@ export function formRoutes(app: FastifyInstance) {
     const parsed = formSchema.partial().safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid", message: "Invalid form" });
     const d = parsed.data;
+    if (!await signatoriesOk(d.settings?.signatories, user.orgId))
+      return reply.code(400).send({ error: "invalid", message: "Signatories must be workspace members" });
     const row = await one<FormRow>(
       `UPDATE forms SET
          title = COALESCE($2, title), description = COALESCE($3, description),
@@ -443,9 +468,13 @@ export function formRoutes(app: FastifyInstance) {
     const f = await getForm((req.params as { id: string }).id, user.orgId);
     if (!f) return notFound(reply);
     if (!canManage(f, user)) return notOwner(reply);
-    const rows = await q<RespRow>(
-      `SELECT r.*, u.email AS resp_email, u.display_name AS resp_name
-       FROM form_responses r LEFT JOIN users u ON u.id = r.respondent_user_id
+    const rows = await q<RespRow & { signer_name: string | null; sig_created: string | null; sig_method: string | null }>(
+      `SELECT r.*, u.email AS resp_email, u.display_name AS resp_name,
+              sg.created_at AS sig_created, sg.method AS sig_method, su.display_name AS signer_name
+       FROM form_responses r
+       LEFT JOIN users u ON u.id = r.respondent_user_id
+       LEFT JOIN form_signatures sg ON sg.response_id = r.id
+       LEFT JOIN users su ON su.id = sg.signer_id
        WHERE r.form_id = $1 ORDER BY r.created_at DESC LIMIT 5000`, [f.id]);
     return {
       form: formOut(f),
@@ -458,6 +487,7 @@ export function formRoutes(app: FastifyInstance) {
           respondent: r.resp_email ?? r.resp_name ?? dec(r.respondent),
           verified: !!r.respondent_user_id, createdAt: r.created_at,
           paidAt: r.paid_at, payRef: r.pay_ref,
+          signedBy: r.signer_name, signedAt: r.sig_created, signMethod: r.sig_method,
         };
       }),
     };
@@ -581,6 +611,91 @@ export function formRoutes(app: FastifyInstance) {
       [(req.params as { rid: string }).rid, f.id]);
     return { ok: true };
   });
+
+  /** Pending responses a signatory may review + sign. Signatories who can't
+   *  manage the form still need read access to the answers they're
+   *  authorizing — scoped to pending rows only. */
+  app.get("/api/forms/:id/signables", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const f = await getForm((req.params as { id: string }).id, user.orgId);
+    if (!f) return notFound(reply);
+    const s = settingsOf(f);
+    if (!s.requireSignature) return notFound(reply);
+    if (!canSign(f, user)) return notOwner(reply);
+    const rows = await q<RespRow>(
+      `SELECT r.*, u.email AS resp_email, u.display_name AS resp_name
+       FROM form_responses r LEFT JOIN users u ON u.id = r.respondent_user_id
+       WHERE r.form_id = $1 AND r.status = 'pending'
+         AND NOT EXISTS (SELECT 1 FROM form_signatures sg WHERE sg.response_id = r.id)
+       ORDER BY r.created_at DESC LIMIT 500`, [f.id]);
+    return {
+      form: formOut(f),
+      responses: rows.map((r) => {
+        let answers: Record<string, unknown> = {};
+        try { answers = JSON.parse(decryptField(r.answers) ?? r.answers); } catch { /* malformed */ }
+        return {
+          id: r.id, answers, status: r.status,
+          respondent: r.resp_email ?? r.resp_name ?? dec(r.respondent),
+          verified: !!r.respondent_user_id, createdAt: r.created_at,
+        };
+      }),
+    };
+  });
+
+  /** Authorize a pending response with a digitized signature — PNG drawn on
+   *  the canvas or rendered from a typed name. CAS on status so two
+   *  signatories can't double-sign; the artifact lands in the blob store. */
+  app.post("/api/forms/:id/responses/:rid/sign", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const f = await getForm((req.params as { id: string }).id, user.orgId);
+    if (!f) return notFound(reply);
+    const s = settingsOf(f);
+    if (!s.requireSignature || !canSign(f, user))
+      return reply.code(403).send({ error: "forbidden", message: "You're not a signatory on this form" });
+    const body = (req.body ?? {}) as { method?: string; dataUrl?: string };
+    const method = body.method === "drawn" ? "drawn" : "typed";
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(body.dataUrl ?? ""));
+    const buf = m ? Buffer.from(m[1], "base64") : null;
+    if (!buf || !buf.length || buf.length > 200 * 1024 ||
+        !buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+      return reply.code(400).send({ error: "invalid", message: "Expected a PNG signature" });
+    const rid = (req.params as { rid: string }).rid;
+    const r = await one<RespRow>(
+      "SELECT * FROM form_responses WHERE id = $1 AND form_id = $2", [rid, f.id]);
+    if (!r || r.status !== "pending")
+      return reply.code(409).send({ error: "not_pending", message: "This response isn't awaiting signature" });
+    const { key } = await putBlob(buf);
+    await run(
+      `INSERT INTO form_signatures (id, response_id, form_id, signer_id, method, blob_key, ip)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [randomUUID(), r.id, f.id, user.id, method, key, String(req.ip ?? "").slice(0, 64)]);
+    const n = await run(
+      "UPDATE form_responses SET status = 'approved' WHERE id = $1 AND status = 'pending'", [r.id]);
+    if (!n) return reply.code(409).send({ error: "signed", message: "Already authorized" });
+    void run(
+      `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+       VALUES ($1,$2,'form',$3,$4)`,
+      [randomUUID(), f.created_by, user.id,
+       encryptField(`Response signed by ${user.displayName}: ${dec(f.title) ?? "form"}`)]);
+    void logActivity(f.org_id, user.id, null, "form.signed",
+      `${dec(f.title) ?? "form"}: response authorized by signature`);
+    return { ok: true };
+  });
+
+  /** Signature artifact — PNG image of the recorded signature. */
+  app.get("/api/forms/:id/responses/:rid/signature.png", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const f = await getForm((req.params as { id: string }).id, user.orgId);
+    if (!f) return notFound(reply);
+    if (!canSign(f, user)) return notOwner(reply);
+    const sg = await one<{ blob_key: string }>(
+      "SELECT blob_key FROM form_signatures WHERE response_id = $1 AND form_id = $2",
+      [(req.params as { rid: string }).rid, f.id]);
+    const blob = sg && await getBlob(sg.blob_key);
+    if (!blob) return reply.code(404).send({ error: "not_found", message: "No signature" });
+    reply.header("content-type", "image/png").header("cache-control", "private, no-store");
+    return reply.send(blob);
+  });
 }
 
 /** Public (token-gated, no JWT) — view, submit, and file upload. Signed-in
@@ -621,6 +736,7 @@ export function formPublicRoutes(app: FastifyInstance) {
         requireSignIn: !!(s.requireSignIn || s.orgOnly || s.onePerUser),
         orgOnly: !!s.orgOnly, quiz: !!s.quiz,
         shuffleOptions: !!s.shuffleOptions, editAfterSubmit: !!s.editAfterSubmit,
+        requiresSignature: !!s.requireSignature,
       },
       prior,
     };
@@ -729,7 +845,7 @@ export function formPublicRoutes(app: FastifyInstance) {
     // (notify, trigger, sheet sync) fires when the verify endpoint confirms
     // the Paystack reference, so bots can't cheap-shot a notification flood.
     const payField = fields.find((x) => x.type === "payment" && x.payAmount);
-    let status = s.requiresReview ? "pending" : "approved";
+    let status = s.requiresReview || s.requireSignature ? "pending" : "approved";
     let payUrl: string | null = null;
     let payRef: string | null = null;
     if (payField) {
@@ -829,7 +945,7 @@ export function formPublicRoutes(app: FastifyInstance) {
     const v = await paystackVerify(ref, secret);
     if (!v.ok) return { paid: false };
     const s = settingsOf(f);
-    const status = s.requiresReview ? "pending" : "approved";
+    const status = s.requiresReview || s.requireSignature ? "pending" : "approved";
     const n = await run(
       "UPDATE form_responses SET paid_at = now(), status = $2 WHERE id = $1 AND paid_at IS NULL",
       [row.id, status]);
@@ -858,6 +974,17 @@ function responseFinal(
      encryptField(status === "pending"
        ? `Response awaiting review: ${dec(f.title) ?? "form"}`
        : `New response: ${dec(f.title) ?? "form"}`)]);
+  if (s.requireSignature && status === "pending") {
+    // tell every designated signatory there's a response waiting on them
+    for (const sid of s.signatories ?? []) {
+      if (sid === f.created_by) continue; // creator already notified above
+      void run(
+        `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+         VALUES ($1,$2,'form',$3,$4)`,
+        [randomUUID(), sid, actorId ?? f.created_by,
+         encryptField(`Signature requested: ${dec(f.title) ?? "form"}`)]);
+    }
+  }
   void fireTrigger(f.org_id, "form.submitted",
     { formId: f.id, name: dec(f.title) ?? "form",
       respondent: respondent ? respondent.slice(0, 120) : "" },

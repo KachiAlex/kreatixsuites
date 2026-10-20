@@ -3371,6 +3371,11 @@ html[data-theme="dark"]{
 .form-tpl:hover{border-color:var(--k-orange)}
 .form-tpl b{display:block;font-size:13.5px;margin-bottom:2px}
 .formfill-pay{border:1px dashed var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;font-size:13.5px}
+.sig-canvas{width:100%;height:160px;border:1px solid var(--line);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair}
+.form-sign-box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:10px}
+.form-sign-list{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;max-height:180px;overflow:auto}
+.form-resp-sig{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
+.form-sig-img{display:block;max-width:220px;max-height:80px;background:#fff;border:1px solid var(--line);border-radius:6px;margin-top:4px}
 
 /* kreatix notes */
 .note-title{flex:1;min-width:0;border:0;background:none;font-size:15px;font-weight:700;color:var(--ink);font-family:inherit}

@@ -21,7 +21,7 @@ interface PubForm {
   closedReason: string | null; confirmMsg: string | null; collectName: boolean;
   layout: "classic" | "chat"; showProgress: boolean; accent: string | null;
   requireSignIn: boolean; orgOnly: boolean; quiz: boolean; shuffleOptions: boolean;
-  editAfterSubmit?: boolean;
+  editAfterSubmit?: boolean; requiresSignature?: boolean;
 }
 
 type Answer = string | number | boolean | string[] | { itemId: string; name: string };
@@ -386,6 +386,9 @@ export function FormFill() {
         <h2 style={{ margin: "0 0 4px" }}>{form.title}</h2>
         {form.description && <p className="d-sub">{form.description}</p>}
         {editing && <p className="d-sub" style={{ color: "var(--k-orange)" }}>Editing your previous response</p>}
+        {form.requiresSignature && !editing && (
+          <p className="d-sub">Responses to this form are authorized by signature from a designated approver.</p>
+        )}
         {payState === "pending" && (
           <p className="formfill-err">We couldn't confirm your payment yet — if checkout completed, wait a minute and refresh this page.</p>
         )}

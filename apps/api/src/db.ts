@@ -938,6 +938,20 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_form_responses_edit ON form_responses(edit_token) WHERE edit_token IS NOT NULL`);
   await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS paystack_secret TEXT`);
+  // Forms v3b — authorized sign-off: designated org members ("signatories")
+  // review pending responses and attach a digitized signature (typed/drawn
+  // PNG blob) to authorize them. One signature per response.
+  await pool.query(`CREATE TABLE IF NOT EXISTS form_signatures (
+    id TEXT PRIMARY KEY,
+    response_id TEXT NOT NULL UNIQUE REFERENCES form_responses(id) ON DELETE CASCADE,
+    form_id TEXT NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+    signer_id TEXT NOT NULL REFERENCES users(id),
+    method TEXT NOT NULL,                       -- 'typed' | 'drawn'
+    blob_key TEXT NOT NULL,                     -- PNG signature image
+    ip TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_signatures_form ON form_signatures(form_id)`);
 
   // Kreatix Notes — org wiki pages (OneNote-lite; markdown-ish body)
   await pool.query(`CREATE TABLE IF NOT EXISTS wiki_pages (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../lib/api";
 import { API_BASE } from "../lib/platform";
@@ -28,6 +28,7 @@ interface Settings {
   layout?: "classic" | "chat"; quiz?: boolean; dlp?: boolean;
   requiresReview?: boolean; retentionDays?: number; shuffleOptions?: boolean;
   editAfterSubmit?: boolean; syncSheet?: string;
+  requireSignature?: boolean; signatories?: string[];
 }
 interface Form {
   id: string; title: string | null; description: string | null;
@@ -39,7 +40,9 @@ interface Resp {
   id: string; answers: Record<string, unknown>; respondent: string | null;
   verified: boolean; status: string; score: number | null; createdAt: string;
   paidAt?: string | null; payRef?: string | null;
+  signedBy?: string | null; signedAt?: string | null; signMethod?: string | null;
 }
+interface OrgMember { id: string; name: string; initials: string | null; role: string }
 interface SummaryField {
   id: string; label: string; type: string; answered: number;
   buckets?: { v: string; n: number }[]; avg?: number | null; samples?: string[];
@@ -147,6 +150,92 @@ const ans = (v: unknown): string =>
     : typeof v === "object" && v !== null ? (v as { name?: string }).name ?? "file"
     : v === true ? "Yes" : v === false ? "No" : v == null ? "—" : String(v);
 
+/** Digitized signature capture — freehand canvas strokes, or a typed name
+ *  rendered in a handwriting font. Produces a PNG data URL. */
+function SignaturePad({ onSign, onClose }: {
+  onSign: (dataUrl: string, method: "drawn" | "typed") => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+  const [mode, setMode] = useState<"drawn" | "typed">("drawn");
+  const [typed, setTyped] = useState("");
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.strokeStyle = "#1b1b1f"; ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  }, []);
+
+  const pos = (e: React.PointerEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const down = (e: React.PointerEvent) => {
+    drawing.current = true; setDirty(true);
+    const ctx = ref.current!.getContext("2d")!;
+    const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y);
+    ref.current!.setPointerCapture(e.pointerId);
+  };
+  const move = (e: React.PointerEvent) => {
+    if (!drawing.current) return;
+    const ctx = ref.current!.getContext("2d")!;
+    const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke();
+  };
+  const up = () => { drawing.current = false; };
+
+  const clear = () => {
+    const c = ref.current!;
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    setDirty(false);
+  };
+
+  const signTyped = () => {
+    const c = ref.current!;
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = "#1b1b1f";
+    ctx.font = "italic 56px 'Dancing Script','Segoe Script',cursive";
+    ctx.textBaseline = "middle";
+    ctx.fillText(typed.slice(0, 40), 20, c.height / 2);
+    return c.toDataURL("image/png");
+  };
+
+  return (
+    <div>
+      <div className="dlg-tabs" style={{ marginBottom: 10 }}>
+        <button className={`dlg-tab${mode === "drawn" ? " on" : ""}`} onClick={() => setMode("drawn")}>Draw</button>
+        <button className={`dlg-tab${mode === "typed" ? " on" : ""}`} onClick={() => setMode("typed")}>Type name</button>
+      </div>
+      <canvas ref={ref} width={460} height={160} className="sig-canvas"
+        onPointerDown={mode === "drawn" ? down : undefined}
+        onPointerMove={mode === "drawn" ? move : undefined}
+        onPointerUp={up} onPointerLeave={up} />
+      {mode === "typed" && (
+        <input placeholder="Type your full name" value={typed} autoFocus
+          onChange={(e) => setTyped(e.target.value)} style={{ width: "100%", marginTop: 8 }} />
+      )}
+      <p className="d-sub" style={{ margin: "8px 0 0" }}>
+        Signing authorizes this response — your name, timestamp, and IP are recorded with it.
+      </p>
+      <div className="dlg-actions">
+        <button className="btn-ghost" onClick={clear}>Clear</button>
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-primary"
+          disabled={mode === "drawn" ? !dirty : !typed.trim()}
+          onClick={() => {
+            const c = ref.current!;
+            onSign(mode === "typed" ? signTyped() : c.toDataURL("image/png"), mode);
+          }}>Sign &amp; authorize</button>
+      </div>
+    </div>
+  );
+}
+
 export function Forms() {
   const { user } = useAuth();
   const { msg, toast } = useToast();
@@ -165,6 +254,15 @@ export function Forms() {
   const [tplOpen, setTplOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragArmed, setDragArmed] = useState<number | null>(null); // grip held → card becomes draggable
+  const [members, setMembers] = useState<OrgMember[]>([]);
+  const [signResp, setSignResp] = useState<Resp | null>(null);   // response being signed
+  const [signOnly, setSignOnly] = useState(false);               // viewing signables as a signatory
+  const [sigPng, setSigPng] = useState<Record<string, string>>({}); // rid → object URL
+
+  useEffect(() => {
+    api.get<{ members: OrgMember[] }>("/api/forms/members")
+      .then((r) => setMembers(r.members)).catch(() => {});
+  }, []);
   const [embedForm, setEmbedForm] = useState<Form | null>(null);
   const [qr, setQr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -252,8 +350,19 @@ export function Forms() {
   const viewResponses = async (f: Form) => {
     try {
       const r = await api.get<{ responses: Resp[] }>(`/api/forms/${f.id}/responses`);
-      setResponses(r.responses); setRespForm(f); setRespStatus("all");
-    } catch (e) { toast((e as Error).message); }
+      setResponses(r.responses); setRespForm(f); setRespStatus("all"); setSignOnly(false);
+      r.responses.forEach((x) => { if (x.signedAt) void showSignature(f, x.id); });
+    } catch (e) {
+      // signatories who can't manage the form still get the pending queue
+      if ((e as Error & { status?: number }).status === 403 && (f.settings.signatories ?? []).includes(user?.id ?? "")) {
+        try {
+          const r = await api.get<{ responses: Resp[] }>(`/api/forms/${f.id}/signables`);
+          setResponses(r.responses); setRespForm(f); setRespStatus("pending"); setSignOnly(true);
+          return;
+        } catch (e2) { toast((e2 as Error).message); return; }
+      }
+      toast((e as Error).message);
+    }
   };
   const setResp = async (f: Form, rid: string, status: string) => {
     try {
@@ -266,6 +375,28 @@ export function Forms() {
       await api.del(`/api/forms/${f.id}/responses/${rid}`);
       setResponses((rs) => rs.filter((r) => r.id !== rid));
     } catch (e) { toast((e as Error).message); }
+  };
+
+  const signResponse = async (f: Form, rid: string, dataUrl: string, method: "drawn" | "typed") => {
+    try {
+      await api.post(`/api/forms/${f.id}/responses/${rid}/sign`, { method, dataUrl });
+      setResponses((rs) => rs.map((r) => r.id === rid
+        ? { ...r, status: "approved", signedBy: user?.displayName ?? null, signedAt: new Date().toISOString(), signMethod: method }
+        : r));
+      setSignResp(null);
+      toast("Response signed and authorized");
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const showSignature = async (f: Form, rid: string) => {
+    if (sigPng[rid]) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/forms/${f.id}/responses/${rid}/signature.png`,
+        { headers: { authorization: `Bearer ${getToken()}` } });
+      if (!r.ok) return;
+      const url = URL.createObjectURL(await r.blob());
+      setSigPng((m) => ({ ...m, [rid]: url }));
+    } catch { /* no artifact */ }
   };
 
   const viewSummary = async (f: Form) => {
@@ -571,7 +702,35 @@ export function Forms() {
                     onChange={(e) => setSet({ dlp: e.target.checked })} /> Scan answers with DLP rules</label>
                   <label className="cal-check"><input type="checkbox" checked={!!fSettings.editAfterSubmit}
                     onChange={(e) => setSet({ editAfterSubmit: e.target.checked })} /> Let respondents edit their response</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.requireSignature}
+                    onChange={(e) => setSet({ requireSignature: e.target.checked, signatories: e.target.checked ? (fSettings.signatories ?? []) : undefined })} />
+                    Require authorized signature</label>
                 </div>
+                {fSettings.requireSignature && (
+                  <div className="form-sign-box">
+                    <span className="d-sub" style={{ display: "block", marginBottom: 6 }}>
+                      Authorized signatories — a response stays pending until one signs it:
+                    </span>
+                    <div className="form-sign-list">
+                      {members.map((m) => (
+                        <label key={m.id} className="cal-check" style={{ marginBottom: 0 }}>
+                          <input type="checkbox" checked={(fSettings.signatories ?? []).includes(m.id)}
+                            onChange={(e) => setSet({
+                              signatories: e.target.checked
+                                ? [...(fSettings.signatories ?? []), m.id]
+                                : (fSettings.signatories ?? []).filter((x) => x !== m.id),
+                            })} />
+                          {m.name} <span className="d-sub">({m.role})</span>
+                        </label>
+                      ))}
+                    </div>
+                    {!(fSettings.signatories ?? []).length && (
+                      <span className="formfill-err" style={{ display: "block", marginTop: 6 }}>
+                        Pick at least one signatory, or nobody can authorize responses.
+                      </span>
+                    )}
+                  </div>
+                )}
                 {fFields.some((f) => f.type === "payment") && (
                   <p className="d-sub" style={{ marginTop: 8 }}>
                     Payment field: responses settle to this workspace's Paystack account —
@@ -614,11 +773,17 @@ export function Forms() {
                   <span>{fmtWhen(r.createdAt)} · {r.respondent ?? "anonymous"}{r.verified ? " ✓" : ""}</span>
                   {r.status !== "approved" && <span className={`meet-status ${r.status === "pending" ? "live" : "ended"}`}>{r.status}</span>}
                   {r.paidAt && <span className="meet-status live">paid</span>}
+                  {r.signedBy && <span className="meet-status live">✍ {r.signedBy}</span>}
                   {r.score !== null && <span className="d-sub">score {r.score}</span>}
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                    {r.status !== "approved" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "approved")}>Approve</button>}
-                    {r.status !== "rejected" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "rejected")}>Reject</button>}
-                    <button className="btn-ghost btn-sm" onClick={() => void delResp(respForm, r.id)}>Delete</button>
+                    {r.status === "pending" && !r.signedBy &&
+                      (signOnly || canEdit(respForm)) &&
+                      respForm.settings.requireSignature && (
+                      <button className="btn-primary btn-sm" onClick={() => setSignResp(r)}>Sign</button>
+                    )}
+                    {!signOnly && r.status !== "approved" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "approved")}>Approve</button>}
+                    {!signOnly && r.status !== "rejected" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "rejected")}>Reject</button>}
+                    {!signOnly && <button className="btn-ghost btn-sm" onClick={() => void delResp(respForm, r.id)}>Delete</button>}
                   </span>
                 </div>
                 {respForm.fields.filter(answerable).map((f) => (
@@ -627,6 +792,12 @@ export function Forms() {
                     <span>{ans(r.answers[f.id])}</span>
                   </div>
                 ))}
+                {r.signedAt && sigPng[r.id] && (
+                  <div className="form-resp-sig">
+                    <span className="d-sub">Authorized signature — {r.signedBy} · {fmtWhen(r.signedAt)}</span>
+                    <img src={sigPng[r.id]} alt="signature" className="form-sig-img" />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -665,6 +836,16 @@ export function Forms() {
                 {f.samples?.map((s, i) => <div key={i} className="form-sum-sample">{s.slice(0, 200)}</div>)}
               </div>
             ))}
+          </div>
+        </Modal>
+      )}
+
+      {signResp && respForm && (
+        <Modal label={`Authorize response — ${respForm.title}`} onClose={() => setSignResp(null)} style={{ width: 520 }}>
+          <div className="ob-body">
+            <SignaturePad
+              onSign={(dataUrl, method) => void signResponse(respForm, signResp.id, dataUrl, method)}
+              onClose={() => setSignResp(null)} />
           </div>
         </Modal>
       )}
