@@ -212,11 +212,15 @@ function matchExcerpt(text: string, re: RegExp): string | null {
  *  and returns the name of the first blocking rule if the write must be
  *  rejected. ref: {type:'item'|'chat', id} — chat events never stamp items. */
 export async function scanDlp(
-  orgId: string, ref: { type: "item" | "chat"; id: string },
+  orgId: string, ref: { type: "item" | "chat" | "form"; id: string },
   name: string, text: string, actorId: string | null,
 ): Promise<{ blockedBy: string | null; hits: number }> {
+  // applies_to "all" covers every ref kind; "files"/"chat" stay scoped so a
+  // files-only rule doesn't silently start scanning form submissions
   const rules = (await dlpRules(orgId)).filter((r) =>
-    r.enabled && (r.applies_to === "all" || r.applies_to === (ref.type === "chat" ? "chat" : "files")));
+    r.enabled && (r.applies_to === "all" ||
+      (r.applies_to === "chat" && ref.type === "chat") ||
+      (r.applies_to === "files" && ref.type === "item")));
   if (!rules.length) return { blockedBy: null, hits: 0 };
   const haystack = `${name}\n${text.slice(0, 500_000)}`;
   let blockedBy: string | null = null;
@@ -236,7 +240,7 @@ export async function scanDlp(
       `INSERT INTO dlp_events (id, org_id, rule_id, rule_name, ref_type, ref_id, excerpt, actor_id, action)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [randomUUID(), orgId, rule.id, rule.name,
-       ref.type === "chat" ? "chat_message" : "item", ref.id,
+       ref.type === "chat" ? "chat_message" : ref.type === "form" ? "form_response" : "item", ref.id,
        encryptField(matchExcerpt(haystack, re) ?? ""), actorId, action]);
   }
   if (hits && ref.type === "item" && !blockedBy) {

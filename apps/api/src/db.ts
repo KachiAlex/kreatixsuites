@@ -916,6 +916,20 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_responses_form ON form_responses(form_id)`);
+  // Forms v2 — settings JSON, signed-in respondent capture, review status, quiz score
+  await pool.query(`ALTER TABLE forms ADD COLUMN IF NOT EXISTS settings TEXT`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS respondent_user_id TEXT`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved'`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS score NUMERIC`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_responses_user ON form_responses(form_id, respondent_user_id)`);
+  // file-type answers: uploads land as Drive items owned by the form creator;
+  // this table proves an item was uploaded *through* a given form's token
+  await pool.query(`CREATE TABLE IF NOT EXISTS form_uploads (
+    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    form_id TEXT NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_uploads_form ON form_uploads(form_id)`);
 
   // Kreatix Notes — org wiki pages (OneNote-lite; markdown-ish body)
   await pool.query(`CREATE TABLE IF NOT EXISTS wiki_pages (

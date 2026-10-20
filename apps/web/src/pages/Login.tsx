@@ -23,6 +23,12 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
+  // post-auth target — ?next=/f/<token> sends respondents back to the form
+  // they were gated from; only same-origin absolute paths are honored
+  const nextTarget = () => {
+    const n = new URLSearchParams(location.search).get("next");
+    return n && n.startsWith("/") && !n.startsWith("//") ? n : "/";
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -110,7 +116,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       setParams({}, { replace: true });
       api.post<{ token: string }>("/api/auth/sso/exchange", {})
         .then((r) => loginWithToken(r.token))
-        .then(() => { prefetchAppShell(); navigate("/", { replace: true }); })
+        .then(() => { prefetchAppShell(); navigate(nextTarget(), { replace: true }); })
         .catch(() => setError(t("auth.ssoExchangeFailed")));
     } else if (ssoError) {
       setError(t("auth.ssoFailed", { msg: ssoError }));
@@ -146,7 +152,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       });
       if (mfa) { setMfaToken(mfa); return; }
       prefetchAppShell();
-      navigate("/");
+      navigate(nextTarget());
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.genericError"));
     }
@@ -165,7 +171,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       if (resp.mfaRequired) { setMfaToken(resp.mfaToken ?? null); return; }
       await loginWithToken(resp.token!);
       prefetchAppShell();
-      navigate("/");
+      navigate(nextTarget());
     } catch (err) {
       if (err instanceof Error && /cancel/i.test(err.message)) return;
       setError(err instanceof Error ? err.message : t("auth.genericError"));
@@ -230,7 +236,7 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         await register(email, password, name, org || undefined, invite, kind);
       }
       prefetchAppShell();
-      navigate("/");
+      navigate(nextTarget());
     } catch (err) {
       // duplicate email → actionable notice with sign-in/reset links, not a
       // dead-end "already registered" string

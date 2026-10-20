@@ -1,96 +1,339 @@
-import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useParams, Link } from "react-router-dom";
 import { API_BASE } from "../lib/platform";
+import { getToken } from "../lib/api";
 
-// Public form-fill page — no auth; the share token is the credential. Uses
-// plain fetch so anonymous/offline sessions never detour through the mirror.
+// Public form-fill page — no auth required unless the form demands it; the
+// share token is the credential. Plain fetch so anonymous/offline sessions
+// never detour through the mirror. `hp` honeypot is invisible to humans;
+// bots that fill it get a fake success and nothing is stored.
 
-interface Field { id: string; label: string; type: string; required?: boolean; options?: string[] }
-interface PubForm { title: string | null; description: string | null; fields: Field[] }
+interface PubField {
+  id: string; label: string; type: string; required?: boolean;
+  description?: string; options?: string[]; allowOther?: boolean;
+  min?: number; max?: number; minLen?: number; maxLen?: number;
+  scaleMin?: number; scaleMax?: number; scaleLow?: string; scaleHigh?: string;
+  showIf?: { field: string; equals: string };
+}
+interface PubForm {
+  title: string | null; description: string | null; fields: PubField[];
+  closedReason: string | null; confirmMsg: string | null; collectName: boolean;
+  layout: "classic" | "chat"; showProgress: boolean; accent: string | null;
+  requireSignIn: boolean; orgOnly: boolean; quiz: boolean; shuffleOptions: boolean;
+}
+
+type Answer = string | number | boolean | string[] | { itemId: string; name: string };
+const answered = (v: Answer | undefined) =>
+  v !== undefined && v !== "" && !(Array.isArray(v) && !v.length);
 
 export function FormFill() {
   const { token } = useParams();
   const [form, setForm] = useState<PubForm | null>(null);
-  const [gone, setGone] = useState(false);
-  const [answers, setAnswers] = useState<Record<string, string | number | boolean>>({});
+  const [gone, setGone] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<Record<string, Answer>>({});
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
   const [respondent, setRespondent] = useState("");
+  const [hp, setHp] = useState("");
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState<{ score: number | null; max: number | null } | null>(null);
   const [err, setErr] = useState("");
+  const [step, setStep] = useState(0);
+  const [uploading, setUploading] = useState<string | null>(null);
+  const signedIn = !!getToken();
 
   useEffect(() => {
     fetch(`${API_BASE}/api/forms/public/${token}`)
-      .then(async (r) => (r.ok ? setForm((await r.json()).form) : setGone(true)))
-      .catch(() => setGone(true));
+      .then(async (r) => (r.ok ? setForm((await r.json()).form) : setGone("This form is closed or doesn't exist.")))
+      .catch(() => setGone("Couldn't reach the server — check your connection."));
   }, [token]);
 
-  const set = (id: string, v: string | number | boolean) => setAnswers((a) => ({ ...a, [id]: v }));
+  // options are shuffled once per load when the form asks for it
+  const shuffled = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    if (!form?.shuffleOptions) return m;
+    for (const f of form.fields) {
+      if (!f.options?.length) continue;
+      const o = [...f.options];
+      for (let i = o.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [o[i], o[j]] = [o[j], o[i]];
+      }
+      m[f.id] = o;
+    }
+    return m;
+  }, [form]);
+
+  if (gone) return <div className="auth-wrap"><div className="empty">{gone}</div></div>;
+  if (!form) return <div className="auth-wrap"><div className="empty">Loading…</div></div>;
+  if (form.closedReason) return <div className="auth-wrap"><div className="empty">{form.closedReason}</div></div>;
+
+  const accentStyle = (form.accent ? { "--k-orange": form.accent } : {}) as CSSProperties;
+  const opts = (f: PubField) => shuffled[f.id] ?? f.options ?? [];
+
+  // showIf mirrors the server: hidden fields are skipped entirely
+  const visible = form.fields.filter((f) =>
+    f.type === "section" || !f.showIf || String(answers[f.showIf.field] ?? "") === f.showIf.equals);
+  const questions = visible.filter((f) => f.type !== "section");
+  const answeredCount = questions.filter((f) => answered(answers[f.id])).length;
+  const chat = form.layout === "chat";
+
+  const set = (id: string, v: Answer) => setAnswers((a) => ({ ...a, [id]: v }));
+  const toggle = (id: string, opt: string) =>
+    setAnswers((a) => {
+      const cur = Array.isArray(a[id]) ? (a[id] as string[]) : [];
+      return { ...a, [id]: cur.includes(opt) ? cur.filter((x) => x !== opt) : [...cur, opt] };
+    });
+
+  const missing = (f: PubField) => f.required && !answered(answers[f.id]);
+
+  const upload = async (f: PubField, file: File) => {
+    setUploading(f.id); setErr("");
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/forms/public/${token}/files?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: {
+          "content-type": file.type || "application/octet-stream",
+          ...(signedIn ? { authorization: `Bearer ${getToken()}` } : {}),
+        },
+        body: file,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) setErr(j.message ?? "Upload failed");
+      else set(f.id, { itemId: j.item.id, name: j.item.name });
+    } catch { setErr("Upload failed — try again"); }
+    setUploading(null);
+  };
 
   const submit = async () => {
+    const miss = questions.find(missing);
+    if (miss) { setErr(`"${miss.label}" is required`); return; }
     setBusy(true); setErr("");
     try {
       const r = await fetch(`${API_BASE}/api/forms/public/${token}`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ answers, respondent: respondent.trim() || undefined }),
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(signedIn ? { authorization: `Bearer ${getToken()}` } : {}),
+        },
+        body: JSON.stringify({ answers, respondent: respondent.trim() || undefined, hp: hp || undefined }),
       });
-      if (!r.ok) { const j = await r.json().catch(() => ({})); setErr(j.message ?? "Submit failed"); }
-      else setDone(true);
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 401) setErr("You must be signed in to respond — sign in, then reopen this link.");
+      else if (r.status === 409) setErr(j.message ?? "You've already responded.");
+      else if (!r.ok) setErr(j.message ?? "Submit failed");
+      else setDone({ score: j.score ?? null, max: j.maxScore ?? null });
     } catch { setErr("Network error — try again"); }
     setBusy(false);
   };
 
-  if (gone) return (
-    <div className="auth-wrap"><div className="empty">This form is closed or doesn't exist.</div></div>
-  );
-  if (!form) return <div className="auth-wrap"><div className="empty">Loading…</div></div>;
-  if (done) return (
-    <div className="auth-wrap">
+  const doneCard = (
+    <div className="auth-wrap" style={accentStyle}>
       <div className="panel" style={{ maxWidth: 480, padding: 28, textAlign: "center" }}>
-        <h2>Response recorded</h2>
-        <p className="d-sub">Thanks — your answers were submitted.</p>
+        <h2>{form.quiz && done ? "Quiz submitted" : "Response recorded"}</h2>
+        {done?.score !== null && done?.score !== undefined
+          ? <p className="formfill-score">You scored <b>{done.score}</b>{done.max ? ` / ${done.max}` : ""}</p>
+          : <p className="d-sub">{form.confirmMsg ?? "Thanks — your answers were submitted."}</p>}
       </div>
     </div>
   );
 
+  if (done) return doneCard;
+
+  if (form.requireSignIn && !signedIn) return (
+    <div className="auth-wrap" style={accentStyle}>
+      <div className="panel" style={{ maxWidth: 480, padding: 28, textAlign: "center" }}>
+        <h2>{form.title}</h2>
+        <p className="d-sub">{form.orgOnly
+          ? "This form is only open to members of its workspace — sign in with your work account."
+          : "This form requires sign-in so your response can be verified."}</p>
+        <div className="dlg-actions" style={{ justifyContent: "center" }}>
+          <Link className="btn-primary" to={`/login?next=/f/${token}`}>Sign in</Link>
+          <Link className="btn-ghost" to={`/register?next=/f/${token}`}>Create account</Link>
+        </div>
+      </div>
+    </div>
+  );
+
+  const fieldBody = (f: PubField) => {
+    switch (f.type) {
+      case "section":
+        return (
+          <div className="formfill-section" key={f.id}>
+            <h3>{f.label}</h3>
+            {f.description && <p className="d-sub">{f.description}</p>}
+          </div>
+        );
+      case "textarea":
+        return <textarea rows={4} value={String(answers[f.id] ?? "")} onChange={(e) => set(f.id, e.target.value)} />;
+      case "choice":
+        return (
+          <div className="formfill-opts">
+            {opts(f).map((o) => (
+              <label key={o} className="formfill-opt">
+                <input type="radio" name={f.id} checked={answers[f.id] === o}
+                  onChange={() => set(f.id, o)} /> {o}
+              </label>
+            ))}
+            {f.allowOther && (
+              <label className="formfill-opt">
+                <input type="radio" name={f.id}
+                  checked={answers[f.id] !== undefined && !opts(f).includes(String(answers[f.id]))}
+                  onChange={() => set(f.id, otherText[f.id] ?? "")} /> Other:
+                <input style={{ flex: 1 }} value={otherText[f.id] ?? ""}
+                  onChange={(e) => { setOtherText((m) => ({ ...m, [f.id]: e.target.value })); set(f.id, e.target.value); }} />
+              </label>
+            )}
+          </div>
+        );
+      case "multiselect":
+        return (
+          <div className="formfill-opts">
+            {opts(f).map((o) => (
+              <label key={o} className="formfill-opt">
+                <input type="checkbox"
+                  checked={Array.isArray(answers[f.id]) && (answers[f.id] as string[]).includes(o)}
+                  onChange={() => toggle(f.id, o)} /> {o}
+              </label>
+            ))}
+            {f.allowOther && (
+              <label className="formfill-opt">Other:
+                <input style={{ flex: 1 }} value={otherText[f.id] ?? ""}
+                  onChange={(e) => {
+                    const prev = otherText[f.id] ?? "";
+                    setOtherText((m) => ({ ...m, [f.id]: e.target.value }));
+                    // replace the previous "other" entry in-place — otherwise
+                    // every keystroke appends a new option to the array
+                    setAnswers((a) => {
+                      const cur = (a[f.id] as string[]) ?? [];
+                      const next = cur.filter((x) => x !== prev);
+                      if (e.target.value.trim()) next.push(e.target.value);
+                      return { ...a, [f.id]: next };
+                    });
+                  }} />
+              </label>
+            )}
+          </div>
+        );
+      case "checkbox":
+        return (
+          <label className="formfill-opt">
+            <input type="checkbox" checked={answers[f.id] === true}
+              onChange={(e) => set(f.id, e.target.checked)} /> Yes
+          </label>
+        );
+      case "rating":
+        return (
+          <div className="formfill-rating">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button key={n} type="button"
+                className={`formfill-star${Number(answers[f.id]) >= n ? " on" : ""}`}
+                onClick={() => set(f.id, n)}>★</button>
+            ))}
+          </div>
+        );
+      case "scale": {
+        const lo = f.scaleMin ?? 1, hi = f.scaleMax ?? 10;
+        return (
+          <div className="formfill-scale">
+            <span className="d-sub">{f.scaleLow ?? lo}</span>
+            {Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).map((n) => (
+              <button key={n} type="button"
+                className={`formfill-scale-n${answers[f.id] === n ? " on" : ""}`}
+                onClick={() => set(f.id, n)}>{n}</button>
+            ))}
+            <span className="d-sub">{f.scaleHigh ?? hi}</span>
+          </div>
+        );
+      }
+      case "file": {
+        const a = answers[f.id] as { itemId: string; name: string } | undefined;
+        return (
+          <div>
+            {a?.name
+              ? <span className="formfill-file">📎 {a.name} <button type="button" className="btn-ghost btn-sm" onClick={() => set(f.id, "")}>Remove</button></span>
+              : <input type="file" disabled={uploading === f.id}
+                  onChange={(e) => { const x = e.target.files?.[0]; if (x) void upload(f, x); e.target.value = ""; }} />}
+            {uploading === f.id && <span className="d-sub"> Uploading…</span>}
+          </div>
+        );
+      }
+      default:
+        return (
+          <input
+            type={f.type === "email" ? "email" : f.type === "number" ? "number"
+              : f.type === "date" ? "date" : f.type === "time" ? "time"
+              : f.type === "url" ? "url" : f.type === "phone" ? "tel" : "text"}
+            {...(f.type === "number" && f.min !== undefined ? { min: f.min } : {})}
+            {...(f.type === "number" && f.max !== undefined ? { max: f.max } : {})}
+            value={String(answers[f.id] ?? "")}
+            onChange={(e) => set(f.id, f.type === "number" ? e.target.valueAsNumber || "" : e.target.value)} />
+        );
+    }
+  };
+
+  const fieldCard = (f: PubField) => (
+    <label key={f.id} className={`formfill-field${missing(f) && err ? " formfill-req" : ""}`}>
+      <span className="formfill-label">{f.label}{f.required ? " *" : ""}</span>
+      {f.description && <span className="d-sub" style={{ fontSize: 12 }}>{f.description}</span>}
+      {fieldBody(f)}
+    </label>
+  );
+
+  // conversational layout: one question (or section) per screen
+  const chatSteps = visible;
+  const cur = chatSteps[Math.min(step, chatSteps.length - 1)];
+  const progress = chat
+    ? Math.round(((step + (done ? 1 : 0)) / Math.max(1, chatSteps.length)) * 100)
+    : questions.length ? Math.round((answeredCount / questions.length) * 100) : 0;
+
   return (
-    <div className="auth-wrap" style={{ alignItems: "flex-start", paddingTop: "6vh" }}>
+    <div className="auth-wrap" style={{ alignItems: "flex-start", paddingTop: "6vh", ...accentStyle }}>
       <div className="panel formfill">
         <h2 style={{ margin: "0 0 4px" }}>{form.title}</h2>
         {form.description && <p className="d-sub">{form.description}</p>}
-        {form.fields.map((f) => (
-          <label key={f.id} className="formfill-field">
-            <span className="formfill-label">{f.label}{f.required ? " *" : ""}</span>
-            {f.type === "textarea" ? (
-              <textarea rows={3} value={String(answers[f.id] ?? "")} onChange={(e) => set(f.id, e.target.value)} />
-            ) : f.type === "choice" ? (
-              <select value={String(answers[f.id] ?? "")} onChange={(e) => set(f.id, e.target.value)}>
-                <option value="">Choose…</option>
-                {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            ) : f.type === "checkbox" ? (
-              <input type="checkbox" checked={!!answers[f.id]} onChange={(e) => set(f.id, e.target.checked)} />
-            ) : f.type === "rating" ? (
-              <div className="formfill-rating">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button key={n} type="button"
-                    className={`formfill-star${Number(answers[f.id]) >= n ? " on" : ""}`}
-                    onClick={() => set(f.id, n)}>★</button>
-                ))}
-              </div>
-            ) : (
-              <input type={f.type === "email" ? "email" : f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}
-                value={String(answers[f.id] ?? "")} onChange={(e) => set(f.id, e.target.value)} />
+        {(form.showProgress || chat) && (
+          <div className="formfill-progress"><div className="formfill-progress-fill" style={{ width: `${progress}%` }} /></div>
+        )}
+        {/* honeypot — hidden from humans, irresistible to bots */}
+        <input value={hp} onChange={(e) => setHp(e.target.value)} tabIndex={-1} autoComplete="off"
+          aria-hidden="true" style={{ position: "absolute", left: -9999, opacity: 0, height: 0 }} />
+
+        {chat ? (
+          <>
+            {cur && fieldCard(cur)}
+            <div className="dlg-actions" style={{ justifyContent: "space-between" }}>
+              <button className="btn-ghost" disabled={step === 0} onClick={() => setStep((s) => s - 1)}>← Back</button>
+              <span className="d-sub">{step + 1} / {chatSteps.length}</span>
+              {step < chatSteps.length - 1
+                ? <button className="btn-primary" disabled={!!cur?.required && !answered(answers[cur.id])}
+                    onClick={() => setStep((s) => s + 1)}>Next →</button>
+                : <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
+                    {busy ? "Submitting…" : "Submit"}</button>}
+            </div>
+          </>
+        ) : (
+          <>
+            {visible.map(fieldCard)}
+            {form.collectName && (
+              <label className="formfill-field">
+                <span className="formfill-label">Your name or email (optional)</span>
+                <input value={respondent} onChange={(e) => setRespondent(e.target.value)} />
+              </label>
             )}
+            {err && <p className="formfill-err">{err}</p>}
+            <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
+              {busy ? "Submitting…" : "Submit"}
+            </button>
+          </>
+        )}
+        {chat && err && <p className="formfill-err">{err}</p>}
+        {chat && form.collectName && step === chatSteps.length - 1 && (
+          <label className="formfill-field" style={{ marginTop: 10 }}>
+            <span className="formfill-label">Your name or email (optional)</span>
+            <input value={respondent} onChange={(e) => setRespondent(e.target.value)} />
           </label>
-        ))}
-        <label className="formfill-field">
-          <span className="formfill-label">Your name or email (optional)</span>
-          <input value={respondent} onChange={(e) => setRespondent(e.target.value)} />
-        </label>
-        {err && <p className="formfill-err">{err}</p>}
-        <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
-          {busy ? "Submitting…" : "Submit"}
-        </button>
+        )}
       </div>
     </div>
   );

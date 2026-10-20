@@ -31,12 +31,12 @@ const patchSchema = z.object({
   label: z.enum(["internal", "public", "confidential", "restricted"]).optional(),
 });
 
-const BLOCKED_EXTS = new Set([
+export const BLOCKED_EXTS = new Set([
   "exe", "msi", "bat", "cmd", "com", "scr", "pif", "vbs", "vbe", "jse", "wsf", "wsh",
   "ps1", "dll", "hta", "cpl", "jar", "lnk", "reg", "apk",
 ]);
 
-const SCAN_CMD = process.env.KREATIX_SCAN_CMD;
+export const SCAN_CMD = process.env.KREATIX_SCAN_CMD;
 
 // EICAR anti-virus test signature — always rejected.
 const EICAR = Buffer.from("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR");
@@ -55,7 +55,7 @@ const EXT_MAGIC: Record<string, Buffer> = {
 };
 
 /** Returns a rejection reason, or null when the buffer passes the gate. */
-function sniffReject(buf: Buffer, ext: string): string | null {
+export function sniffReject(buf: Buffer, ext: string): string | null {
   if (buf.includes(EICAR)) return "EICAR test signature";
   if (EXEC_MAGIC.some((m) => buf.subarray(0, m.length).equals(m))) return "executable binary";
   const want = EXT_MAGIC[ext];
@@ -66,7 +66,8 @@ function sniffReject(buf: Buffer, ext: string): string | null {
 }
 
 /** Write buffer to a temp file, run KREATIX_SCAN_CMD, return stderr verdict or null. */
-async function scanBuffer(buf: Buffer, name: string): Promise<string | null> {
+export async function scanBuffer(buf: Buffer, name: string): Promise<string | null> {
+  if (!SCAN_CMD) return null;
   const { writeFileSync, unlinkSync } = await import("node:fs");
   const { execFile } = await import("node:child_process");
   const { join } = await import("node:path");

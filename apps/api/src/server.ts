@@ -29,7 +29,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
 import { runScheduleSweep } from "./rules.js";
 import { sweepWebhookDeliveries } from "./integrations.js";
-import { formRoutes, formPublicRoutes } from "./routes/forms.js";
+import { formRoutes, formPublicRoutes, sweepFormRetention } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
 import { publicApiRoutes } from "./routes/publicApi.js";
 import { billingRoutes } from "./routes/billing.js";
@@ -373,6 +373,9 @@ async function main() {
     runSweep("retention.versions", 717005, () => sweepVersionRetention())
       .then((n) => { if (n) app.log.info({ pruned: n }, "free-tier version retention applied"); })
       .catch((e) => app.log.warn(e, "version retention sweep failed"));
+    runSweep("retention.forms", 717009, () => sweepFormRetention())
+      .then((n) => { if (n) app.log.info({ deleted: n }, "form response retention applied"); })
+      .catch((e) => app.log.warn(e, "form retention sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

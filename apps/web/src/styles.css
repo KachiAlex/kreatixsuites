@@ -3341,6 +3341,28 @@ html[data-theme="dark"]{
 .formfill-star{background:none;border:0;font-size:24px;color:var(--muted);cursor:pointer;padding:0 2px}
 .formfill-star.on{color:var(--k-orange)}
 .formfill-err{color:#d13438;font-size:12.5px}
+.form-field-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.form-set-row{display:grid;grid-template-columns:200px 1fr;gap:10px;align-items:center;margin-bottom:8px;font-size:12.5px}
+.form-set-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-top:10px}
+.formfill-section{border-top:1px solid var(--line);padding-top:12px;margin:14px 0 6px}
+.formfill-section h3{margin:0 0 4px}
+.formfill-opts{display:flex;flex-direction:column;gap:6px}
+.formfill-opt{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:400}
+.formfill-scale{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.formfill-scale-n{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer;font-size:12.5px;font-weight:600}
+.formfill-scale-n.on{background:var(--k-orange);border-color:var(--k-orange);color:#fff}
+.formfill-progress{height:6px;border-radius:3px;background:var(--line);margin:10px 0 14px;overflow:hidden}
+.formfill-progress-fill{height:100%;background:var(--k-orange);border-radius:3px;transition:width .25s}
+.formfill-file{display:inline-flex;align-items:center;gap:8px;font-size:13px}
+.formfill-req .formfill-label{color:#d13438}
+.formfill-score{font-size:16px}
+.form-sum{border-bottom:1px solid var(--line);padding:10px 0}
+.form-sum-q{display:block;font-size:13.5px;margin-bottom:2px}
+.form-sum-bar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12.5px}
+.form-sum-v{min-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.form-sum-track{flex:1;height:10px;border-radius:5px;background:var(--line);overflow:hidden}
+.form-sum-fill{height:100%;background:var(--k-orange)}
+.form-sum-sample{font-size:12.5px;color:var(--muted);padding:3px 0;border-bottom:1px dashed var(--line)}
 
 /* kreatix notes */
 .note-title{flex:1;min-width:0;border:0;background:none;font-size:15px;font-weight:700;color:var(--ink);font-family:inherit}

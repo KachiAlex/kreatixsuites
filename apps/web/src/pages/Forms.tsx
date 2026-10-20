@@ -1,42 +1,88 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { api, getToken } from "../lib/api";
+import { API_BASE } from "../lib/platform";
 import { useToast } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 import { Modal } from "../components/Modal";
+import { createDoc } from "../lib/create";
+import { saveFile } from "../lib/saveFile";
+import type { CellData } from "../sheets/model";
 
-// Kreatix Forms — org forms with a public share link (Microsoft Forms model).
-// Builder edits a field list; the /f/<token> route is public for respondents.
+// Kreatix Forms — org forms with a public share link. Builder edits an
+// ordered field list + form settings; /f/<token> is public for respondents.
 
-interface Field { id: string; label: string; type: string; required?: boolean; options?: string[] }
+interface ShowIf { field: string; equals: string }
+interface Field {
+  id: string; label: string; type: string; required?: boolean;
+  description?: string; options?: string[]; allowOther?: boolean;
+  min?: number; max?: number; minLen?: number; maxLen?: number;
+  scaleMin?: number; scaleMax?: number; scaleLow?: string; scaleHigh?: string;
+  showIf?: ShowIf; correct?: string; points?: number;
+}
+interface Settings {
+  confirmMsg?: string; closeAt?: string; closeAfter?: number;
+  requireSignIn?: boolean; orgOnly?: boolean; onePerUser?: boolean;
+  collectName?: boolean; showProgress?: boolean; accent?: string;
+  layout?: "classic" | "chat"; quiz?: boolean; dlp?: boolean;
+  requiresReview?: boolean; retentionDays?: number; shuffleOptions?: boolean;
+}
 interface Form {
   id: string; title: string | null; description: string | null;
-  fields: Field[]; open: boolean; token: string;
+  fields: Field[]; settings: Settings; open: boolean; token: string;
   createdBy: string; createdByName: string | null; responses: number; updatedAt: string;
 }
-interface Resp { id: string; answers: Record<string, string | number | boolean>; respondent: string | null; createdAt: string }
+interface Resp {
+  id: string; answers: Record<string, unknown>; respondent: string | null;
+  verified: boolean; status: string; score: number | null; createdAt: string;
+}
+interface SummaryField {
+  id: string; label: string; type: string; answered: number;
+  buckets?: { v: string; n: number }[]; avg?: number | null; samples?: string[];
+}
 
 const TYPES: { v: string; label: string }[] = [
   { v: "text", label: "Short text" }, { v: "textarea", label: "Paragraph" },
   { v: "email", label: "Email" }, { v: "number", label: "Number" },
-  { v: "date", label: "Date" }, { v: "choice", label: "Choice" },
+  { v: "date", label: "Date" }, { v: "time", label: "Time" },
+  { v: "url", label: "Link / URL" }, { v: "phone", label: "Phone" },
+  { v: "choice", label: "Multiple choice" }, { v: "multiselect", label: "Checkboxes" },
   { v: "checkbox", label: "Yes/No" }, { v: "rating", label: "Rating (1-5)" },
+  { v: "scale", label: "Linear scale" }, { v: "section", label: "Section header" },
+  { v: "file", label: "File upload" },
 ];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmtWhen = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const publicUrl = (token: string) => `${location.origin}/f/${token}`;
+const hasOptions = (t: string) => t === "choice" || t === "multiselect";
+const answerable = (f: Field) => f.type !== "section";
+
+const ans = (v: unknown): string =>
+  Array.isArray(v) ? v.join(", ")
+    : typeof v === "object" && v !== null ? (v as { name?: string }).name ?? "file"
+    : v === true ? "Yes" : v === false ? "No" : v == null ? "—" : String(v);
 
 export function Forms() {
   const { user } = useAuth();
   const { msg, toast } = useToast();
+  const navigate = useNavigate();
   const [forms, setForms] = useState<Form[]>([]);
   const [editOpen, setEditOpen] = useState(false);
+  const [tab, setTab] = useState<"questions" | "settings">("questions");
   const [editing, setEditing] = useState<Form | null>(null);
   const [respForm, setRespForm] = useState<Form | null>(null);
   const [responses, setResponses] = useState<Resp[]>([]);
+  const [sumForm, setSumForm] = useState<Form | null>(null);
+  const [summary, setSummary] = useState<SummaryField[]>([]);
+  const [sumStats, setSumStats] = useState<{ total: number; avgScore: number | null } | null>(null);
+  const [embedForm, setEmbedForm] = useState<Form | null>(null);
+  const [qr, setQr] = useState("");
   const [busy, setBusy] = useState(false);
   const [fTitle, setFTitle] = useState("");
   const [fDesc, setFDesc] = useState("");
   const [fFields, setFFields] = useState<Field[]>([]);
+  const [fSettings, setFSettings] = useState<Settings>({});
+  const [respStatus, setRespStatus] = useState("all");
 
   const load = useCallback(async () => {
     try { setForms((await api.get<{ forms: Form[] }>("/api/forms")).forms); }
@@ -47,22 +93,31 @@ export function Forms() {
   const openNew = () => {
     setEditing(null); setFTitle(""); setFDesc("");
     setFFields([{ id: uid(), label: "", type: "text", required: false }]);
-    setEditOpen(true);
+    setFSettings({}); setTab("questions"); setEditOpen(true);
   };
   const openEdit = (f: Form) => {
     setEditing(f); setFTitle(f.title ?? ""); setFDesc(f.description ?? "");
     setFFields(f.fields.length ? f.fields : [{ id: uid(), label: "", type: "text" }]);
-    setEditOpen(true);
+    setFSettings(f.settings ?? {}); setTab("questions"); setEditOpen(true);
   };
   const setField = (i: number, patch: Partial<Field>) =>
     setFFields((fs) => fs.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  const moveField = (i: number, dir: -1 | 1) =>
+    setFFields((fs) => {
+      const j = i + dir;
+      if (j < 0 || j >= fs.length) return fs;
+      const next = [...fs];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  const setSet = (patch: Partial<Settings>) => setFSettings((s) => ({ ...s, ...patch }));
 
   const save = async () => {
     const fields = fFields.filter((f) => f.label.trim());
     if (!fTitle.trim() || !fields.length) return;
     setBusy(true);
     try {
-      const body = { title: fTitle.trim(), description: fDesc.trim() || undefined, fields };
+      const body = { title: fTitle.trim(), description: fDesc.trim() || undefined, fields, settings: fSettings };
       if (editing) await api.patch(`/api/forms/${editing.id}`, body);
       else await api.post("/api/forms", body);
       setEditOpen(false); void load();
@@ -75,20 +130,97 @@ export function Forms() {
     catch (e) { toast((e as Error).message); }
   };
   const del = async (f: Form) => {
+    if (!confirm(`Delete "${f.title}" and all its responses?`)) return;
     try { await api.del(`/api/forms/${f.id}`); void load(); }
+    catch (e) { toast((e as Error).message); }
+  };
+  const dupe = async (f: Form) => {
+    try { await api.post(`/api/forms/${f.id}/duplicate`, {}); void load(); toast("Form duplicated (closed — open it when ready)"); }
     catch (e) { toast((e as Error).message); }
   };
   const copyLink = async (f: Form) => {
     await navigator.clipboard.writeText(publicUrl(f.token));
     toast("Share link copied");
   };
+  const openEmbed = async (f: Form) => {
+    setEmbedForm(f); setQr("");
+    try {
+      const QR = await import("qrcode");
+      setQr(await QR.toDataURL(publicUrl(f.token), { width: 220, margin: 1 }));
+    } catch { /* QR optional — snippet still shows */ }
+  };
+
   const viewResponses = async (f: Form) => {
     try {
       const r = await api.get<{ responses: Resp[] }>(`/api/forms/${f.id}/responses`);
-      setResponses(r.responses); setRespForm(f);
+      setResponses(r.responses); setRespForm(f); setRespStatus("all");
     } catch (e) { toast((e as Error).message); }
   };
+  const setResp = async (f: Form, rid: string, status: string) => {
+    try {
+      await api.patch(`/api/forms/${f.id}/responses/${rid}`, { status });
+      setResponses((rs) => rs.map((r) => (r.id === rid ? { ...r, status } : r)));
+    } catch (e) { toast((e as Error).message); }
+  };
+  const delResp = async (f: Form, rid: string) => {
+    try {
+      await api.del(`/api/forms/${f.id}/responses/${rid}`);
+      setResponses((rs) => rs.filter((r) => r.id !== rid));
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const viewSummary = async (f: Form) => {
+    try {
+      const r = await api.get<{ total: number; avgScore: number | null; summary: SummaryField[] }>(
+        `/api/forms/${f.id}/summary`);
+      setSummary(r.summary); setSumStats({ total: r.total, avgScore: r.avgScore }); setSumForm(f);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const exportCsv = async (f: Form) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/forms/${f.id}/responses.csv`,
+        { headers: { authorization: `Bearer ${getToken()}` } });
+      if (!r.ok) throw new Error("Export failed");
+      await saveFile(new Blob([await r.blob()], { type: "text/csv" }), `${(f.title ?? "responses").replace(/[^\w-]+/g, "_")}.csv`);
+    } catch (e) { toast((e as Error).message); }
+  };
+
+  const toSheets = async (f: Form) => {
+    try {
+      const r = await api.get<{ responses: Resp[] }>(`/api/forms/${f.id}/responses`);
+      const fields = f.fields.filter(answerable);
+      const cells: Record<string, CellData> = {};
+      const cols = ["Submitted", "Respondent", ...fields.map((x) => x.label), ...(f.settings.quiz ? ["Score"] : [])];
+      // A1-style column names — past Z needs AA/AB/… (forms can have 100 fields)
+      const col = (i: number) => {
+        let s = ""; let n = i + 1;
+        while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+        return s;
+      };
+      cols.forEach((c, i) => { cells[`${col(i)}1`] = { v: c, s: { b: true } }; });
+      r.responses.slice().reverse().forEach((resp, ri) => {
+        const row = ri + 2;
+        cells[`A${row}`] = { v: fmtWhen(resp.createdAt) };
+        cells[`B${row}`] = { v: resp.respondent ?? "anonymous" };
+        fields.forEach((fd, ci) => {
+          const v = resp.answers[fd.id];
+          if (v !== undefined) cells[`${col(ci + 2)}${row}`] = { v: ans(v) };
+        });
+        if (f.settings.quiz && resp.score !== null) cells[`${col(cols.length - 1)}${row}`] = { v: resp.score };
+      });
+      const item = await createDoc("sheets", `${f.title ?? "Form"} — Responses`, {
+        kind: "sheets",
+        workbook: { sheets: [{ name: "Responses", cells, freeze: { rows: 1, cols: 0 } }] },
+      });
+      toast("Responses saved to Sheets");
+      navigate(`/edit/${item.id}`);
+    } catch (e) { toast((e as Error).message); }
+  };
+
   const canEdit = (f: Form) => f.createdBy === user?.id || user?.role === "owner" || user?.role === "admin";
+  const filteredResp = responses.filter((r) => respStatus === "all" || r.status === respStatus);
+  const showIfTargets = (i: number) => fFields.slice(0, i).filter((f) => f.label.trim() && f.type !== "section" && f.type !== "file");
 
   return (
     <>
@@ -100,22 +232,26 @@ export function Forms() {
       <div className="panel">
         {!forms.length && <div className="empty" style={{ padding: 24 }}>No forms yet — create one and share the link.</div>}
         {forms.map((f) => (
-          <div key={f.id} className="meet-row">
+          <div key={f.id} className="meet-row" style={{ flexWrap: "wrap" }}>
             <span className={`meet-status ${f.open ? "live" : "ended"}`}>{f.open ? "open" : "closed"}</span>
             <div className="meet-row-main">
               <b>{f.title}</b>
               <span className="d-sub">
-                {f.fields.length} field{f.fields.length === 1 ? "" : "s"} · {f.responses} response{f.responses === 1 ? "" : "s"}
+                {f.fields.filter(answerable).length} question{f.fields.filter(answerable).length === 1 ? "" : "s"} · {f.responses} response{f.responses === 1 ? "" : "s"}
+                {f.settings.quiz ? " · quiz" : ""}{f.settings.requiresReview ? " · review on" : ""}
                 {f.createdByName ? ` · ${f.createdByName}` : ""} · {fmtWhen(f.updatedAt)}
               </span>
             </div>
-            <button className="btn-ghost btn-sm" onClick={() => void copyLink(f)}>🔗 Share</button>
-            <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void viewResponses(f)}>
-              Responses{f.responses ? ` (${f.responses})` : ""}
-            </button>
+            <button className="btn-ghost btn-sm" onClick={() => void copyLink(f)} title="Copy share link">🔗 Share</button>
+            <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void viewResponses(f)}>Responses{f.responses ? ` (${f.responses})` : ""}</button>
+            <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void viewSummary(f)}>Summary</button>
             {canEdit(f) && (
               <>
                 <button className="btn-ghost btn-sm" onClick={() => openEdit(f)}>Edit</button>
+                <button className="btn-ghost btn-sm" onClick={() => void openEmbed(f)}>Embed</button>
+                <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void exportCsv(f)}>CSV</button>
+                <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void toSheets(f)}>→ Sheets</button>
+                <button className="btn-ghost btn-sm" onClick={() => void dupe(f)}>Duplicate</button>
                 <button className="btn-ghost btn-sm" onClick={() => void toggleOpen(f)}>{f.open ? "Close" : "Open"}</button>
                 <button className="btn-ghost btn-sm" onClick={() => void del(f)}>Delete</button>
               </>
@@ -125,33 +261,175 @@ export function Forms() {
       </div>
 
       {editOpen && (
-        <Modal label={editing ? "Edit form" : "New form"} onClose={() => setEditOpen(false)} style={{ width: 560 }}>
-          <div className="ob-body">
+        <Modal label={editing ? "Edit form" : "New form"} onClose={() => setEditOpen(false)} style={{ width: 680, maxWidth: "96vw" }}>
+          <div className="dlg-tabs">
+            <button className={`dlg-tab${tab === "questions" ? " on" : ""}`} onClick={() => setTab("questions")}>Questions</button>
+            <button className={`dlg-tab${tab === "settings" ? " on" : ""}`} onClick={() => setTab("settings")}>Settings</button>
+          </div>
+          <div className="ob-body" style={{ maxHeight: "72vh", overflow: "auto" }}>
             <input placeholder="Form title" value={fTitle} onChange={(e) => setFTitle(e.target.value)}
               style={{ width: "100%", marginBottom: 8 }} autoFocus />
-            <input placeholder="Description (optional)" value={fDesc} onChange={(e) => setFDesc(e.target.value)}
-              style={{ width: "100%", marginBottom: 12 }} />
-            {fFields.map((f, i) => (
-              <div key={f.id} className="form-field-row">
-                <input placeholder="Question" value={f.label} style={{ flex: 1 }}
-                  onChange={(e) => setField(i, { label: e.target.value })} />
-                <select value={f.type} onChange={(e) => setField(i, { type: e.target.value })}>
-                  {TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
-                </select>
-                <label className="cal-check" style={{ marginBottom: 0 }}>
-                  <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> Req
-                </label>
-                <button className="iconbtn" title="Remove" onClick={() => setFFields((fs) => fs.filter((_, j) => j !== i))}>✕</button>
-                {f.type === "choice" && (
-                  <input placeholder="Options, comma-separated" style={{ gridColumn: "1 / -1" }}
-                    value={(f.options ?? []).join(", ")}
-                    onChange={(e) => setField(i, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+            {tab === "questions" && (
+              <input placeholder="Description (optional)" value={fDesc} onChange={(e) => setFDesc(e.target.value)}
+                style={{ width: "100%", marginBottom: 12 }} />
+            )}
+
+            {tab === "questions" && fFields.map((f, i) => (
+              <div key={f.id} className="form-field-card">
+                <div className="form-field-row">
+                  <input placeholder={f.type === "section" ? "Section title" : "Question"} value={f.label} style={{ flex: 1 }}
+                    onChange={(e) => setField(i, { label: e.target.value })} />
+                  <select value={f.type} onChange={(e) => setField(i, { type: e.target.value as Field["type"] })}>
+                    {TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+                  </select>
+                  {f.type !== "section" && (
+                    <label className="cal-check" style={{ marginBottom: 0 }}>
+                      <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> Req
+                    </label>
+                  )}
+                  <button className="iconbtn" title="Move up" disabled={i === 0} onClick={() => moveField(i, -1)}>↑</button>
+                  <button className="iconbtn" title="Move down" disabled={i === fFields.length - 1} onClick={() => moveField(i, 1)}>↓</button>
+                  <button className="iconbtn" title="Remove" onClick={() => setFFields((fs) => fs.filter((_, j) => j !== i))}>✕</button>
+                </div>
+                <input placeholder="Help text (optional)" value={f.description ?? ""} style={{ width: "100%", marginTop: 6 }}
+                  onChange={(e) => setField(i, { description: e.target.value || undefined })} />
+
+                {hasOptions(f.type) && (
+                  <div style={{ marginTop: 8 }}>
+                    {(f.options ?? []).map((o, oi) => (
+                      <div key={oi} className="dlg-inline">
+                        <input value={o} style={{ flex: 1 }}
+                          onChange={(e) => setField(i, { options: (f.options ?? []).map((x, j) => (j === oi ? e.target.value : x)) })} />
+                        <button className="iconbtn" onClick={() => setField(i, { options: (f.options ?? []).filter((_, j) => j !== oi) })}>✕</button>
+                      </div>
+                    ))}
+                    <div className="dlg-inline">
+                      <button className="btn-ghost btn-sm" onClick={() => setField(i, { options: [...(f.options ?? []), `Option ${(f.options ?? []).length + 1}`] })}>＋ Option</button>
+                      <label className="cal-check" style={{ marginBottom: 0 }}>
+                        <input type="checkbox" checked={!!f.allowOther} onChange={(e) => setField(i, { allowOther: e.target.checked })} /> Allow "Other"
+                      </label>
+                    </div>
+                  </div>
+                )}
+                {f.type === "number" && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <input type="number" placeholder="Min" style={{ width: 90 }} value={f.min ?? ""}
+                      onChange={(e) => setField(i, { min: e.target.value === "" ? undefined : Number(e.target.value) })} />
+                    <input type="number" placeholder="Max" style={{ width: 90 }} value={f.max ?? ""}
+                      onChange={(e) => setField(i, { max: e.target.value === "" ? undefined : Number(e.target.value) })} />
+                  </div>
+                )}
+                {(f.type === "text" || f.type === "textarea") && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <input type="number" placeholder="Min chars" style={{ width: 100 }} value={f.minLen ?? ""}
+                      onChange={(e) => setField(i, { minLen: e.target.value === "" ? undefined : Number(e.target.value) })} />
+                    <input type="number" placeholder="Max chars" style={{ width: 100 }} value={f.maxLen ?? ""}
+                      onChange={(e) => setField(i, { maxLen: e.target.value === "" ? undefined : Number(e.target.value) })} />
+                  </div>
+                )}
+                {f.type === "scale" && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <input type="number" placeholder="From" style={{ width: 70 }} value={f.scaleMin ?? 1}
+                      onChange={(e) => setField(i, { scaleMin: Number(e.target.value) || 1 })} />
+                    <input type="number" placeholder="To" style={{ width: 70 }} value={f.scaleMax ?? 10}
+                      onChange={(e) => setField(i, { scaleMax: Number(e.target.value) || 10 })} />
+                    <input placeholder="Low label" style={{ flex: 1 }} value={f.scaleLow ?? ""}
+                      onChange={(e) => setField(i, { scaleLow: e.target.value || undefined })} />
+                    <input placeholder="High label" style={{ flex: 1 }} value={f.scaleHigh ?? ""}
+                      onChange={(e) => setField(i, { scaleHigh: e.target.value || undefined })} />
+                  </div>
+                )}
+                {showIfTargets(i).length > 0 && f.type !== "section" && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <label className="cal-check" style={{ marginBottom: 0 }}>
+                      <input type="checkbox" checked={!!f.showIf}
+                        onChange={(e) => setField(i, { showIf: e.target.checked ? { field: showIfTargets(i)[0].id, equals: "" } : undefined })} />
+                      Show only if
+                    </label>
+                    {f.showIf && (
+                      <>
+                        <select value={f.showIf.field} onChange={(e) => setField(i, { showIf: { ...f.showIf!, field: e.target.value } })}>
+                          {showIfTargets(i).map((t) => <option key={t.id} value={t.id}>{t.label.slice(0, 40)}</option>)}
+                        </select>
+                        <span className="d-sub">=</span>
+                        <input placeholder="answer" style={{ width: 120 }} value={f.showIf.equals}
+                          onChange={(e) => setField(i, { showIf: { ...f.showIf!, equals: e.target.value } })} />
+                      </>
+                    )}
+                  </div>
+                )}
+                {fSettings.quiz && (hasOptions(f.type) || f.type === "checkbox" || f.type === "rating" || f.type === "scale") && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <span className="d-sub">Correct:</span>
+                    <select value={f.correct ?? ""} onChange={(e) => setField(i, { correct: e.target.value || undefined })}>
+                      <option value="">—</option>
+                      {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                      {f.type === "checkbox" && <><option value="true">Yes</option><option value="false">No</option></>}
+                      {(f.type === "rating" || f.type === "scale") &&
+                        Array.from({ length: ((f.type === "scale" ? (f.scaleMax ?? 10) : 5) - (f.type === "scale" ? (f.scaleMin ?? 1) : 1)) + 1 },
+                          (_, n) => String(n + (f.type === "scale" ? (f.scaleMin ?? 1) : 1)))
+                          .map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    <input type="number" placeholder="Pts" style={{ width: 60 }} value={f.points ?? ""}
+                      onChange={(e) => setField(i, { points: e.target.value === "" ? undefined : Number(e.target.value) })} />
+                  </div>
                 )}
               </div>
             ))}
-            <button className="btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
-              onClick={() => setFFields((fs) => [...fs, { id: uid(), label: "", type: "text" }])}>＋ Add question</button>
-            <div className="dlg-actions">
+            {tab === "questions" && (
+              <button className="btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
+                onClick={() => setFFields((fs) => [...fs, { id: uid(), label: "", type: "text" }])}>＋ Add question</button>
+            )}
+
+            {tab === "settings" && (
+              <div className="form-settings">
+                <label className="form-set-row"><span>Confirmation message</span>
+                  <input value={fSettings.confirmMsg ?? ""} placeholder="Thanks — your response was recorded"
+                    onChange={(e) => setSet({ confirmMsg: e.target.value || undefined })} /></label>
+                <label className="form-set-row"><span>Layout</span>
+                  <select value={fSettings.layout ?? "classic"} onChange={(e) => setSet({ layout: e.target.value as Settings["layout"] })}>
+                    <option value="classic">All questions on one page</option>
+                    <option value="chat">One question at a time</option>
+                  </select></label>
+                <label className="form-set-row"><span>Accent color</span>
+                  <span className="dlg-inline" style={{ marginBottom: 0 }}>
+                    <input type="color" value={fSettings.accent ?? "#F2782E"} onChange={(e) => setSet({ accent: e.target.value })} />
+                    {fSettings.accent && <button className="btn-ghost btn-sm" onClick={() => setSet({ accent: undefined })}>Clear</button>}
+                  </span></label>
+                <label className="form-set-row"><span>Close at date/time</span>
+                  <input type="datetime-local" value={fSettings.closeAt
+                      ? new Date(new Date(fSettings.closeAt).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}
+                    onChange={(e) => setSet({ closeAt: e.target.value ? new Date(e.target.value).toISOString() : undefined })} /></label>
+                <label className="form-set-row"><span>Close after N responses</span>
+                  <input type="number" min={1} style={{ width: 120 }} value={fSettings.closeAfter ?? ""}
+                    onChange={(e) => setSet({ closeAfter: e.target.value === "" ? undefined : Number(e.target.value) })} /></label>
+                <label className="form-set-row"><span>Auto-delete responses after (days)</span>
+                  <input type="number" min={1} max={3650} style={{ width: 120 }} value={fSettings.retentionDays ?? ""}
+                    onChange={(e) => setSet({ retentionDays: e.target.value === "" ? undefined : Number(e.target.value) })} /></label>
+                <div className="form-set-grid">
+                  <label className="cal-check"><input type="checkbox" checked={fSettings.collectName !== false}
+                    onChange={(e) => setSet({ collectName: e.target.checked })} /> Ask for name/email</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.requireSignIn}
+                    onChange={(e) => setSet({ requireSignIn: e.target.checked })} /> Require sign-in</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.orgOnly}
+                    onChange={(e) => setSet({ orgOnly: e.target.checked })} /> Workspace members only</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.onePerUser}
+                    onChange={(e) => setSet({ onePerUser: e.target.checked })} /> One response per person</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.showProgress}
+                    onChange={(e) => setSet({ showProgress: e.target.checked })} /> Show progress bar</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.shuffleOptions}
+                    onChange={(e) => setSet({ shuffleOptions: e.target.checked })} /> Shuffle answer options</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.quiz}
+                    onChange={(e) => setSet({ quiz: e.target.checked })} /> Quiz mode (score answers)</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.requiresReview}
+                    onChange={(e) => setSet({ requiresReview: e.target.checked })} /> Review before counting</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.dlp}
+                    onChange={(e) => setSet({ dlp: e.target.checked })} /> Scan answers with DLP rules</label>
+                </div>
+              </div>
+            )}
+
+            <div className="dlg-actions" style={{ position: "sticky", bottom: 0 }}>
               <button className="btn-ghost" onClick={() => setEditOpen(false)}>Cancel</button>
               <button className="btn-primary" disabled={busy || !fTitle.trim() || !fFields.some((f) => f.label.trim())}
                 onClick={() => void save()}>{editing ? "Save" : "Create form"}</button>
@@ -161,22 +439,80 @@ export function Forms() {
       )}
 
       {respForm && (
-        <Modal label={`Responses — ${respForm.title}`} onClose={() => setRespForm(null)} style={{ width: 640, maxWidth: "94vw" }}>
-          <div className="ob-body" style={{ maxHeight: "70vh", overflow: "auto" }}>
-            {!responses.length && <div className="empty">No responses yet.</div>}
-            {responses.map((r) => (
+        <Modal label={`Responses — ${respForm.title}`} onClose={() => setRespForm(null)} style={{ width: 680, maxWidth: "96vw" }}>
+          <div className="ob-body" style={{ maxHeight: "72vh", overflow: "auto" }}>
+            <div className="dlg-inline">
+              {["all", "approved", "pending", "rejected"].map((s) => (
+                <button key={s}
+                  className={`btn-ghost btn-sm${respStatus === s ? " on" : ""}`}
+                  onClick={() => setRespStatus(s)}>{s}</button>
+              ))}
+            </div>
+            {!filteredResp.length && <div className="empty">No responses{respStatus !== "all" ? ` with status "${respStatus}"` : ""} yet.</div>}
+            {filteredResp.map((r) => (
               <div key={r.id} className="form-resp">
-                <div className="d-sub" style={{ marginBottom: 6 }}>
-                  {fmtWhen(r.createdAt)}{r.respondent ? ` · ${r.respondent}` : " · anonymous"}
+                <div className="d-sub" style={{ marginBottom: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span>{fmtWhen(r.createdAt)} · {r.respondent ?? "anonymous"}{r.verified ? " ✓" : ""}</span>
+                  {r.status !== "approved" && <span className={`meet-status ${r.status === "pending" ? "live" : "ended"}`}>{r.status}</span>}
+                  {r.score !== null && <span className="d-sub">score {r.score}</span>}
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    {r.status !== "approved" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "approved")}>Approve</button>}
+                    {r.status !== "rejected" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "rejected")}>Reject</button>}
+                    <button className="btn-ghost btn-sm" onClick={() => void delResp(respForm, r.id)}>Delete</button>
+                  </span>
                 </div>
-                {respForm.fields.map((f) => (
+                {respForm.fields.filter(answerable).map((f) => (
                   <div key={f.id} className="form-resp-row">
                     <span className="form-resp-q">{f.label}</span>
-                    <span>{String(r.answers[f.id] ?? "—")}</span>
+                    <span>{ans(r.answers[f.id])}</span>
                   </div>
                 ))}
               </div>
             ))}
+          </div>
+        </Modal>
+      )}
+
+      {sumForm && sumStats && (
+        <Modal label={`Summary — ${sumForm.title}`} onClose={() => setSumForm(null)} style={{ width: 640, maxWidth: "94vw" }}>
+          <div className="ob-body" style={{ maxHeight: "72vh", overflow: "auto" }}>
+            <p className="d-sub">{sumStats.total} approved response{sumStats.total === 1 ? "" : "s"}
+              {sumStats.avgScore !== null ? ` · avg score ${sumStats.avgScore}` : ""}</p>
+            {summary.map((f) => (
+              <div key={f.id} className="form-sum">
+                <b className="form-sum-q">{f.label}</b>
+                <span className="d-sub">{f.answered} answer{f.answered === 1 ? "" : "s"}{f.avg !== undefined && f.avg !== null ? ` · avg ${f.avg}` : ""}</span>
+                {f.buckets?.map((b) => {
+                  const pct = f.answered ? Math.round((b.n / f.answered) * 100) : 0;
+                  return (
+                    <div key={b.v} className="form-sum-bar">
+                      <span className="form-sum-v">{b.v}</span>
+                      <div className="form-sum-track"><div className="form-sum-fill" style={{ width: `${pct}%` }} /></div>
+                      <span className="d-sub">{b.n} ({pct}%)</span>
+                    </div>
+                  );
+                })}
+                {f.samples?.map((s, i) => <div key={i} className="form-sum-sample">{s.slice(0, 200)}</div>)}
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {embedForm && (
+        <Modal label={`Share — ${embedForm.title}`} onClose={() => setEmbedForm(null)} style={{ width: 480 }}>
+          <div className="ob-body">
+            <label className="d-sub">Link</label>
+            <div className="dlg-inline">
+              <input readOnly value={publicUrl(embedForm.token)} style={{ flex: 1 }}
+                onFocus={(e) => e.target.select()} />
+              <button className="btn-ghost btn-sm" onClick={() => void copyLink(embedForm)}>Copy</button>
+            </div>
+            {qr && <div style={{ textAlign: "center", margin: "10px 0" }}><img src={qr} alt="QR code" width={180} /></div>}
+            <label className="d-sub">Embed</label>
+            <textarea className="dlg-textarea" rows={3} readOnly style={{ width: "100%" }}
+              value={`<iframe src="${publicUrl(embedForm.token)}" width="100%" height="640" frameborder="0" title="${embedForm.title ?? "Form"}"></iframe>`}
+              onFocus={(e) => e.target.select()} />
           </div>
         </Modal>
       )}
