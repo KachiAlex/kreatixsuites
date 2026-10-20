@@ -267,7 +267,7 @@ async function syncSheetRow(
   if (!itemId) return;
   await tx(async (c) => {
     const it = await c.query(
-      "SELECT id FROM items WHERE id = $1 AND org_id = $2 AND kind = 'sheets' AND deleted_at IS NULL FOR UPDATE",
+      "SELECT id FROM items WHERE id = $1 AND org_id = $2 AND kind = 'sheets' AND trashed = false FOR UPDATE",
       [itemId, f.org_id]);
     if (!it.rowCount) return;
     const v = await c.query<{ blob_key: string; number: number }>(
