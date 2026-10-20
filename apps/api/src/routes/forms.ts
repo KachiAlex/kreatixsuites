@@ -6,18 +6,19 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth, resolveSession, type AuthedRequest } from "../auth.js";
-import { q, one, run, now } from "../db.js";
+import { q, one, run, tx, now } from "../db.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { fireTrigger } from "../rules.js";
-import { storageQuota } from "../billing.js";
-import { putBlob } from "../blobs.js";
+import { storageQuota, paystackInit, paystackVerify } from "../billing.js";
+import { putBlob, getBlob } from "../blobs.js";
 import { scanDlp } from "../policies.js";
 import { BLOCKED_EXTS, sniffReject, scanBuffer, buffer } from "./drive.js";
 import { logActivity } from "../items.js";
 
 export const FIELD_TYPES = [
   "text", "textarea", "email", "number", "date", "time", "url", "phone",
-  "choice", "multiselect", "checkbox", "rating", "scale", "section", "file",
+  "choice", "multiselect", "checkbox", "rating", "scale", "nps", "ranking",
+  "section", "file", "payment",
 ] as const;
 
 const fieldSchema = z.object({
@@ -38,6 +39,8 @@ const fieldSchema = z.object({
   showIf: z.object({ field: z.string().max(40), equals: z.string().max(200) }).optional(),
   correct: z.string().max(200).optional(),                     // quiz answer key
   points: z.number().min(0).max(1000).optional(),              // quiz weight
+  payAmount: z.number().int().min(1).max(100_000_000).optional(), // ₦ for payment fields
+  payLabel: z.string().trim().max(200).optional(),             // e.g. "Registration fee"
 });
 
 const settingsSchema = z.object({
@@ -56,6 +59,8 @@ const settingsSchema = z.object({
   requiresReview: z.boolean().optional(),                      // responses land pending
   retentionDays: z.number().int().min(1).max(3650).optional(),
   shuffleOptions: z.boolean().optional(),
+  editAfterSubmit: z.boolean().optional(),                     // respondent can edit via editToken
+  syncSheet: z.string().max(64).optional(),                    // Drive sheets item — live row sync
 });
 
 const formSchema = z.object({
@@ -72,12 +77,13 @@ export type FormSettings = z.infer<typeof settingsSchema>;
 interface FormRow {
   id: string; org_id: string; title: string; description: string | null;
   schema: string; settings: string | null; open: boolean; token: string;
-  created_by: string; created_at: string; updated_at: string;
+  created_by: string; created_at: string; updated_at: string; view_count: number;
   creator_name?: string; response_count?: number;
 }
 interface RespRow {
   id: string; answers: string; respondent: string | null;
   respondent_user_id: string | null; status: string; score: string | null; // NUMERIC → string
+  edit_token: string | null; pay_ref: string | null; paid_at: string | null;
   created_at: string; resp_email?: string | null; resp_name?: string | null;
 }
 
@@ -94,7 +100,7 @@ const formOut = (r: FormRow) => ({
   fields: fieldsOf(r), settings: settingsOf(r), open: r.open, token: r.token,
   createdBy: r.created_by, createdByName: r.creator_name ?? null,
   createdAt: r.created_at, updatedAt: r.updated_at,
-  responses: Number(r.response_count ?? 0),
+  responses: Number(r.response_count ?? 0), viewCount: Number(r.view_count ?? 0),
 });
 
 /** Fields visible given the current answers — showIf is evaluated the same
@@ -193,6 +199,19 @@ async function validateAnswers(
         if (!up) return bad(`"${f.label}" needs a file uploaded through this form`, clean);
         clean[f.id] = { itemId, name }; break;
       }
+      case "nps": {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0 || n > 10) return bad(`"${f.label}" must be 0-10`, clean);
+        clean[f.id] = n; break;
+      }
+      case "ranking": {
+        if (!Array.isArray(v) || !f.options?.length) return bad(`"${f.label}" must rank all options`, clean);
+        const order = [...new Set(v.map((x) => String(x).slice(0, 200)))];
+        if (order.length !== f.options.length || !order.every((o) => f.options!.includes(o)))
+          return bad(`"${f.label}" must rank every option exactly once`, clean);
+        clean[f.id] = order; break;
+      }
+      case "payment": break; // no answer — payment state lives on the response row
       default: {
         const cap = f.type === "textarea" ? 8000 : 500;
         const s = String(v).slice(0, cap);
@@ -220,13 +239,91 @@ function scoreAnswers(fields: Field[], clean: Record<string, unknown>): { score:
   return { score, max };
 }
 
+/** Form payments settle to the org's own Paystack account (Admin sets the
+ *  secret; platform env key is only the fallback path's — never for forms). */
+const orgPaystackSecret = async (orgId: string): Promise<string | null> => {
+  const o = await one<{ paystack_secret: string | null }>(
+    "SELECT paystack_secret FROM orgs WHERE id = $1", [orgId]);
+  return o?.paystack_secret ? decryptField(o.paystack_secret) ?? o.paystack_secret : null;
+};
+
+const A1 = (i: number) => { // 0-based → A1 column letters (AA past Z)
+  let s = ""; let n = i + 1;
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+};
+
+interface SheetDoc { workbook?: { sheets?: { name?: string; cells?: Record<string, { v?: unknown; s?: unknown }> }[] } }
+
+/** Live Sheets sync — settings.syncSheet names a sheets-kind Drive item; each
+ *  approved/pending response appends a row as a new immutable version. The
+ *  row-write runs inside a `SELECT … FOR UPDATE` on the item so concurrent
+ *  submits can't clobber each other. */
+async function syncSheetRow(
+  f: FormRow, fields: Field[], clean: Record<string, unknown>,
+  respondent: string | null, createdAt: string, score: number | null,
+): Promise<void> {
+  const itemId = settingsOf(f).syncSheet;
+  if (!itemId) return;
+  await tx(async (c) => {
+    const it = await c.query(
+      "SELECT id FROM items WHERE id = $1 AND org_id = $2 AND kind = 'sheets' AND deleted_at IS NULL FOR UPDATE",
+      [itemId, f.org_id]);
+    if (!it.rowCount) return;
+    const v = await c.query<{ blob_key: string; number: number }>(
+      "SELECT blob_key, number FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 1", [itemId]);
+    const blob = v.rowCount ? await getBlob(v.rows[0].blob_key) : null;
+    let doc: SheetDoc | null = null;
+    try { doc = blob ? JSON.parse(blob.toString("utf8")) as SheetDoc : null; } catch { /* recreate below */ }
+    if (!doc?.workbook?.sheets?.length)
+      doc = { workbook: { sheets: [{ name: "Responses", cells: {} }] } };
+    const sheet = doc.workbook!.sheets![0];
+    if (!sheet.cells) sheet.cells = {};
+    const cells = sheet.cells;
+    const answerable = fields.filter((x) => x.type !== "section" && x.type !== "payment");
+    const hasPay = fields.some((x) => x.type === "payment");
+    const s = settingsOf(f);
+    const cols = ["Submitted", "Respondent", ...answerable.map((x) => x.label),
+      ...(s.quiz ? ["Score"] : []), ...(hasPay ? ["Paid"] : [])];
+    let maxRow = 0;
+    for (const ref of Object.keys(cells)) {
+      const m = /^[A-Z]+(\d+)$/.exec(ref);
+      if (m) maxRow = Math.max(maxRow, Number(m[1]));
+    }
+    if (!maxRow) { // fresh workbook — write the header first
+      cols.forEach((col, i) => { cells[`${A1(i)}1`] = { v: col, s: { b: true } }; });
+      maxRow = 1;
+    }
+    const row = maxRow + 1;
+    const cell = (v: unknown): string | number | boolean =>
+      Array.isArray(v) ? v.join("; ")
+        : typeof v === "object" && v !== null ? ((v as { name?: string }).name ?? "") : v as string | number | boolean;
+    cells[`A${row}`] = { v: createdAt };
+    cells[`B${row}`] = { v: respondent ?? "anonymous" };
+    answerable.forEach((fd, ci) => {
+      const av = clean[fd.id];
+      if (av !== undefined) cells[`${A1(ci + 2)}${row}`] = { v: cell(av) };
+    });
+    if (s.quiz && score !== null) cells[`${A1(answerable.length + 2)}${row}`] = { v: score };
+    if (hasPay) cells[`${A1(cols.length - 1)}${row}`] = { v: "yes" };
+    const buf = Buffer.from(JSON.stringify(doc));
+    const { key, size } = await putBlob(buf);
+    const num = Number(v.rows[0]?.number ?? 0) + 1;
+    await c.query(
+      `INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at)
+       VALUES ($1,$2,$3,$3,0,true,'Form response',$4,$5,$6,$7)`,
+      [randomUUID(), itemId, num, key, size, f.created_by, now()]);
+    await c.query("UPDATE items SET size = $2, updated_at = now() WHERE id = $1", [itemId, size]);
+  });
+}
+
 /** open flag + scheduled/cap closes — returns a reason or null when live. */
 async function closedReason(f: FormRow, s: FormSettings): Promise<string | null> {
   if (!f.open) return "This form is closed.";
   if (s.closeAt && Date.parse(s.closeAt) <= Date.now()) return "This form is closed.";
   if (s.closeAfter) {
     const c = await one<{ n: string }>(
-      "SELECT count(*) AS n FROM form_responses WHERE form_id = $1", [f.id]);
+      "SELECT count(*) AS n FROM form_responses WHERE form_id = $1 AND status != 'unpaid'", [f.id]);
     if (Number(c?.n ?? 0) >= s.closeAfter) return "This form has reached its response limit.";
   }
   return null;
@@ -360,6 +457,7 @@ export function formRoutes(app: FastifyInstance) {
           score: r.score === null ? null : Number(r.score),
           respondent: r.resp_email ?? r.resp_name ?? dec(r.respondent),
           verified: !!r.respondent_user_id, createdAt: r.created_at,
+          paidAt: r.paid_at, payRef: r.pay_ref,
         };
       }),
     };
@@ -372,12 +470,13 @@ export function formRoutes(app: FastifyInstance) {
     if (!f) return notFound(reply);
     if (!canManage(f, user)) return notOwner(reply);
     const s = settingsOf(f);
-    const fields = fieldsOf(f).filter((x) => x.type !== "section");
+    const fields = fieldsOf(f).filter((x) => x.type !== "section" && x.type !== "payment");
     const rows = await q<RespRow>(
       `SELECT r.*, u.email AS resp_email FROM form_responses r
        LEFT JOIN users u ON u.id = r.respondent_user_id
        WHERE r.form_id = $1 ORDER BY r.created_at`, [f.id]);
-    const head = ["Submitted", "Status", "Respondent", ...fields.map((x) => x.label), ...(s.quiz ? ["Score"] : [])];
+    const head = ["Submitted", "Status", "Respondent", ...fields.map((x) => x.label),
+      ...(s.quiz ? ["Score"] : []), ...(fields.some((x) => x.type === "payment") ? ["Paid"] : [])];
     const lines = [head.map(csvCell).join(",")];
     for (const r of rows) {
       let answers: Record<string, unknown> = {};
@@ -386,6 +485,7 @@ export function formRoutes(app: FastifyInstance) {
         r.created_at, r.status, r.resp_email ?? dec(r.respondent) ?? "",
         ...fields.map((x) => answers[x.id]),
         ...(s.quiz ? [r.score ?? ""] : []),
+        ...(head.includes("Paid") ? [r.paid_at ? "yes" : ""] : []),
       ].map(csvCell).join(","));
     }
     reply.header("content-type", "text/csv; charset=utf-8")
@@ -399,7 +499,7 @@ export function formRoutes(app: FastifyInstance) {
     const f = await getForm((req.params as { id: string }).id, user.orgId);
     if (!f) return notFound(reply);
     if (!canManage(f, user)) return notOwner(reply);
-    const fields = fieldsOf(f).filter((x) => x.type !== "section" && x.type !== "file");
+    const fields = fieldsOf(f).filter((x) => x.type !== "section" && x.type !== "file" && x.type !== "payment");
     const rows = await q<{ answers: string; score: string | null }>(
       "SELECT answers, score FROM form_responses WHERE form_id = $1 AND status = 'approved' LIMIT 20000",
       [f.id]);
@@ -424,14 +524,35 @@ export function formRoutes(app: FastifyInstance) {
         out.buckets = Object.entries(nums.reduce<Record<string, number>>((m, n) => ({ ...m, [n]: (m[n] ?? 0) + 1 }), {}))
           .map(([v, n]) => ({ v, n })).sort((a, b) => Number(a.v) - Number(b.v));
         out.avg = nums.length ? Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 100) / 100 : null;
+      } else if (fd.type === "nps") {
+        // Net Promoter: %promoters (9-10) − %detractors (0-6), −100…+100
+        const nums = vals.map(Number).filter(Number.isFinite);
+        const pro = nums.filter((n) => n >= 9).length;
+        const det = nums.filter((n) => n <= 6).length;
+        out.buckets = Object.entries(nums.reduce<Record<string, number>>((m, n) => ({ ...m, [n]: (m[n] ?? 0) + 1 }), {}))
+          .map(([v, n]) => ({ v, n })).sort((a, b) => Number(a.v) - Number(b.v));
+        out.nps = nums.length ? Math.round((pro / nums.length - det / nums.length) * 100) : null;
+      } else if (fd.type === "ranking") {
+        // mean position per option (1 = ranked top) — lower is better
+        const sums: Record<string, { t: number; n: number }> = {};
+        for (const v of vals) (Array.isArray(v) ? v : []).forEach((o, i) => {
+          const k = String(o); sums[k] = sums[k] ?? { t: 0, n: 0 };
+          sums[k].t += i + 1; sums[k].n += 1;
+        });
+        out.buckets = Object.entries(sums)
+          .map(([v, s2]) => ({ v, n: Math.round((s2.t / s2.n) * 100) / 100 }))
+          .sort((a, b) => a.n - b.n);
+        out.rankAvg = true; // client renders `n` as "avg rank", not a count
       } else {
         out.samples = vals.slice(0, 10).map(String);
       }
       return out;
     });
     const scores = rows.map((r) => (r.score === null ? null : Number(r.score))).filter((x): x is number => x !== null);
+    const views = Number(f.view_count ?? 0);
     return {
-      form: formOut(f), total: answers.length,
+      form: formOut(f), total: answers.length, views,
+      completionRate: views ? Math.round((answers.length / views) * 100) : null,
       avgScore: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100 : null,
       summary,
     };
@@ -474,6 +595,20 @@ export function formPublicRoutes(app: FastifyInstance) {
     if (!f) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
     const s = settingsOf(f);
     const closed = await closedReason(f, s);
+    const edit = String((req.query as { edit?: string }).edit ?? "");
+    let prior: { answers: Record<string, unknown>; respondent: string | null } | null = null;
+    if (edit && s.editAfterSubmit) {
+      const r = await one<RespRow>(
+        "SELECT answers, respondent FROM form_responses WHERE form_id = $1 AND edit_token = $2",
+        [f.id, edit.slice(0, 64)]);
+      if (r) {
+        let answers: Record<string, unknown> = {};
+        try { answers = JSON.parse(decryptField(r.answers) ?? r.answers); } catch { /* malformed */ }
+        prior = { answers, respondent: dec(r.respondent) };
+      }
+    }
+    if (!closed && !edit)
+      void run("UPDATE forms SET view_count = view_count + 1 WHERE id = $1", [f.id]);
     // `correct`/`points` are the quiz answer key — never ship them to the
     // public page, or anyone can read the answers out of the payload
     const pubFields = closed ? [] : fieldsOf(f).map(({ correct: _c, points: _p, ...rest }) => rest);
@@ -485,8 +620,9 @@ export function formPublicRoutes(app: FastifyInstance) {
         showProgress: !!s.showProgress, accent: s.accent ?? null,
         requireSignIn: !!(s.requireSignIn || s.orgOnly || s.onePerUser),
         orgOnly: !!s.orgOnly, quiz: !!s.quiz,
-        shuffleOptions: !!s.shuffleOptions,
+        shuffleOptions: !!s.shuffleOptions, editAfterSubmit: !!s.editAfterSubmit,
       },
+      prior,
     };
   });
 
@@ -563,7 +699,11 @@ export function formPublicRoutes(app: FastifyInstance) {
     if (s.orgOnly && user && user.org_id !== f.org_id)
       return reply.code(403).send({ error: "forbidden", message: "Only members of that workspace can respond" });
     if (s.onePerUser && user) {
-      const dup = await one("SELECT id FROM form_responses WHERE form_id = $1 AND respondent_user_id = $2",
+      // unpaid rows don't lock a respondent out — a payment they abandoned
+      // mustn't block a retry (they have ~30 min to finish it)
+      const dup = await one(
+        `SELECT id FROM form_responses WHERE form_id = $1 AND respondent_user_id = $2
+           AND (status != 'unpaid' OR created_at > now() - interval '30 minutes')`,
         [f.id, user.id]);
       if (dup) return reply.code(409).send({ error: "already_submitted", message: "You've already responded" });
     }
@@ -572,8 +712,9 @@ export function formPublicRoutes(app: FastifyInstance) {
     const v = await validateAnswers(f, fields, body.answers);
     if (!v.ok) return reply.code(400).send({ error: "invalid", message: v.error });
     const quiz = s.quiz ? scoreAnswers(fields, v.clean) : null;
-    const status = s.requiresReview ? "pending" : "approved";
     const id = randomUUID();
+    const respondent = body.respondent ? String(body.respondent).slice(0, 200) : null;
+    const editToken = s.editAfterSubmit ? randomBytes(16).toString("hex") : null;
 
     if (s.dlp) {
       const text = Object.values(v.clean).map((x) =>
@@ -584,26 +725,145 @@ export function formPublicRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "blocked", message: `Response blocked by a workspace data policy (${scan.blockedBy})` });
     }
 
+    // Payment field → the response is parked as `unpaid`; every side effect
+    // (notify, trigger, sheet sync) fires when the verify endpoint confirms
+    // the Paystack reference, so bots can't cheap-shot a notification flood.
+    const payField = fields.find((x) => x.type === "payment" && x.payAmount);
+    let status = s.requiresReview ? "pending" : "approved";
+    let payUrl: string | null = null;
+    let payRef: string | null = null;
+    if (payField) {
+      const secret = await orgPaystackSecret(f.org_id);
+      if (!secret) return reply.code(400).send({
+        error: "no_payments",
+        message: "This workspace hasn't connected a payment account yet",
+      });
+      payRef = `fp-${randomBytes(10).toString("hex")}`;
+      const emailField = fields.find((x) => x.type === "email");
+      const email = (user?.email
+        ?? (emailField ? String(v.clean[emailField.id] ?? "") : ""))
+        || (respondent && /@/.test(respondent) ? respondent : `respondent-${payRef}@kreatix-forms.invalid`);
+      const origin = String(req.headers.origin ?? `https://${req.headers.host ?? ""}`);
+      try {
+        payUrl = (await paystackInit(email, payField.payAmount!, payRef,
+          `${origin}/f/${f.token}?paid=${payRef}`, secret)).authorization_url;
+      } catch (e) {
+        app.log.warn({ err: String(e), form: f.id }, "paystack init failed");
+        return reply.code(502).send({ error: "payment", message: "Couldn't start the payment — try again" });
+      }
+      status = "unpaid";
+    }
+
     await run(
-      `INSERT INTO form_responses (id, form_id, answers, respondent, respondent_user_id, status, score)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      `INSERT INTO form_responses (id, form_id, answers, respondent, respondent_user_id, status, score, edit_token, pay_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [id, f.id,
        encryptField(JSON.stringify(v.clean)) ?? JSON.stringify(v.clean),
-       body.respondent ? encryptField(String(body.respondent).slice(0, 200)) ?? String(body.respondent).slice(0, 200) : null,
-       user?.id ?? null, status, quiz?.score ?? null]);
-    void run(
-      `INSERT INTO notifications (id, user_id, kind, actor_id, message)
-       VALUES ($1,$2,'form',$3,$4)`,
-      [randomUUID(), f.created_by, user?.id ?? f.created_by,
-       encryptField(status === "pending"
-         ? `Response awaiting review: ${dec(f.title) ?? "form"}`
-         : `New response: ${dec(f.title) ?? "form"}`)]);
-    void fireTrigger(f.org_id, "form.submitted",
-      { formId: f.id, name: dec(f.title) ?? "form",
-        respondent: user?.email ?? (body.respondent ? String(body.respondent).slice(0, 120) : "") },
-      app.log);
-    void logActivity(f.org_id, user?.id ?? f.created_by, null, "form.submitted",
-      `${dec(f.title) ?? "form"}: new response`);
-    return reply.code(201).send({ ok: true, score: quiz?.score ?? null, maxScore: quiz?.max ?? null });
+       respondent ? encryptField(respondent) ?? respondent : null,
+       user?.id ?? null, status, quiz?.score ?? null, editToken, payRef]);
+    if (status !== "unpaid")
+      responseFinal(app, f, s, user?.id ?? null, respondent, status, quiz?.score ?? null, v.clean);
+    return reply.code(201).send({
+      ok: true, score: quiz?.score ?? null, maxScore: quiz?.max ?? null,
+      payUrl, payRef, editToken,
+    });
   });
+
+  /** Respondent edit — bearer editToken (returned at submit, kept by the
+   *  respondent) rewrites answers; re-validates, re-scans DLP, re-scores,
+   *  and drops back to pending when the form requires review. */
+  app.put("/api/forms/public/:token", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    const f = await byToken((req.params as { token: string }).token);
+    if (!f) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
+    const s = settingsOf(f);
+    if (!s.editAfterSubmit) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
+    if (await closedReason(f, s)) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
+    const body = (req.body ?? {}) as { editToken?: string; answers?: Record<string, unknown>; respondent?: string };
+    const row = await one<RespRow>(
+      "SELECT * FROM form_responses WHERE form_id = $1 AND edit_token = $2",
+      [f.id, String(body.editToken ?? "").slice(0, 64)]);
+    if (!row) return reply.code(404).send({ error: "not_found", message: "Response not found" });
+    if (row.pay_ref && !row.paid_at)
+      return reply.code(400).send({ error: "unpaid", message: "This response is awaiting payment" });
+    if (!body.answers || typeof body.answers !== "object")
+      return reply.code(400).send({ error: "invalid", message: "Expected { answers }" });
+    const fields = fieldsOf(f);
+    const v = await validateAnswers(f, fields, body.answers);
+    if (!v.ok) return reply.code(400).send({ error: "invalid", message: v.error });
+    const quiz = s.quiz ? scoreAnswers(fields, v.clean) : null;
+    const status = s.requiresReview ? "pending" : row.status;
+    const respondent = body.respondent ? String(body.respondent).slice(0, 200) : null;
+    if (s.dlp) {
+      const text = Object.values(v.clean).map((x) =>
+        Array.isArray(x) ? x.join(" ") : typeof x === "object" && x !== null ? (x as { name?: string }).name ?? "" : String(x)).join("\n");
+      const scan = await scanDlp(f.org_id, { type: "form", id: row.id },
+        dec(f.title) ?? "form", text, row.respondent_user_id);
+      if (scan.blockedBy)
+        return reply.code(400).send({ error: "blocked", message: `Response blocked by a workspace data policy (${scan.blockedBy})` });
+    }
+    await run(
+      "UPDATE form_responses SET answers = $2, respondent = $3, score = $4, status = $5 WHERE id = $1",
+      [row.id, encryptField(JSON.stringify(v.clean)) ?? JSON.stringify(v.clean),
+       respondent ? encryptField(respondent) ?? respondent : null,
+       quiz?.score ?? null, status]);
+    return { ok: true, score: quiz?.score ?? null, maxScore: quiz?.max ?? null };
+  });
+
+  /** Payment verify — the respondent returns from Paystack with ?paid=<ref>;
+   *  we verify server-side (authoritative), flip the parked response, and
+   *  fire the usual side effects. Idempotent + CAS on paid_at. */
+  app.get("/api/forms/public/:token/verify", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    const f = await byToken((req.params as { token: string }).token);
+    if (!f) return reply.code(404).send({ error: "not_found", message: "Form unavailable" });
+    const ref = String((req.query as { ref?: string }).ref ?? "").slice(0, 64);
+    const row = ref && await one<RespRow>(
+      "SELECT * FROM form_responses WHERE form_id = $1 AND pay_ref = $2", [f.id, ref]);
+    if (!row) return reply.code(404).send({ error: "not_found", message: "Payment not found" });
+    if (row.paid_at) return { paid: true, already: true };
+    const secret = await orgPaystackSecret(f.org_id);
+    if (!secret) return reply.code(400).send({ error: "no_payments", message: "Payments not configured" });
+    const v = await paystackVerify(ref, secret);
+    if (!v.ok) return { paid: false };
+    const s = settingsOf(f);
+    const status = s.requiresReview ? "pending" : "approved";
+    const n = await run(
+      "UPDATE form_responses SET paid_at = now(), status = $2 WHERE id = $1 AND paid_at IS NULL",
+      [row.id, status]);
+    if (n > 0) {
+      let clean: Record<string, unknown> = {};
+      try { clean = JSON.parse(decryptField(row.answers) ?? row.answers); } catch { /* malformed */ }
+      responseFinal(app, f, s, row.respondent_user_id, dec(row.respondent), status,
+        row.score === null ? null : Number(row.score), clean);
+    }
+    return { paid: true };
+  });
+}
+
+/** Side effects that run once a response is "real" (approved/pending — i.e.
+ *  immediately for free forms, or after payment verification): creator
+ *  notification, automation trigger, activity log, live Sheets sync. */
+function responseFinal(
+  app: FastifyInstance, f: FormRow, s: FormSettings,
+  actorId: string | null, respondent: string | null, status: string,
+  score: number | null, clean: Record<string, unknown>,
+): void {
+  void run(
+    `INSERT INTO notifications (id, user_id, kind, actor_id, message)
+     VALUES ($1,$2,'form',$3,$4)`,
+    [randomUUID(), f.created_by, actorId ?? f.created_by,
+     encryptField(status === "pending"
+       ? `Response awaiting review: ${dec(f.title) ?? "form"}`
+       : `New response: ${dec(f.title) ?? "form"}`)]);
+  void fireTrigger(f.org_id, "form.submitted",
+    { formId: f.id, name: dec(f.title) ?? "form",
+      respondent: respondent ? respondent.slice(0, 120) : "" },
+    app.log);
+  void logActivity(f.org_id, actorId ?? f.created_by, null, "form.submitted",
+    `${dec(f.title) ?? "form"}: new response`);
+  void syncSheetRow(f, fieldsOf(f), clean, respondent, now(), score)
+    .catch((e) => app.log.warn({ err: String(e), form: f.id }, "form sheet sync failed"));
 }

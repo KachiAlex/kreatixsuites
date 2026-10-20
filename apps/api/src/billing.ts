@@ -336,10 +336,10 @@ export async function createPayment(orgId: string, method: string, reference?: s
 
 const PS = "https://api.paystack.co";
 
-export async function paystackInit(email: string, amountNgn: number, reference: string, callbackUrl: string): Promise<{ authorization_url: string }> {
+export async function paystackInit(email: string, amountNgn: number, reference: string, callbackUrl: string, secret = process.env.KREATIX_PAYSTACK_SECRET): Promise<{ authorization_url: string }> {
   const res = await fetch(`${PS}/transaction/initialize`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${process.env.KREATIX_PAYSTACK_SECRET}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
     body: JSON.stringify({ email, amount: amountNgn * 100, reference, callback_url: callbackUrl }),
   });
   const json = await res.json() as { status: boolean; message?: string; data?: { authorization_url: string } };
@@ -347,9 +347,9 @@ export async function paystackInit(email: string, amountNgn: number, reference: 
   return json.data;
 }
 
-export async function paystackVerify(reference: string): Promise<{ ok: boolean; amountNgn: number }> {
+export async function paystackVerify(reference: string, secret = process.env.KREATIX_PAYSTACK_SECRET): Promise<{ ok: boolean; amountNgn: number }> {
   const res = await fetch(`${PS}/transaction/verify/${encodeURIComponent(reference)}`, {
-    headers: { authorization: `Bearer ${process.env.KREATIX_PAYSTACK_SECRET}` },
+    headers: { authorization: `Bearer ${secret}` },
   });
   const json = await res.json() as { status: boolean; data?: { status: string; amount: number } };
   const ok = json.status && json.data?.status === "success";

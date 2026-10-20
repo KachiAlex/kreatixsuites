@@ -930,6 +930,14 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_form_uploads_form ON form_uploads(form_id)`);
+  // Forms v3 — view analytics, edit-after-submit token, payment tracking,
+  // per-org Paystack key (form payments settle to the org, not the platform)
+  await pool.query(`ALTER TABLE forms ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS edit_token TEXT`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS pay_ref TEXT`);
+  await pool.query(`ALTER TABLE form_responses ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_form_responses_edit ON form_responses(edit_token) WHERE edit_token IS NOT NULL`);
+  await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS paystack_secret TEXT`);
 
   // Kreatix Notes — org wiki pages (OneNote-lite; markdown-ish body)
   await pool.query(`CREATE TABLE IF NOT EXISTS wiki_pages (

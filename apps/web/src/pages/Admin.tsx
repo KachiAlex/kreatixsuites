@@ -115,6 +115,8 @@ export function Admin() {
   const [newScimToken, setNewScimToken] = useState("");
   const [domains, setDomains] = useState<OrgDomain[]>([]);
   const [newDomain, setNewDomain] = useState("");
+  const [paystackSet, setPaystackSet] = useState(false);
+  const [paystackKey, setPaystackKey] = useState("");
   const [domainBusy, setDomainBusy] = useState<string | null>(null);
   const [openDomain, setOpenDomain] = useState<string | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
@@ -176,8 +178,9 @@ export function Admin() {
         api.get<{ events: typeof dlpEvents }>("/api/admin/dlp/events?status=open"),
         api.get<{ keys: typeof apiKeys }>("/api/admin/api-keys"),
         api.get<{ hooks: typeof webhooks }>("/api/admin/webhooks"),
+        api.get<{ set: boolean }>("/api/admin/org-paystack"),
       ];
-      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
@@ -197,6 +200,7 @@ export function Admin() {
         { events: typeof dlpEvents },
         { keys: typeof apiKeys },
         { hooks: typeof webhooks },
+        { set: boolean },
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -221,6 +225,7 @@ export function Admin() {
       setDlpEvents(de.events);
       setApiKeys(ak.keys);
       setWebhooks(wh.hooks);
+      setPaystackSet(py.set);
     }
   }, [isSuper]);
 
@@ -932,6 +937,41 @@ export function Admin() {
               </>
             );
           })()}
+        </section>
+      )}
+
+      {isOwnerOrAdmin && (
+        <section className="admin-card" id="form-payments">
+          <h2>Form payments</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Payment fields on this workspace's forms settle to <b>your</b> Paystack account —
+            paste a secret key to enable them. The key is stored encrypted and never shown again.
+          </p>
+          <div className="admin-flags">
+            <div className={`flag ${paystackSet ? "on" : "off"}`}>
+              <b>Paystack</b><span>{paystackSet ? "Connected" : "Not connected"}</span>
+            </div>
+          </div>
+          <div className="dlg-inline" style={{ marginTop: 12 }}>
+            <input type="password" style={{ flex: 1 }} placeholder={paystackSet ? "Replace key (sk_live_…)" : "sk_live_… or sk_test_…"}
+              value={paystackKey} onChange={(e) => setPaystackKey(e.target.value)} autoComplete="off" />
+            <button className="btn-primary btn-sm" disabled={!paystackKey.trim()}
+              onClick={async () => {
+                try {
+                  await api.post("/api/admin/org-paystack", { secret: paystackKey.trim() });
+                  setPaystackSet(true); setPaystackKey(""); toast("Paystack connected");
+                } catch (e) { toast(e instanceof Error ? e.message : "Save failed"); }
+              }}>{paystackSet ? "Replace" : "Connect"}</button>
+            {paystackSet && (
+              <button className="btn-ghost btn-sm"
+                onClick={async () => {
+                  try {
+                    await api.post("/api/admin/org-paystack", { secret: "" });
+                    setPaystackSet(false); toast("Paystack disconnected");
+                  } catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+                }}>Disconnect</button>
+            )}
+          </div>
         </section>
       )}
 

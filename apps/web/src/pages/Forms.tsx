@@ -19,6 +19,7 @@ interface Field {
   min?: number; max?: number; minLen?: number; maxLen?: number;
   scaleMin?: number; scaleMax?: number; scaleLow?: string; scaleHigh?: string;
   showIf?: ShowIf; correct?: string; points?: number;
+  payAmount?: number; payLabel?: string;
 }
 interface Settings {
   confirmMsg?: string; closeAt?: string; closeAfter?: number;
@@ -26,19 +27,23 @@ interface Settings {
   collectName?: boolean; showProgress?: boolean; accent?: string;
   layout?: "classic" | "chat"; quiz?: boolean; dlp?: boolean;
   requiresReview?: boolean; retentionDays?: number; shuffleOptions?: boolean;
+  editAfterSubmit?: boolean; syncSheet?: string;
 }
 interface Form {
   id: string; title: string | null; description: string | null;
   fields: Field[]; settings: Settings; open: boolean; token: string;
   createdBy: string; createdByName: string | null; responses: number; updatedAt: string;
+  viewCount: number;
 }
 interface Resp {
   id: string; answers: Record<string, unknown>; respondent: string | null;
   verified: boolean; status: string; score: number | null; createdAt: string;
+  paidAt?: string | null; payRef?: string | null;
 }
 interface SummaryField {
   id: string; label: string; type: string; answered: number;
   buckets?: { v: string; n: number }[]; avg?: number | null; samples?: string[];
+  nps?: number | null; rankAvg?: boolean;
 }
 
 const TYPES: { v: string; label: string }[] = [
@@ -48,14 +53,94 @@ const TYPES: { v: string; label: string }[] = [
   { v: "url", label: "Link / URL" }, { v: "phone", label: "Phone" },
   { v: "choice", label: "Multiple choice" }, { v: "multiselect", label: "Checkboxes" },
   { v: "checkbox", label: "Yes/No" }, { v: "rating", label: "Rating (1-5)" },
-  { v: "scale", label: "Linear scale" }, { v: "section", label: "Section header" },
-  { v: "file", label: "File upload" },
+  { v: "scale", label: "Linear scale" }, { v: "nps", label: "NPS (0-10)" },
+  { v: "ranking", label: "Ranking" }, { v: "section", label: "Section header" },
+  { v: "file", label: "File upload" }, { v: "payment", label: "Payment (₦)" },
+];
+
+// starter templates — prefilled schema + settings, editable before save
+const TEMPLATES: { name: string; desc: string; title: string; fields: Omit<Field, "id">[]; settings?: Settings }[] = [
+  { name: "Blank form", desc: "Start from scratch", title: "", fields: [{ label: "", type: "text" }] },
+  {
+    name: "Contact / lead intake", desc: "Name, email, message",
+    title: "Contact us",
+    fields: [
+      { label: "Your name", type: "text", required: true },
+      { label: "Email", type: "email", required: true },
+      { label: "Message", type: "textarea", required: true },
+    ],
+  },
+  {
+    name: "Event RSVP", desc: "Attendance, guests, dietary needs",
+    title: "RSVP",
+    fields: [
+      { label: "Your name", type: "text", required: true },
+      { label: "Will you attend?", type: "choice", required: true, options: ["Yes", "No", "Maybe"] },
+      { label: "Number of guests", type: "number", min: 0, max: 10 },
+      { label: "Dietary requirements", type: "text" },
+    ],
+    settings: { collectName: false },
+  },
+  {
+    name: "Customer feedback (NPS)", desc: "0-10 score + free text",
+    title: "How are we doing?",
+    fields: [
+      { label: "How likely are you to recommend us to a friend?", type: "nps", required: true },
+      { label: "What's the main reason for your score?", type: "textarea" },
+      { label: "Overall satisfaction", type: "rating" },
+    ],
+    settings: { collectName: false },
+  },
+  {
+    name: "Job application", desc: "Details + résumé upload",
+    title: "Job application",
+    fields: [
+      { label: "Full name", type: "text", required: true },
+      { label: "Email", type: "email", required: true },
+      { label: "Phone", type: "phone" },
+      { label: "Portfolio / LinkedIn", type: "url" },
+      { label: "Résumé", type: "file", required: true },
+      { label: "Why this role?", type: "textarea" },
+    ],
+    settings: { collectName: false, requireSignIn: false },
+  },
+  {
+    name: "Paid registration", desc: "Sign-up + Paystack payment",
+    title: "Registration",
+    fields: [
+      { label: "Full name", type: "text", required: true },
+      { label: "Email", type: "email", required: true },
+      { label: "Phone", type: "phone" },
+      { label: "Registration fee", type: "payment", payLabel: "Registration", payAmount: 5000 },
+    ],
+    settings: { collectName: false },
+  },
+  {
+    name: "Quiz", desc: "Sample scored questions",
+    title: "Quiz",
+    fields: [
+      { label: "What is 2 + 2?", type: "choice", required: true, options: ["3", "4", "5"], correct: "4", points: 1 },
+      { label: "The sky is blue.", type: "checkbox", required: true, correct: "true", points: 1 },
+    ],
+    settings: { quiz: true, collectName: true },
+  },
+  {
+    name: "Bug report", desc: "Summary, severity, screenshot",
+    title: "Report a bug",
+    fields: [
+      { label: "What happened?", type: "text", required: true },
+      { label: "Severity", type: "choice", required: true, options: ["Cosmetic", "Annoying", "Broken", "Data loss"] },
+      { label: "Steps to reproduce", type: "textarea" },
+      { label: "Screenshot", type: "file" },
+    ],
+    settings: { collectName: false },
+  },
 ];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmtWhen = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const publicUrl = (token: string) => `${location.origin}/f/${token}`;
-const hasOptions = (t: string) => t === "choice" || t === "multiselect";
-const answerable = (f: Field) => f.type !== "section";
+const hasOptions = (t: string) => t === "choice" || t === "multiselect" || t === "ranking";
+const answerable = (f: Field) => f.type !== "section" && f.type !== "payment";
 
 const ans = (v: unknown): string =>
   Array.isArray(v) ? v.join(", ")
@@ -74,7 +159,12 @@ export function Forms() {
   const [responses, setResponses] = useState<Resp[]>([]);
   const [sumForm, setSumForm] = useState<Form | null>(null);
   const [summary, setSummary] = useState<SummaryField[]>([]);
-  const [sumStats, setSumStats] = useState<{ total: number; avgScore: number | null } | null>(null);
+  const [sumStats, setSumStats] = useState<{
+    total: number; avgScore: number | null; views: number; completionRate: number | null;
+  } | null>(null);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragArmed, setDragArmed] = useState<number | null>(null); // grip held → card becomes draggable
   const [embedForm, setEmbedForm] = useState<Form | null>(null);
   const [qr, setQr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,10 +180,11 @@ export function Forms() {
   }, [toast]);
   useEffect(() => { void load(); }, [load]);
 
-  const openNew = () => {
-    setEditing(null); setFTitle(""); setFDesc("");
-    setFFields([{ id: uid(), label: "", type: "text", required: false }]);
-    setFSettings({}); setTab("questions"); setEditOpen(true);
+  const openNew = () => setTplOpen(true);
+  const applyTemplate = (t: (typeof TEMPLATES)[number]) => {
+    setEditing(null); setFTitle(t.title); setFDesc(t.desc);
+    setFFields(t.fields.map((f) => ({ ...f, id: uid() } as Field)));
+    setFSettings(t.settings ?? {}); setTab("questions"); setTplOpen(false); setEditOpen(true);
   };
   const openEdit = (f: Form) => {
     setEditing(f); setFTitle(f.title ?? ""); setFDesc(f.description ?? "");
@@ -108,6 +199,14 @@ export function Forms() {
       if (j < 0 || j >= fs.length) return fs;
       const next = [...fs];
       [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  const moveTo = (from: number, to: number) =>
+    setFFields((fs) => {
+      if (from === to || from < 0 || to < 0 || from >= fs.length || to >= fs.length) return fs;
+      const next = [...fs];
+      const [x] = next.splice(from, 1);
+      next.splice(to, 0, x);
       return next;
     });
   const setSet = (patch: Partial<Settings>) => setFSettings((s) => ({ ...s, ...patch }));
@@ -171,9 +270,13 @@ export function Forms() {
 
   const viewSummary = async (f: Form) => {
     try {
-      const r = await api.get<{ total: number; avgScore: number | null; summary: SummaryField[] }>(
-        `/api/forms/${f.id}/summary`);
-      setSummary(r.summary); setSumStats({ total: r.total, avgScore: r.avgScore }); setSumForm(f);
+      const r = await api.get<{
+        total: number; avgScore: number | null; views: number;
+        completionRate: number | null; summary: SummaryField[];
+      }>(`/api/forms/${f.id}/summary`);
+      setSummary(r.summary);
+      setSumStats({ total: r.total, avgScore: r.avgScore, views: r.views, completionRate: r.completionRate });
+      setSumForm(f);
     } catch (e) { toast((e as Error).message); }
   };
 
@@ -190,8 +293,10 @@ export function Forms() {
     try {
       const r = await api.get<{ responses: Resp[] }>(`/api/forms/${f.id}/responses`);
       const fields = f.fields.filter(answerable);
+      const hasPay = f.fields.some((x) => x.type === "payment");
       const cells: Record<string, CellData> = {};
-      const cols = ["Submitted", "Respondent", ...fields.map((x) => x.label), ...(f.settings.quiz ? ["Score"] : [])];
+      const cols = ["Submitted", "Respondent", ...fields.map((x) => x.label),
+        ...(f.settings.quiz ? ["Score"] : []), ...(hasPay ? ["Paid"] : [])];
       // A1-style column names — past Z needs AA/AB/… (forms can have 100 fields)
       const col = (i: number) => {
         let s = ""; let n = i + 1;
@@ -199,7 +304,7 @@ export function Forms() {
         return s;
       };
       cols.forEach((c, i) => { cells[`${col(i)}1`] = { v: c, s: { b: true } }; });
-      r.responses.slice().reverse().forEach((resp, ri) => {
+      r.responses.filter((x) => x.status !== "unpaid").slice().reverse().forEach((resp, ri) => {
         const row = ri + 2;
         cells[`A${row}`] = { v: fmtWhen(resp.createdAt) };
         cells[`B${row}`] = { v: resp.respondent ?? "anonymous" };
@@ -207,13 +312,18 @@ export function Forms() {
           const v = resp.answers[fd.id];
           if (v !== undefined) cells[`${col(ci + 2)}${row}`] = { v: ans(v) };
         });
-        if (f.settings.quiz && resp.score !== null) cells[`${col(cols.length - 1)}${row}`] = { v: resp.score };
+        if (f.settings.quiz && resp.score !== null)
+          cells[`${col(fields.length + 2)}${row}`] = { v: resp.score };
+        if (hasPay) cells[`${col(cols.length - 1)}${row}`] = { v: resp.paidAt ? "yes" : "" };
       });
       const item = await createDoc("sheets", `${f.title ?? "Form"} — Responses`, {
         kind: "sheets",
         workbook: { sheets: [{ name: "Responses", cells, freeze: { rows: 1, cols: 0 } }] },
       });
-      toast("Responses saved to Sheets");
+      // link for live sync — every new response appends a row server-side
+      await api.patch(`/api/forms/${f.id}`, { settings: { ...f.settings, syncSheet: item.id } });
+      void load();
+      toast("Linked — new responses will append to this workbook live");
       navigate(`/edit/${item.id}`);
     } catch (e) { toast((e as Error).message); }
   };
@@ -238,7 +348,9 @@ export function Forms() {
               <b>{f.title}</b>
               <span className="d-sub">
                 {f.fields.filter(answerable).length} question{f.fields.filter(answerable).length === 1 ? "" : "s"} · {f.responses} response{f.responses === 1 ? "" : "s"}
+                {f.viewCount ? ` · ${f.viewCount} views` : ""}
                 {f.settings.quiz ? " · quiz" : ""}{f.settings.requiresReview ? " · review on" : ""}
+                {f.settings.syncSheet ? " · ⇄ Sheets live" : ""}
                 {f.createdByName ? ` · ${f.createdByName}` : ""} · {fmtWhen(f.updatedAt)}
               </span>
             </div>
@@ -250,7 +362,8 @@ export function Forms() {
                 <button className="btn-ghost btn-sm" onClick={() => openEdit(f)}>Edit</button>
                 <button className="btn-ghost btn-sm" onClick={() => void openEmbed(f)}>Embed</button>
                 <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void exportCsv(f)}>CSV</button>
-                <button className="btn-ghost btn-sm" disabled={!f.responses} onClick={() => void toSheets(f)}>→ Sheets</button>
+                <button className="btn-ghost btn-sm" title="Export current responses and link live sync"
+                  onClick={() => void toSheets(f)}>⇄ Sheets</button>
                 <button className="btn-ghost btn-sm" onClick={() => void dupe(f)}>Duplicate</button>
                 <button className="btn-ghost btn-sm" onClick={() => void toggleOpen(f)}>{f.open ? "Close" : "Open"}</button>
                 <button className="btn-ghost btn-sm" onClick={() => void del(f)}>Delete</button>
@@ -259,6 +372,21 @@ export function Forms() {
           </div>
         ))}
       </div>
+
+      {tplOpen && (
+        <Modal label="New form" onClose={() => setTplOpen(false)} style={{ width: 560, maxWidth: "94vw" }}>
+          <div className="ob-body" style={{ maxHeight: "70vh", overflow: "auto" }}>
+            <div className="form-tpl-grid">
+              {TEMPLATES.map((t) => (
+                <button key={t.name} className="form-tpl" onClick={() => applyTemplate(t)}>
+                  <b>{t.name}</b>
+                  <span className="d-sub">{t.fields.length} question{t.fields.length === 1 ? "" : "s"} · {t.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {editOpen && (
         <Modal label={editing ? "Edit form" : "New form"} onClose={() => setEditOpen(false)} style={{ width: 680, maxWidth: "96vw" }}>
@@ -275,14 +403,21 @@ export function Forms() {
             )}
 
             {tab === "questions" && fFields.map((f, i) => (
-              <div key={f.id} className="form-field-card">
+              <div key={f.id} className={`form-field-card${dragIdx === i ? " dragging" : ""}`}
+                draggable={dragArmed === i}
+                onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); if (dragIdx !== null) moveTo(dragIdx, i); setDragIdx(null); setDragArmed(null); }}
+                onDragEnd={() => { setDragIdx(null); setDragArmed(null); }}>
                 <div className="form-field-row">
+                  <span className="form-grip" title="Drag to reorder"
+                    onMouseDown={() => setDragArmed(i)} onMouseUp={() => setDragArmed(null)}>⠿</span>
                   <input placeholder={f.type === "section" ? "Section title" : "Question"} value={f.label} style={{ flex: 1 }}
                     onChange={(e) => setField(i, { label: e.target.value })} />
                   <select value={f.type} onChange={(e) => setField(i, { type: e.target.value as Field["type"] })}>
                     {TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
                   </select>
-                  {f.type !== "section" && (
+                  {f.type !== "section" && f.type !== "payment" && (
                     <label className="cal-check" style={{ marginBottom: 0 }}>
                       <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> Req
                     </label>
@@ -339,7 +474,16 @@ export function Forms() {
                       onChange={(e) => setField(i, { scaleHigh: e.target.value || undefined })} />
                   </div>
                 )}
-                {showIfTargets(i).length > 0 && f.type !== "section" && (
+                {f.type === "payment" && (
+                  <div className="dlg-inline" style={{ marginTop: 6 }}>
+                    <input placeholder="Label" style={{ flex: 1 }} value={f.payLabel ?? ""}
+                      onChange={(e) => setField(i, { payLabel: e.target.value || undefined })} />
+                    <span className="d-sub">₦</span>
+                    <input type="number" min={1} placeholder="Amount" style={{ width: 110 }} value={f.payAmount ?? ""}
+                      onChange={(e) => setField(i, { payAmount: e.target.value === "" ? undefined : Math.round(Number(e.target.value)) })} />
+                  </div>
+                )}
+                {showIfTargets(i).length > 0 && f.type !== "section" && f.type !== "payment" && (
                   <div className="dlg-inline" style={{ marginTop: 6 }}>
                     <label className="cal-check" style={{ marginBottom: 0 }}>
                       <input type="checkbox" checked={!!f.showIf}
@@ -425,7 +569,22 @@ export function Forms() {
                     onChange={(e) => setSet({ requiresReview: e.target.checked })} /> Review before counting</label>
                   <label className="cal-check"><input type="checkbox" checked={!!fSettings.dlp}
                     onChange={(e) => setSet({ dlp: e.target.checked })} /> Scan answers with DLP rules</label>
+                  <label className="cal-check"><input type="checkbox" checked={!!fSettings.editAfterSubmit}
+                    onChange={(e) => setSet({ editAfterSubmit: e.target.checked })} /> Let respondents edit their response</label>
                 </div>
+                {fFields.some((f) => f.type === "payment") && (
+                  <p className="d-sub" style={{ marginTop: 8 }}>
+                    Payment field: responses settle to this workspace's Paystack account —
+                    connect a key under <b>Admin → Workspace → Payments</b>.
+                  </p>
+                )}
+                {fSettings.syncSheet && (
+                  <p className="d-sub" style={{ marginTop: 4 }}>
+                    ⇄ Live-linked to a Sheets workbook — each response appends a row.
+                    <button className="btn-ghost btn-sm" style={{ marginLeft: 6 }}
+                      onClick={() => setSet({ syncSheet: undefined })}>Unlink</button>
+                  </p>
+                )}
               </div>
             )}
 
@@ -442,7 +601,7 @@ export function Forms() {
         <Modal label={`Responses — ${respForm.title}`} onClose={() => setRespForm(null)} style={{ width: 680, maxWidth: "96vw" }}>
           <div className="ob-body" style={{ maxHeight: "72vh", overflow: "auto" }}>
             <div className="dlg-inline">
-              {["all", "approved", "pending", "rejected"].map((s) => (
+              {["all", "approved", "pending", "rejected", "unpaid"].map((s) => (
                 <button key={s}
                   className={`btn-ghost btn-sm${respStatus === s ? " on" : ""}`}
                   onClick={() => setRespStatus(s)}>{s}</button>
@@ -454,6 +613,7 @@ export function Forms() {
                 <div className="d-sub" style={{ marginBottom: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <span>{fmtWhen(r.createdAt)} · {r.respondent ?? "anonymous"}{r.verified ? " ✓" : ""}</span>
                   {r.status !== "approved" && <span className={`meet-status ${r.status === "pending" ? "live" : "ended"}`}>{r.status}</span>}
+                  {r.paidAt && <span className="meet-status live">paid</span>}
                   {r.score !== null && <span className="d-sub">score {r.score}</span>}
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
                     {r.status !== "approved" && <button className="btn-ghost btn-sm" onClick={() => void setResp(respForm, r.id, "approved")}>Approve</button>}
@@ -477,12 +637,22 @@ export function Forms() {
         <Modal label={`Summary — ${sumForm.title}`} onClose={() => setSumForm(null)} style={{ width: 640, maxWidth: "94vw" }}>
           <div className="ob-body" style={{ maxHeight: "72vh", overflow: "auto" }}>
             <p className="d-sub">{sumStats.total} approved response{sumStats.total === 1 ? "" : "s"}
-              {sumStats.avgScore !== null ? ` · avg score ${sumStats.avgScore}` : ""}</p>
+              {sumStats.avgScore !== null ? ` · avg score ${sumStats.avgScore}` : ""}
+              {sumStats.views ? ` · ${sumStats.views} views` : ""}
+              {sumStats.completionRate !== null ? ` · ${sumStats.completionRate}% completion` : ""}</p>
             {summary.map((f) => (
               <div key={f.id} className="form-sum">
                 <b className="form-sum-q">{f.label}</b>
-                <span className="d-sub">{f.answered} answer{f.answered === 1 ? "" : "s"}{f.avg !== undefined && f.avg !== null ? ` · avg ${f.avg}` : ""}</span>
+                <span className="d-sub">{f.answered} answer{f.answered === 1 ? "" : "s"}
+                  {f.avg !== undefined && f.avg !== null ? ` · avg ${f.avg}` : ""}
+                  {f.nps !== undefined && f.nps !== null ? ` · NPS ${f.nps > 0 ? "+" : ""}${f.nps}` : ""}</span>
                 {f.buckets?.map((b) => {
+                  if (f.rankAvg) return ( // ranking: n is mean position — ordered list, not a bar
+                    <div key={b.v} className="form-sum-bar">
+                      <span className="d-sub" style={{ width: 32 }}>#{b.n}</span>
+                      <span className="form-sum-v" style={{ flex: 1 }}>{b.v}</span>
+                    </div>
+                  );
                   const pct = f.answered ? Math.round((b.n / f.answered) * 100) : 0;
                   return (
                     <div key={b.v} className="form-sum-bar">

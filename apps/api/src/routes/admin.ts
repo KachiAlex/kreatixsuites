@@ -6,7 +6,7 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { q as dbq, one, run, now, tx } from "../db.js";
 import { requireAuth, type AuthedRequest, type UserRow } from "../auth.js";
 import { getPolicies, setPolicies, dlpRules, isSafePattern, type DlpRule } from "../policies.js";
-import { encryptionEnabled, decryptField } from "../crypto.js";
+import { encryptionEnabled, decryptField, encryptField } from "../crypto.js";
 import { metrics } from "../metrics.js";
 import { activeCollabRooms, collabPeers } from "../collab.js";
 import { ssoEnabled } from "./sso.js";
@@ -46,6 +46,28 @@ export function adminRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     await run("UPDATE orgs SET onboarded_at = COALESCE(onboarded_at, now()) WHERE id = $1", [user.orgId]);
     return { ok: true };
+  });
+
+  /** Per-org Paystack secret — payment fields on this org's forms settle to
+   *  this account. Stored encrypted like other sensitive columns; the POST
+   *  only ever returns `set`, never the key. */
+  app.get("/api/admin/org-paystack", async (req) => {
+    const { user } = req as AuthedRequest;
+    const o = await one<{ paystack_secret: string | null }>(
+      "SELECT paystack_secret FROM orgs WHERE id = $1", [user.orgId]);
+    return { set: !!o?.paystack_secret };
+  });
+
+  app.post("/api/admin/org-paystack", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const secret = String((req.body as { secret?: string })?.secret ?? "").trim();
+    if (secret && !/^sk_(live|test)_.{8,}$/.test(secret))
+      return reply.code(400).send({ error: "invalid", message: "Expected a Paystack secret key (sk_live_… / sk_test_…)" });
+    await run("UPDATE orgs SET paystack_secret = $2 WHERE id = $1",
+      [user.orgId, secret ? encryptField(secret) ?? secret : null]);
+    void logActivity(user.orgId, user.id, null, "admin.paystack",
+      secret ? "Payment account connected" : "Payment account disconnected");
+    return { set: !!secret };
   });
 
   app.get("/api/admin/members", async (req) => {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { API_BASE } from "../lib/platform";
 import { getToken } from "../lib/api";
 
@@ -14,12 +14,14 @@ interface PubField {
   min?: number; max?: number; minLen?: number; maxLen?: number;
   scaleMin?: number; scaleMax?: number; scaleLow?: string; scaleHigh?: string;
   showIf?: { field: string; equals: string };
+  payAmount?: number; payLabel?: string;
 }
 interface PubForm {
   title: string | null; description: string | null; fields: PubField[];
   closedReason: string | null; confirmMsg: string | null; collectName: boolean;
   layout: "classic" | "chat"; showProgress: boolean; accent: string | null;
   requireSignIn: boolean; orgOnly: boolean; quiz: boolean; shuffleOptions: boolean;
+  editAfterSubmit?: boolean;
 }
 
 type Answer = string | number | boolean | string[] | { itemId: string; name: string };
@@ -28,6 +30,7 @@ const answered = (v: Answer | undefined) =>
 
 export function FormFill() {
   const { token } = useParams();
+  const [params] = useSearchParams();
   const [form, setForm] = useState<PubForm | null>(null);
   const [gone, setGone] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, Answer>>({});
@@ -36,16 +39,41 @@ export function FormFill() {
   const [hp, setHp] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ score: number | null; max: number | null } | null>(null);
+  const [editToken, setEditToken] = useState<string | null>(null);
+  const [payState, setPayState] = useState<"checking" | "ok" | "pending" | null>(null);
   const [err, setErr] = useState("");
   const [step, setStep] = useState(0);
   const [uploading, setUploading] = useState<string | null>(null);
   const signedIn = !!getToken();
+  const editing = !!params.get("edit");
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/forms/public/${token}`)
-      .then(async (r) => (r.ok ? setForm((await r.json()).form) : setGone("This form is closed or doesn't exist.")))
+    // returning from Paystack — confirm the payment server-side before
+    // showing anything (the ?paid= ref alone proves nothing)
+    const ref = params.get("paid");
+    if (ref) {
+      setPayState("checking");
+      fetch(`${API_BASE}/api/forms/public/${token}/verify?ref=${encodeURIComponent(ref)}`)
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          setPayState(j.paid ? "ok" : "pending");
+        })
+        .catch(() => setPayState("pending"));
+    }
+    const edit = params.get("edit") ?? "";
+    fetch(`${API_BASE}/api/forms/public/${token}${edit ? `?edit=${encodeURIComponent(edit)}` : ""}`)
+      .then(async (r) => {
+        if (!r.ok) { setGone("This form is closed or doesn't exist."); return; }
+        const j = await r.json();
+        setForm(j.form);
+        if (j.prior) { // edit-after-submit: prefill the stored answers
+          setAnswers(j.prior.answers ?? {});
+          setRespondent(j.prior.respondent ?? "");
+          setEditToken(edit);
+        }
+      })
       .catch(() => setGone("Couldn't reach the server — check your connection."));
-  }, [token]);
+  }, [token, params]);
 
   // options are shuffled once per load when the form asks for it
   const shuffled = useMemo(() => {
@@ -64,6 +92,13 @@ export function FormFill() {
   }, [form]);
 
   if (gone) return <div className="auth-wrap"><div className="empty">{gone}</div></div>;
+  if (payState === "checking")
+    return <div className="auth-wrap"><div className="empty">Confirming your payment…</div></div>;
+  if (payState === "ok")
+    return <div className="auth-wrap"><div className="panel" style={{ maxWidth: 480, padding: 28, textAlign: "center" }}>
+      <h2>Payment confirmed</h2>
+      <p className="d-sub">Thanks — your response was recorded.</p>
+    </div></div>;
   if (!form) return <div className="auth-wrap"><div className="empty">Loading…</div></div>;
   if (form.closedReason) return <div className="auth-wrap"><div className="empty">{form.closedReason}</div></div>;
 
@@ -73,7 +108,7 @@ export function FormFill() {
   // showIf mirrors the server: hidden fields are skipped entirely
   const visible = form.fields.filter((f) =>
     f.type === "section" || !f.showIf || String(answers[f.showIf.field] ?? "") === f.showIf.equals);
-  const questions = visible.filter((f) => f.type !== "section");
+  const questions = visible.filter((f) => f.type !== "section" && f.type !== "payment");
   const answeredCount = questions.filter((f) => answered(answers[f.id])).length;
   const chat = form.layout === "chat";
 
@@ -111,21 +146,36 @@ export function FormFill() {
     setBusy(true); setErr("");
     try {
       const r = await fetch(`${API_BASE}/api/forms/public/${token}`, {
-        method: "POST",
+        method: editToken ? "PUT" : "POST",
         headers: {
           "content-type": "application/json",
           ...(signedIn ? { authorization: `Bearer ${getToken()}` } : {}),
         },
-        body: JSON.stringify({ answers, respondent: respondent.trim() || undefined, hp: hp || undefined }),
+        body: JSON.stringify({
+          answers, respondent: respondent.trim() || undefined, hp: hp || undefined,
+          ...(editToken ? { editToken } : {}),
+        }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.status === 401) setErr("You must be signed in to respond — sign in, then reopen this link.");
       else if (r.status === 409) setErr(j.message ?? "You've already responded.");
       else if (!r.ok) setErr(j.message ?? "Submit failed");
-      else setDone({ score: j.score ?? null, max: j.maxScore ?? null });
+      else if (j.payUrl) {
+        if (j.editToken) try { localStorage.setItem(`formedit.${token}`, j.editToken); } catch { /* private mode */ }
+        location.href = j.payUrl; // → Paystack checkout, returns to ?paid=<ref>
+      }
+      else {
+        if (j.editToken) try { localStorage.setItem(`formedit.${token}`, j.editToken); } catch { /* private mode */ }
+        if (j.editToken) setEditToken(j.editToken);
+        setDone({ score: j.score ?? null, max: j.maxScore ?? null });
+      }
     } catch { setErr("Network error — try again"); }
     setBusy(false);
   };
+
+  const storedEdit = (() => {
+    try { return localStorage.getItem(`formedit.${token}`); } catch { return null; }
+  })();
 
   const doneCard = (
     <div className="auth-wrap" style={accentStyle}>
@@ -134,6 +184,9 @@ export function FormFill() {
         {done?.score !== null && done?.score !== undefined
           ? <p className="formfill-score">You scored <b>{done.score}</b>{done.max ? ` / ${done.max}` : ""}</p>
           : <p className="d-sub">{form.confirmMsg ?? "Thanks — your answers were submitted."}</p>}
+        {form.editAfterSubmit && (editToken || storedEdit) && (
+          <p><Link className="btn-ghost btn-sm" to={`/f/${token}?edit=${editToken ?? storedEdit}`}>Edit your response</Link></p>
+        )}
       </div>
     </div>
   );
@@ -258,6 +311,46 @@ export function FormFill() {
           </div>
         );
       }
+      case "nps":
+        return (
+          <div className="formfill-scale">
+            <span className="d-sub">Not likely</span>
+            {Array.from({ length: 11 }, (_, i) => i).map((n) => (
+              <button key={n} type="button"
+                className={`formfill-scale-n${answers[f.id] === n ? " on" : ""}`}
+                onClick={() => set(f.id, n)}>{n}</button>
+            ))}
+            <span className="d-sub">Extremely likely</span>
+          </div>
+        );
+      case "ranking": {
+        const order = (Array.isArray(answers[f.id]) ? answers[f.id] as string[] : null) ?? opts(f);
+        const shift = (i: number, dir: -1 | 1) => {
+          const next = [...order]; const j = i + dir;
+          if (j < 0 || j >= next.length) return;
+          [next[i], next[j]] = [next[j], next[i]];
+          set(f.id, next);
+        };
+        return (
+          <div className="formfill-opts">
+            {order.map((o, i) => (
+              <div key={o} className="formfill-opt" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="d-sub" style={{ width: 18, textAlign: "right" }}>{i + 1}.</span>
+                <span style={{ flex: 1 }}>{o}</span>
+                <button type="button" className="iconbtn" disabled={i === 0} onClick={() => shift(i, -1)}>↑</button>
+                <button type="button" className="iconbtn" disabled={i === order.length - 1} onClick={() => shift(i, 1)}>↓</button>
+              </div>
+            ))}
+          </div>
+        );
+      }
+      case "payment":
+        return (
+          <div className="formfill-pay">
+            <b>{f.payLabel ?? "Payment"} — ₦{Number(f.payAmount ?? 0).toLocaleString()}</b>
+            <span className="d-sub">You'll be sent to Paystack's secure checkout after submitting.</span>
+          </div>
+        );
       default:
         return (
           <input
@@ -292,6 +385,10 @@ export function FormFill() {
       <div className="panel formfill">
         <h2 style={{ margin: "0 0 4px" }}>{form.title}</h2>
         {form.description && <p className="d-sub">{form.description}</p>}
+        {editing && <p className="d-sub" style={{ color: "var(--k-orange)" }}>Editing your previous response</p>}
+        {payState === "pending" && (
+          <p className="formfill-err">We couldn't confirm your payment yet — if checkout completed, wait a minute and refresh this page.</p>
+        )}
         {(form.showProgress || chat) && (
           <div className="formfill-progress"><div className="formfill-progress-fill" style={{ width: `${progress}%` }} /></div>
         )}
@@ -309,7 +406,7 @@ export function FormFill() {
                 ? <button className="btn-primary" disabled={!!cur?.required && !answered(answers[cur.id])}
                     onClick={() => setStep((s) => s + 1)}>Next →</button>
                 : <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
-                    {busy ? "Submitting…" : "Submit"}</button>}
+                    {busy ? "Submitting…" : editing ? "Save changes" : "Submit"}</button>}
             </div>
           </>
         ) : (
@@ -323,7 +420,7 @@ export function FormFill() {
             )}
             {err && <p className="formfill-err">{err}</p>}
             <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
-              {busy ? "Submitting…" : "Submit"}
+              {busy ? "Submitting…" : editing ? "Save changes" : "Submit"}
             </button>
           </>
         )}

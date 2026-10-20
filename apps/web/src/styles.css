@@ -3363,6 +3363,14 @@ html[data-theme="dark"]{
 .form-sum-track{flex:1;height:10px;border-radius:5px;background:var(--line);overflow:hidden}
 .form-sum-fill{height:100%;background:var(--k-orange)}
 .form-sum-sample{font-size:12.5px;color:var(--muted);padding:3px 0;border-bottom:1px dashed var(--line)}
+.form-field-card.dragging{opacity:.45;border-style:dashed}
+.form-grip{cursor:grab;color:var(--muted);font-size:14px;user-select:none;padding:0 2px}
+.form-grip:active{cursor:grabbing}
+.form-tpl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-tpl{border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:12px 14px;text-align:left;cursor:pointer;color:var(--ink)}
+.form-tpl:hover{border-color:var(--k-orange)}
+.form-tpl b{display:block;font-size:13.5px;margin-bottom:2px}
+.formfill-pay{border:1px dashed var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;font-size:13.5px}
 
 /* kreatix notes */
 .note-title{flex:1;min-width:0;border:0;background:none;font-size:15px;font-weight:700;color:var(--ink);font-family:inherit}
