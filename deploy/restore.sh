@@ -45,7 +45,27 @@ echo "blob tar: ${BLOB_TAR:-none}"
 gunzip -t "$DB_DUMP" && echo "dump integrity: ok"
 [ -f "$BLOB_TAR" ] && tar -tzf "$BLOB_TAR" >/dev/null && echo "tarball integrity: ok"
 
-# 2. restore db
+# 2. restore db — verify-only goes into a scratch database on the same
+# postgres container: the dump is exercised end-to-end without touching
+# the live schema, and the scratch db is dropped afterwards.
+if [ "$VERIFY_ONLY" = "1" ]; then
+  DRILL_DB="kreatix_drill_$$"
+  docker exec "$DB_CONT" psql -U "$DB_USER" -c "CREATE DATABASE $DRILL_DB" >/dev/null
+  trap 'docker exec "$DB_CONT" psql -U "$DB_USER" -c "DROP DATABASE IF EXISTS $DRILL_DB" >/dev/null 2>&1 || true' EXIT
+  echo "restoring dump into scratch db $DRILL_DB…"
+  gunzip -c "$DB_DUMP" | docker exec -i "$DB_CONT" psql -U "$DB_USER" -d "$DRILL_DB" -v ON_ERROR_STOP=1 -q
+  echo "drill restore: ok"
+  # compare headline counts restored-vs-live
+  for t in users orgs items versions sessions activity; do
+    restored=$(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DRILL_DB" -tAc "SELECT count(*) FROM $t" 2>/dev/null || echo "n/a")
+    live=$(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT count(*) FROM $t" 2>/dev/null || echo "n/a")
+    printf "  %-12s restored=%-6s live=%-6s\n" "$t" "$restored" "$live"
+  done
+  [ -f "${BLOB_TAR:-}" ] && echo "blob tarball objects: $(tar -tzf "$BLOB_TAR" | wc -l)"
+  echo "verify-only run complete — prod untouched (scratch db dropped)"
+  exit 0
+fi
+
 echo "restoring database $DB_NAME…"
 gunzip -c "$DB_DUMP" | docker exec -i "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1
 echo "db restore: ok ($(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT count(*) FROM items') items)"
@@ -63,5 +83,4 @@ docker compose restart app >/dev/null
 for i in $(seq 1 20); do curl -sf http://127.0.0.1:3017/api/health && break || sleep 2; done
 echo; echo "status: $(curl -s http://127.0.0.1:3017/api/status)"
 
-[ "$VERIFY_ONLY" = "1" ] && echo "verify-only run complete — prod untouched apart from the app restart"
 echo "done."

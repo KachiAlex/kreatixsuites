@@ -52,4 +52,30 @@ export function installGlobalErrorReporting() {
       kind: "unhandledrejection",
     }).catch(() => {});
   });
+
+  // Stale-chunk self-heal: a deploy replaces hashed /assets/*.js while open
+  // tabs still reference the previous build's manifest — dynamic imports
+  // then 404 with "error loading dynamically imported module". Vite emits
+  // vite:preloadError for exactly this; reloading once picks up the new
+  // index.html → new chunk graph. The sessionStorage flag stops a reload
+  // loop when the *new* bundle itself is broken.
+  const isStaleChunk = (m: string) =>
+    /dynamically imported module|Failed to fetch dynamically|Importing a module script failed|vite:preloadError/i.test(m);
+  const reloadOnce = (reportUrl: string) => {
+    // sessionStorage survives the reload — a 90s window breaks the loop if
+    // the freshly deployed bundle itself is broken (still crashy, but once)
+    const last = Number(sessionStorage.getItem("kx.chunkReloadAt") ?? 0);
+    if (Date.now() - last < 90_000) return;
+    sessionStorage.setItem("kx.chunkReloadAt", String(Date.now()));
+    api.post("/api/client-error", {
+      message: "stale chunk — auto reload",
+      url: reportUrl,
+      kind: "stale-chunk",
+    }).catch(() => {});
+    location.reload();
+  };
+  window.addEventListener("vite:preloadError", () => reloadOnce(location.pathname));
+  window.addEventListener("unhandledrejection", (ev) => {
+    if (isStaleChunk(String(ev.reason?.message ?? ev.reason ?? ""))) reloadOnce(location.pathname);
+  });
 }
