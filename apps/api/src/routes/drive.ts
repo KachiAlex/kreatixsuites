@@ -12,7 +12,7 @@ import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
 import { purgeItem, isHeld, scanDlp } from "../policies.js";
 import { fireTrigger } from "../rules.js";
-import { indexFile } from "../indexer.js";
+import { indexFile, indexBody } from "../indexer.js";
 import { encryptField, decryptField } from "../crypto.js";
 
 const createSchema = z.object({
@@ -629,8 +629,24 @@ export function driveRoutes(app: FastifyInstance) {
     await pendOnAdd(id, libraryId, user);
     if (libraryId)
       void fireTrigger(user.orgId, "file.created", { fileId: id, libraryId, name: name ?? "Untitled" }, app.log);
-    // index PDF uploads immediately (body text + later annotation text)
-    if (fileKind === "pdf") void indexFile(id, "pdf", null).catch(() => {});
+    // index PDF uploads immediately (body text + later annotation text),
+    // then run the DLP rule pipeline over the extracted text — binary files
+    // skip the synchronous text scan above, so a blocked-rule hit lands here:
+    // the item is flagged or purged with an audit trail
+    if (fileKind === "pdf") void (async () => {
+      try {
+        await indexFile(id, "pdf", null);
+        const body = await indexBody(id);
+        if (!body) return;
+        const scan = await scanDlp(user.orgId, { type: "item", id },
+          name ?? "Untitled", body, user.id);
+        if (scan.blockedBy) {
+          await purgeItem(id);
+          void logActivity(user.orgId, user.id, null, "upload-dlp-blocked",
+            `${name ?? "upload"}: ${scan.blockedBy}`);
+        }
+      } catch { /* indexing/scan failures never break the upload path */ }
+    })();
     return { item: await toDriveItem((await getItem(id))!, "owner") };
   });
 

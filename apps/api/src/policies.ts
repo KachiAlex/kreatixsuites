@@ -54,6 +54,10 @@ export interface OrgPolicies {
    *  endpoint as JSON (Splunk HEC, Sentinel ingestion, or any webhook).
    *  Empty = disabled. */
   siemWebhook: string;
+  /** Maximum session lifetime in days — new tokens (web + desktop + SSO)
+   *  are clamped to this TTL at issue time. 0 = platform defaults
+   *  (7d web / 30d desktop). Conditional-access "sign-in frequency". */
+  maxSessionDays: number;
 }
 
 const DEFAULTS: OrgPolicies = {
@@ -71,6 +75,7 @@ const DEFAULTS: OrgPolicies = {
   shareDomainAllowlist: [],
   passwordMinLength: 0,
   siemWebhook: "",
+  maxSessionDays: 0,
 };
 
 // ---- ReDoS guard ------------------------------------------------------------

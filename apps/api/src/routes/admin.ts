@@ -30,6 +30,7 @@ const policiesSchema = z.object({
   shareDomainAllowlist: z.array(z.string().min(3).max(200)).max(50).optional(),
   passwordMinLength: z.number().int().min(0).max(64).optional(),
   siemWebhook: z.union([z.literal(""), z.string().url().max(500)]).optional(),
+  maxSessionDays: z.number().int().min(0).max(365).optional(),
 });
 
 const roleSchema = z.object({ role: z.enum(["admin", "member", "guest"]) });

@@ -40,13 +40,36 @@ export function verifyPassword(password: string, stored: string): boolean {
   return expected.length === candidate.length && timingSafeEqual(expected, candidate);
 }
 
+/** "7d"/"12h"/"30m" → seconds (jose-style relative ttl strings). */
+function ttlSeconds(ttl: string): number | null {
+  const m = /^(\d+)\s*([smhd])$/.exec(ttl.trim());
+  if (!m) return null;
+  const n = +m[1];
+  return n * ({ s: 1, m: 60, h: 3600, d: 86400 } as const)[m[2] as "s" | "m" | "h" | "d"];
+}
+
 export async function signToken(
   userId: string, ttl = "7d", client: "web" | "desktop" = "web",
   meta?: { ip?: string; ua?: string },
 ): Promise<string> {
   // tkv = token_version at issue time; resolveSession rejects on mismatch,
   // which is what makes "sign out everywhere" actually work
-  const row = await one<{ token_version: number }>("SELECT token_version FROM users WHERE id = $1", [userId]);
+  const row = await one<{ token_version: number; org_id: string }>(
+    "SELECT token_version, org_id FROM users WHERE id = $1", [userId]);
+  // Org session-lifetime policy clamps every issue path (password, MFA,
+  // Google, SAML/OIDC, SCIM-independent). Read inline — policies.ts is in an
+  // import cycle with items.ts and auth.ts must stay out of it.
+  if (row?.org_id) {
+    const pol = await one<{ json: string | { maxSessionDays?: number } }>(
+      "SELECT json FROM org_policies WHERE org_id = $1", [row.org_id]);
+    try {
+      const parsed = typeof pol?.json === "string" ? JSON.parse(pol.json) : pol?.json;
+      const capDays = Number(parsed?.maxSessionDays) || 0;
+      const ttlS = ttlSeconds(ttl);
+      if (capDays > 0 && ttlS !== null && ttlS > capDays * 86400)
+        ttl = `${Math.floor(capDays)}d`;
+    } catch { /* malformed policy json — platform default stands */ }
+  }
   const jti = randomUUID();
   const token = await new SignJWT({ sub: userId, client, tkv: row?.token_version ?? 0 })
     .setJti(jti)

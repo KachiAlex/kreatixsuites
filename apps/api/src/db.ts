@@ -586,6 +586,9 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_groups_org ON groups(org_id)`);
+  // SCIM group provisioning: the IdP's stable identifier for the group —
+  // lets PUT/PATCH upserts stay idempotent across displayName renames
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS scim_external_id TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS group_members (
       group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

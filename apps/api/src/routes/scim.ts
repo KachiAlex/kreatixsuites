@@ -8,6 +8,7 @@ import { hashPassword, initials, type UserRow } from "../auth.js";
 import { logActivity } from "../items.js";
 
 const CORE_USER = "urn:ietf:params:scim:schemas:core:2.0:User";
+const CORE_GROUP = "urn:ietf:params:scim:schemas:core:2.0:Group";
 const LIST = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 const ERR = "urn:ietf:params:scim:api:messages:2.0:Error";
 const PATCH_OP = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
@@ -75,20 +76,33 @@ export async function scimRoutes(app: FastifyInstance) {
   }));
 
   app.get("/scim/v2/ResourceTypes", async (req) => ({
-    schemas: [LIST], totalResults: 1, itemsPerPage: 1, startIndex: 1,
-    Resources: [{
-      schemas: ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-      id: "User", name: "User", endpoint: "/Users", schema: CORE_USER,
-      meta: { resourceType: "ResourceType", location: `${base(req)}/ResourceTypes/User` },
-    }],
+    schemas: [LIST], totalResults: 2, itemsPerPage: 2, startIndex: 1,
+    Resources: [
+      {
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+        id: "User", name: "User", endpoint: "/Users", schema: CORE_USER,
+        meta: { resourceType: "ResourceType", location: `${base(req)}/ResourceTypes/User` },
+      },
+      {
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+        id: "Group", name: "Group", endpoint: "/Groups", schema: CORE_GROUP,
+        meta: { resourceType: "ResourceType", location: `${base(req)}/ResourceTypes/Group` },
+      },
+    ],
   }));
 
   app.get("/scim/v2/Schemas", async (req) => ({
-    schemas: [LIST], totalResults: 1, itemsPerPage: 1, startIndex: 1,
-    Resources: [{
-      id: CORE_USER, name: "User",
-      meta: { resourceType: "Schema", location: `${base(req)}/Schemas/${CORE_USER}` },
-    }],
+    schemas: [LIST], totalResults: 2, itemsPerPage: 2, startIndex: 1,
+    Resources: [
+      {
+        id: CORE_USER, name: "User",
+        meta: { resourceType: "Schema", location: `${base(req)}/Schemas/${CORE_USER}` },
+      },
+      {
+        id: CORE_GROUP, name: "Group",
+        meta: { resourceType: "Schema", location: `${base(req)}/Schemas/${CORE_GROUP}` },
+      },
+    ],
   }));
 
   // ---------- users ----------
@@ -236,6 +250,216 @@ export async function scimRoutes(app: FastifyInstance) {
     // org resources transfer to a successor instead of cascading away
     const { eraseUser } = await import("../lifecycle.js");
     await eraseUser(id);
+    return reply.code(204).send();
+  });
+
+  // ---------- groups ----------
+  // IdP-pushed groups land in the same `groups`/`group_members` tables the
+  // app uses for site + library permission grants — membership changes flow
+  // into access automatically, which is the whole point of group sync.
+
+  interface GroupRow {
+    id: string; org_id: string; name: string; description: string | null;
+    scim_external_id: string | null; created_at: string;
+  }
+
+  async function toScimGroup(g: GroupRow, baseUrl: string) {
+    const members = await q<{ user_id: string; email: string; display_name: string }>(
+      `SELECT gm.user_id, u.email, u.display_name FROM group_members gm
+       JOIN users u ON u.id = gm.user_id WHERE gm.group_id = $1 ORDER BY u.email`, [g.id]);
+    return {
+      schemas: [CORE_GROUP],
+      id: g.id,
+      externalId: g.scim_external_id ?? undefined,
+      displayName: g.name,
+      members: members.map((m) => ({
+        value: m.user_id, display: m.display_name,
+        $ref: `${baseUrl}/Users/${m.user_id}`,
+      })),
+      meta: { resourceType: "Group", created: g.created_at, location: `${baseUrl}/Groups/${g.id}` },
+    };
+  }
+
+  /** activity.actor_id is a real-user FK — IdP-driven changes attribute to
+   *  the org owner, matching how SCIM user-create attributes to the user. */
+  const scimActor = async (org: string) =>
+    (await one<{ id: string }>(
+      "SELECT id FROM users WHERE org_id = $1 ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END LIMIT 1",
+      [org]))?.id ?? "";
+
+  /** Normalize a SCIM members attribute ([{value:"uid"}] or single object)
+   *  into a deduped list of user ids that actually belong to the org —
+   *  unknown ids are dropped silently, matching Entra/Okta tolerance for
+   *  members the SP hasn't provisioned yet. */
+  async function memberIds(org: string, raw: unknown): Promise<string[]> {
+    const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
+    const ids = [...new Set(list
+      .map((m) => str((m as Record<string, unknown>)?.value))
+      .filter((v): v is string => !!v))].slice(0, 500);
+    if (!ids.length) return [];
+    const rows = await q<{ id: string }>(
+      "SELECT id FROM users WHERE org_id = $1 AND id = ANY($2)", [org, ids]);
+    return rows.map((r) => r.id);
+  }
+
+  async function replaceMembers(groupId: string, org: string, ids: string[]) {
+    await run("DELETE FROM group_members WHERE group_id = $1", [groupId]);
+    for (const uid of ids) {
+      await run("INSERT INTO group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [groupId, uid]);
+    }
+    void logActivity(org, await scimActor(org), null, "scim-group-members", `${ids.length} members`);
+  }
+
+  app.get("/scim/v2/Groups", async (req, reply) => {
+    const org = (req as ScimReq).scimOrg!;
+    const query = req.query as { filter?: string; startIndex?: string; count?: string };
+    const startIndex = Math.max(1, Number(query.startIndex) || 1);
+    const count = Math.min(Math.max(Number(query.count) || 100, 1), 200);
+    const params: unknown[] = [org];
+    let where = "org_id = $1";
+    const fm = /^(displayName|externalId)\s+eq\s+"([^"]*)"$/i.exec(query.filter?.trim() ?? "");
+    if (query.filter && !fm)
+      return scimError(reply, 400, "Only 'displayName eq' and 'externalId eq' filters are supported", "invalidFilter");
+    if (fm) {
+      params.push(fm[2]);
+      where += fm[1].toLowerCase() === "displayname" ? " AND name = $2" : " AND scim_external_id = $2";
+    }
+    const total = (await one<{ n: string }>(`SELECT COUNT(*) n FROM groups WHERE ${where}`, params))?.n ?? "0";
+    const rows = await q<GroupRow>(
+      `SELECT * FROM groups WHERE ${where} ORDER BY created_at LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, count, startIndex - 1]);
+    const b = base(req);
+    return reply.type("application/scim+json").send({
+      schemas: [LIST], totalResults: Number(total), startIndex, itemsPerPage: rows.length,
+      Resources: await Promise.all(rows.map((g) => toScimGroup(g, b))),
+    });
+  });
+
+  app.get("/scim/v2/Groups/:id", async (req, reply) => {
+    const org = (req as ScimReq).scimOrg!;
+    const g = await one<GroupRow>("SELECT * FROM groups WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, org]);
+    if (!g) return scimError(reply, 404, "Group not found");
+    return reply.type("application/scim+json").send(await toScimGroup(g, base(req)));
+  });
+
+  app.post("/scim/v2/Groups", async (req, reply) => {
+    const org = (req as ScimReq).scimOrg!;
+    const body = b(req);
+    const displayName = str(body.displayName);
+    if (!displayName || displayName.length > 120)
+      return scimError(reply, 400, "displayName is required (≤120 chars)", "invalidValue");
+    const clash = await one("SELECT id FROM groups WHERE org_id = $1 AND name = $2", [org, displayName]);
+    if (clash) return scimError(reply, 409, "displayName already exists", "uniqueness");
+    const id = randomUUID();
+    await run(
+      `INSERT INTO groups (id, org_id, name, description, scim_external_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, org, displayName, str((body as Record<string, unknown>).description) ?? null,
+       str(body.externalId) ?? null, now()]);
+    const ids = await memberIds(org, body.members);
+    if (ids.length) await replaceMembers(id, org, ids);
+    void logActivity(org, await scimActor(org), null, "scim-group-create", `SCIM group "${displayName}"`);
+    const g = (await one<GroupRow>("SELECT * FROM groups WHERE id = $1", [id]))!;
+    return reply.code(201).type("application/scim+json").send(await toScimGroup(g, base(req)));
+  });
+
+  /** shared replace for PUT + PATCH-replace */
+  const applyGroupUpdate = async (req: FastifyRequest, reply: FastifyReply, fields: {
+    displayName?: string; externalId?: string | null; members?: string[];
+  }) => {
+    const org = (req as ScimReq).scimOrg!;
+    const id = (req.params as { id: string }).id;
+    const g = await one<GroupRow>("SELECT * FROM groups WHERE id = $1 AND org_id = $2", [id, org]);
+    if (!g) return scimError(reply, 404, "Group not found");
+    if (fields.displayName && fields.displayName !== g.name) {
+      const clash = await one("SELECT id FROM groups WHERE org_id = $1 AND name = $2 AND id <> $3",
+        [org, fields.displayName, id]);
+      if (clash) return scimError(reply, 409, "displayName already exists", "uniqueness");
+    }
+    await run(
+      `UPDATE groups SET name = COALESCE($3, name), scim_external_id = COALESCE($4, scim_external_id)
+       WHERE id = $1 AND org_id = $2`,
+      [id, org, fields.displayName ?? null,
+       fields.externalId === undefined ? null : fields.externalId]);
+    if (fields.members !== undefined) await replaceMembers(id, org, fields.members);
+    void logActivity(org, await scimActor(org), null, "scim-group-update", `SCIM group ${g.name}`);
+    const fresh = (await one<GroupRow>("SELECT * FROM groups WHERE id = $1", [id]))!;
+    return reply.type("application/scim+json").send(await toScimGroup(fresh, base(req)));
+  };
+
+  app.put("/scim/v2/Groups/:id", async (req, reply) => {
+    const body = b(req);
+    return applyGroupUpdate(req, reply, {
+      displayName: str(body.displayName),
+      externalId: body.externalId === null ? null : str(body.externalId),
+      members: body.members === undefined ? undefined : await memberIds((req as ScimReq).scimOrg!, body.members),
+    });
+  });
+
+  app.patch("/scim/v2/Groups/:id", async (req, reply) => {
+    const org = (req as ScimReq).scimOrg!;
+    const id = (req.params as { id: string }).id;
+    const g = await one<GroupRow>("SELECT * FROM groups WHERE id = $1 AND org_id = $2", [id, org]);
+    if (!g) return scimError(reply, 404, "Group not found");
+    const ops = Array.isArray(b(req).Operations) ? b(req).Operations as Record<string, unknown>[] : [];
+    if (!ops.length) return scimError(reply, 400, "No Operations supplied", "invalidValue");
+
+    let displayName: string | undefined;
+    let externalId: string | null | undefined;
+    let memberReplace: string[] | undefined;
+    const memberAdd = new Set<string>();
+    const memberRemove = new Set<string>();
+
+    for (const op of ops) {
+      const opName = (str(op.op) ?? "replace").toLowerCase();
+      const path = str(op.path)?.toLowerCase();
+      const val = op.value;
+      // path filter form: members[value eq "uid"] — Entra's remove shape
+      const memFilter = /^members\[value\s+eq\s+"([^"]+)"\]$/i.exec(path ?? "");
+      if (path === "displayname" || (!path && opName === "replace" && val && typeof val === "object" && (val as Record<string, unknown>).displayName !== undefined)) {
+        displayName = str(path === "displayname" ? val : (val as Record<string, unknown>).displayName);
+      }
+      if (path === "externalid") externalId = val === null ? null : str(val);
+      if (path === "members" || (!path && val && typeof val === "object" && (val as Record<string, unknown>).members !== undefined)) {
+        const rawMembers = path === "members" ? val : (val as Record<string, unknown>).members;
+        if (opName === "remove") for (const u of await memberIds(org, rawMembers)) memberRemove.add(u);
+        else if (opName === "add") for (const u of await memberIds(org, rawMembers)) memberAdd.add(u);
+        else memberReplace = await memberIds(org, rawMembers);
+      }
+      if (memFilter) {
+        const uid = memFilter[1];
+        const exists = await one("SELECT id FROM users WHERE id = $1 AND org_id = $2", [uid, org]);
+        if (exists) (opName === "remove" ? memberRemove : memberAdd).add(uid);
+      }
+    }
+
+    if (memberReplace !== undefined) {
+      await replaceMembers(id, org, memberReplace);
+    } else {
+      for (const uid of memberRemove)
+        await run("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2", [id, uid]);
+      for (const uid of memberAdd)
+        await run("INSERT INTO group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, uid]);
+      if (memberAdd.size || memberRemove.size)
+        void logActivity(org, await scimActor(org), null, "scim-group-members", `+${memberAdd.size} -${memberRemove.size}`);
+    }
+    if (displayName !== undefined || externalId !== undefined)
+      return applyGroupUpdate(req, reply, { displayName, externalId });
+    const fresh = (await one<GroupRow>("SELECT * FROM groups WHERE id = $1", [id]))!;
+    return reply.type("application/scim+json").send(await toScimGroup(fresh, base(req)));
+  });
+
+  app.delete("/scim/v2/Groups/:id", async (req, reply) => {
+    const org = (req as ScimReq).scimOrg!;
+    const id = (req.params as { id: string }).id;
+    const g = await one<GroupRow>("SELECT id FROM groups WHERE id = $1 AND org_id = $2", [id, org]);
+    if (!g) return scimError(reply, 404, "Group not found");
+    // group_members / site_group_members / library_group_permissions all
+    // cascade on the group delete — access derived from this group ends here
+    await run("DELETE FROM groups WHERE id = $1", [id]);
+    void logActivity(org, await scimActor(org), null, "scim-group-delete", `SCIM group ${id}`);
     return reply.code(204).send();
   });
 }

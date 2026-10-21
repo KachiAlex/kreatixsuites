@@ -59,6 +59,7 @@ interface Policies {
   shareDomainAllowlist: string[];
   passwordMinLength: number;
   siemWebhook: string;
+  maxSessionDays: number;
 }
 interface Hold {
   id: string; name: string; description: string | null; active: boolean;
@@ -720,6 +721,17 @@ export function Admin() {
               <span>
                 <b>Minimum password length</b>
                 <em>Enforced on invite joins and password resets. 0 = platform default (8).</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input
+                type="number" min={0} max={365} style={{ width: 72 }}
+                value={policies.maxSessionDays ?? 0}
+                onChange={(e) => patchPolicy({ maxSessionDays: Math.max(0, Math.min(365, Number(e.target.value) || 0)) })}
+              />
+              <span>
+                <b>Max session lifetime (days)</b>
+                <em>New sign-ins (password, SSO, desktop) expire after this. 0 = platform default (7d web / 30d desktop).</em>
               </span>
             </label>
             <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
