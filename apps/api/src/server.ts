@@ -140,7 +140,8 @@ async function main() {
     `default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
     "font-src 'self' data:; connect-src 'self' wss: https://cloudflareinsights.com; worker-src 'self' blob:; " +
-    "media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; " +
+    "media-src 'self' blob: data:; object-src 'none'; " +
+    `frame-src 'self'${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; manifest-src 'self'";
   // the Sheets script sandbox needs eval — scoped to that page only, which is
   // additionally isolated by sandbox="allow-scripts" (opaque origin)
@@ -435,7 +436,12 @@ async function main() {
       return reply.header("Cache-Control", "no-cache").sendFile(landing ? "index-landing.html" : "index.html");
     });
     app.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith("/api/")) return reply.code(404).send({ error: "not_found" });
+      // only document fetches get the SPA shell — POST/PUT/etc to page
+      // routes are not "accepted" (scanners and crawlers read a 200 shell
+      // as a successful submission); /api/* misses stay 404 JSON either way
+      if (req.url.startsWith("/api/") || (req.method !== "GET" && req.method !== "HEAD")) {
+        return reply.code(404).send({ error: "not_found" });
+      }
       return reply.header("Cache-Control", "no-cache").sendFile("index.html");
     });
   }
