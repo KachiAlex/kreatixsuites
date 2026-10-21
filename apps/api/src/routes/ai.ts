@@ -425,7 +425,7 @@ export function aiRoutes(app: FastifyInstance) {
 
     // files — permission-trimmed (owner or direct share)
     const rows = await q<{ id: string; name: string }>(
-      `SELECT DISTINCT i.id, i.name FROM items i
+      `SELECT DISTINCT i.id, i.name, i.updated_at FROM items i
        LEFT JOIN shares s ON s.file_id = i.id AND s.user_id = $1
        WHERE i.trashed = false AND i.kind != 'folder' AND (i.owner_id = $1 OR s.user_id IS NOT NULL)
        ORDER BY i.updated_at DESC LIMIT 200`,
