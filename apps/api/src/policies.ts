@@ -35,6 +35,25 @@ export interface OrgPolicies {
   requireDesktopClient: boolean;
   /** Kill switch — admins can disable Kreatix AI workspace-wide. */
   aiDisabled: boolean;
+  /** SSO enforcement — when set, org members cannot log in with passwords;
+   *  they must arrive via SAML/OIDC (owner + superadmin keep password access
+   *  as the break-glass path for IdP outages). */
+  ssoRequired: boolean;
+  /** External-sharing control — no anonymous share links on ANY file in the
+   *  org (the label-scoped rules above still apply when this is off). */
+  blockPublicLinks: boolean;
+  /** External-sharing control — non-empty list = files may only be shared
+   *  with users whose email domain matches (exact or "x.example.com" suffix
+   *  of an allowlisted "example.com"). Direct shares are checked at grant
+   *  time; links are governed by blockPublicLinks. */
+  shareDomainAllowlist: string[];
+  /** Minimum password length for members' passwords (register-via-invite and
+   *  password reset; 0 = platform default of 8). */
+  passwordMinLength: number;
+  /** SIEM export — every org audit/activity event is POSTed to this HTTPS
+   *  endpoint as JSON (Splunk HEC, Sentinel ingestion, or any webhook).
+   *  Empty = disabled. */
+  siemWebhook: string;
 }
 
 const DEFAULTS: OrgPolicies = {
@@ -47,6 +66,11 @@ const DEFAULTS: OrgPolicies = {
   allowedIpRanges: [],
   requireDesktopClient: false,
   aiDisabled: false,
+  ssoRequired: false,
+  blockPublicLinks: false,
+  shareDomainAllowlist: [],
+  passwordMinLength: 0,
+  siemWebhook: "",
 };
 
 // ---- ReDoS guard ------------------------------------------------------------
@@ -320,6 +344,34 @@ export async function setPolicies(orgId: string, patch: Partial<OrgPolicies>): P
     [orgId, JSON.stringify(merged)],
   );
   return merged;
+}
+
+// ---- SIEM export ------------------------------------------------------------
+// Every org audit event is mirrored to the org's configured webhook (Splunk
+// HEC, Sentinel ingestion, a SIEM bridge, …) as JSON. Fire-and-forget: the
+// request path never waits on a customer's SIEM, and a failing endpoint warns
+// once per org per process instead of spamming logs.
+const siemWarned = new Set<string>();
+
+export function pushSiemEvent(orgId: string, event: Record<string, unknown>) {
+  void (async () => {
+    const url = (await getPolicies(orgId)).siemWebhook;
+    if (!url) return;
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "kreatix-suite", orgId, at: new Date().toISOString(), ...event }),
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      if (!siemWarned.has(orgId)) {
+        siemWarned.add(orgId);
+        console.warn(`[siem] webhook push failed for org ${orgId}: ${(e as Error).message}`);
+      }
+    }
+  })();
 }
 
 /**

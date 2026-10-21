@@ -111,7 +111,7 @@ export function samlRoutes(app: FastifyInstance) {
         row = (await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!;
       }
       if (row.disabled) return fail("account_disabled");
-      const token = await signToken(row.id);
+      const token = await signToken(row.id, "7d", "web", { ip: req.ip, ua: req.headers["user-agent"] });
       if (mobile) return reply.redirect(mobileAuthRedirect({ code: issueMobileCode(token) }), 302);
       const secure = callbackUrl(req).startsWith("https:") ? "; Secure" : "";
       reply.header("set-cookie",

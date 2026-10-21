@@ -58,6 +58,20 @@ export function sharingRoutes(app: FastifyInstance) {
       const target = await one<UserRow>("SELECT * FROM users WHERE email = $1", [body.email]);
       if (!target) return reply.code(404).send({ error: "not_found", message: "No user with that email" });
       if (target.id === user.id) return reply.code(400).send({ error: "bad_request", message: "Already the owner" });
+      // org external-sharing policy: when a domain allowlist is configured,
+      // grants are limited to matching addresses (exact or subdomain)
+      const allowlist = (await getPolicies(user.orgId)).shareDomainAllowlist;
+      if (allowlist.length) {
+        const domain = body.email.split("@")[1]?.toLowerCase() ?? "";
+        const ok = allowlist.some((d) => {
+          const dl = d.toLowerCase().trim();
+          return domain === dl || domain.endsWith(`.${dl}`);
+        });
+        if (!ok) return reply.code(403).send({
+          error: "policy_blocked",
+          message: "Org policy only allows sharing with approved email domains",
+        });
+      }
 
       await run(
         `INSERT INTO shares (id, file_id, user_id, permission, created_at) VALUES ($1,$2,$3,$4,$5)
@@ -99,6 +113,12 @@ export function sharingRoutes(app: FastifyInstance) {
       const body = linkSchema.parse(req.body);
       // DLP: org policy may forbid public links on labeled files
       const policies = await getPolicies(user.orgId);
+      if (policies.blockPublicLinks) {
+        return reply.code(403).send({
+          error: "policy_blocked",
+          message: "Org policy blocks anonymous share links — share with named users instead",
+        });
+      }
       const label = item.label ?? "internal";
       if (
         (policies.blockRestrictedShareLinks && label === "restricted") ||

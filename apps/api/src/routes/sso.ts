@@ -140,7 +140,7 @@ export function ssoRoutes(app: FastifyInstance) {
         row = (await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!;
       }
       if (row.disabled) return fail("account_disabled");
-      const token = await signToken(row.id);
+      const token = await signToken(row.id, "7d", "web", { ip: req.ip, ua: req.headers["user-agent"] });
       // Mobile shells can't carry the kx_sso cookie back through the system
       // browser — the deep link returns a one-time code exchanged for the
       // token by the app itself.

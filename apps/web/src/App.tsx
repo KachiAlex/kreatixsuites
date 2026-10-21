@@ -32,6 +32,7 @@ const Forms = lazy(() => import("./pages/Forms").then((m) => ({ default: m.Forms
 const FormFill = lazy(() => import("./pages/FormFill").then((m) => ({ default: m.FormFill })));
 const Notes = lazy(() => import("./pages/Notes").then((m) => ({ default: m.Notes })));
 const Shell = lazy(() => import("./components/Shell").then((m) => ({ default: m.Shell })));
+const Account = lazy(() => import("./pages/Account").then((m) => ({ default: m.Account })));
 
 const RouteFallback = () => (
   <div className="auth-wrap"><div className="empty">Loading…</div></div>
@@ -139,6 +140,7 @@ export default function App() {
             <Route path="/sites/:siteId/library/:libId" element={<LibraryPage />} />
             <Route path="/sites/:siteId/library/:libId/folder/:folderId" element={<LibraryPage />} />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/account" element={<Account />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -1,7 +1,7 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { one, q } from "./db.js";
+import { now, one, q, run } from "./db.js";
 import { libraryPermission } from "./sites.js";
 import type { Permission, User, UserRole } from "@kreatix/shared";
 
@@ -40,15 +40,29 @@ export function verifyPassword(password: string, stored: string): boolean {
   return expected.length === candidate.length && timingSafeEqual(expected, candidate);
 }
 
-export async function signToken(userId: string, ttl = "7d", client: "web" | "desktop" = "web"): Promise<string> {
+export async function signToken(
+  userId: string, ttl = "7d", client: "web" | "desktop" = "web",
+  meta?: { ip?: string; ua?: string },
+): Promise<string> {
   // tkv = token_version at issue time; resolveSession rejects on mismatch,
   // which is what makes "sign out everywhere" actually work
   const row = await one<{ token_version: number }>("SELECT token_version FROM users WHERE id = $1", [userId]);
-  return new SignJWT({ sub: userId, client, tkv: row?.token_version ?? 0 })
+  const jti = randomUUID();
+  const token = await new SignJWT({ sub: userId, client, tkv: row?.token_version ?? 0 })
+    .setJti(jti)
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(ttl)
     .sign(secret);
+  // sessions row is what powers per-device listing/revocation — awaited so a
+  // token is never handed out before its row exists (resolveSession is
+  // deny-by-default for unknown jti's)
+  await run(
+    `INSERT INTO sessions (id, user_id, client, user_agent, ip, created_at, last_seen_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$6)`,
+    [jti, userId, client, meta?.ua?.slice(0, 300) ?? null, meta?.ip ?? null, now()],
+  ).catch(() => { /* table predates this deploy — token still works via tkv */ });
+  return token;
 }
 
 /** Offline entitlement for the desktop app — signed subscription state the
@@ -93,6 +107,8 @@ export async function verifyToken(token: string): Promise<{ sub?: string } | nul
 
 export interface AuthedRequest extends FastifyRequest {
   user: User;
+  /** Verified JWT claims (jti, tkv, client…) — set by requireAuth. */
+  payload?: Record<string, unknown> | null;
 }
 
 export interface ResolvedSession {
@@ -136,6 +152,19 @@ async function resolveSessionInner(req: FastifyRequest): Promise<ResolvedSession
     if ((typeof payload.tkv === "number" ? payload.tkv : 0) !== user.token_version) {
       return { token, payload: payload as Record<string, unknown>, user: null };
     }
+    // per-session revocation: tokens minted before the sessions table existed
+    // carry no jti and pass through (governed by tkv above); new tokens must
+    // map to a live session row. last_seen is touched at most once/minute.
+    if (typeof payload.jti === "string") {
+      const sess = await one<{ revoked_at: string | null; last_seen_at: string }>(
+        "SELECT revoked_at, last_seen_at FROM sessions WHERE id = $1", [payload.jti]);
+      if (!sess || sess.revoked_at) {
+        return { token, payload: payload as Record<string, unknown>, user: null };
+      }
+      if (Date.now() - Date.parse(sess.last_seen_at) > 60_000) {
+        void run("UPDATE sessions SET last_seen_at = $1 WHERE id = $2", [now(), payload.jti]).catch(() => {});
+      }
+    }
     return { token, payload: payload as Record<string, unknown>, user };
   } catch {
     return { token, payload: null, user: null };
@@ -145,7 +174,7 @@ async function resolveSessionInner(req: FastifyRequest): Promise<ResolvedSession
 /** Fastify preHandler — requires a valid Bearer token (or the `kx_t` cookie,
  *  which lets <img>/<iframe> media URLs authenticate without headers), attaches req.user */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
-  const { token, user } = await resolveSession(req);
+  const { token, payload, user } = await resolveSession(req);
   if (!token) {
     return reply.code(401).send({ error: "unauthorized", message: "Missing token" });
   }
@@ -153,6 +182,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(401).send({ error: "unauthorized", message: "Invalid token" });
   }
   (req as AuthedRequest).user = toUser(user);
+  (req as AuthedRequest).payload = payload;
 }
 
 export interface UserRow {

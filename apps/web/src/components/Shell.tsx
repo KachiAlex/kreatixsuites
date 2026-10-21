@@ -141,6 +141,7 @@ function SuperShell() {
             <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
               <button onClick={() => { setMenu(false); toggleTheme(); }}>{t("shell.toggleTheme")}</button>
               <button onClick={() => { setMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
+              <button onClick={() => { setMenu(false); navigate("/account"); }}>{t("shell.account")}</button>
               <div className="um-lang">
                 <label>{t("shell.language")}</label>
                 <select value={locale} onChange={(e) => setLocale(e.target.value)}>
@@ -173,6 +174,7 @@ function SuperShell() {
                     <span className="sap-acctrole">Platform superadmin · all tenants</span>
                   </div>
                   <button role="menuitem" onClick={() => { setAcctMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
+                  <button role="menuitem" onClick={() => { setAcctMenu(false); navigate("/account"); }}>{t("shell.account")}</button>
                   <button role="menuitem" className="sap-signout"
                     onClick={() => { setAcctMenu(false); logout(); navigate("/login"); }}>
                     {t("shell.signOut")}
@@ -314,9 +316,10 @@ function Rail({ toast }: { toast: (m: string) => void }) {
         {menu && (
           <div className="user-menu" style={{ position: "fixed", left: 62, bottom: 12, width: 190 }}>
             <button onClick={() => { setMenu(false); toggleTheme(); }}>{t("shell.toggleTheme")}</button>
-            {user && user.id !== "local" && (
+            {user && user.id !== "local" && (<>
               <button onClick={() => { setMenu(false); setSecurity(true); }}>{t("shell.security")}</button>
-            )}
+              <button onClick={() => { setMenu(false); navigate("/account"); }}>{t("shell.account")}</button>
+            </>)}
             {(user?.role === "owner" || user?.role === "admin") && (
               <button onClick={() => { setMenu(false); navigate("/admin"); }}>{t("nav.admin")}</button>
             )}
@@ -669,6 +672,7 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
         {userMenu && (
           <div className="user-menu">
             <div className="um-head"><b>{user?.displayName}</b><span>{user?.email}</span></div>
+            <button onClick={() => { setUserMenu(false); navigate("/account"); }}>{t("shell.account")}</button>
             <button onClick={() => { logout(); navigate("/login"); }}>{t("shell.signOut")}</button>
           </div>
         )}

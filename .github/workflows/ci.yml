@@ -59,3 +59,25 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://localhost:3001/api/health && break || sleep 1; done
       - name: API e2e harnesses
         run: pnpm --filter @kreatix/api test:mfa && pnpm --filter @kreatix/api test:scim
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # dependency vulnerabilities — fails on high/critical advisories
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high --prod
+      # filesystem scan — flags committed secrets, misconfig, vuln packages
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true

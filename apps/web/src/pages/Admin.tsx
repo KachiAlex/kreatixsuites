@@ -54,6 +54,11 @@ interface Policies {
   watermarkConfidentialExports: boolean;
   allowedIpRanges: string[];
   requireDesktopClient: boolean;
+  ssoRequired: boolean;
+  blockPublicLinks: boolean;
+  shareDomainAllowlist: string[];
+  passwordMinLength: number;
+  siemWebhook: string;
 }
 interface Hold {
   id: string; name: string; description: string | null; active: boolean;
@@ -628,6 +633,71 @@ export function Admin() {
                   desktop client. Existing web tokens stop working when enabled.</em>
               </span>
             </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.ssoRequired ?? false}
+                onChange={(e) => patchPolicy({ ssoRequired: e.target.checked })} />
+              <span>
+                <b>Require single sign-on</b>
+                <em>Members must sign in through SAML/OIDC — password login is disabled.
+                  The owner keeps password access as the break-glass path for IdP outages.</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.blockPublicLinks ?? false}
+                onChange={(e) => patchPolicy({ blockPublicLinks: e.target.checked })} />
+              <span>
+                <b>Block all anonymous share links</b>
+                <em>No "anyone with the link" sharing on any file — external sharing is
+                  limited to named users. Strongest external-sharing control.</em>
+              </span>
+            </label>
+            <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
+              <span>
+                <b>Approved sharing domains</b>
+                <em>One domain per line — files can only be shared with people whose email
+                  ends in these domains (subdomains count). Empty = no restriction.</em>
+              </span>
+              <textarea
+                rows={2}
+                defaultValue={(policies.shareDomainAllowlist ?? []).join("\n")}
+                placeholder={"partner.com\nclient.example"}
+                onBlur={(e) => {
+                  const domains = e.target.value.split("\n").map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 50);
+                  if (domains.join("\n") !== (policies.shareDomainAllowlist ?? []).join("\n")) {
+                    void patchPolicy({ shareDomainAllowlist: domains });
+                  }
+                }}
+                style={{ fontFamily: "monospace", fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
+              />
+            </label>
+            <label className="pol-row">
+              <input
+                type="number" min={0} max={64} style={{ width: 72 }}
+                value={policies.passwordMinLength ?? 0}
+                onChange={(e) => patchPolicy({ passwordMinLength: Math.max(0, Math.min(64, Number(e.target.value) || 0)) })}
+              />
+              <span>
+                <b>Minimum password length</b>
+                <em>Enforced on invite joins and password resets. 0 = platform default (8).</em>
+              </span>
+            </label>
+            <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
+              <span>
+                <b>SIEM webhook</b>
+                <em>Every audit event is POSTed here as JSON — Splunk HEC, Sentinel
+                  ingestion, or any HTTPS collector. Empty = disabled.</em>
+              </span>
+              <input type="url" placeholder="https://splunk.example.com/services/collector"
+                defaultValue={policies.siemWebhook ?? ""}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v !== (policies.siemWebhook ?? "")) void patchPolicy({ siemWebhook: v });
+                }}
+                style={{ fontFamily: "monospace", fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
+              />
+            </label>
             <label className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
               <span>
                 <b>DLP content patterns</b>
@@ -783,6 +853,17 @@ export function Admin() {
                 toast("Export downloaded");
               } catch (e) { toast((e as Error).message); }
             }}>Export JSON</button>
+            <button className="btn-primary btn-sm" disabled={!ediscUser} onClick={async () => {
+              try {
+                const blob = await api.get<Blob>(`/api/admin/ediscovery/${ediscUser}`);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                const who = members.find((m) => m.id === ediscUser)?.email ?? "user";
+                a.href = url; a.download = `ediscovery-${who}-${Date.now()}.zip`;
+                a.click(); URL.revokeObjectURL(url);
+                toast("ZIP export downloaded — includes file contents");
+              } catch (e) { toast((e as Error).message); }
+            }}>Export ZIP (with files)</button>
           </div>
         </section>
       )}

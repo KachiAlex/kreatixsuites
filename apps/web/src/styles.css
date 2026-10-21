@@ -193,6 +193,21 @@ main{padding:19px 28px 50px;min-width:0}
 .app-card p{font-size:11px;margin:3px 0 0;color:var(--muted);line-height:1.35}
 .app-card .launch{margin-left:auto;color:var(--muted);font-size:17px;transition:transform .2s ease,color .2s ease;flex-shrink:0}
 .app-card:hover .launch{transform:translateX(3px);color:var(--ink)}
+/* account security page */
+.acct-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px}
+.acct-row:last-child{border-bottom:none}
+.acct-row>span{min-width:150px;color:var(--muted);font-size:12px}
+.acct-row b{flex:1;font-weight:600}
+.sess-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.sess-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;transition:.16s}
+.sess-row:hover{border-color:rgba(52,39,30,.14)}
+.sess-row.current{border-color:var(--k-orange);background:var(--k-orange-soft)}
+.sess-ico{font-size:18px}
+.sess-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.sess-info b{font-size:13px;font-weight:650}
+.sess-info small{font-size:11px;color:var(--muted)}
+.sess-current{font-style:normal;color:var(--k-orange-dark);font-weight:800;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+
 /* getting-started checklist */
 .ob-card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:18px 20px;margin-top:18px;box-shadow:0 8px 28px rgba(46,35,29,.035);animation:dlg-in .3s cubic-bezier(.2,.9,.3,1.1)}
 .ob-head{display:flex;align-items:center;gap:10px}

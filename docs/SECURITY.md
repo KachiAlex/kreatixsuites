@@ -33,20 +33,23 @@ reviewers, and procurement questionnaires.
 - The data-encryption key is supplied via `KREATIX_DATA_KEY` (32-byte hex),
   generated with `openssl rand -hex 32`, and exists only in the server
   environment — never in the database, in client code, or in git.
-- There is currently **one** active key per deployment; a key-rotation procedure
-  (rewrap ciphertext under a new key) is on the roadmap.
+- **Key rotation is supported natively**: `KREATIX_DATA_KEY` accepts a
+  comma-separated key ring (`NEW,OLD,…`). The first key encrypts; every key
+  is tried on decrypt (GCM's auth tag doubles as wrong-key detection), so
+  rotation is a prepend-and-restart, then lazy re-wrap or a rekey sweep.
 
 ## 2. Authentication
 
 - **Passwords** are hashed with **scrypt** (Node `crypto.scrypt`) with per-user
   random salts and constant-time comparison. Minimum 8 characters.
 - **Sessions** are HS256 JWTs (7-day expiry) carrying a **token version**
-  (`tkv`). Every request loads the user row once and compares the claim against
-  `users.token_version`, so sessions can be revoked globally:
-  - password resets bump the version (all old sessions die),
-  - admin user-disable kills that user's sessions immediately,
-  - SCIM deactivation (IdP offboarding) does the same,
-  - `POST /api/auth/logout-all` lets a user revoke every session at once.
+  (`tkv`) and a **session id** (`jti`). Every request loads the user row once
+  and compares `tkv` against `users.token_version`, then checks the `jti`
+  against the `sessions` table — giving two revocation layers:
+  - **per-device**: `GET/DELETE /api/me/sessions` lists every live session
+    (client, IP, UA, last-seen) and revokes any one of them instantly,
+  - **global**: password resets, admin disable, SCIM deactivation, and
+    `POST /api/auth/logout-all` bump the version and mark all rows revoked.
 - **MFA**: TOTP authenticator enrollment with one-time backup codes; required
   for sensitive operations (account deletion). Org-level MFA enforcement is
   policy-configurable.
@@ -100,6 +103,11 @@ reviewers, and procurement questionnaires.
   anonymizes rather than hard-deleting.
 - **IP allowlists** and **superadmin confinement** are enforced as global
   request hooks.
+- **Org security policies** (`/api/admin/policies`): SSO enforcement
+  (password login disabled for members, owner keeps break-glass), external
+  sharing controls (block all anonymous links; email-domain allowlist for
+  named shares), minimum password length (enforced at join + reset), device
+  posture (desktop-client-only sessions), DLP patterns, watermarking.
 
 ## 6. Data Lifecycle & Governance
 
@@ -111,7 +119,9 @@ reviewers, and procurement questionnaires.
 - **DLP**: outbound form submissions are scanned against configurable patterns;
   AI prompts pass through the same screen.
 - **Audit log**: administrative and security-relevant actions append to a
-  tamper-evident audit table (details encrypted at rest).
+  tamper-evident audit table (details encrypted at rest). Org admins can
+  filter/export it and configure a **SIEM webhook** — every event is mirrored
+  as JSON to the org's HTTPS collector (Splunk HEC, Sentinel, …).
 - **Recycle bin**: soft-delete with restore before permanent purge.
 - **User deletion is non-destructive by design**: erasure anonymizes the user
   and transfers ownership so shared workspaces stay coherent; org deletion
@@ -134,6 +144,8 @@ reviewers, and procurement questionnaires.
   (`KREATIX_ALERT_WEBHOOK`). A public status probe is available at
   `GET /api/status` (uptime, DB latency, last-good-backup age — no auth, no
   sensitive data).
+- **Restore procedure**: documented + scripted in `deploy/restore.sh` and
+  `docs/DR.md` (integrity check → db restore → blob restore → smoke).
 
 ## 8. Application Security
 

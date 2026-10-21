@@ -7,6 +7,7 @@ import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
+import { getPolicies } from "../policies.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 // Brute-force ceilings — the in-memory limiter is per-IP; pair with real
@@ -116,6 +117,7 @@ async function googleSignInComplete(
   ctx: { invite?: string; kind?: OrgKind; orgName?: string },
   log: { warn: (o: unknown, m: string) => void },
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+  meta?: { ip?: string; ua?: string },
 ): Promise<unknown> {
   const email = claims.email?.trim();
   if (!email || claims.email_verified !== true) {
@@ -129,7 +131,7 @@ async function googleSignInComplete(
     if (existing.totp_secret) {
       return { mfaRequired: true, mfaToken: await signMfaToken(existing.id) };
     }
-    return { token: await signToken(existing.id), user: toUser(existing) };
+    return { token: await signToken(existing.id, "7d", "web", meta), user: toUser(existing) };
   }
 
   // new account — same invite/no-invite split as password registration;
@@ -160,7 +162,7 @@ async function googleSignInComplete(
   const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
   const t = ctx.invite ? tpl.joinedWorkspace(displayName, orgName) : tpl.welcome(displayName, orgName, kind);
   sendMailSafe(log, { to: email, toName: displayName, ...t });
-  return { token: await signToken(userId), user };
+  return { token: await signToken(userId, "7d", "web", meta), user };
 }
 
 export function authRoutes(app: FastifyInstance) {
@@ -199,7 +201,7 @@ export function authRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(401).send({ error: "bad_token", message: "Google sign-in failed" });
     }
-    return googleSignInComplete(claims, body, app.log, reply);
+    return googleSignInComplete(claims, body, app.log, reply, { ip: req.ip, ua: req.headers["user-agent"] });
   });
 
   /**
@@ -250,7 +252,7 @@ export function authRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(401).send({ error: "bad_token", message: "Google sign-in failed" });
     }
-    return googleSignInComplete(claims, body, app.log, reply);
+    return googleSignInComplete(claims, body, app.log, reply, { ip: req.ip, ua: req.headers["user-agent"] });
   });
 
   /** Invite-link preview — name + branding of the workspace you're joining. */
@@ -436,6 +438,14 @@ export function authRoutes(app: FastifyInstance) {
       orgId = j.orgId;
       orgName = j.orgName;
       role = "member";
+      // org password policy applies to members joining an existing tenant
+      const minLen = (await getPolicies(orgId)).passwordMinLength;
+      if (minLen > 0 && body.password.length < minLen) {
+        return reply.code(400).send({
+          error: "bad_request",
+          message: `Workspace policy requires passwords of at least ${minLen} characters`,
+        });
+      }
     } else {
       orgId = randomUUID();
       await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)", [orgId, orgName, kind, now()]);
@@ -462,7 +472,7 @@ export function authRoutes(app: FastifyInstance) {
     sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...tpl.verifyEmail(body.displayName, vtok) });
 
     const user = toUser((await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]))!);
-    return { token: await signToken(userId), user };
+    return { token: await signToken(userId, "7d", "web", { ip: req.ip, ua: req.headers["user-agent"] }), user };
   });
 
   /**
@@ -484,6 +494,16 @@ export function authRoutes(app: FastifyInstance) {
     const body = z.object({ token: z.string().min(20), password: z.string().min(8) }).parse(req.body);
     const tok = await consumeAuthToken("password_reset", body.token);
     if (!tok) return reply.code(400).send({ error: "bad_token", message: "Reset link is expired or already used" });
+    const resetUser = await one<{ org_id: string }>("SELECT org_id FROM users WHERE id = $1", [tok.user_id]);
+    if (resetUser) {
+      const minLen = (await getPolicies(resetUser.org_id)).passwordMinLength;
+      if (minLen > 0 && body.password.length < minLen) {
+        return reply.code(400).send({
+          error: "bad_request",
+          message: `Workspace policy requires passwords of at least ${minLen} characters`,
+        });
+      }
+    }
     // password rotation revokes every outstanding session — whoever held an
     // old token (the reason for the reset) is signed out immediately
     await run("UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2", [hashPassword(body.password), tok.user_id]);
@@ -519,11 +539,13 @@ export function authRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** POST /api/auth/logout-all — bump token_version: every session on every
-   *  device dies immediately (stolen laptop, shared account, offboarding). */
+  /** POST /api/auth/logout-all — bump token_version + revoke every session
+   *  row: all devices die immediately (stolen laptop, shared account,
+   *  offboarding) and the sessions list reflects reality. */
   app.post("/api/auth/logout-all", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req) => {
     const user = (req as AuthedRequest).user;
     await run("UPDATE users SET token_version = token_version + 1 WHERE id = $1", [user.id]);
+    await run("UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL", [now(), user.id]);
     return { ok: true };
   });
 
@@ -536,6 +558,14 @@ export function authRoutes(app: FastifyInstance) {
     if (row.email_verify_required && !row.email_verified) {
       return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
+    // SSO enforcement: org policy routes members to their IdP; owner +
+    // superadmin keep password login as the break-glass path for IdP outages
+    if (row.role !== "owner" && !row.is_super && (await getPolicies(row.org_id)).ssoRequired) {
+      return reply.code(403).send({
+        error: "sso_required",
+        message: "This workspace requires single sign-on — sign in through your identity provider",
+      });
+    }
     // second factor — password verified, now challenge the TOTP
     if (row.totp_secret) {
       return { mfaRequired: true, mfaToken: await signMfaToken(row.id) };
@@ -543,7 +573,7 @@ export function authRoutes(app: FastifyInstance) {
     // desktop sessions get 30d — the 14-day offline grace must not strand
     // a logged-in desktop user mid-offline-period
     const desktop = body.client === "desktop";
-    return { token: await signToken(row.id, desktop ? "30d" : "7d", desktop ? "desktop" : "web"), user: toUser(row) };
+    return { token: await signToken(row.id, desktop ? "30d" : "7d", desktop ? "desktop" : "web", { ip: req.ip, ua: req.headers["user-agent"] }), user: toUser(row) };
   });
 
   /** Second step of login when the account has TOTP enabled. Accepts a
@@ -559,6 +589,12 @@ export function authRoutes(app: FastifyInstance) {
     if (row.email_verify_required && !row.email_verified) {
       return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
+    if (row.role !== "owner" && !row.is_super && (await getPolicies(row.org_id)).ssoRequired) {
+      return reply.code(403).send({
+        error: "sso_required",
+        message: "This workspace requires single sign-on — sign in through your identity provider",
+      });
+    }
     const secret = decryptField(row.totp_secret) ?? "";
     let ok = verifyTotp(secret, body.code);
     if (!ok) {
@@ -570,7 +606,7 @@ export function authRoutes(app: FastifyInstance) {
     }
     if (!ok) return reply.code(401).send({ error: "unauthorized", message: "Invalid authentication code" });
     const mfaDesktop = body.client === "desktop";
-    return { token: await signToken(row.id, mfaDesktop ? "30d" : "7d", mfaDesktop ? "desktop" : "web"), user: toUser(row) };
+    return { token: await signToken(row.id, mfaDesktop ? "30d" : "7d", mfaDesktop ? "desktop" : "web", { ip: req.ip, ua: req.headers["user-agent"] }), user: toUser(row) };
   });
 
   /** Begin enrollment — the secret is returned but not stored until the

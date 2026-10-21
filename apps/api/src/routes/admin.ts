@@ -25,6 +25,11 @@ const policiesSchema = z.object({
   watermarkConfidentialExports: z.boolean().optional(),
   allowedIpRanges: z.array(z.string().max(64)).max(50).optional(),
   requireDesktopClient: z.boolean().optional(),
+  ssoRequired: z.boolean().optional(),
+  blockPublicLinks: z.boolean().optional(),
+  shareDomainAllowlist: z.array(z.string().min(3).max(200)).max(50).optional(),
+  passwordMinLength: z.number().int().min(0).max(64).optional(),
+  siemWebhook: z.union([z.literal(""), z.string().url().max(500)]).optional(),
 });
 
 const roleSchema = z.object({ role: z.enum(["admin", "member", "guest"]) });
@@ -116,6 +121,7 @@ export function adminRoutes(app: FastifyInstance) {
     if (target.role === "owner") return reply.code(403).send({ error: "forbidden", message: "Cannot disable the owner" });
     const { disabled } = z.object({ disabled: z.boolean() }).parse(req.body);
     await run("UPDATE users SET disabled = $1, token_version = token_version + 1 WHERE id = $2", [disabled, target.id]);
+    if (disabled) await run("UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL", [now(), target.id]);
     return { ok: true, disabled };
   });
 
@@ -1004,5 +1010,80 @@ export function brandingRoutes(app: FastifyInstance) {
   app.delete("/api/admin/branding/logo", { preHandler: requireOrgAdmin }, async (req) => {
     await run("UPDATE orgs SET brand_logo = NULL, brand_logo_mime = NULL WHERE id = $1", [orgId(req)]);
     return { ok: true };
+  });
+
+  /**
+   * GET /api/admin/ediscovery/:userId — custodian export for investigations
+   * and legal requests. Bundles the custodian's profile, item/version
+   * metadata, their audit activity, and each owned file's latest content
+   * into one zip; every export is itself audit-logged (and SIEM-mirrored).
+   * Blobs over 100MB are listed in the manifest but skipped inline.
+   */
+  app.get("/api/admin/ediscovery/:userId", { preHandler: requireOrgAdmin }, async (req, reply) => {
+    const admin = (req as AuthedRequest).user;
+    const { userId } = req.params as { userId: string };
+    const target = await one<UserRow>("SELECT * FROM users WHERE id = $1 AND org_id = $2", [userId, admin.orgId]);
+    if (!target) return reply.code(404).send({ error: "not_found", message: "No such member" });
+
+    const { getBlob } = await import("../blobs.js");
+    const { zipFiles } = await import("../zip.js");
+    const BLOB_CAP = 100 * 1024 * 1024;
+
+    const [items, versions, activity] = await Promise.all([
+      dbq<Record<string, unknown>>(
+        `SELECT id, name, kind, mime, size, trashed, label, created_at, updated_at
+         FROM items WHERE owner_id = $1 AND org_id = $2 ORDER BY updated_at DESC`,
+        [userId, admin.orgId]),
+      dbq<Record<string, unknown>>(
+        `SELECT v.file_id, v.number, v.size, v.created_at, u.display_name AS saved_by
+         FROM versions v JOIN items i ON i.id = v.file_id LEFT JOIN users u ON u.id = v.created_by
+         WHERE i.owner_id = $1 AND i.org_id = $2 ORDER BY v.file_id, v.number`,
+        [userId, admin.orgId]),
+      dbq<Record<string, unknown>>(
+        `SELECT action, detail, file_id, created_at FROM activity
+         WHERE actor_id = $1 AND org_id = $2 ORDER BY created_at DESC LIMIT 20000`,
+        [userId, admin.orgId]),
+    ]);
+
+    const heads = await dbq<{ file_id: string; blob_key: string; name: string; mime: string; size: number }>(
+      `SELECT DISTINCT ON (v.file_id) v.file_id, v.blob_key, i.name, i.mime, v.size
+       FROM versions v JOIN items i ON i.id = v.file_id
+       WHERE i.owner_id = $1 AND i.org_id = $2 ORDER BY v.file_id, v.number DESC`,
+      [userId, admin.orgId]);
+
+    const skipped: { fileId: string; reason: string }[] = [];
+    const entries: { name: string; data: Buffer }[] = [];
+    const used = new Set<string>();
+    for (const h of heads) {
+      if (Number(h.size) > BLOB_CAP) { skipped.push({ fileId: h.file_id, reason: "exceeds 100MB inline cap" }); continue; }
+      const blob = await getBlob(h.blob_key);
+      if (!blob) { skipped.push({ fileId: h.file_id, reason: "blob missing" }); continue; }
+      let name = (decryptField(h.name) ?? h.name).replace(/[\\/:*?"<>|]/g, "_");
+      while (used.has(name)) name = `_${name}`;
+      used.add(name);
+      entries.push({ name: `files/${name}`, data: blob });
+    }
+
+    entries.unshift({ name: "manifest.json", data: Buffer.from(JSON.stringify({
+      generatedAt: now(), generatedBy: { id: admin.id, email: admin.email },
+      custodian: { id: target.id, email: target.email, displayName: target.display_name, role: target.role },
+      scope: "owned items, latest-version content, activity history",
+      items: items.map((r) => ({ ...r, name: decryptField(r.name as string) ?? r.name })),
+      versions, skippedBlobs: skipped,
+    }, null, 2)) });
+
+    const cell = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
+    const csv = "timestamp,action,file_id,detail\n" + activity.map((r) =>
+      [r.created_at, r.action, r.file_id, decryptField(r.detail as string) ?? r.detail].map(cell).join(",")).join("\n");
+    entries.push({ name: "activity.csv", data: Buffer.from(csv) });
+
+    void logActivity(admin.orgId, admin.id, null, "ediscovery-export",
+      `custodian ${target.email} (${items.length} items, ${skipped.length} blobs skipped)`);
+
+    const zip = zipFiles(entries);
+    return reply
+      .header("content-type", "application/zip")
+      .header("content-disposition", `attachment; filename="ediscovery-${target.email.replace(/[^a-z0-9]/gi, "_")}.zip"`)
+      .send(zip);
   });
 }

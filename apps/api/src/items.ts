@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { q, one, run, now } from "./db.js";
 import { encryptField, decryptField } from "./crypto.js";
+import { pushSiemEvent } from "./policies.js";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 
 export interface ItemRow {
@@ -127,6 +128,9 @@ export function touchItem(id: string) {
 }
 
 export function logActivity(orgId: string, actorId: string, fileId: string | null, action: string, detail?: string, siteId?: string) {
+  // SIEM mirror gets the plaintext detail (the whole point of exporting the
+  // audit trail); the stored copy keeps its field-level encryption
+  pushSiemEvent(orgId, { action, actorId, fileId, detail: detail ?? null, siteId: siteId ?? null });
   return run(
     "INSERT INTO activity (id, org_id, actor_id, file_id, action, detail, site_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
     [randomUUID(), orgId, actorId, fileId, action, encryptField(detail ?? null), siteId ?? null, now()],

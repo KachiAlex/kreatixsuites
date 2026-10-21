@@ -1139,6 +1139,20 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // SSO/SCIM paths are verified by construction
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verify_required BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_dismissed BOOLEAN NOT NULL DEFAULT false`);
+
+  // per-device sessions — id is the JWT jti; revoking a row kills that
+  // device's session immediately while leaving the user's others intact
+  await pool.query(`CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client TEXT NOT NULL DEFAULT 'web',
+    user_agent TEXT,
+    ip TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, revoked_at)`);
   await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_logo_mime TEXT`);
   // ops: backup bookkeeping + sweep coordination state (see backup.ts / monitor.ts)
   await pool.query(`CREATE TABLE IF NOT EXISTS backup_runs (

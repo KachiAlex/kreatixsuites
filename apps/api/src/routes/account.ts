@@ -90,4 +90,33 @@ export function accountRoutes(app: FastifyInstance) {
     await run("UPDATE users SET onboarding_dismissed = $1 WHERE id = $2", [dismissed, (req as AuthedRequest).user.id]);
     return { ok: true };
   });
+
+  /** GET /api/me/sessions — every live session (device) for the account,
+   *  newest activity first; `current` marks the caller's own session. */
+  app.get("/api/me/sessions", { preHandler: requireAuth }, async (req) => {
+    const { user, payload } = req as AuthedRequest;
+    const rows = await q<{ id: string; client: string; user_agent: string | null; ip: string | null; created_at: string; last_seen_at: string }>(
+      `SELECT id, client, user_agent, ip, created_at, last_seen_at FROM sessions
+       WHERE user_id = $1 AND revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 50`,
+      [user.id],
+    );
+    return {
+      sessions: rows.map((s) => ({
+        id: s.id, client: s.client, userAgent: s.user_agent, ip: s.ip,
+        createdAt: s.created_at, lastSeenAt: s.last_seen_at,
+        current: s.id === payload?.jti,
+      })),
+    };
+  });
+
+  /** DELETE /api/me/sessions/:id — revoke one session (sign out that device).
+   *  Scoped to the caller's own rows; revoking the current session logs the
+   *  caller out too, which is the point of the button. */
+  app.delete("/api/me/sessions/:id", { preHandler: requireAuth }, async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { id } = req.params as { id: string };
+    const r = await run("UPDATE sessions SET revoked_at = $1 WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL", [now(), id, user.id]);
+    if (!r) return reply.code(404).send({ error: "not_found" });
+    return { ok: true };
+  });
 }

@@ -128,6 +128,7 @@ export const en: Record<string, string> = {
   "shell.settings": "Settings",
   "shell.toggleTheme": "Toggle dark / light theme",
   "shell.security": "Security & two-factor…",
+  "shell.account": "Account & sessions…",
   "shell.language": "Language",
   "shell.signOut": "Sign out",
   "shell.renewSub": "Renew subscription",
