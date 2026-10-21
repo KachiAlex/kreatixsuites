@@ -1072,15 +1072,38 @@ export function brandingRoutes(app: FastifyInstance) {
     if (!Buffer.isBuffer(buf) || buf.length === 0 || buf.length > 512 * 1024) {
       return reply.code(400).send({ error: "bad_size", message: "Logo must be under 512KB" });
     }
+    // bytes must prove the claimed type — a renamed HTML payload is not a logo
+    const isSvg = /^\s*(<\?xml|<svg)/i.test(buf.toString("utf8", 0, 512));
+    const magicOk =
+      buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])) || // png
+      buf.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ||        // jpeg
+      buf.subarray(0, 4).equals(Buffer.from("GIF8")) ||                  // gif
+      (buf.subarray(0, 4).equals(Buffer.from("RIFF")) && buf.subarray(8, 12).equals(Buffer.from("WEBP"))) ||
+      buf.subarray(0, 4).equals(Buffer.from([0x00, 0x00, 0x01, 0x00])) || // ico
+      isSvg;
+    if (!magicOk) {
+      return reply.code(415).send({ error: "blocked_file_type", message: "File content is not a valid image" });
+    }
+    // an SVG is markup — it must not carry scriptable content even though the
+    // serve path already neuters it with a sandbox CSP
+    if (isSvg && /<\s*script|on\w+\s*=|javascript:/i.test(buf.toString("utf8", 0, Math.min(buf.length, 500_000)))) {
+      return reply.code(415).send({ error: "blocked_file_type", message: "SVG contains active content" });
+    }
     const { storageQuota } = await import("../billing.js");
     const quota = await storageQuota(orgId(req), buf.length);
     if (!quota.ok) {
       return reply.code(413).send({ error: "storage_quota",
         message: "Workspace storage full — upgrade or free space" });
     }
+    const sniffedMime = isSvg ? "image/svg+xml"
+      : buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])) ? "image/png"
+      : buf.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ? "image/jpeg"
+      : buf.subarray(0, 4).equals(Buffer.from("GIF8")) ? "image/gif"
+      : buf.subarray(0, 4).equals(Buffer.from("RIFF")) ? "image/webp"
+      : "image/x-icon";
     const { putBlob } = await import("../blobs.js");
     const { key } = await putBlob(buf);
-    await run("UPDATE orgs SET brand_logo = $1, brand_logo_mime = $2 WHERE id = $3", [key, mime, orgId(req)]);
+    await run("UPDATE orgs SET brand_logo = $1, brand_logo_mime = $2 WHERE id = $3", [key, sniffedMime, orgId(req)]);
     return { logoUrl: `/api/org/brand/${orgId(req)}/logo` };
   });
 

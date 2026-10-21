@@ -54,6 +54,14 @@ const EXT_MAGIC: Record<string, Buffer> = {
   gif: Buffer.from("GIF8"),
 };
 
+/** Magics whose payload must be pure binary — markup inside one of these is
+ *  a polyglot (PNG+HTML etc.) smuggling active content past the prefix check. */
+const STRICT_BINARY = [...EXEC_MAGIC, ...Object.values(EXT_MAGIC)];
+
+/** Markup that must never appear inside a binary-magic payload. PDFs may carry
+ *  Acrobat JS (`app.alert`) but never angle-bracket HTML elements. */
+const ACTIVE_MARKUP = /<\s*(html|head|body|script|iframe|object|embed|form|meta|link)\b/i;
+
 /** Returns a rejection reason, or null when the buffer passes the gate. */
 export function sniffReject(buf: Buffer, ext: string): string | null {
   if (buf.includes(EICAR)) return "EICAR test signature";
@@ -62,7 +70,47 @@ export function sniffReject(buf: Buffer, ext: string): string | null {
   if (want && !buf.subarray(0, want.length).equals(want)) {
     return `'.${ext}' file content does not match its type`;
   }
+  if (STRICT_BINARY.some((m) => buf.subarray(0, m.length).equals(m))
+    && ACTIVE_MARKUP.test(buf.toString("latin1", 0, Math.min(buf.length, 2_000_000)))) {
+    return "binary file contains embedded markup (polyglot)";
+  }
   return null;
+}
+
+/** Claimed-MIME sanity — a real `type/subtype`, never a multipart envelope. */
+const SINGLE_MIME = /^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/i;
+
+/** Extension → fallback MIME for uploads whose bytes carry no known magic. */
+const EXT_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", ico: "image/x-icon",
+  pdf: "application/pdf", zip: "application/zip",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json",
+  html: "text/html", htm: "text/html", xml: "application/xml", ics: "text/calendar",
+  mp3: "audio/mpeg", wav: "audio/wav", mp4: "video/mp4", webm: "video/webm",
+};
+
+/** Unambiguous magic → MIME. PK\x03\x04 is deliberately absent: it is shared
+ *  by zip and the OOXML formats, so extension must disambiguate. */
+const MAGIC_MIME: [Buffer, string][] = [
+  [Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png"],
+  [Buffer.from([0xff, 0xd8, 0xff]), "image/jpeg"],
+  [Buffer.from("GIF8"), "image/gif"],
+  [Buffer.from("%PDF-"), "application/pdf"],
+];
+
+/** Resolve the stored MIME truthfully: sniffed magic wins, then a sane client
+ *  claim, then the extension map — never the raw request Content-Type (which
+ *  can be a multipart envelope or an outright lie). */
+export function resolveMime(buf: Buffer, ext: string, claimed: string): string {
+  for (const [magic, mime] of MAGIC_MIME) {
+    if (buf.subarray(0, magic.length).equals(magic)) return mime;
+  }
+  if (SINGLE_MIME.test(claimed) && !claimed.startsWith("multipart/")) return claimed.toLowerCase();
+  return EXT_MIME[ext] ?? "application/octet-stream";
 }
 
 /** Write buffer to a temp file, run KREATIX_SCAN_CMD, return stderr verdict or null. */
@@ -539,6 +587,14 @@ export function driveRoutes(app: FastifyInstance) {
   }, async (req, reply) => {
     const { user } = req as AuthedRequest;
     const { name, parent, kind, mediaFor, library } = req.query as { name?: string; parent?: string; kind?: string; mediaFor?: string; library?: string };
+    const reqCt = ((req.headers["content-type"] as string) ?? "").toLowerCase();
+    // This route takes the raw file bytes — the client posts file.type as the
+    // Content-Type. A multipart body would store the entire envelope (boundary
+    // strings and all) as the file content, so reject it explicitly.
+    if (reqCt.startsWith("multipart/")) {
+      return reply.code(400).send({ error: "bad_request",
+        message: "Send the raw file bytes as the request body, not multipart/form-data" });
+    }
     // text/* content-types hit Fastify's built-in parser (string body) before
     // the wildcard buffer parser — handle all three shapes.
     const buf = Buffer.isBuffer(req.body)
@@ -602,20 +658,21 @@ export function driveRoutes(app: FastifyInstance) {
       if (host && hasPermission(await permissionFor(user.id, host), "editor")) mediaForId = mediaFor;
     }
 
+    const mime = resolveMime(buf, ext, reqCt);
     await run(
       `INSERT INTO items (id, org_id, parent_id, owner_id, name, kind, mime, size, media_for, library_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [id, user.orgId, parent || null, user.id, encryptField(name ?? "Untitled"), fileKind,
-       (req.headers["content-type"] as string) ?? "application/octet-stream", size, mediaForId, libraryId, now(), now()],
+       mime, size, mediaForId, libraryId, now(), now()],
     );
     await run(
       "INSERT INTO versions (id, file_id, number, major, minor, published, label, blob_key, size, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
       [randomUUID(), id, 1, 1, 0, true, "Initial upload", key, size, user.id, now()],
     );
 
-    // DLP engine — scan text uploads through the rules pipeline
-    const ct = (req.headers["content-type"] as string) ?? "";
-    if (ct.startsWith("text/") || ct.includes("json") || ct.includes("xml") || ct.includes("csv")) {
+    // DLP engine — scan text uploads through the rules pipeline. Judge by the
+    // resolved MIME, not the claim — a "text/*" lie must not skip the scan.
+    if (mime.startsWith("text/") || mime.includes("json") || mime.includes("xml") || mime.includes("csv")) {
       const scan = await scanDlp(user.orgId, { type: "item", id },
         name ?? "Untitled", buf.toString("utf8").slice(0, 500_000), user.id);
       if (scan.blockedBy) {
