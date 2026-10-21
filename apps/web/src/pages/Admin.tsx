@@ -79,6 +79,11 @@ interface Rule {
   match: Record<string, string> | null; action: string;
   config: Record<string, string | null>; createdBy: string; createdAt: string;
 }
+interface SsoProvider {
+  id: string; protocol: "saml" | "oidc"; enabled: boolean; domains: string[];
+  config: Record<string, unknown>;
+  metadataUrl: string | null; callbackUrl: string;
+}
 interface Metrics {
   uptimeSec: number;
   requests: { total: number; errors5xx: number; byStatus: Record<string, number> };
@@ -158,6 +163,40 @@ export function Admin() {
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
+
+  // per-org enterprise IdP configs (SAML/OIDC) — separate lazy load so the
+  // big Promise.all tuple above stays untouched
+  const [ssoProviders, setSsoProviders] = useState<SsoProvider[]>([]);
+  const [ssoForm, setSsoForm] = useState({
+    protocol: "saml" as "saml" | "oidc",
+    entryPoint: "", spIssuer: "", cert: "",
+    issuer: "", clientId: "", clientSecret: "", scope: "",
+    domains: "", enabled: true,
+  });
+  const loadSso = useCallback(async () => {
+    const r = await api.get<{ providers: SsoProvider[] }>("/api/admin/sso");
+    setSsoProviders(r.providers);
+  }, []);
+  useEffect(() => {
+    if (isOwnerOrAdmin && !isSuper) loadSso().catch(() => {});
+  }, [isOwnerOrAdmin, isSuper, loadSso]);
+
+  const saveSso = async () => {
+    const config = ssoForm.protocol === "saml"
+      ? { entryPoint: ssoForm.entryPoint.trim(), cert: ssoForm.cert.trim(),
+          ...(ssoForm.spIssuer.trim() ? { spIssuer: ssoForm.spIssuer.trim() } : {}) }
+      : { issuer: ssoForm.issuer.trim(), clientId: ssoForm.clientId.trim(),
+          clientSecret: ssoForm.clientSecret, ...(ssoForm.scope.trim() ? { scope: ssoForm.scope.trim() } : {}) };
+    try {
+      await api.put(`/api/admin/sso/${ssoForm.protocol}`, {
+        config, enabled: ssoForm.enabled,
+        domains: ssoForm.domains.split("\n").map((s) => s.trim().toLowerCase()).filter(Boolean),
+      });
+      toast("SSO provider saved");
+      setSsoForm({ ...ssoForm, cert: "", clientSecret: "" });
+      void loadSso();
+    } catch (e) { toast(e instanceof Error ? e.message : "Save failed"); }
+  };
 
   const load = useCallback(async () => {
     // superadmin sessions are confined to the platform portal — the
@@ -720,6 +759,74 @@ export function Admin() {
           </div>
         )}
       </section>
+
+      {/* ── Enterprise SSO (per-org IdP) ── */}
+      {isOwnerOrAdmin && (
+        <section className="admin-card" id="sso">
+          <h2>Single sign-on</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Connect this workspace's own identity provider — members then sign in
+            through your IdP (pair with "Require single sign-on" in Data policies).
+          </p>
+          {ssoProviders.map((p) => (
+            <div key={p.id} className="pol-row" style={{ alignItems: "center" }}>
+              <span className={`flag ${p.enabled ? "on" : "off"}`}><i />{p.protocol === "saml" ? "SAML 2.0" : "OIDC"}</span>
+              <span style={{ flex: 1 }}>
+                <b>{String(p.config.entryPoint ?? p.config.issuer ?? "")}</b>
+                <em style={{ display: "block" }}>
+                  {p.domains.length ? `managed domains: ${p.domains.join(", ")}` : "no managed domains — members sign in via the SSO link"}
+                  {" · callback: "}<code>{p.callbackUrl}</code>
+                  {p.metadataUrl && <>{" · "}<a href={p.metadataUrl} target="_blank" rel="noreferrer">SP metadata</a></>}
+                </em>
+              </span>
+              <button className="btn-sm" onClick={async () => {
+                try { await api.del(`/api/admin/sso/${p.protocol}`); toast("Provider removed"); void loadSso(); }
+                catch (e) { toast(e instanceof Error ? e.message : "Failed"); }
+              }}>Remove</button>
+            </div>
+          ))}
+          <div className="cal-formrow" style={{ marginTop: 10 }}>
+            <select value={ssoForm.protocol}
+              onChange={(e) => setSsoForm({ ...ssoForm, protocol: e.target.value as "saml" | "oidc" })}>
+              <option value="saml">SAML 2.0</option>
+              <option value="oidc">OpenID Connect</option>
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <input type="checkbox" checked={ssoForm.enabled}
+                onChange={(e) => setSsoForm({ ...ssoForm, enabled: e.target.checked })} />
+              Enabled
+            </label>
+          </div>
+          {ssoForm.protocol === "saml" ? (
+            <>
+              <div className="cal-formrow"><input placeholder="IdP SSO URL (HTTP-Redirect entry point)" value={ssoForm.entryPoint}
+                onChange={(e) => setSsoForm({ ...ssoForm, entryPoint: e.target.value })} /></div>
+              <div className="cal-formrow"><input placeholder="SP entity ID (optional — defaults to the org SSO URL)" value={ssoForm.spIssuer}
+                onChange={(e) => setSsoForm({ ...ssoForm, spIssuer: e.target.value })} /></div>
+              <textarea rows={4} placeholder="IdP signing certificate (PEM — paste the full -----BEGIN CERTIFICATE----- block)"
+                value={ssoForm.cert} onChange={(e) => setSsoForm({ ...ssoForm, cert: e.target.value })}
+                style={{ width: "100%", fontFamily: "monospace", fontSize: 11, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }} />
+            </>
+          ) : (
+            <>
+              <div className="cal-formrow"><input placeholder="Issuer URL (e.g. https://login.microsoftonline.com/<tenant>/v2.0)" value={ssoForm.issuer}
+                onChange={(e) => setSsoForm({ ...ssoForm, issuer: e.target.value })} /></div>
+              <div className="cal-formrow">
+                <input placeholder="Client ID" value={ssoForm.clientId}
+                  onChange={(e) => setSsoForm({ ...ssoForm, clientId: e.target.value })} />
+                <input placeholder="Client secret" type="password" value={ssoForm.clientSecret}
+                  onChange={(e) => setSsoForm({ ...ssoForm, clientSecret: e.target.value })} />
+              </div>
+              <div className="cal-formrow"><input placeholder="Scope (optional — default: openid email profile)" value={ssoForm.scope}
+                onChange={(e) => setSsoForm({ ...ssoForm, scope: e.target.value })} /></div>
+            </>
+          )}
+          <textarea rows={2} placeholder={"Managed email domains, one per line (e.g. acme.com)\nUsed to route sign-ins on the login page"}
+            value={ssoForm.domains} onChange={(e) => setSsoForm({ ...ssoForm, domains: e.target.value })}
+            style={{ width: "100%", fontFamily: "monospace", fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }} />
+          <button className="btn-primary btn-sm" onClick={() => void saveSso()}>Save provider</button>
+        </section>
+      )}
 
       {/* ── Legal holds + eDiscovery ── */}
       {isOwnerOrAdmin && (

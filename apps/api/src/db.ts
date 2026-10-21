@@ -1153,6 +1153,22 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     revoked_at TIMESTAMPTZ
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, revoked_at)`);
+
+  // per-org enterprise IdP configs — each workspace can federate to its own
+  // SAML 2.0 / OIDC provider (the env-configured KREATIX_SAML_*/KREATIX_OIDC_*
+  // stay as the platform-global fallback). config is enc:v1: ciphertext JSON:
+  //   saml → {entryPoint, cert, spIssuer?}   oidc → {issuer, clientId, clientSecret, scope?, requireVerifiedEmail?}
+  await pool.query(`CREATE TABLE IF NOT EXISTS org_sso (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    protocol TEXT NOT NULL,
+    config TEXT NOT NULL,
+    domains TEXT[] NOT NULL DEFAULT '{}',
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(org_id, protocol)
+  )`);
   await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_logo_mime TEXT`);
   // ops: backup bookkeeping + sweep coordination state (see backup.ts / monitor.ts)
   await pool.query(`CREATE TABLE IF NOT EXISTS backup_runs (

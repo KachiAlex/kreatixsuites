@@ -8,6 +8,8 @@ import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
 import { getPolicies } from "../policies.js";
+import { samlEnabled } from "./saml.js";
+import { ssoEnabled } from "./sso.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 // Brute-force ceilings — the in-memory limiter is per-IP; pair with real
@@ -559,10 +561,17 @@ export function authRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
     // SSO enforcement: org policy routes members to their IdP; owner +
-    // superadmin keep password login as the break-glass path for IdP outages
+    // superadmin keep password login as the break-glass path for IdP outages.
+    // ssoUrl deep-links the client straight into the org's IdP when one is
+    // configured (per-org SSO → global SAML → global OIDC, first found).
     if (row.role !== "owner" && !row.is_super && (await getPolicies(row.org_id)).ssoRequired) {
+      const orgSso = await one<{ protocol: string }>(
+        "SELECT protocol FROM org_sso WHERE org_id = $1 AND enabled ORDER BY protocol LIMIT 1", [row.org_id]);
+      const ssoUrl = orgSso
+        ? `/api/auth/orgsso/${row.org_id}/login?p=${orgSso.protocol}`
+        : samlEnabled ? "/api/auth/saml" : ssoEnabled ? "/api/auth/sso" : null;
       return reply.code(403).send({
-        error: "sso_required",
+        error: "sso_required", ssoUrl,
         message: "This workspace requires single sign-on — sign in through your identity provider",
       });
     }
@@ -590,8 +599,13 @@ export function authRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
     if (row.role !== "owner" && !row.is_super && (await getPolicies(row.org_id)).ssoRequired) {
+      const orgSso = await one<{ protocol: string }>(
+        "SELECT protocol FROM org_sso WHERE org_id = $1 AND enabled ORDER BY protocol LIMIT 1", [row.org_id]);
+      const ssoUrl = orgSso
+        ? `/api/auth/orgsso/${row.org_id}/login?p=${orgSso.protocol}`
+        : samlEnabled ? "/api/auth/saml" : ssoEnabled ? "/api/auth/sso" : null;
       return reply.code(403).send({
-        error: "sso_required",
+        error: "sso_required", ssoUrl,
         message: "This workspace requires single sign-on — sign in through your identity provider",
       });
     }

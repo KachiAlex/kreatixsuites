@@ -31,10 +31,13 @@ if (getToken()) mirrorCookie(getToken());
 export class ApiError extends Error {
   status: number;
   code: string;
-  constructor(status: number, code: string, message: string) {
+  /** Raw error body — endpoints attach actionable fields (e.g. ssoUrl). */
+  body: Record<string, unknown>;
+  constructor(status: number, code: string, message: string, body: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 
@@ -61,12 +64,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     let code = "error";
     let message = res.statusText;
+    let body: Record<string, unknown> = {};
     try {
-      const body = await res.json();
-      code = body.error ?? code;
-      message = body.message ?? message;
+      body = await res.json();
+      code = (body.error as string) ?? code;
+      message = (body.message as string) ?? message;
     } catch { /* non-json */ }
-    throw new ApiError(res.status, code, message);
+    throw new ApiError(res.status, code, message, body);
   }
   const ct = res.headers.get("content-type") ?? "";
   const data = (ct.includes("json") ? res.json() : res.blob()) as Promise<T>;

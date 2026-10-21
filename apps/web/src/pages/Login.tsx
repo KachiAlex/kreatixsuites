@@ -49,6 +49,9 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [emailTaken, setEmailTaken] = useState(false);
   const [unverified, setUnverified] = useState(false);
   const [resendSent, setResendSent] = useState(false);
+  // sso_required → swap the form for IdP buttons (direct ssoUrl from the 403
+  // plus lookup results for managed-domain/JIT matches)
+  const [ssoRequired, setSsoRequired] = useState<{ url: string; label: string }[] | null>(null);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [googleDesktop, setGoogleDesktop] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
@@ -250,6 +253,18 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         // form for a resend-the-link card instead of a bare error
         setUnverified(true);
         setError("");
+      } else if (err instanceof ApiError && err.code === "sso_required") {
+        // org enforces SSO — swap the form for IdP buttons: the 403 carries
+        // the org's direct entry point; the lookup adds managed-domain hits
+        const direct = typeof err.body.ssoUrl === "string" ? err.body.ssoUrl : null;
+        const links = direct ? [{ url: direct, label: "identity provider" }] : [];
+        try {
+          const lu = await api.get<{ providers: { url: string; label: string }[] }>(
+            `/api/auth/orgsso/lookup?email=${encodeURIComponent(email)}`);
+          for (const p of lu.providers) if (!links.some((l) => l.url === p.url)) links.push(p);
+        } catch { /* lookup best-effort */ }
+        setSsoRequired(links);
+        setError("");
       // a dead connection surfaces as TypeError("Failed to fetch") — say so
       // plainly instead of dumping the raw network error on the user
       } else if (!navigator.onLine || (err instanceof TypeError && /fetch|network|resolve/i.test(err.message))) {
@@ -292,6 +307,30 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
             <button type="button" className="btn-ghost anon-btn" style={{ width: "100%" }}
               onClick={() => { setUnverified(false); setResendSent(false); }}>
               {t("auth.unverifiedBack")}
+            </button>
+          </>
+        ) : ssoRequired ? (
+          <>
+            <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.55 }}>
+              This workspace requires single sign-on. Continue through your
+              identity provider:
+            </p>
+            {ssoRequired.length === 0 && (
+              <p style={{ color: "var(--muted)", fontSize: 12 }}>
+                No SSO provider is linked to this account yet — ask your admin
+                to configure one under Admin → Single sign-on, or check for a
+                workspace invitation.
+              </p>
+            )}
+            {ssoRequired.map((l) => (
+              <a key={l.url} className="btn-primary sso-btn" style={{ textAlign: "center", textDecoration: "none" }}
+                href={`${API_BASE}${l.url}${isNativeMobile ? (l.url.includes("?") ? "&" : "?") + "client=mobile" : ""}`}>
+                Continue with {l.label}
+              </a>
+            ))}
+            <button type="button" className="btn-ghost anon-btn" style={{ width: "100%" }}
+              onClick={() => setSsoRequired(null)}>
+              Back to password sign-in
             </button>
           </>
         ) : mode === "forgot" ? (
@@ -410,6 +449,26 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
         )}
         {saml && mode === "login" && (
           <a className="btn-secondary sso-btn" href={`${API_BASE}/api/auth/saml${isNativeMobile ? "?client=mobile" : ""}`}>{t("auth.samlContinue")}</a>
+        )}
+        {/* Enterprise SSO by email — resolves managed domains and org IdP
+            configs, including JIT users with no account yet */}
+        {mode === "login" && !mfaToken && (
+          <button type="button" className="btn-ghost anon-btn" style={{ width: "100%", fontSize: 12 }}
+            onClick={async () => {
+              if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { setError("Enter your work email first"); return; }
+              setBusy(true); setError("");
+              try {
+                const lu = await api.get<{ providers: { url: string; label: string }[] }>(
+                  `/api/auth/orgsso/lookup?email=${encodeURIComponent(email)}`);
+                if (lu.providers.length === 0) { setError("No single sign-on is configured for that email"); }
+                else if (lu.providers.length === 1) {
+                  location.href = `${API_BASE}${lu.providers[0].url}${isNativeMobile ? "&client=mobile" : ""}`;
+                } else setSsoRequired(lu.providers);
+              } catch { setError("SSO lookup failed — try again"); }
+              finally { setBusy(false); }
+            }}>
+            Workplace sign-in (SSO)
+          </button>
         )}
         <button type="button" className="btn-ghost anon-btn"
           onClick={() => { void enterAnonymous().then(() => { prefetchAppShell(); navigate("/home"); }); }}>
