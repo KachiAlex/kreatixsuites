@@ -21,13 +21,13 @@ export default defineConfig({
         // OCR runtime (~7MB) fetches lazily on first use and caches in IDB —
         // no point precaching it into the SW. Spellcheck dictionaries are the
         // same story — ~8MB of hunspell data, only one language ever loads.
-        globIgnores: ["tesseract/**", "assets/dict-*.js"],
+        globIgnores: ["tesseract/**", "assets/**/dict-*.js"],
         cleanupOutdatedCaches: true,
         // never cache API or realtime endpoints at runtime; dict chunks the SW
         // skipped get a CacheFirst route so a language survives offline after
         // its first fetch
         runtimeCaching: [{
-          urlPattern: /\/assets\/dict-[a-z]+-[A-Za-z0-9_-]+\.js$/,
+          urlPattern: /\/assets\/[a-z0-9]+\/dict-[a-z]+-[A-Za-z0-9_-]+\.js$/,
           handler: "CacheFirst",
         }],
       },
@@ -43,6 +43,13 @@ export default defineConfig({
     // which turns them into eager entry deps (modulepreloaded on every route).
     chunkSizeWarningLimit: 800,
     rollupOptions: {
+      // cache-namespace segment: bump when edge caches must be invalidated in
+      // bulk (immutable 1y TTL keeps old keys alive otherwise)
+      output: {
+        entryFileNames: 'assets/b2/[name]-[hash].js',
+        chunkFileNames: 'assets/b2/[name]-[hash].js',
+        assetFileNames: 'assets/b2/[name]-[hash][extname]',
+      },
       // second entry: the Sheets script sandbox page, served under its own
       // CSP (unsafe-eval) inside an opaque-origin iframe
       input: {
