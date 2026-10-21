@@ -60,7 +60,7 @@ function Glyph({ kind, color }: { kind: AppKind; color: string }) {
     case "pdf":
       return (
         <text x="32" y="39" textAnchor="middle" fill="#fff"
-          fontFamily="Inter, ui-sans-serif, system-ui, sans-serif" fontWeight="800" fontSize="19" letterSpacing="1">
+          fontFamily="'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif" fontWeight="800" fontSize="19" letterSpacing="1">
           PDF
         </text>
       );

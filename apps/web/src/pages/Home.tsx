@@ -169,27 +169,33 @@ export function Home() {
       </section>
 
       <section className="apps">
-        {apps.map((a) => (
-          <div className="app-card" key={a.cls}
-            onClick={async () => {
-              const names: Record<string, string> = { writer: t("home.untitledDoc"), sheets: t("home.untitledSheet"), present: t("home.untitledDeck"), board: "Untitled board" };
-              if (a.kind === "pdf") return navigate("/drive/all");
-              const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[a.kind], kind: a.kind });
-              navigate(`/edit/${r.item.id}`);
-            }}>
-            <div className={`app-ico ${a.cls}`}><AppIcon kind={a.cls} /></div>
-            <div><h4>{a.name}</h4><p>{a.desc}</p></div>
-            <div className="launch">›</div>
-          </div>
-        ))}
+        {apps.map((a) => {
+          const openApp = async () => {
+            const names: Record<string, string> = { writer: t("home.untitledDoc"), sheets: t("home.untitledSheet"), present: t("home.untitledDeck"), board: "Untitled board" };
+            if (a.kind === "pdf") return navigate("/drive/all");
+            const r = await api.post<{ item: DriveItem }>("/api/drive", { name: names[a.kind], kind: a.kind });
+            navigate(`/edit/${r.item.id}`);
+          };
+          return (
+            <div className="app-card" key={a.cls} role="button" tabIndex={0}
+              onClick={() => void openApp()}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openApp(); } }}>
+              <div className="app-ico"><AppIcon kind={a.cls} size={44} /></div>
+              <div className="app-card-txt"><h4>{a.name}</h4><p>{a.desc}</p></div>
+              <div className="launch">›</div>
+            </div>
+          );
+        })}
       </section>
 
       <div className="section-head" style={{ marginTop: 22 }}><h2>{t("home.workApps")}</h2></div>
       <section className="apps">
         {workApps.map((a) => (
-          <div className="app-card" key={a.cls} onClick={() => navigate(a.to)}>
-            <div className={`app-ico ${a.cls}`}><AppIcon kind={a.cls} /></div>
-            <div><h4>{a.name}</h4><p>{a.desc}</p></div>
+          <div className="app-card" key={a.cls} role="button" tabIndex={0}
+            onClick={() => navigate(a.to)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(a.to); } }}>
+            <div className="app-ico"><AppIcon kind={a.cls} size={44} /></div>
+            <div className="app-card-txt"><h4>{a.name}</h4><p>{a.desc}</p></div>
             <div className="launch">›</div>
           </div>
         ))}

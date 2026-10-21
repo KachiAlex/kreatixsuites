@@ -148,14 +148,20 @@ main{padding:19px 28px 50px;min-width:0}
 .btn-ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer;font-size:12px}
 .btn-ghost:hover{background:var(--subtle)}
 .btn-sm{padding:7px 11px;font-size:11px;border-radius:10px}
-.apps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-top:16px}
-.app-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:15px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:.2s ease}
-.app-card:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(52,39,30,.07);border-color:var(--line)}
-.app-ico{width:44px;height:44px;border-radius:13px;color:#fff;display:grid;place-items:center;font-weight:900;font-size:13px}
+.apps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:16px;align-items:start}
+.app-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;align-items:center;gap:13px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;min-height:76px}
+.app-card:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(52,39,30,.08);border-color:rgba(52,39,30,.16)}
+.app-card:focus-visible{outline:2px solid var(--k-orange);outline-offset:2px}
+.app-card:active{transform:translateY(-1px)}
+.app-ico{width:44px;height:44px;border-radius:13px;color:#fff;display:grid;place-items:center;font-weight:900;font-size:13px;flex-shrink:0}
+.app-ico svg{border-radius:13px;transition:transform .2s ease}
+.app-card:hover .app-ico svg{transform:scale(1.07)}
+.app-card-txt{min-width:0;flex:1}
 .writer{background:var(--writer)}.sheets{background:var(--sheets)}.present{background:var(--present)}.pdf{background:var(--pdf)}.file-ico{background:#727272}.folder-ico{background:#B8AFA6}
-.app-card h4{font-size:13px;margin:0;color:var(--ink)}
-.app-card p{font-size:10px;margin:3px 0 0;color:var(--muted)}
-.app-card .launch{margin-left:auto;color:var(--muted);font-size:16px}
+.app-card h4{font-size:13.5px;font-weight:650;margin:0;color:var(--ink);letter-spacing:-0.005em}
+.app-card p{font-size:11px;margin:3px 0 0;color:var(--muted);line-height:1.35}
+.app-card .launch{margin-left:auto;color:var(--muted);font-size:17px;transition:transform .2s ease,color .2s ease;flex-shrink:0}
+.app-card:hover .launch{transform:translateX(3px);color:var(--ink)}
 .content-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(310px,.72fr);gap:17px}
 .section-head{display:flex;align-items:center;justify-content:space-between;margin:28px 0 12px}
 .section-head h2{margin:0;font-size:17px;letter-spacing:-.35px}

@@ -61,7 +61,7 @@ export function Ruler({ editor, canMutate = true }: { editor: Editor; canMutate?
   for (let i = 1; ml + i * IN < width - mr + IN / 2; i++) {
     numbers.push(
       <text key={i} x={ml + i * IN} y={11} textAnchor="middle" fontSize={9} fill="#7A7169"
-        fontFamily="Inter, sans-serif">{i}</text>,
+        fontFamily="'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', sans-serif">{i}</text>,
     );
   }
 
