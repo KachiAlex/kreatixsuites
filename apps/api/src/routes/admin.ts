@@ -115,7 +115,7 @@ export function adminRoutes(app: FastifyInstance) {
     if (target.id === user.id) return reply.code(400).send({ error: "bad_request", message: "Cannot disable yourself" });
     if (target.role === "owner") return reply.code(403).send({ error: "forbidden", message: "Cannot disable the owner" });
     const { disabled } = z.object({ disabled: z.boolean() }).parse(req.body);
-    await run("UPDATE users SET disabled = $1 WHERE id = $2", [disabled, target.id]);
+    await run("UPDATE users SET disabled = $1, token_version = token_version + 1 WHERE id = $2", [disabled, target.id]);
     return { ok: true, disabled };
   });
 

@@ -3,8 +3,9 @@
 // runtime image (postgresql-client-17); when it's absent (dev machines) the
 // run is recorded as an error and the blob tarball still proceeds.
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { randomUUID, createHash, createHmac } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { basename, join } from "node:path";
 import { DATA_DIR, one, q, run } from "./db.js";
 
@@ -52,6 +53,83 @@ async function tarBlobs(file: string): Promise<{ bytes: number; error?: string }
   return { bytes: statSync(file).size };
 }
 
+/** Integrity check — a truncated/corrupt archive is worse than no backup
+ *  because it reads as "ok" in listings until restore day. Full decompress
+ *  pass (gzip -t / tar -t), which also catches mid-write crashes. */
+async function verifyArchive(file: string): Promise<string | null> {
+  const isTar = file.endsWith(".tar.gz");
+  const { code, err } = await spawnCollect(isTar ? "tar" : "gzip",
+    isTar ? ["-tzf", file] : ["-t", file]);
+  return code === 0 ? null : (err || "archive failed integrity check");
+}
+
+/* ---- optional off-site copy: S3-compatible PUT (R2 / AWS S3 / MinIO) ----
+ *  Path-style requests on purpose — R2 and MinIO both accept them, and they
+ *  keep the signing code simple. Set KREATIX_BACKUP_S3_* env to enable. */
+const S3 = {
+  endpoint: process.env.KREATIX_BACKUP_S3_ENDPOINT?.replace(/\/$/, "") ?? "",
+  bucket: process.env.KREATIX_BACKUP_S3_BUCKET ?? "",
+  region: process.env.KREATIX_BACKUP_S3_REGION ?? "auto",
+  key: process.env.KREATIX_BACKUP_S3_ACCESS_KEY ?? "",
+  secret: process.env.KREATIX_BACKUP_S3_SECRET_KEY ?? "",
+  prefix: (process.env.KREATIX_BACKUP_S3_PREFIX ?? "backups").replace(/^\/|\/$/g, ""),
+};
+export const s3OffloadEnabled = !!(S3.endpoint && S3.bucket && S3.key && S3.secret);
+
+async function sha256File(file: string): Promise<string> {
+  const h = createHash("sha256");
+  await pipeline(createReadStream(file), h);
+  return h.digest("hex");
+}
+
+async function s3Put(filePath: string, name: string): Promise<string | null> {
+  const payloadHash = await sha256File(filePath);
+  const objectKey = `${S3.prefix}/${name}`;
+  const url = `${S3.endpoint}/${S3.bucket}/${objectKey}`;
+  const host = new URL(S3.endpoint).host;
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+  const date = amzDate.slice(0, 8);
+  const headers = [
+    ["content-length", String(statSync(filePath).size)],
+    ["host", host],
+    ["x-amz-content-sha256", payloadHash],
+    ["x-amz-date", amzDate],
+  ] as [string, string][];
+  headers.sort(([a], [b]) => a.localeCompare(b));
+  const canonicalHeaders = headers.map(([k, v]) => `${k}:${v}\n`).join("");
+  const signedHeaders = headers.map(([k]) => k).join(";");
+  const canonical = ["PUT", `/${S3.bucket}/${objectKey}`, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const scope = `${date}/${S3.region}/s3/aws4_request`;
+  const toSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${createHash("sha256").update(canonical).digest("hex")}`;
+  const hmac = (key: string | Buffer, data: string) => createHmac("sha256", key).update(data).digest();
+  const signing = hmac(hmac(hmac(hmac(Buffer.from(`AWS4${S3.secret}`), date), S3.region), "s3"), "aws4_request");
+  const signature = createHmac("sha256", signing).update(toSign).digest("hex");
+  const auth = `AWS4-HMAC-SHA256 Credential=${S3.key}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { authorization: auth, "content-length": headers[0][1], "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate },
+      // undici streaming uploads need the explicit body + duplex pair
+      body: createReadStream(filePath) as unknown as ReadableStream,
+      duplex: "half",
+      signal: AbortSignal.timeout(10 * 60_000),
+    } as RequestInit & { duplex: string });
+    return res.ok ? null : `S3 PUT ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`;
+  } catch (e) {
+    return (e as Error).message.slice(0, 200);
+  }
+}
+
+async function offload(file: string, name: string): Promise<void> {
+  const err = await s3Put(file, name);
+  if (err) {
+    console.warn(`[backup] off-site copy failed for ${name}: ${err}`);
+    return;
+  }
+  await run("UPDATE backup_runs SET offloaded_at = now() WHERE file = $1", [name]);
+}
+
 async function record(kind: BackupRun["kind"], file: string | null, bytes: number, status: BackupRun["status"], error?: string) {
   await run(
     `INSERT INTO backup_runs (id, kind, file, bytes, status, error) VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -63,15 +141,25 @@ export async function runBackup(): Promise<{ db: BackupRun["status"]; blobs: Bac
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
 
   const dbFile = `db-${stamp}.sql.gz`;
-  const dbRes = await dumpDatabase(join(BACKUP_DIR, dbFile));
-  await record("db", dbRes.error ? null : dbFile, dbRes.bytes, dbRes.error ? "error" : "ok", dbRes.error);
+  const dbPath = join(BACKUP_DIR, dbFile);
+  const dbRes = await dumpDatabase(dbPath);
+  const dbVerify = dbRes.error ? null : await verifyArchive(dbPath);
+  const dbErr = dbRes.error ?? dbVerify;
+  await record("db", dbErr ? null : dbFile, dbRes.bytes, dbErr ? "error" : "ok",
+    dbErr ? (dbVerify ? `integrity: ${dbVerify}` : dbRes.error) : undefined);
+  if (!dbErr && s3OffloadEnabled) await offload(dbPath, dbFile).catch((e) => console.warn("[backup] offload error", e));
 
   const blobFile = `blobs-${stamp}.tar.gz`;
-  const blobRes = await tarBlobs(join(BACKUP_DIR, blobFile));
-  await record("blobs", blobRes.error ? null : blobFile, blobRes.bytes, blobRes.error ? "error" : "ok", blobRes.error);
+  const blobPath = join(BACKUP_DIR, blobFile);
+  const blobRes = await tarBlobs(blobPath);
+  const blobVerify = blobRes.error ? null : await verifyArchive(blobPath);
+  const blobErr = blobRes.error ?? blobVerify;
+  await record("blobs", blobErr ? null : blobFile, blobRes.bytes, blobErr ? "error" : "ok",
+    blobErr ? (blobVerify ? `integrity: ${blobVerify}` : blobRes.error) : undefined);
+  if (!blobErr && s3OffloadEnabled) await offload(blobPath, blobFile).catch((e) => console.warn("[backup] offload error", e));
 
   await pruneBackups();
-  return { db: dbRes.error ? "error" : "ok", blobs: blobRes.error ? "error" : "ok" };
+  return { db: dbErr ? "error" : "ok", blobs: blobErr ? "error" : "ok" };
 }
 
 export async function pruneBackups(keep = KEEP): Promise<number> {

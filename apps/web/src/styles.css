@@ -193,6 +193,21 @@ main{padding:19px 28px 50px;min-width:0}
 .app-card p{font-size:11px;margin:3px 0 0;color:var(--muted);line-height:1.35}
 .app-card .launch{margin-left:auto;color:var(--muted);font-size:17px;transition:transform .2s ease,color .2s ease;flex-shrink:0}
 .app-card:hover .launch{transform:translateX(3px);color:var(--ink)}
+/* getting-started checklist */
+.ob-card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:18px 20px;margin-top:18px;box-shadow:0 8px 28px rgba(46,35,29,.035);animation:dlg-in .3s cubic-bezier(.2,.9,.3,1.1)}
+.ob-head{display:flex;align-items:center;gap:10px}
+.ob-head h3{margin:0;font-size:15px;flex:1}
+.ob-progress{font-size:11px;font-weight:800;color:var(--k-orange-dark);background:var(--k-orange-soft);border-radius:999px;padding:3px 9px}
+.ob-dismiss{width:30px;height:30px;border-radius:9px;font-size:12px}
+.ob-bar{height:5px;border-radius:99px;background:var(--subtle);margin:12px 0 14px;overflow:hidden}
+.ob-bar i{display:block;height:100%;background:var(--k-orange);border-radius:99px;transition:width .4s ease}
+.ob-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.ob-step{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:transparent;font:inherit;font-size:12.5px;font-weight:600;color:var(--ink);cursor:pointer;text-align:left;transition:.16s}
+.ob-step:hover{background:var(--subtle);border-color:rgba(52,39,30,.14)}
+.ob-step.done{opacity:.62;text-decoration:line-through;text-decoration-color:var(--muted)}
+.ob-check{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--k-orange);color:var(--k-orange-dark);display:grid;place-items:center;font-size:11px;font-weight:800;flex-shrink:0}
+.ob-step.done .ob-check{background:var(--k-orange);border-color:var(--k-orange);color:#fff}
+
 .content-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(310px,.72fr);gap:17px}
 .section-head{display:flex;align-items:center;justify-content:space-between;margin:28px 0 12px}
 .section-head h2{margin:0;font-size:17px;letter-spacing:-.35px}

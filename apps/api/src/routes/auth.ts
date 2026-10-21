@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createHash, createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { one, q as dbq, run, now } from "../db.js";
-import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
+import { hashPassword, verifyPassword, signToken, signMfaToken, verifyMfaToken, requireAuth, resolveSession, initials, toUser, type UserRow, type AuthedRequest } from "../auth.js";
 import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
@@ -442,8 +442,14 @@ export function authRoutes(app: FastifyInstance) {
     }
     const userId = randomUUID();
     await run(
-      "INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [userId, orgId, body.email, hashPassword(body.password), body.displayName, initials(body.displayName), role, now()],
+      `INSERT INTO users (id, org_id, email, password_hash, display_name, initials, role, email_verified, email_verify_required, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      // invite links are emailed to the address — clicking through is proof
+      // of mailbox ownership, so invite joins are verified by construction;
+      // open signups must verify before their *next* login (first session
+      // rides through so onboarding isn't blocked by spam-foldered mail)
+      [userId, orgId, body.email, hashPassword(body.password), body.displayName,
+       initials(body.displayName), role, !!body.invite, !body.invite, now()],
     );
     if (!body.invite && kind === "family") await createFamilyFolder(orgId, userId);
     if (body.invite) await grantFamilyFolderShare(orgId, userId);
@@ -478,7 +484,9 @@ export function authRoutes(app: FastifyInstance) {
     const body = z.object({ token: z.string().min(20), password: z.string().min(8) }).parse(req.body);
     const tok = await consumeAuthToken("password_reset", body.token);
     if (!tok) return reply.code(400).send({ error: "bad_token", message: "Reset link is expired or already used" });
-    await run("UPDATE users SET password_hash = $1 WHERE id = $2", [hashPassword(body.password), tok.user_id]);
+    // password rotation revokes every outstanding session — whoever held an
+    // old token (the reason for the reset) is signed out immediately
+    await run("UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2", [hashPassword(body.password), tok.user_id]);
     // burn any other outstanding reset/verify tokens for the account
     await run("UPDATE auth_tokens SET used_at = $1 WHERE user_id = $2 AND used_at IS NULL", [now(), tok.user_id]);
     return { ok: true };
@@ -489,19 +497,33 @@ export function authRoutes(app: FastifyInstance) {
     const token = String((req.query as { token?: string }).token ?? "");
     const tok = token.length >= 20 ? await consumeAuthToken("email_verify", token) : null;
     if (!tok) return reply.code(400).send({ error: "bad_token", message: "Verification link is expired or already used" });
-    await run("UPDATE users SET email_verified = true WHERE id = $1", [tok.user_id]);
+    await run("UPDATE users SET email_verified = true, email_verify_required = false WHERE id = $1", [tok.user_id]);
     return { ok: true };
   });
 
-  /** POST /api/auth/resend-verification — new verify link for the session user. */
-  app.post("/api/auth/resend-verification", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req) => {
-    const user = (req as AuthedRequest).user;
-    if (user.emailVerified) return { ok: true };
-    const row = await one<UserRow>("SELECT * FROM users WHERE id = $1", [user.id]);
+  /** POST /api/auth/resend-verification — new verify link. Works with a live
+   *  session OR a bare {email} body: unverified users can't log in, so they
+   *  can't hold a session. Always 200 — never reveals whether the address
+   *  exists (enumeration). */
+  app.post("/api/auth/resend-verification", { config: { rateLimit: RL_AUTH } }, async (req) => {
+    const { user } = await resolveSession(req);
+    const email = z.string().email().max(254).optional()
+      .parse((req.body as { email?: string } | null)?.email);
+    const row = user
+      ? await one<UserRow>("SELECT * FROM users WHERE id = $1", [user.id])
+      : email ? await one<UserRow>("SELECT * FROM users WHERE email = $1", [email]) : null;
     if (row && !row.email_verified) {
       const token = await issueAuthToken(row.id, "email_verify", 24 * 60);
       sendMailSafe(app.log, { to: row.email, toName: row.display_name, ...tpl.verifyEmail(row.display_name, token) });
     }
+    return { ok: true };
+  });
+
+  /** POST /api/auth/logout-all — bump token_version: every session on every
+   *  device dies immediately (stolen laptop, shared account, offboarding). */
+  app.post("/api/auth/logout-all", { preHandler: requireAuth, config: { rateLimit: RL_AUTH } }, async (req) => {
+    const user = (req as AuthedRequest).user;
+    await run("UPDATE users SET token_version = token_version + 1 WHERE id = $1", [user.id]);
     return { ok: true };
   });
 
@@ -510,6 +532,9 @@ export function authRoutes(app: FastifyInstance) {
     const row = await one<UserRow>("SELECT * FROM users WHERE email = $1", [body.email]);
     if (!row || row.disabled || !verifyPassword(body.password, row.password_hash)) {
       return reply.code(401).send({ error: "unauthorized", message: "Invalid email or password" });
+    }
+    if (row.email_verify_required && !row.email_verified) {
+      return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
     // second factor — password verified, now challenge the TOTP
     if (row.totp_secret) {
@@ -530,6 +555,9 @@ export function authRoutes(app: FastifyInstance) {
     const row = await one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]);
     if (!row || row.disabled || !row.totp_secret) {
       return reply.code(401).send({ error: "unauthorized", message: "Invalid session" });
+    }
+    if (row.email_verify_required && !row.email_verified) {
+      return reply.code(403).send({ error: "email_unverified", message: "Please verify your email address — check your inbox for the verification link" });
     }
     const secret = decryptField(row.totp_secret) ?? "";
     let ok = verifyTotp(secret, body.code);

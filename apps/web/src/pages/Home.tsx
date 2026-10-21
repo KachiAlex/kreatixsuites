@@ -4,6 +4,7 @@ import type { DriveItem } from "@kreatix/shared";
 import { api, getToken } from "../lib/api";
 import type { AiQuota } from "../ai/AiPanel";
 import { useT } from "../lib/i18n";
+import { useAuth } from "../lib/auth";
 import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
 import { AppIcon } from "../components/AppIcon";
@@ -15,6 +16,7 @@ import { TemplatesDialog } from "../components/TemplatesDialog";
 export function Home() {
   const navigate = useNavigate();
   const t = useT();
+  const { user, refreshUser } = useAuth();
   const { items, refresh } = useFiles("home");
   const { sharing, setSharing, versions, setVersions, msg, toast } = useItemActions(refresh);
   const [prompt, setPrompt] = useState("");
@@ -33,6 +35,24 @@ export function Home() {
     api.get<{ quota?: AiQuota }>("/api/ai/status")
       .then((r) => setAiQuota(r.quota ?? null)).catch(() => {});
   }, []);
+
+  // getting-started checklist — steps auto-check from live workspace data;
+  // dismissal persists server-side so it stays gone on every device
+  const [memberCount, setMemberCount] = useState(0);
+  const [obHidden, setObHidden] = useState(false);
+  useEffect(() => {
+    api.get<{ members: { id: string }[] }>("/api/forms/members")
+      .then((r) => setMemberCount(r.members.length)).catch(() => {});
+  }, []);
+  const obSteps = [
+    { done: items.length > 0, label: t("home.obCreate"), act: () => void createDoc() },
+    { done: !!aiQuota && (aiQuota.orgTokensUsed ?? 0) > 0, label: t("home.obAi"), act: () => promptRef.current?.focus() },
+    { done: memberCount > 1, label: t("home.obInvite"), act: () => navigate("/admin") },
+    { done: !!user?.emailVerified, label: t("home.obVerify"),
+      act: () => void api.post("/api/auth/resend-verification", {}).then(() => toast(t("home.obVerifySent"))).catch(() => {}) },
+  ];
+  const obDone = obSteps.filter((s) => s.done).length;
+  const showOnboarding = !!user && !user.onboardingDismissed && !obHidden && obDone < obSteps.length;
 
   const open = (it: DriveItem) =>
     navigate(it.kind === "folder" ? `/drive/folder/${it.id}` : `/edit/${it.id}`);
@@ -167,6 +187,28 @@ export function Home() {
           </div>
         </div>
       </section>
+
+      {showOnboarding && (
+        <section className="ob-card">
+          <div className="ob-head">
+            <h3>{t("home.obTitle")}</h3>
+            <span className="ob-progress">{obDone}/{obSteps.length}</span>
+            <button className="iconbtn ob-dismiss" title={t("home.obDismiss")}
+              onClick={() => { setObHidden(true); void api.post("/api/me/onboarding", { dismissed: true }).then(() => refreshUser()).catch(() => {}); }}>
+              ✕
+            </button>
+          </div>
+          <div className="ob-bar"><i style={{ width: `${(obDone / obSteps.length) * 100}%` }} /></div>
+          <div className="ob-steps">
+            {obSteps.map((s, i) => (
+              <button key={i} className={`ob-step${s.done ? " done" : ""}`} onClick={s.act} type="button">
+                <span className="ob-check">{s.done ? "✓" : i + 1}</span>
+                <span>{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="apps">
         {apps.map((a) => {

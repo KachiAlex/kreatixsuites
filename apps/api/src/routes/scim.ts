@@ -165,6 +165,7 @@ export async function scimRoutes(app: FastifyInstance) {
     await run(
       `UPDATE users SET email = COALESCE($3, email), display_name = COALESCE($4, display_name),
         initials = COALESCE($5, initials), disabled = COALESCE($6, disabled),
+        token_version = token_version + CASE WHEN $6::boolean IS TRUE THEN 1 ELSE 0 END,
         scim_external_id = COALESCE($7, scim_external_id) WHERE id = $1 AND org_id = $2`,
       [id, org, fields.userName ?? null, fields.display ?? null,
        fields.display ? initials(fields.display) : null,

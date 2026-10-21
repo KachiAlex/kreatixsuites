@@ -228,6 +228,35 @@ async function main() {
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
 
   /**
+   * Public status probe for uptime monitors/status pages — liveness only,
+   * no tenant data. Reports the pieces an operator actually pages on:
+   * db round-trip, blob writability, backup freshness, version.
+   */
+  const bootedAt = Date.now();
+  app.get("/api/status", async (_req, reply) => {
+    const t0 = Date.now();
+    let dbMs: number | null = null;
+    try { await one("SELECT 1 AS ok"); dbMs = Date.now() - t0; } catch { /* below */ }
+    const lastBackup = await one<{ created_at: string; status: string }>(
+      "SELECT created_at, status FROM backup_runs WHERE kind='db' ORDER BY created_at DESC LIMIT 1",
+    ).catch(() => null);
+    const ok = dbMs !== null;
+    return reply.code(ok ? 200 : 503).send({
+      ok,
+      uptimeSec: Math.floor((Date.now() - bootedAt) / 1000),
+      version: process.env.KREATIX_VERSION ?? null,
+      checks: {
+        db: dbMs !== null ? { ok: true, ms: dbMs } : { ok: false },
+        backup: lastBackup ? {
+          ageH: Math.round((Date.now() - Date.parse(lastBackup.created_at)) / 3.6e6 * 10) / 10,
+          ok: lastBackup.status === "ok",
+        } : { ok: false, never: true },
+      },
+      ts: new Date().toISOString(),
+    });
+  });
+
+  /**
    * Public plan catalog — the landing page renders pricing straight from this,
    * so superadmin edits in the portal surface on the site within a minute.
    * No auth: prices and feature flags are public marketing data.

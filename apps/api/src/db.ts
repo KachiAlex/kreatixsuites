@@ -1132,6 +1132,13 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false`);
+  // session revocation: tokens carry tkv; a mismatch means "signed out
+  // everywhere" (password reset, admin disable, logout-all, SCIM deactivate)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0`);
+  // new password signups must verify email before their NEXT login; invite/
+  // SSO/SCIM paths are verified by construction
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verify_required BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_dismissed BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE orgs ADD COLUMN IF NOT EXISTS brand_logo_mime TEXT`);
   // ops: backup bookkeeping + sweep coordination state (see backup.ts / monitor.ts)
   await pool.query(`CREATE TABLE IF NOT EXISTS backup_runs (
@@ -1141,8 +1148,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     bytes BIGINT NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'running',  -- running | ok | error
     error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    offloaded_at TIMESTAMPTZ           -- set when the off-site copy lands
   )`);
+  await pool.query(`ALTER TABLE backup_runs ADD COLUMN IF NOT EXISTS offloaded_at TIMESTAMPTZ`);
   await pool.query(`CREATE TABLE IF NOT EXISTS sweep_state (
     name TEXT PRIMARY KEY,
     last_run TIMESTAMPTZ NOT NULL,

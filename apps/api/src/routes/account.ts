@@ -82,4 +82,12 @@ export function accountRoutes(app: FastifyInstance) {
     const result = await eraseUser(row.id);
     return { ok: true, mode: result.mode };
   });
+
+  /** POST /api/me/onboarding — persist the getting-started dismissal so the
+   *  checklist stays gone across devices and browsers. */
+  app.post("/api/me/onboarding", { preHandler: requireAuth }, async (req) => {
+    const { dismissed } = z.object({ dismissed: z.boolean() }).parse(req.body);
+    await run("UPDATE users SET onboarding_dismissed = $1 WHERE id = $2", [dismissed, (req as AuthedRequest).user.id]);
+    return { ok: true };
+  });
 }

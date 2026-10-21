@@ -41,7 +41,10 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 
 export async function signToken(userId: string, ttl = "7d", client: "web" | "desktop" = "web"): Promise<string> {
-  return new SignJWT({ sub: userId, client })
+  // tkv = token_version at issue time; resolveSession rejects on mismatch,
+  // which is what makes "sign out everywhere" actually work
+  const row = await one<{ token_version: number }>("SELECT token_version FROM users WHERE id = $1", [userId]);
+  return new SignJWT({ sub: userId, client, tkv: row?.token_version ?? 0 })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(ttl)
@@ -128,6 +131,11 @@ async function resolveSessionInner(req: FastifyRequest): Promise<ResolvedSession
     if (payload.aud === "kreatix-mfa") return { token, payload: null, user: null };
     const user = await one<UserRow>("SELECT * FROM users WHERE id = $1", [payload.sub as string]);
     if (!user || user.disabled) return { token, payload, user: null };
+    // token_version bump revokes — tokens minted before this column existed
+    // carry no tkv and verify as version 0 until the first bump
+    if ((typeof payload.tkv === "number" ? payload.tkv : 0) !== user.token_version) {
+      return { token, payload: payload as Record<string, unknown>, user: null };
+    }
     return { token, payload: payload as Record<string, unknown>, user };
   } catch {
     return { token, payload: null, user: null };
@@ -160,6 +168,9 @@ export interface UserRow {
   totp_secret: string | null;
   totp_backups: string | null;
   email_verified?: boolean;
+  email_verify_required?: boolean;
+  onboarding_dismissed?: boolean;
+  token_version: number;
   created_at: string;
 }
 
@@ -174,6 +185,7 @@ export function toUser(row: UserRow): User {
     isSuper: row.is_super,
     mfaEnabled: !!row.totp_secret,
     emailVerified: !!row.email_verified,
+    onboardingDismissed: !!row.onboarding_dismissed,
     createdAt: row.created_at,
   };
 }

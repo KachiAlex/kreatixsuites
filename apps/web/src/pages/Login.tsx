@@ -47,6 +47,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
   const [jrState, setJrState] = useState<"idle" | "sending" | "code" | "verifying" | "sent" | "err">("idle");
   const [jrCode, setJrCode] = useState("");
   const [emailTaken, setEmailTaken] = useState(false);
+  const [unverified, setUnverified] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [googleDesktop, setGoogleDesktop] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
@@ -243,6 +245,11 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
       if (err instanceof ApiError && err.status === 409) {
         setEmailTaken(true);
         setError("");
+      } else if (err instanceof ApiError && err.code === "email_unverified") {
+        // account exists but the mailbox was never confirmed — swap the
+        // form for a resend-the-link card instead of a bare error
+        setUnverified(true);
+        setError("");
       // a dead connection surfaces as TypeError("Failed to fetch") — say so
       // plainly instead of dumping the raw network error on the user
       } else if (!navigator.onLine || (err instanceof TypeError && /fetch|network|resolve/i.test(err.message))) {
@@ -271,7 +278,23 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
           : kind === "family" ? t("auth.createFamily") : kind === "personal" ? t("auth.createAccount2") : t("auth.createWorkspace")}</h1>
         <p>{mfaToken ? t("auth.mfaPrompt") : mode === "forgot" ? "We'll email you a reset link." : t("auth.tagline")}</p>
         {error && <div className="auth-error">{error}</div>}
-        {mode === "forgot" ? (
+        {unverified ? (
+          <>
+            <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.55 }}>
+              {t("auth.unverifiedBody", { email })}
+            </p>
+            {resendSent
+              ? <p className="ws-hint-ok">{t("auth.unverifiedSent")}</p>
+              : <button type="button" className="btn-secondary" style={{ width: "100%" }}
+                  onClick={() => { void api.post("/api/auth/resend-verification", { email }).then(() => setResendSent(true)).catch(() => {}); }}>
+                  {t("auth.unverifiedResend")}
+                </button>}
+            <button type="button" className="btn-ghost anon-btn" style={{ width: "100%" }}
+              onClick={() => { setUnverified(false); setResendSent(false); }}>
+              {t("auth.unverifiedBack")}
+            </button>
+          </>
+        ) : mode === "forgot" ? (
           forgotSent
             ? <p style={{ color: "var(--text-2)", fontSize: 14 }}>If that email has an account, a reset link is on its way. Check your inbox (and spam).</p>
             : <>

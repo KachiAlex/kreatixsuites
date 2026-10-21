@@ -16,6 +16,8 @@ export interface User {
   mfaEnabled?: boolean;
   /** email_verified flag — false until the verification link is clicked */
   emailVerified?: boolean;
+  /** onboarding checklist dismissed — persists across devices */
+  onboardingDismissed?: boolean;
   createdAt: string;
 }
 
