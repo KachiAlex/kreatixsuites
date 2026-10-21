@@ -51,8 +51,15 @@ reviewers, and procurement questionnaires.
   - **global**: password resets, admin disable, SCIM deactivation, and
     `POST /api/auth/logout-all` bump the version and mark all rows revoked.
 - **MFA**: TOTP authenticator enrollment with one-time backup codes; required
-  for sensitive operations (account deletion). Org-level MFA enforcement is
-  policy-configurable.
+  for sensitive operations (account deletion). The `mfaRequired` org policy
+  confines non-enrolled members' sessions to the setup endpoints
+  (`/api/auth|health|client-error|org/brand`) until enrollment completes —
+  enforced in the global conditional-access hook, `/me` flags it, and the
+  web app renders a blocking enroll screen.
+- **New-sign-in alerts**: `signToken` records every session's IP; a returning
+  account authenticating from a first-seen IP writes an `auth.new-ip` audit
+  event and emails the account owner (IP, device, client, time). Applies to
+  all issue paths — password, TOTP, Google, SAML/OIDC.
 - **Email verification**: password signups receive a signed verification link;
   accounts flagged `email_verify_required` cannot log in until verified
   (`403 email_unverified`, with an unauthenticated resend endpoint).
@@ -115,8 +122,19 @@ reviewers, and procurement questionnaires.
 - **Org security policies** (`/api/admin/policies`): SSO enforcement
   (password login disabled for members, owner keeps break-glass), external
   sharing controls (block all anonymous links; email-domain allowlist for
-  named shares), minimum password length (enforced at join + reset), device
-  posture (desktop-client-only sessions), DLP patterns, watermarking.
+  named shares), minimum password length + complexity (enforced at join +
+  reset), device posture (desktop-client-only sessions), DLP patterns,
+  watermarking, `mfaRequired`, and `blockConfidentialDownloads` —
+  viewer-level sessions get 403 on raw bytes of confidential/restricted
+  files across `/content`, `/raw`, version content, and share-link
+  downloads while native in-app viewing stays available.
+- **Access review** (`/api/admin/access-review`, JSON + CSV): every
+  externally-reachable grant in the org — live anonymous links and
+  cross-org named shares — for periodic recertification.
+- **Metrics** (`/api/metrics`): Prometheus text exposition (uptime,
+  request counts by status class, 5xx, pg pool state, process memory,
+  S3 backend flag). Authenticated by a `KREATIX_METRICS_TOKEN` bearer
+  when configured, otherwise superadmin sessions only.
 
 ## 6. Data Lifecycle & Governance
 
