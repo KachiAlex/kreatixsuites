@@ -503,6 +503,54 @@ export function superadminRoutes(app: FastifyInstance) {
     reply.header("content-disposition", `attachment; filename="${name}"`);
     return reply.type("application/gzip").send(createReadStream(p));
   });
+
+  /** Blob-store status: whether the S3 mirror is configured + how many
+   *  objects are currently on local disk. */
+  app.get("/api/superadmin/blobs", async () => {
+    const { blobS3Enabled } = await import("../blobs.js");
+    const { DATA_DIR } = await import("../db.js");
+    const { readdir } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    let local = 0;
+    try {
+      for (const d of await readdir(join(DATA_DIR, "blobs"))) {
+        if (!/^[0-9a-f]{2}$/.test(d)) continue;
+        local += (await readdir(join(DATA_DIR, "blobs", d))).filter((f) => /^[0-9a-f]{64}$/.test(f)).length;
+      }
+    } catch { /* empty store */ }
+    return { s3Enabled: blobS3Enabled, localObjects: local };
+  });
+
+  /** Backfill: mirror every local blob into the configured S3 bucket.
+   *  Advisory-locked (only one run at a time), runs async — poll the log or
+   *  /api/superadmin/blobs for progress. */
+  app.post("/api/superadmin/blob-sync", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const { blobS3Enabled } = await import("../blobs.js");
+    if (!blobS3Enabled)
+      return reply.code(400).send({ error: "not_configured", message: "KREATIX_BLOB_S3_* is not configured" });
+    const { runSweep } = await import("../db.js");
+    const { syncBlobsToS3 } = await import("../blobs.js");
+    void logSa(user, "blob-sync.start");
+    void runSweep("blobs.s3sync", 717010, async () => {
+      const r = await syncBlobsToS3((m) => app.log.info(m));
+      void logSa(user, "blob-sync.done", null, r ?? undefined);
+      return r;
+    });
+    return { started: true };
+  });
+
+  /** Recent client crash reports (newest first) — persisted by
+   *  /api/client-error so production bugs are queryable, not just in logs. */
+  app.get("/api/superadmin/client-errors", async (req) => {
+    const { before } = req.query as { before?: string };
+    const rows = await q(
+      `SELECT id, org_id, user_id, kind, url, ua, message, created_at
+       FROM client_errors ${before ? "WHERE created_at < $1" : ""}
+       ORDER BY created_at DESC LIMIT 100`,
+      before ? [before] : []);
+    return { errors: rows };
+  });
 }
 
 interface OrgDeleteResult {

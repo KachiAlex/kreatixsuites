@@ -82,6 +82,10 @@ interface SaFbMsg {
   message: string; page: string | null; read_at: string | null;
   seen_at: string | null; created_at: string;
 }
+interface SaClientError {
+  id: string; org_id: string | null; user_id: string | null; kind: string;
+  url: string | null; ua: string | null; message: string | null; created_at: string;
+}
 interface SaAudit {
   id: string; actor_email: string; action: string; target: string | null;
   detail: string | null; created_at: string;
@@ -189,6 +193,8 @@ export function SuperPortal() {
   const [stats, setStats] = useState<Record<string, number>>({});
   const [health, setHealth] = useState<SaHealth | null>(null);
   const [backups, setBackups] = useState<SaBackups | null>(null);
+  const [clientErrors, setClientErrors] = useState<SaClientError[] | null>(null);
+  const [blobInfo, setBlobInfo] = useState<{ s3Enabled: boolean; localObjects: number } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [activeConvo, setActiveConvo] = useState<SaConvo | null>(null);
   const [thread, setThread] = useState<SaFbMsg[] | null>(null);
@@ -233,7 +239,7 @@ export function SuperPortal() {
     setRefreshing(true);
     setLoadErr(null);
     try {
-      const [o, og, pay, c, a, fb, pl, hc, bk] = await Promise.all([
+      const [o, og, pay, c, a, fb, pl, hc, bk, ce, bi] = await Promise.all([
         api.get<SaOverview>("/api/superadmin/overview"),
         api.get<{ orgs: SaOrg[] }>("/api/superadmin/orgs"),
         api.get<{ payments: SaPayment[] }>("/api/superadmin/payments?status=pending"),
@@ -243,10 +249,13 @@ export function SuperPortal() {
         api.get<{ plans: PlanRow[] }>("/api/superadmin/plans"),
         api.get<SaHealth>("/api/superadmin/health").catch(() => null),
         api.get<SaBackups>("/api/superadmin/backups").catch(() => null),
+        api.get<{ errors: SaClientError[] }>("/api/superadmin/client-errors").catch(() => null),
+        api.get<{ s3Enabled: boolean; localObjects: number }>("/api/superadmin/blobs").catch(() => null),
       ]);
       setOv(o); setOrgs(og.orgs); setPayments(pay.payments); setCfg(c.config); setPlans(pl.plans);
       setAi(a); setConvos(fb.conversations); setStats(fb.stats);
       setHealth(hc); setBackups(bk);
+      setClientErrors(ce?.errors ?? []); setBlobInfo(bi);
       setRefreshedAt(new Date());
     } catch (e) {
       const m = e instanceof Error ? e.message : "Load failed";
@@ -1254,8 +1263,35 @@ export function SuperPortal() {
           </tbody>
         </table></div>
 
+        <div className="sap-tablewrap"><table className="sap-table">
+          <thead><tr><th>Client error</th><th>Kind</th><th>Page</th><th>When</th></tr></thead>
+          <tbody>
+            {clientErrors?.map((e) => (
+              <tr key={e.id}>
+                <td className="sap-from"><b style={{ fontFamily: "monospace", fontSize: 11 }}>{(e.message ?? "").slice(0, 140) || "—"}</b></td>
+                <td>{e.kind}</td>
+                <td className="sap-detail"><code>{e.url ?? "—"}</code></td>
+                <td><When v={e.created_at} /></td>
+              </tr>
+            ))}
+            {clientErrors && !clientErrors.length && (
+              <tr><td colSpan={4}><div className="sap-empty"><I n="shield" s={18} /><strong>No client errors</strong>Web crash reports persist here.</div></td></tr>
+            )}
+            {!clientErrors && <tr><td colSpan={4}><div className="sap-empty"><strong>Loading…</strong></div></td></tr>}
+          </tbody>
+        </table></div>
+
         <div className="sap-cardfoot">
           <span>{backups ? `${backups.files} files in ${backups.dir} · ${(backups.bytes / 1e9).toFixed(2)} GB` : "Backup dir —"}</span>
+          <span>
+            Blobs: {blobInfo ? `${blobInfo.localObjects.toLocaleString()} objects · ${blobInfo.s3Enabled ? "S3 mirror on" : "local only"}` : "—"}
+            {blobInfo?.s3Enabled && (
+              <button className="btn-secondary sap-btn sm" style={{ marginLeft: 8 }} onClick={async () => {
+                try { await api.post("/api/superadmin/blob-sync"); toast("Blob sync started — check logs"); }
+                catch (e) { toast(e instanceof Error ? e.message : "Sync failed"); }
+              }}><I n="refresh" s={13} /> Sync to S3</button>
+            )}
+          </span>
           <span><I n="clock" s={13} /> Uptime {health ? `${Math.floor(health.uptimeSec / 3600)}h ${Math.floor((health.uptimeSec % 3600) / 60)}m` : "—"} · {health?.errors5xx ?? 0} 5xx</span>
         </div>
       </section>

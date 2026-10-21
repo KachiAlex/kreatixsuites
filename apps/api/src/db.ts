@@ -360,6 +360,23 @@ CREATE TABLE IF NOT EXISTS sa_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_sa_audit_created ON sa_audit(created_at DESC);
 
+-- client crash reports — /api/client-error persists here so production bugs
+-- are queryable in SuperPortal, not buried in container logs. stack/context
+-- are field-encrypted (they can contain paths/emails).
+CREATE TABLE IF NOT EXISTS client_errors (
+  id TEXT PRIMARY KEY,
+  org_id TEXT,
+  user_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'boundary',
+  url TEXT,
+  ua TEXT,
+  message TEXT,
+  stack TEXT,
+  context TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_client_errors_created ON client_errors(created_at DESC);
+
 -- plan catalog — superadmin-editable pricing tiers. features = entitlement
 -- flags (client + server gates), limits = numeric caps (quotas/retention).
 CREATE TABLE IF NOT EXISTS plans (

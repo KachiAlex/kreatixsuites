@@ -37,6 +37,27 @@ term) from db restore or pre-stage a warm standby.
    (backup-freshness check should report the restored run).
 6. Point DNS / nginx at the host; re-issue TLS (certbot).
 
+## Zero-downtime deploys
+
+`deploy/roll.sh` is the blue-green path: build → start a second app
+container on the alternate port (3017↔3018) → health-check → flip host
+nginx → drain → stop the old container. HTTP requests see no downtime;
+collab WebSockets reconnect (Yjs re-syncs). Constraint: boot-time DDL must
+stay additive-only — new columns/tables fine, renames/drops need a
+two-release expand/contract split.
+
+```bash
+cd /opt/kreatix && ./deploy/roll.sh        # or: ./deploy/roll.sh <git-ref>
+```
+
+## Blob storage (S3 mirror)
+
+Set `KREATIX_BLOB_S3_*` to mirror objects to S3/R2/MinIO — new writes go to
+both stores, reads fall back to S3 and rehydrate the local cache. Then run
+the one-time backfill: SuperPortal → Ops → **Sync to S3** (advisory-locked,
+progress in the app log). Benefits: survives local-disk loss without a
+restore window, and is a prerequisite for running a second app node.
+
 ## Failure modes
 
 | Symptom | Likely cause | Action |

@@ -42,10 +42,12 @@ import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention, getPlans } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric } from "./metrics.js";
-import { migrate, one, runSweep } from "./db.js";
+import { migrate, one, run, now, runSweep } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
-import { encryptionEnabled } from "./crypto.js";
+import { encryptionEnabled, encryptField } from "./crypto.js";
+import { blobS3Enabled } from "./blobs.js";
+import { randomUUID } from "node:crypto";
 import { resolveSession } from "./auth.js";
 
 /** Auth/session tokens must never land in access logs — strip the query
@@ -252,6 +254,7 @@ async function main() {
           ageH: Math.round((Date.now() - Date.parse(lastBackup.created_at)) / 3.6e6 * 10) / 10,
           ok: lastBackup.status === "ok",
         } : { ok: false, never: true },
+        blobs: { ok: true, s3: blobS3Enabled },
       },
       ts: new Date().toISOString(),
     });
@@ -330,16 +333,25 @@ async function main() {
   // there's no Sentry in this stack, so server logs are the observability path.
   app.post("/api/client-error", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
     const b = (req.body ?? {}) as { message?: string; stack?: string; componentStack?: string; url?: string; ua?: string; kind?: string };
-    app.log.error({
-      clientError: {
-        message: String(b.message ?? "").slice(0, 500),
-        stack: String(b.stack ?? "").slice(0, 4000),
-        componentStack: String(b.componentStack ?? "").slice(0, 2000),
-        url: String(b.url ?? "").slice(0, 200),
-        ua: String(b.ua ?? "").slice(0, 200),
-        kind: String(b.kind ?? "boundary"),
-      },
-    }, "client-side error report");
+    const err = {
+      message: String(b.message ?? "").slice(0, 500),
+      stack: String(b.stack ?? "").slice(0, 4000),
+      componentStack: String(b.componentStack ?? "").slice(0, 2000),
+      url: String(b.url ?? "").slice(0, 200),
+      ua: String(b.ua ?? "").slice(0, 200),
+      kind: String(b.kind ?? "boundary"),
+    };
+    app.log.error({ clientError: err }, "client-side error report");
+    // persist for the SuperPortal errors view — optional session attribution
+    // (a valid token may still be attached when the crash hit mid-session)
+    try {
+      const session = await resolveSession(req);
+      await run(
+        `INSERT INTO client_errors (id, org_id, user_id, kind, url, ua, message, stack, context, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [randomUUID(), session?.user?.org_id ?? null, session?.user?.id ?? null, err.kind,
+         err.url, err.ua, err.message, encryptField(err.stack), encryptField(err.componentStack), now()]);
+    } catch { /* reporting is best-effort — logging above is the fallback */ }
     return { ok: true };
   });
 
