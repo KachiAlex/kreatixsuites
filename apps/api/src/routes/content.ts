@@ -173,12 +173,25 @@ export function sendRawBlob(
   mime: string,
   blob: Buffer,
   filename = "file",
+  opts?: { immutable?: boolean; etag?: string },
 ) {
   reply.header("content-type", mime).header("content-length", blob.length);
+  if (opts?.immutable) {
+    // version-pinned content can never change — cache privately forever
+    reply.header("cache-control", "private, immutable, max-age=31536000");
+  } else {
+    // latest-version URLs change when a new version uploads: revalidate
+    // cheaply against the blob key (strong ETag) → 304 instead of refetch
+    reply.header("cache-control", "private, must-revalidate");
+    if (opts?.etag) reply.header("etag", `"${opts.etag}"`);
+  }
   if (SCRIPTABLE.test(mime)) {
     reply
       .header("content-security-policy", "sandbox")
       .header("content-disposition", contentDisposition(filename));
+  }
+  if (opts?.etag && !opts.immutable && reply.request.headers["if-none-match"] === `"${opts.etag}"`) {
+    return reply.code(304).send();
   }
   return reply.send(blob);
 }
@@ -253,7 +266,8 @@ export function contentRoutes(app: FastifyInstance) {
     }
     const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, user.email);
     if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
-    return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
+    return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
+      { etag: `${v.blob_key}${wm.watermarked ? `:wm:${user.id}` : ""}` });
   });
 
   /** GET the PDF bytes — the LATEST version whose blob is a real PDF (page
@@ -274,7 +288,7 @@ export function contentRoutes(app: FastifyInstance) {
     for (const v of rows) {
       const blob = await getBlob(v.blob_key);
       if (blob && blob.subarray(0, 5).equals(Buffer.from("%PDF-")))
-        return sendRawBlob(reply, item.mime, blob, itemName(item));
+        return sendRawBlob(reply, item.mime, blob, itemName(item), { etag: v.blob_key });
     }
     return reply.code(404).send({ error: "not_found", message: "No PDF bytes" });
   });
@@ -507,7 +521,7 @@ export function contentRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "download_blocked",
           message: "Your workspace blocks downloads of this file — view it in the app" });
       }
-      return sendRawBlob(reply, item.mime, blob, itemName(item));
+      return sendRawBlob(reply, item.mime, blob, itemName(item), { immutable: true });
     }
   });
 

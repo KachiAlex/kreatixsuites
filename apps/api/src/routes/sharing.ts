@@ -200,7 +200,8 @@ export function sharingRoutes(app: FastifyInstance) {
     if (row.link.block_download || orgBlocked) {
       return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
     }
-    return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
+    return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
+      { etag: `${v.blob_key}${wm.watermarked ? ":wm:guest" : ""}` });
   });
 }
 
