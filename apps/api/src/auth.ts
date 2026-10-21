@@ -3,6 +3,8 @@ import { SignJWT, jwtVerify } from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { now, one, q, run } from "./db.js";
 import { libraryPermission } from "./sites.js";
+import { logActivity } from "./items.js";
+import { sendMail } from "./email.js";
 import type { Permission, User, UserRole } from "@kreatix/shared";
 
 const secret = new TextEncoder().encode(
@@ -48,14 +50,17 @@ function ttlSeconds(ttl: string): number | null {
   return n * ({ s: 1, m: 60, h: 3600, d: 86400 } as const)[m[2] as "s" | "m" | "h" | "d"];
 }
 
+const escHtml = (s: string) => s.replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
+
 export async function signToken(
   userId: string, ttl = "7d", client: "web" | "desktop" = "web",
   meta?: { ip?: string; ua?: string },
 ): Promise<string> {
   // tkv = token_version at issue time; resolveSession rejects on mismatch,
   // which is what makes "sign out everywhere" actually work
-  const row = await one<{ token_version: number; org_id: string }>(
-    "SELECT token_version, org_id FROM users WHERE id = $1", [userId]);
+  const row = await one<{ token_version: number; org_id: string; email: string; display_name: string }>(
+    "SELECT token_version, org_id, email, display_name FROM users WHERE id = $1", [userId]);
   // Org session-lifetime policy clamps every issue path (password, MFA,
   // Google, SAML/OIDC, SCIM-independent). Read inline — policies.ts is in an
   // import cycle with items.ts and auth.ts must stay out of it.
@@ -85,6 +90,49 @@ export async function signToken(
      VALUES ($1,$2,$3,$4,$5,$6,$6)`,
     [jti, userId, client, meta?.ua?.slice(0, 300) ?? null, meta?.ip ?? null, now()],
   ).catch(() => { /* table predates this deploy — token still works via tkv */ });
+  // Unusual sign-in detection — alert when a *returning* account
+  // authenticates from an IP that has never held one of its sessions.
+  // First-ever logins and repeat IPs stay quiet. Whole block is best-effort:
+  // an alert failure must never block authentication.
+  if (meta?.ip && row?.org_id) {
+    const ip = meta.ip;
+    void (async () => {
+      const seen = await one<{ seen_ip: number; prior: number }>(
+        `SELECT COUNT(*) FILTER (WHERE ip = $2)::int AS seen_ip,
+                COUNT(*) FILTER (WHERE id <> $3)::int AS prior
+           FROM sessions WHERE user_id = $1`,
+        [userId, ip, jti]);
+      // seen_ip counts the just-inserted row — 1 means never seen before
+      if (!seen || seen.seen_ip > 1 || seen.prior === 0) return;
+      const detail = JSON.stringify({ ip, ua: meta.ua ?? null, client });
+      await logActivity(row.org_id, userId, null, "auth.new-ip", detail);
+      await sendMail({
+        to: row.email,
+        subject: "New sign-in to your Kreatix account",
+        html: [
+          `<p>Hi ${escHtml(row.display_name || "there")},</p>`,
+          `<p>Your account just signed in from a new location:</p>`,
+          `<ul><li><b>IP:</b> ${escHtml(ip)}</li>`,
+          `<li><b>Device:</b> ${escHtml((meta.ua ?? "unknown").slice(0, 120))}</li>`,
+          `<li><b>Client:</b> ${escHtml(client)}</li>`,
+          `<li><b>Time:</b> ${new Date().toUTCString()}</li></ul>`,
+          `<p>If this was you, no action is needed. If you don't recognize this sign-in, reset your password immediately and sign out of all devices in Security settings.</p>`,
+        ].join(""),
+        text: [
+          `Hi ${row.display_name || "there"},`,
+          "",
+          `Your account just signed in from a new location:`,
+          `  IP address: ${ip}`,
+          `  Device:     ${(meta.ua ?? "unknown").slice(0, 120)}`,
+          `  Client:     ${client}`,
+          `  Time:       ${new Date().toUTCString()}`,
+          "",
+          "If this was you, no action is needed. If you don't recognize this sign-in,",
+          "reset your password immediately and use Security settings to sign out of all devices.",
+        ].join("\n"),
+      }).catch(() => {});
+    })().catch(() => {});
+  }
   return token;
 }
 

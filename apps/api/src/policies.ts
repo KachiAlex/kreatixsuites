@@ -58,6 +58,14 @@ export interface OrgPolicies {
    *  are clamped to this TTL at issue time. 0 = platform defaults
    *  (7d web / 30d desktop). Conditional-access "sign-in frequency". */
   maxSessionDays: number;
+  /** Force TOTP enrollment — members get a session that can only reach the
+   *  MFA setup endpoints until they complete enrollment. */
+  mfaRequired: boolean;
+  /** Viewers cannot download raw bytes of confidential|restricted files —
+   *  they may view native docs in-app but never pull the bytes. MAM-lite. */
+  blockConfidentialDownloads: boolean;
+  /** Passwords must contain lower+upper+digit (beyond passwordMinLength). */
+  passwordComplexity: boolean;
 }
 
 const DEFAULTS: OrgPolicies = {
@@ -76,6 +84,9 @@ const DEFAULTS: OrgPolicies = {
   passwordMinLength: 0,
   siemWebhook: "",
   maxSessionDays: 0,
+  mfaRequired: false,
+  blockConfidentialDownloads: false,
+  passwordComplexity: false,
 };
 
 // ---- ReDoS guard ------------------------------------------------------------
@@ -326,6 +337,20 @@ export async function isHeld(itemId: string): Promise<boolean> {
        WHERE lhc.user_id IN (SELECT owner_id FROM anc)
      LIMIT 1`, [itemId]);
   return !!hit;
+}
+
+/** Combined password-policy check for credential-setting paths (invite
+ *  joins, resets). Returns the 400 message or null when acceptable. */
+export function passwordPolicyMessage(
+  pol: Pick<OrgPolicies, "passwordMinLength" | "passwordComplexity">,
+  password: string,
+): string | null {
+  if (pol.passwordMinLength > 0 && password.length < pol.passwordMinLength)
+    return `Workspace policy requires passwords of at least ${pol.passwordMinLength} characters`;
+  if (pol.passwordComplexity
+      && !(/[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password)))
+    return "Workspace policy requires passwords to include uppercase, lowercase and a number";
+  return null;
 }
 
 export async function getPolicies(orgId: string): Promise<OrgPolicies> {

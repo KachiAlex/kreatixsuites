@@ -41,8 +41,8 @@ import { downloadRoutes } from "./routes/downloads.js";
 import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention, getPlans } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
-import { onResponseMetric } from "./metrics.js";
-import { migrate, one, run, now, runSweep } from "./db.js";
+import { onResponseMetric, metrics } from "./metrics.js";
+import { migrate, one, run, now, runSweep, pool } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
 import { encryptionEnabled, encryptField } from "./crypto.js";
@@ -194,7 +194,7 @@ async function main() {
     if (!req.url.startsWith("/api/") || /^\/api\/auth\/(login|register|mfa|invite|forgot|reset|verify)\b/.test(req.url)) return;
     const { payload, user } = await resolveSession(req);
     if (!user || user.is_super) return;
-    const { allowedIpRanges, requireDesktopClient } = await getPolicies(user.org_id);
+    const { allowedIpRanges, requireDesktopClient, mfaRequired } = await getPolicies(user.org_id);
     if (allowedIpRanges.length && !ipAllowed(req.ip, allowedIpRanges)) {
       return reply.code(403).send({
         error: "ip_restricted",
@@ -208,6 +208,17 @@ async function main() {
         error: "device_restricted",
         message: "This workspace requires the Kreatix desktop app",
       });
+    }
+    // forced MFA enrollment — the org mandates TOTP; until the user enrolls,
+    // their session may only reach the endpoints needed to complete setup
+    if (mfaRequired && !user.totp_secret) {
+      const MFA_ALLOW = /^\/api\/(auth|health|client-error|org\/brand)\b/;
+      if (!MFA_ALLOW.test(req.url)) {
+        return reply.code(403).send({
+          error: "mfa_enrollment_required",
+          message: "Your workspace requires two-factor authentication. Set up an authenticator app to continue.",
+        });
+      }
     }
   });
 
@@ -229,6 +240,53 @@ async function main() {
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
+
+  /**
+   * Prometheus scrape endpoint — text exposition format. Auth: a bearer
+   * KREATIX_METRICS_TOKEN when configured (the Prometheus scrape header);
+   * otherwise a superadmin session. 401/403 otherwise — request counts and
+   * pool stats are low-sensitivity but still internals.
+   */
+  const METRICS_TOKEN = process.env.KREATIX_METRICS_TOKEN ?? "";
+  app.get("/api/metrics", async (req, reply) => {
+    if (METRICS_TOKEN) {
+      const auth = req.headers.authorization ?? "";
+      if (auth !== `Bearer ${METRICS_TOKEN}` && (req.query as { token?: string }).token !== METRICS_TOKEN) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+    } else {
+      const { user } = await resolveSession(req);
+      if (!user) return reply.code(401).send({ error: "unauthorized" });
+      if (!user.is_super) return reply.code(403).send({ error: "forbidden" });
+    }
+    const mem = process.memoryUsage();
+    const lines: string[] = [
+      "# HELP kreatix_uptime_seconds Seconds since API boot.",
+      "# TYPE kreatix_uptime_seconds gauge",
+      `kreatix_uptime_seconds ${Math.floor((Date.now() - metrics.startedAt) / 1000)}`,
+      "# HELP kreatix_http_requests_total HTTP responses by status class.",
+      "# TYPE kreatix_http_requests_total counter",
+      ...Object.entries(metrics.byStatus).map(([cls, n]) => `kreatix_http_requests_total{status_class="${cls}"} ${n}`),
+      "# HELP kreatix_http_errors_total 5xx responses.",
+      "# TYPE kreatix_http_errors_total counter",
+      `kreatix_http_errors_total ${metrics.errors}`,
+      "# HELP kreatix_db_pool_connections pg pool connection counts.",
+      "# TYPE kreatix_db_pool_connections gauge",
+      `kreatix_db_pool_connections{state="total"} ${pool.totalCount}`,
+      `kreatix_db_pool_connections{state="idle"} ${pool.idleCount}`,
+      `kreatix_db_pool_connections{state="waiting"} ${pool.waitingCount}`,
+      "# HELP kreatix_process_memory_bytes Node process memory.",
+      "# TYPE kreatix_process_memory_bytes gauge",
+      `kreatix_process_memory_bytes{kind="rss"} ${mem.rss}`,
+      `kreatix_process_memory_bytes{kind="heap_used"} ${mem.heapUsed}`,
+      `kreatix_process_memory_bytes{kind="heap_total"} ${mem.heapTotal}`,
+      "# HELP kreatix_blob_backend_s3 Whether the S3 blob mirror is enabled.",
+      "# TYPE kreatix_blob_backend_s3 gauge",
+      `kreatix_blob_backend_s3 ${blobS3Enabled ? 1 : 0}`,
+    ];
+    reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    return lines.join("\n") + "\n";
+  });
 
   /**
    * Public status probe for uptime monitors/status pages — liveness only,

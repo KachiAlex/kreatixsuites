@@ -31,6 +31,9 @@ const policiesSchema = z.object({
   passwordMinLength: z.number().int().min(0).max(64).optional(),
   siemWebhook: z.union([z.literal(""), z.string().url().max(500)]).optional(),
   maxSessionDays: z.number().int().min(0).max(365).optional(),
+  mfaRequired: z.boolean().optional(),
+  blockConfidentialDownloads: z.boolean().optional(),
+  passwordComplexity: z.boolean().optional(),
 });
 
 const roleSchema = z.object({ role: z.enum(["admin", "member", "guest"]) });
@@ -444,6 +447,79 @@ export function adminRoutes(app: FastifyInstance) {
     ).join("\n");
     reply.header("content-disposition", `attachment; filename="kreatix-audit-${Date.now()}.csv"`);
     return reply.type("text/csv").send(csv);
+  });
+
+  /** Access review — every externally-reachable grant in the org, for
+   *  periodic recertification (SOC 2 CC6.1-style evidence). Two classes:
+   *  anonymous "anyone with the link" links and named shares granted to
+   *  users outside this org. ?format=csv downloads the same rows. */
+  app.get("/api/admin/access-review", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    interface Grant {
+      kind: "public_link" | "external_share";
+      item_id: string; item_name: string | null; item_label: string;
+      owner: string | null; target: string;
+      permission: string; expires_at: string | null;
+      has_password: boolean; block_download: boolean; created_at: string;
+    }
+    const links = await dbq<{
+      item_id: string; item_name: string | null; item_label: string; owner: string | null;
+      permission: string; expires_at: string | null; has_password: boolean;
+      block_download: boolean; created_at: string;
+    }>(
+      `SELECT i.id AS item_id, i.name AS item_name, i.label AS item_label,
+              o.email AS owner, l.permission, l.expires_at,
+              (l.password_hash IS NOT NULL) AS has_password,
+              l.block_download, l.created_at
+       FROM share_links l
+       JOIN items i ON i.id = l.file_id
+       LEFT JOIN users o ON o.id = i.owner_id
+       WHERE i.org_id = $1 AND i.trashed = false
+         AND (l.expires_at IS NULL OR l.expires_at > now())
+       ORDER BY l.created_at DESC`,
+      [user.orgId]);
+    const external = await dbq<{
+      item_id: string; item_name: string | null; item_label: string; owner: string | null;
+      email: string; permission: string; created_at: string;
+    }>(
+      `SELECT i.id AS item_id, i.name AS item_name, i.label AS item_label,
+              o.email AS owner, u.email, s.permission, s.created_at
+       FROM shares s
+       JOIN items i ON i.id = s.file_id
+       JOIN users u ON u.id = s.user_id
+       LEFT JOIN users o ON o.id = i.owner_id
+       WHERE i.org_id = $1 AND i.trashed = false AND u.org_id <> $1
+       ORDER BY s.created_at DESC`,
+      [user.orgId]);
+    const grants: Grant[] = [
+      ...links.map((r) => ({
+        kind: "public_link" as const, item_id: r.item_id,
+        item_name: r.item_name ? decryptField(r.item_name) ?? r.item_name : null,
+        item_label: r.item_label, owner: r.owner, target: "anyone with link",
+        permission: r.permission, expires_at: r.expires_at,
+        has_password: r.has_password, block_download: r.block_download,
+        created_at: r.created_at,
+      })),
+      ...external.map((r) => ({
+        kind: "external_share" as const, item_id: r.item_id,
+        item_name: r.item_name ? decryptField(r.item_name) ?? r.item_name : null,
+        item_label: r.item_label, owner: r.owner, target: r.email,
+        permission: r.permission, expires_at: null,
+        has_password: false, block_download: false,
+        created_at: r.created_at,
+      })),
+    ].sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+    if ((req.query as { format?: string }).format === "csv") {
+      const cell = (v: string | null | boolean) => `"${String(v ?? "").replaceAll('"', '""')}"`;
+      const csv = "kind,item,label,owner,target,permission,expires,password_protected,download_blocked,granted\n"
+        + grants.map((g) => [g.kind, g.item_name, g.item_label, g.owner, g.target,
+            g.permission, g.expires_at, g.has_password, g.block_download, g.created_at]
+          .map(cell).join(",")).join("\n");
+      reply.header("content-disposition", `attachment; filename="kreatix-access-review-${Date.now()}.csv"`);
+      return reply.type("text/csv").send(csv);
+    }
+    return { grants, counts: { publicLinks: links.length, externalShares: external.length } };
   });
 
   /** Observability: process + data + request stats. Table counts are scoped

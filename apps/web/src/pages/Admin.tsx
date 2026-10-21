@@ -60,6 +60,9 @@ interface Policies {
   passwordMinLength: number;
   siemWebhook: string;
   maxSessionDays: number;
+  mfaRequired: boolean;
+  blockConfidentialDownloads: boolean;
+  passwordComplexity: boolean;
 }
 interface Hold {
   id: string; name: string; description: string | null; active: boolean;
@@ -681,6 +684,36 @@ export function Admin() {
                 <b>Require single sign-on</b>
                 <em>Members must sign in through SAML/OIDC — password login is disabled.
                   The owner keeps password access as the break-glass path for IdP outages.</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.mfaRequired ?? false}
+                onChange={(e) => patchPolicy({ mfaRequired: e.target.checked })} />
+              <span>
+                <b>Require two-factor authentication</b>
+                <em>Members must enroll an authenticator app — sessions are limited to
+                  the MFA setup endpoints until enrollment completes.</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.blockConfidentialDownloads ?? false}
+                onChange={(e) => patchPolicy({ blockConfidentialDownloads: e.target.checked })} />
+              <span>
+                <b>Block downloads of labeled files</b>
+                <em>Viewers cannot pull raw bytes of confidential or restricted files —
+                  in-app viewing only. MAM-style data-exfiltration control.</em>
+              </span>
+            </label>
+            <label className="pol-row">
+              <input type="checkbox"
+                checked={policies.passwordComplexity ?? false}
+                onChange={(e) => patchPolicy({ passwordComplexity: e.target.checked })} />
+              <span>
+                <b>Password complexity</b>
+                <em>Requires lowercase + uppercase + digit in new passwords (invite joins
+                  and resets), on top of the minimum length.</em>
               </span>
             </label>
             <label className="pol-row">

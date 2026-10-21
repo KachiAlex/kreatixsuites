@@ -44,6 +44,10 @@ interface AuthState {
   /** "Sign in with Google" — sends the GIS ID token; resolves null on success
    *  or the mfaToken when the account has a second factor enrolled. */
   loginWithGoogle: (idToken: string, opts?: { invite?: string; kind?: string; orgName?: string }) => Promise<string | null>;
+  /** Org mandates MFA and this user hasn't enrolled — the API already gates
+   *  their session to the setup endpoints; the UI renders a blocking enroll
+   *  screen until this flips false. */
+  mfaSetupRequired: boolean;
   loginWithToken: (token: string) => Promise<void>;
   /** Re-fetch /api/auth/me — e.g. after changing security settings. */
   refreshUser: () => Promise<void>;
@@ -57,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<SessionOrg | null>(null);
   const [plan, setPlan] = useState<SessionPlan | null>(null);
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
   const [loading, setLoading] = useState(!!getToken() || isAnonymous());
 
   useEffect(() => {
@@ -68,8 +73,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (!getToken()) return;
-    api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me")
-      .then((r) => { setUser(r.user); setOrg(r.org ?? null); setPlan(r.plan ?? null); })
+    api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me")
+      .then((r) => { setUser(r.user); setOrg(r.org ?? null); setPlan(r.plan ?? null); setMfaSetupRequired(!!r.mfaSetupRequired); })
       .catch(() => setToken(null))
       .finally(() => setLoading(false));
   }, []);
@@ -138,10 +143,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = async (token: string) => {
     const wasAnon = localStorage.getItem("kx.anon") === "1";
     setToken(token);
-    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me");
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me");
     setUser(r.user);
     setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
+    setMfaSetupRequired(!!r.mfaSetupRequired);
     void convertAnonymous(wasAnon);
   };
 
@@ -153,10 +159,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshUser = async () => {
-    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan }>("/api/auth/me");
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me");
     setUser(r.user);
     setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
+    setMfaSetupRequired(!!r.mfaSetupRequired);
   };
 
   const logout = () => {
@@ -172,7 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasFeature = (key: string) => (plan ? plan.features?.[key] === true : true);
   const markOnboarded = () => setOrg((o) => (o ? { ...o, onboardedAt: new Date().toISOString() } : o));
-  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithGoogle, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithGoogle, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout, mfaSetupRequired }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

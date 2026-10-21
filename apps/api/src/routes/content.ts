@@ -9,6 +9,7 @@ import { getLibrary, libraryPermission } from "../sites.js";
 import { requestApproval } from "../approvals.js";
 import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
+import type { Permission } from "@kreatix/shared";
 import { storageQuota } from "../billing.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { indexFile } from "../indexer.js";
@@ -191,6 +192,16 @@ function contentDisposition(filename: string): string {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${enc}`;
 }
 
+/** MAM-lite download gate — when the org enables blockConfidentialDownloads,
+ *  viewer-level sessions can't pull raw bytes of confidential|restricted
+ *  files. Native docs keep their JSON /content path (that IS the in-app
+ *  viewer); editors and above are unaffected. */
+export async function rawDownloadBlocked(item: ItemRow, perm: Permission | null): Promise<boolean> {
+  if (hasPermission(perm, "editor")) return false;
+  if (item.label !== "confidential" && item.label !== "restricted") return false;
+  return (await getPolicies(item.org_id)).blockConfidentialDownloads;
+}
+
 export function contentRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
 
@@ -236,6 +247,10 @@ export function contentRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")), watermarked: wm.watermarked };
     }
     const policies = await getPolicies(item.org_id);
+    if (await rawDownloadBlocked(item, perm)) {
+      return reply.code(403).send({ error: "download_blocked",
+        message: "Your workspace blocks downloads of this file — view it in the app" });
+    }
     const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, user.email);
     if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
     return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
@@ -246,8 +261,13 @@ export function contentRoutes(app: FastifyInstance) {
   app.get("/api/files/:id/raw", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);
-    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
+    const perm = item ? await permissionFor(user.id, item) : null;
+    if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
+    }
+    if (await rawDownloadBlocked(item, perm)) {
+      return reply.code(403).send({ error: "download_blocked",
+        message: "Your workspace blocks downloads of this file — view it in the app" });
     }
     const rows = await q<VersionRow>(
       "SELECT * FROM versions WHERE file_id = $1 ORDER BY number DESC LIMIT 50", [item.id]);
@@ -483,6 +503,10 @@ export function contentRoutes(app: FastifyInstance) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")) };
     } catch {
       // binary version (e.g. the original PDF upload) — stream it raw
+      if (await rawDownloadBlocked(item, perm)) {
+        return reply.code(403).send({ error: "download_blocked",
+          message: "Your workspace blocks downloads of this file — view it in the app" });
+      }
       return sendRawBlob(reply, item.mime, blob, itemName(item));
     }
   });

@@ -6,6 +6,7 @@ import { Login } from "./pages/Login";
 import { ResetPassword, VerifyEmail } from "./pages/AccountRecovery";
 import { Landing } from "./pages/Landing";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
+import MfaEnrollScreen from "./components/MfaEnrollScreen";
 import { useGlobalModalA11y } from "./lib/a11y";
 import { isNativeMobile } from "./lib/platform";
 import type { ReactNode } from "react";
@@ -39,11 +40,14 @@ const RouteFallback = () => (
 );
 
 function Protected({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, mfaSetupRequired } = useAuth();
   const { pathname } = useLocation();
   const t = useT();
   if (loading) return <div className="auth-wrap"><div className="empty">{t("app.loading")}</div></div>;
   if (!user) return <Navigate to="/login" replace />;
+  // org MFA mandate — the session is already API-gated to setup endpoints;
+  // render the enroll wall until /me reports the secret enrolled
+  if (mfaSetupRequired) return <MfaEnrollScreen />;
   // superadmin is a platform operator, not a workspace user — confine the
   // session to the portal; the API enforces the same boundary with 403s.
   if (user.isSuper && pathname !== "/admin") return <Navigate to="/admin" replace />;

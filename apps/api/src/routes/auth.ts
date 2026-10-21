@@ -7,7 +7,7 @@ import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, effectiveState, planLimit, seatCount } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
 import { genSecret, otpauthUri, verifyTotp, genBackupCodes, consumeBackupCode } from "../mfa.js";
-import { getPolicies } from "../policies.js";
+import { getPolicies, passwordPolicyMessage } from "../policies.js";
 import { samlEnabled } from "./saml.js";
 import { ssoEnabled } from "./sso.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -441,13 +441,8 @@ export function authRoutes(app: FastifyInstance) {
       orgName = j.orgName;
       role = "member";
       // org password policy applies to members joining an existing tenant
-      const minLen = (await getPolicies(orgId)).passwordMinLength;
-      if (minLen > 0 && body.password.length < minLen) {
-        return reply.code(400).send({
-          error: "bad_request",
-          message: `Workspace policy requires passwords of at least ${minLen} characters`,
-        });
-      }
+      const pwErr = passwordPolicyMessage(await getPolicies(orgId), body.password);
+      if (pwErr) return reply.code(400).send({ error: "bad_request", message: pwErr });
     } else {
       orgId = randomUUID();
       await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)", [orgId, orgName, kind, now()]);
@@ -498,13 +493,8 @@ export function authRoutes(app: FastifyInstance) {
     if (!tok) return reply.code(400).send({ error: "bad_token", message: "Reset link is expired or already used" });
     const resetUser = await one<{ org_id: string }>("SELECT org_id FROM users WHERE id = $1", [tok.user_id]);
     if (resetUser) {
-      const minLen = (await getPolicies(resetUser.org_id)).passwordMinLength;
-      if (minLen > 0 && body.password.length < minLen) {
-        return reply.code(400).send({
-          error: "bad_request",
-          message: `Workspace policy requires passwords of at least ${minLen} characters`,
-        });
-      }
+      const pwErr = passwordPolicyMessage(await getPolicies(resetUser.org_id), body.password);
+      if (pwErr) return reply.code(400).send({ error: "bad_request", message: pwErr });
     }
     // password rotation revokes every outstanding session — whoever held an
     // old token (the reason for the reset) is signed out immediately
@@ -674,8 +664,15 @@ export function authRoutes(app: FastifyInstance) {
     const plan = await effectivePlan(sub);
     const org = await one<{ name: string; onboarded_at: string | null; brand_name: string | null; brand_logo: string | null; kind: string }>(
       "SELECT name, onboarded_at, brand_name, brand_logo, kind FROM orgs WHERE id = $1", [user.orgId]);
+    // org MFA mandate — the enforcement hook already limits this session to
+    // auth endpoints; the flag lets the web app render the blocking enroll
+    // screen instead of a wall of 403s
+    const row = await one<{ totp_secret: string | null }>("SELECT totp_secret FROM users WHERE id = $1", [user.id]);
+    const mfaSetupRequired = !row?.totp_secret
+      && (await getPolicies(user.orgId)).mfaRequired;
     return {
       user,
+      mfaSetupRequired,
       org: {
         name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null, kind: org?.kind ?? "business",
         brandName: org?.brand_name ?? null,

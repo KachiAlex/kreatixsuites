@@ -193,7 +193,13 @@ export function sharingRoutes(app: FastifyInstance) {
     if (item.mime.startsWith("application/x-kreatix-")) {
       return { version: v.number, content: JSON.parse(blob.toString("utf8")), blockDownload: !!row.link.block_download, watermarked: wm.watermarked };
     }
-    if (row.link.block_download) return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
+    // per-link flag or org policy on labeled files — anonymous guests may
+    // view native docs in-app but never pull labeled raw bytes
+    const orgBlocked = policies.blockConfidentialDownloads
+      && (item.label === "confidential" || item.label === "restricted");
+    if (row.link.block_download || orgBlocked) {
+      return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
+    }
     return sendRawBlob(reply, item.mime, wm.blob, itemName(item));
   });
 }
