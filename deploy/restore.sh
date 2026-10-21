@@ -64,8 +64,8 @@ if [ "$VERIFY_ONLY" = "1" ]; then
   # table coverage: flag live tables absent from the backup (real gaps vs
   # post-backup schema additions — check pg_class.ctime-era rows to tell apart)
   comm -13 \
-    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DRILL_DB" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
-    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
+    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DRILL_DB" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public'" | sort) \
+    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public'" | sort) \
     | sed '/^$/d' | tr '\n' ' ' | { read -r missing && \
         [ -z "$missing" ] && echo "table coverage: complete" \
                           || echo "table coverage: live tables not in backup → $missing"; }
