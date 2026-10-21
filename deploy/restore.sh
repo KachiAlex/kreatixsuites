@@ -61,6 +61,14 @@ if [ "$VERIFY_ONLY" = "1" ]; then
     live=$(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT count(*) FROM $t" 2>/dev/null || echo "n/a")
     printf "  %-12s restored=%-6s live=%-6s\n" "$t" "$restored" "$live"
   done
+  # table coverage: flag live tables absent from the backup (real gaps vs
+  # post-backup schema additions — check pg_class.ctime-era rows to tell apart)
+  comm -13 \
+    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DRILL_DB" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
+    <(docker exec "$DB_CONT" psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
+    | sed '/^$/d' | tr '\n' ' ' | { read -r missing && \
+        [ -z "$missing" ] && echo "table coverage: complete" \
+                          || echo "table coverage: live tables not in backup → $missing"; }
   [ -f "${BLOB_TAR:-}" ] && echo "blob tarball objects: $(tar -tzf "$BLOB_TAR" | wc -l)"
   echo "verify-only run complete — prod untouched (scratch db dropped)"
   exit 0
