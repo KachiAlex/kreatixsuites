@@ -100,9 +100,16 @@ reviewers, and procurement questionnaires.
   issuer + client credentials (OIDC, encrypted at rest). Managed email domains
   route sign-ins at the login page; JIT provisioning creates seat-checked
   members, and orgs can enforce SSO-only sign-in via policy.
-- **SCIM 2.0** per org (`/api/scim/v2/…`): user create/read/patch/delete,
-  bearer-token auth, IdP-filtered listing; deactivation revokes sessions and
-  anonymizes rather than hard-deleting.
+- **SCIM 2.0** per org (`/scim/v2/…`): user + **group** provisioning —
+  create/read/patch/delete, bearer-token auth, IdP-filtered listing,
+  `externalId` upserts, member add/remove/replace ops (Entra and Okta
+  shapes). Pushed groups land in the same tables that drive site and
+  library permission grants, so IdP membership changes flow straight into
+  access. User deactivation revokes sessions and anonymizes rather than
+  hard-deleting.
+- **Conditional access**: per-org IP allowlists (CIDR), desktop-client
+  posture requirement, and `maxSessionDays` — every issued token
+  (password, MFA, SAML/OIDC) is clamped to the org's sign-in frequency.
 - **IP allowlists** and **superadmin confinement** are enforced as global
   request hooks.
 - **Org security policies** (`/api/admin/policies`): SSO enforcement
