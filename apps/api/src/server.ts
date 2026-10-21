@@ -227,7 +227,7 @@ async function main() {
   // their org role says, they may only reach /api/superadmin/* plus auth and
   // session endpoints (login session, logout, MFA). Same self-verify pattern
   // as the write-gate — route-level requireAuth hasn't run yet at this point.
-  const SUPER_ALLOW = /^\/api\/(superadmin|auth|health)\b/;
+  const SUPER_ALLOW = /^\/api\/(superadmin|auth|health|metrics)\b/;
   app.addHook("preHandler", async (req, reply) => {
     if (!req.url.startsWith("/api/") || SUPER_ALLOW.test(req.url)) return;
     const { user } = await resolveSession(req);
