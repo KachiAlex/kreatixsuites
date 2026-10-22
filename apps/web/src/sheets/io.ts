@@ -5,7 +5,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, CellStyle, RichRun, SheetData, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
+import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
@@ -997,6 +997,210 @@ export function richRunsFromHtml(html: string): RichRun[] | undefined {
   return merged.length && merged.some((r) => r.s) ? merged : undefined;
 }
 
+// ---- ODS side-channel -------------------------------------------------------
+// .ods is a zip too, but ODF not OOXML: the grid + automatic styles live in
+// content.xml, common styles in styles.xml. SheetJS surfaces no styles,
+// merges or widths for ODS — parse both files ourselves.
+
+/** ODF length ("2.268in", "1.5cm", "12pt") → px */
+const odsUnesc = (s: string): string =>
+  s.replace(/&#(\d+);|&#x([0-9a-fA-F]+);|&(amp|lt|gt|quot|apos);/g,
+    (_m, d, h, e) => d ? String.fromCodePoint(Number(d)) : h ? String.fromCodePoint(parseInt(h, 16))
+      : ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[e]);
+
+const ODS_UNIT_PX: Record<string, number> = { in: 96, cm: 37.795, mm: 3.7795, pt: 4 / 3, pc: 16, px: 1 };
+const odsLen = (v?: string): number | undefined => {
+  const m = v ? /^([\d.]+)\s*(in|cm|mm|pt|pc|px)?$/i.exec(v.trim()) : null;
+  if (!m) return undefined;
+  return Math.round(Number(m[1]) * (ODS_UNIT_PX[(m[2] ?? "in").toLowerCase()] ?? 96));
+};
+
+/** ODF border "0.0026in solid #000000" → BorderEdge */
+const odsEdge = (v?: string): BorderEdge | undefined => {
+  const m = v ? /^([\d.]+)(in|cm|mm|pt|pc|px)\s+(\w+)\s*(#[0-9a-fA-F]{3,8})?/i.exec(v.trim()) : null;
+  if (!m || m[3] === "none") return undefined;
+  const px = odsLen(`${m[1]}${m[2]}`) ?? 1;
+  return {
+    w: px < 1.5 ? 1 : px < 3 ? 2 : 3,
+    style: (["solid", "dashed", "dotted", "double"].includes(m[3].toLowerCase()) ? m[3].toLowerCase() : "solid") as BorderEdge["style"],
+    color: m[4],
+  };
+};
+
+/** <number:date-style|time-style> body → Excel-ish fmt by walking parts in order */
+const odsDateTimeFmt = (body: string): string => {
+  let out = "";
+  for (const m of body.matchAll(/<number:(day|month|year|hours|minutes|seconds|am-pm|day-of-week|text)\b([^>]*?)\/?>([^<]*)/g)) {
+    const attrs = m[2] ?? "";
+    const long = /number:style="long"/.test(attrs);
+    switch (m[1]) {
+      case "text": out += odsUnesc(m[3] ?? ""); break;
+      case "day": out += long ? "dd" : "d"; break;
+      case "month": out += /number:textual="true"/.test(attrs) ? (long ? "mmmm" : "mmm") : long ? "mm" : "m"; break;
+      case "year": out += long ? "yyyy" : "yy"; break;
+      case "hours": out += long ? "hh" : "h"; break;
+      case "minutes": out += long ? "mm" : "m"; break;
+      case "seconds": out += long ? "ss" : "s"; break;
+      case "am-pm": out += "AM/PM"; break;
+      case "day-of-week": out += long ? "dddd" : "ddd"; break;
+    }
+  }
+  return out;
+};
+
+/** all <number:*-style> defs in the concatenated style docs → name → fmt */
+const odsNumStyles = (xml: string): Map<string, string> => {
+  const map = new Map<string, string>();
+  for (const m of xml.matchAll(/<number:(number-style|percentage-style|currency-style|date-style|time-style|text-style)\b([^>]*)>([\s\S]*?)<\/number:\1>/g)) {
+    const name = xAttr(`<x ${m[2]}>`, "style:name");
+    if (!name) continue;
+    const body = m[3];
+    let fmt: string | undefined;
+    if (m[1] === "date-style" || m[1] === "time-style") fmt = odsDateTimeFmt(body) || undefined;
+    else if (m[1] === "text-style") fmt = "@";
+    else {
+      const nt = /<number:number\b[^>]*\/?>/.exec(body)?.[0] ?? "";
+      const dec = Number(xAttr(nt, "number:decimal-places") ?? (m[1] === "number-style" ? 0 : 2));
+      const base = `${/number:grouping="true"/.test(nt) ? "#,##0" : "0"}${dec ? `.${"0".repeat(dec)}` : ""}`;
+      if (m[1] === "percentage-style") fmt = `${base}%`;
+      else {
+        const sym = odsUnesc(/<number:currency-symbol\b[^>]*>([^<]*)</.exec(body)?.[1] ?? "");
+        // symbol element placed after <number:number> → suffix currency
+        fmt = sym
+          ? body.indexOf("currency-symbol") > body.indexOf("<number:number") ? `${base}${sym}` : `${sym}${base}`
+          : base;
+      }
+    }
+    if (fmt) map.set(name, fmt);
+  }
+  return map;
+};
+
+interface OdsDefs {
+  cell(name: string | undefined): CellStyle | undefined;
+  colW: Map<string, number>;
+  rowH: Map<string, number>;
+}
+
+/** every <style:style> def across content.xml + styles.xml, with
+ *  style:parent-style-name inheritance (one shared resolver). */
+const odsDefs = (xml: string): OdsDefs => {
+  const num = odsNumStyles(xml);
+  const raw = new Map<string, { attrs: string; body: string }>();
+  for (const m of xml.matchAll(/<style:style\b[^>]*?\/>|<style:style\b[^>]*>[\s\S]*?<\/style:style>/g)) {
+    const open = /^<style:style\b[^>]*>/.exec(m[0])![0];
+    const name = xAttr(open, "style:name");
+    if (name && !raw.has(name)) raw.set(name, { attrs: open, body: m[0] });
+  }
+  const colW = new Map<string, number>(), rowH = new Map<string, number>();
+  for (const [name, d] of raw) {
+    const fam = xAttr(d.attrs, "style:family");
+    if (fam === "table-column") {
+      const w = odsLen(xAttr(/<style:table-column-properties\b[^>]*\/?>/.exec(d.body)?.[0] ?? "", "style:column-width"));
+      if (w) colW.set(name, w);
+    } else if (fam === "table-row") {
+      const h = odsLen(xAttr(/<style:table-row-properties\b[^>]*\/?>/.exec(d.body)?.[0] ?? "", "style:row-height"));
+      if (h) rowH.set(name, h);
+    }
+  }
+  const memo = new Map<string, CellStyle>();
+  const build = (name: string, seen: Set<string>): CellStyle => {
+    const hit = memo.get(name);
+    if (hit) return hit;
+    const d = raw.get(name);
+    if (!d || seen.has(name)) return {};
+    seen.add(name);
+    const parent = xAttr(d.attrs, "style:parent-style-name");
+    const s: CellStyle = parent ? { ...build(parent, seen) } : {};
+    if (xAttr(d.attrs, "style:family") !== "table-cell") { memo.set(name, s); return s; }
+    const text = /<style:text-properties\b[^>]*\/?>/.exec(d.body)?.[0] ?? "";
+    const cellPr = /<style:table-cell-properties\b[^>]*\/?>/.exec(d.body)?.[0] ?? "";
+    const para = /<style:paragraph-properties\b[^>]*\/?>/.exec(d.body)?.[0] ?? "";
+    if (/font-weight="bold"/.test(text)) s.b = true;
+    if (/font-style="(italic|oblique)"/.test(text)) s.i = true;
+    if (/text-underline-style="(?!none)/.test(text)) s.u = true;
+    if (/text-line-through-style="(?!none)/.test(text)) s.st = true;
+    const col = xAttr(text, "fo:color"); if (col) s.color = col;
+    const fname = xAttr(text, "fo:font-name") ?? xAttr(text, "style:font-name"); if (fname) s.font = fname;
+    const fpt = /([\d.]+)pt/.exec(xAttr(text, "fo:font-size") ?? ""); if (fpt) s.size = Number(fpt[1]);
+    const bg = xAttr(cellPr, "fo:background-color"); if (bg && bg !== "transparent") s.bg = bg;
+    if (/wrap-option="wrap"/.test(cellPr)) s.wrap = true;
+    const va = xAttr(cellPr, "style:vertical-align") ?? xAttr(cellPr, "fo:vertical-align");
+    if (va === "top" || va === "middle" || va === "bottom") s.valign = va;
+    const ha = xAttr(para, "fo:text-align");
+    if (ha === "center" || ha === "justify") s.align = ha;
+    else if (ha === "end" || ha === "right") s.align = "right";
+    else if (ha === "start" || ha === "left") s.align = "left";
+    const edge = (side: string) => odsEdge(xAttr(cellPr, `fo:border-${side}`) ?? xAttr(cellPr, "fo:border"));
+    const borders = { top: edge("top"), right: edge("right"), bottom: edge("bottom"), left: edge("left") };
+    if (borders.top || borders.right || borders.bottom || borders.left) s.borders = borders;
+    const dsn = xAttr(d.attrs, "style:data-style-name");
+    if (dsn && num.has(dsn)) s.fmt = num.get(dsn);
+    memo.set(name, s);
+    return s;
+  };
+  return { cell: (n) => n ? build(n, new Set()) : undefined, colW, rowH };
+};
+
+interface OdsSheetExtras {
+  styles: Map<string, CellStyle>;
+  merges: { c1: number; r1: number; c2: number; r2: number }[];
+  colWidths: Record<number, number>;
+  rowHeights: Record<number, number>;
+}
+
+/** Walk the target <table:table> honoring repeats/spans → styles by ref,
+ *  merges, column widths, row heights. covered-table-cell elements already
+ *  occupy their grid slot, so spans don't consume extra columns. */
+function odsSheetExtras(content: string, sheetName: string, defs: OdsDefs): OdsSheetExtras | undefined {
+  let sec = "";
+  for (const t of content.matchAll(/<table:table\b[^>]*>/g)) {
+    if (odsUnesc(xAttr(t[0], "table:name") ?? "") === sheetName) {
+      const end = content.indexOf("</table:table>", (t.index ?? 0) + t[0].length);
+      if (end > 0) sec = content.slice((t.index ?? 0) + t[0].length, end);
+      break;
+    }
+  }
+  if (!sec) return undefined;
+  const out: OdsSheetExtras = { styles: new Map(), merges: [], colWidths: {}, rowHeights: {} };
+  let ci = 0;
+  for (const m of sec.matchAll(/<table:table-column\b[^>]*\/?>/g)) {
+    const rep = Math.min(Number(xAttr(m[0], "table:number-columns-repeated") ?? 1), 16384);
+    const w = defs.colW.get(xAttr(m[0], "table:style-name") ?? "");
+    if (w) for (let k = 0; k < rep; k++) out.colWidths[ci + k] = w;
+    ci += rep;
+  }
+  let ri = 0;
+  for (const m of sec.matchAll(/<table:table-row\b[^>]*?\/>|<table:table-row\b[^>]*>[\s\S]*?<\/table:table-row>/g)) {
+    const open = /^<table:table-row\b[^>]*>/.exec(m[0])![0];
+    const rep = Number(xAttr(open, "table:number-rows-repeated")) || 1;
+    const h = defs.rowH.get(xAttr(open, "table:style-name") ?? "");
+    const body = m[0];
+    const cells: { attrs: string; covered: boolean }[] = [];
+    for (const c of body.matchAll(/<table:(?:table-cell|covered-table-cell)\b[^>]*?\/>|<table:(?:table-cell|covered-table-cell)\b[^>]*>[\s\S]*?<\/table:[a-z-]+>/g))
+      cells.push({ attrs: /^<table:[a-z-]+\b[^>]*>/.exec(c[0])![0], covered: c[0].startsWith("<table:covered") });
+    const hasStyle = h !== undefined || cells.some((c) => defs.cell(xAttr(c.attrs, "table:style-name")) !== undefined ||
+      Number(xAttr(c.attrs, "table:number-columns-spanned")) > 1 || Number(xAttr(c.attrs, "table:number-rows-spanned")) > 1);
+    if (!hasStyle) { ri += rep; continue; } // style-less tail repeats (often 1M rows)
+    for (let k = 0; k < Math.min(rep, 65535); k++, ri++) {
+      if (h) out.rowHeights[ri] = h;
+      let col = 0;
+      for (const cell of cells) {
+        const crep = Math.min(Number(xAttr(cell.attrs, "table:number-columns-repeated")) || 1, 16384);
+        const st = cell.covered ? undefined : defs.cell(xAttr(cell.attrs, "table:style-name"));
+        if (st) for (let kk = 0; kk < crep; kk++) out.styles.set(toA1(col + kk, ri), st);
+        if (!cell.covered) {
+          const cs = Number(xAttr(cell.attrs, "table:number-columns-spanned")) || 1;
+          const rs = Number(xAttr(cell.attrs, "table:number-rows-spanned")) || 1;
+          if (cs > 1 || rs > 1) out.merges.push({ c1: col, r1: ri, c2: col + cs - 1, r2: ri + rs - 1 });
+        }
+        col += crep;
+      }
+    }
+  }
+  return out;
+}
+
 export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const XLSX = await xlsxLib();
   file = await ensureDecryptedFile(file); // password-protected OOXML → ZIP
@@ -1009,12 +1213,18 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
   const parsed = zip ? await zip.file("xl/styles.xml")?.async("string") : undefined;
   const stXml = parsed ? parseStylesXml(parsed, theme) : undefined;
   const partMap = zip ? await sheetPartMap(zip) : new Map<string, string>();
+  // .ods: ODF package — content.xml carries grid + automatic styles
+  const odsContent = zip && !zip.file("xl/workbook.xml") ? await zip.file("content.xml")?.async("string") : undefined;
+  const ods = odsContent
+    ? odsDefs(`${odsContent}\n${await zip!.file("styles.xml")?.async("string") ?? ""}`)
+    : undefined;
   const wbk = (wb as { Workbook?: { Sheets?: { Hidden?: number }[]; Names?: { Name: string; Ref: string; Sheet?: number }[] } }).Workbook;
   let sheetXmlPrintFound = false, pendingPrint: Workbook["print"];
   const sheets: SheetData[] = await Promise.all(wb.SheetNames.map(async (name, idx) => {
     const ws = wb.Sheets[name];
     const sheetXml = zip && partMap.get(name) ? await zip.file(partMap.get(name)!)?.async("string") : undefined;
     const extras = sheetXml ? sheetXmlExtras(sheetXml, theme, stXml) : undefined;
+    const odsX = ods && odsContent ? odsSheetExtras(odsContent, name, ods) : undefined;
     const cells: Record<string, CellData> = {};
     const notes: Record<string, string> = {};
     for (const ref of Object.keys(ws)) {
@@ -1033,7 +1243,8 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
         ? xfToStyle(stXml.xfs[xfIdx] ?? { fontId: 0, fillId: 0, borderId: 0, numFmtId: 0 }, stXml)
         : undefined;
       const legacy = styleFromXLSX(x);
-      const st = xfStyle || legacy ? { ...(legacy ?? {}), ...(xfStyle ?? {}) } : undefined;
+      const odsSt = odsX?.styles.get(ref);
+      const st = xfStyle || legacy || odsSt ? { ...(legacy ?? {}), ...(odsSt ?? {}), ...(xfStyle ?? {}) } : undefined;
       if (st) cell.s = st;
       // cell notes (xl/comments*.xml surface as cell.c: [{a, t}])
       const cm = (x as { c?: { a?: string; t?: string }[] }).c;
@@ -1057,7 +1268,8 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     }
     if (extras?.print && !sheetXmlPrintFound) { sheetXmlPrintFound = true; pendingPrint = extras.print; }
     if (Object.keys(notes).length) sheet.notes = notes;
-    if (ws["!merges"]?.length)
+    if (odsX?.merges.length) sheet.merges = odsX.merges; // ODF walk is authoritative — the reader emits corrupt merge ends for ODS
+    else if (ws["!merges"]?.length)
       sheet.merges = ws["!merges"].map((m) => ({ c1: m.s.c, r1: m.s.r, c2: m.e.c, r2: m.e.r }));
     if (ws["!cols"]) {
       sheet.colWidths = {};
@@ -1070,6 +1282,7 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       if (!sheet.hiddenCols.length) delete sheet.hiddenCols;
       if (!Object.keys(sheet.colWidths).length) delete sheet.colWidths;
     }
+    if (!sheet.colWidths && odsX && Object.keys(odsX.colWidths).length) sheet.colWidths = odsX.colWidths;
     if (ws["!rows"]) {
       sheet.rowHeights = {};
       sheet.hiddenRows = [];
@@ -1081,6 +1294,7 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       if (!sheet.hiddenRows.length) delete sheet.hiddenRows;
       if (!Object.keys(sheet.rowHeights).length) delete sheet.rowHeights;
     }
+    if (!sheet.rowHeights && odsX && Object.keys(odsX.rowHeights).length) sheet.rowHeights = odsX.rowHeights;
     if (ws["!autofilter"]?.ref) sheet.filter = { range: ws["!autofilter"].ref, cols: {} };
     return sheet;
   }));

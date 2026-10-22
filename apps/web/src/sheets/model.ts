@@ -710,6 +710,55 @@ export function parseInput(raw: string): CellData {
       if (day >= 1 && day <= 31) return { v: serial, s: { fmt: yr ? "d-mmm-yyyy" : "d-mmm" } };
     }
   }
+  // month-name dates: "Sep 20, 2026" / "20 Sep 2026" / "Sep 20" (current year)
+  const md = /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(t)
+    ?? /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9}),?\s+(\d{4})$/.exec(t)
+    ?? /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?$/.exec(t);
+  if (md) {
+    const a = /^\d/.test(md[1]) ? md[2] : md[1];
+    const day = Number(/^\d/.test(md[1]) ? md[1] : md[2]);
+    const mi = MONTHS_L.findIndex((mn) => mn.toLowerCase().startsWith(a.toLowerCase()));
+    if (mi >= 0 && day >= 1 && day <= 31) {
+      const year = md[3] ? Number(md[3]) : new Date().getFullYear();
+      const serial = Math.round((Date.UTC(year, mi, day) - Date.UTC(1899, 11, 30)) / 86400000);
+      return { v: serial, s: { fmt: md[3] ? "mmm d, yyyy" : "mmm d" } };
+    }
+  }
+  // ISO dates (unambiguous): 2026-10-22
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (iso) {
+    const [y, m, d] = [+iso[1], +iso[2] - 1, +iso[3]];
+    if (m >= 0 && m < 12 && d >= 1 && d <= 31)
+      return { v: Math.round((Date.UTC(y, m, d) - Date.UTC(1899, 11, 30)) / 86400000), s: { fmt: "yyyy-mm-dd" } };
+  }
+  // slash/dot dates — only when unambiguous (one half > 12 settles day vs month):
+  // 22/10/2026 → dd/mm, 10/22/2026 → mm/dd. Both ≤12 stays text (can't guess).
+  const sl = /^(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})$/.exec(t);
+  if (sl) {
+    const [x, y, z] = [+sl[1], +sl[2], +sl[3]];
+    const yr = sl[3].length === 2 ? 2000 + z : z;
+    const dayFirst = x > 12 ? true : y > 12 ? false : null;
+    if (dayFirst !== null) {
+      const [d, m] = dayFirst ? [x, y - 1] : [y, x - 1];
+      const dt = new Date(Date.UTC(yr, m, d));
+      if (m >= 0 && m < 12 && d >= 1 && dt.getUTCDate() === d) // reject rollovers like 31/02
+        return { v: Math.round((dt.getTime() - Date.UTC(1899, 11, 30)) / 86400000), s: { fmt: dayFirst ? "dd/mm/yyyy" : "mm/dd/yyyy" } };
+    }
+  }
+  // times: 14:30 | 14:30:25 | 2:30 PM | 2:30:15 pm — fraction-of-day serial
+  const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp])?[Mm]?$/.exec(t);
+  if (tm && (tm[4] || Number(tm[1]) <= 24)) {
+    const ampm = tm[4]?.toUpperCase();
+    if (!ampm || ampm === "A" || ampm === "P") {
+      let h = Number(tm[1]) % 24;
+      if (ampm) { if (ampm === "P" && h < 12) h += 12; if (ampm === "A" && h === 12) h = 0; }
+      const frac = (h * 3600 + Number(tm[2]) * 60 + Number(tm[3] ?? 0)) / 86400;
+      return { v: frac, s: { fmt: `h:mm${tm[3] ? ":ss" : ""}${ampm ? " AM/PM" : ""}` } };
+    }
+  }
+  // scientific notation: 1.2e3 | 5E-2
+  if (/^-?\d+\.?\d*[eE][+-]?\d+$/.test(t))
+    return { v: Number(t), s: { fmt: "0.00E+00" } };
   // currency-prefixed/suffixed numbers: ₦1,500.00 | -$2.50 | 100€ | ?41,500.00 |
   // N50,000 — symbol letters only count when the digits carry , or . so codes
   // like "Item1"/"A12" stay text. Symbol is quoted into the fmt literal so the

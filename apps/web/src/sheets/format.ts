@@ -232,7 +232,7 @@ function formatNumber(n: number, sec: string, loc?: string): string {
     if (!m) return s;
     const exp = String(Math.abs(Number(m[3]))).padStart(sci[4].length, "0");
     const mant = localizeDigits(c.includes(",") ? group(m[1]) : m[1], loc);
-    return `${mant}E${sci[3]}${exp}`;
+    return `${mant}E${m[2]}${exp}`;
   }
   // fraction: # ?/? or ??/?? — max denominator from ? count
   const fr = c.match(/([0#?]*)\s*(\?+)\/(\?+)/);

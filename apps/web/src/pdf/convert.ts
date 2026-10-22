@@ -1,4 +1,5 @@
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
+import { parseInput } from "../sheets/model";
 
 /** Shared line extraction — groups text items by baseline y. */
 async function pageLines(page: PDFPageProxy): Promise<{ x: number; s: string; h: number }[][]> {
@@ -26,12 +27,36 @@ export async function exportPdfToXlsx(doc: PDFDocumentProxy, fileName: string): 
   const wb = XLSX.utils.book_new();
   for (let p = 1; p <= doc.numPages; p++) {
     const lines = await pageLines(await doc.getPage(p));
-    const rows: string[][] = lines.map((items) => {
+    // headers/titles render in larger fonts — flag them for bold
+    const hs = lines.flat().map((i) => i.h).sort((a, b) => a - b);
+    const median = hs[Math.floor(hs.length / 2)] || 0;
+    const rows: string[][] = [];
+    const bold = new Set<string>();
+    lines.forEach((items, r) => {
       const row: string[] = [];
-      for (const it of items) row[Math.round(it.x / 60)] = (row[Math.round(it.x / 60)] ?? "") + it.s;
-      return row;
+      for (const it of items) {
+        const c = Math.round(it.x / 60);
+        row[c] = (row[c] ?? "") + it.s;
+        if (median && it.h > median * 1.15) bold.add(`${r}:${c}`);
+      }
+      rows.push(row);
     });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), `p${p}`.slice(0, 31));
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    for (const ref of Object.keys(ws)) {
+      if (ref.startsWith("!")) continue;
+      const x = ws[ref];
+      if (x.t === "s" && typeof x.v === "string") {
+        const parsed = parseInput(x.v); // typed values: dates/currency/numbers stay computable
+        if (parsed.v !== x.v || parsed.s?.fmt) {
+          x.v = parsed.v as string | number | boolean;
+          x.t = typeof parsed.v === "number" ? "n" : typeof parsed.v === "boolean" ? "b" : "s";
+          if (parsed.s?.fmt) x.z = parsed.s.fmt;
+        }
+      }
+      const { r, c } = XLSX.utils.decode_cell(ref);
+      if (bold.has(`${r}:${c}`)) x.s = { ...(x.s ?? {}), font: { ...(x.s?.font ?? {}), bold: true } };
+    }
+    XLSX.utils.book_append_sheet(wb, ws, `p${p}`.slice(0, 31));
   }
   // writeFile() anchor-clicks internally — dead in the native WebView
   const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
