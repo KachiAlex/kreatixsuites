@@ -1623,14 +1623,24 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   onClick={() => setPainter(painter ? null : { s: { ...anchorStyle } })}>🖌</button>
               </>},
               { id: "font", label: "Font", node: <>
-                <select className="rb-sel" value={anchorStyle.font ?? "Inter"} title="Font family" style={{ width: 96 }}
-                  onChange={(e) => setStyle({ font: e.target.value === "Inter" ? undefined : e.target.value })}>
-                  {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
-                </select>
-                <select className="rb-sel" value={String(anchorStyle.size ?? 12)} title="Font size" style={{ width: 52 }}
-                  onChange={(e) => setStyle({ size: Number(e.target.value) === 12 ? undefined : Number(e.target.value) })}>
-                  {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
+                <RbDrop title="Font family" width={170}
+                  label={<span className="font-label" style={{ fontFamily: anchorStyle.font ?? "Inter" }}>{anchorStyle.font ?? "Inter"}</span>}>
+                  {(close) => <div className="font-list">
+                    {FONTS.map((f) => (
+                      <button key={f} className={`font-opt ${(anchorStyle.font ?? "Inter") === f ? "on" : ""}`} style={{ fontFamily: f }}
+                        onClick={() => { setStyle({ font: f === "Inter" ? undefined : f }); close(); }}>{f}</button>
+                    ))}
+                  </div>}
+                </RbDrop>
+                <RbDrop title="Font size" width={84}
+                  label={<span>{anchorStyle.size ?? 12}</span>}>
+                  {(close) => <div className="font-list">
+                    {SIZES.map((n) => (
+                      <button key={n} className={`font-opt ${(anchorStyle.size ?? 12) === n ? "on" : ""}`}
+                        onClick={() => { setStyle({ size: n === 12 ? undefined : n }); close(); }}>{n}</button>
+                    ))}
+                  </div>}
+                </RbDrop>
                 <button className={`rb ${anchorStyle.b ? "on" : ""}`} title="Bold (Ctrl+B)" onClick={() => toggleStyle("b")}><b>B</b></button>
                 <button className={`rb ${anchorStyle.i ? "on" : ""}`} title="Italic (Ctrl+I)" onClick={() => toggleStyle("i")}><i>I</i></button>
                 <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => toggleStyle("u")}><u>U</u></button>
@@ -1677,16 +1687,15 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   </button>
                 ))}
                 {/* S19.11 — extended horizontal alignments */}
-                <select className="rb" title="More alignments — justify / distributed / fill / center-across"
-                  style={{ padding: "0 4px", fontSize: 11 }}
-                  value={anchorStyle.align && !["left", "center", "right"].includes(anchorStyle.align) ? anchorStyle.align : ""}
-                  onChange={(e) => setStyle({ align: (e.target.value || undefined) as CellStyle["align"] })}>
-                  <option value="">⇅</option>
-                  <option value="justify">Justify</option>
-                  <option value="distributed">Distributed</option>
-                  <option value="fill">Fill</option>
-                  <option value="centerAcross">Center across</option>
-                </select>
+                <RbDrop title="More alignments — justify / distributed / fill / center-across" width={140}
+                  label={<span>⇅</span>}>
+                  {(close) => <>
+                    {([["justify", "Justify"], ["distributed", "Distributed"], ["fill", "Fill"], ["centerAcross", "Center across"]] as const).map(([v, l]) => (
+                      <button key={v} className={`menu-li ${anchorStyle.align === v ? "font-opt on" : ""}`}
+                        onClick={() => { setStyle({ align: anchorStyle.align === v ? undefined : v }); close(); }}>{l}</button>
+                    ))}
+                  </>}
+                </RbDrop>
                 {(["top", "middle", "bottom"] as const).map((v) => (
                   <button key={v} className={`rb ${anchorStyle.valign === v ? "on" : ""}`} title={`Align ${v}`}
                     onClick={() => setStyle({ valign: anchorStyle.valign === v ? undefined : v })}>
@@ -1701,46 +1710,69 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   onClick={() => setStyle({ indent: Math.max(0, (anchorStyle.indent ?? 0) - 1) || undefined })}>◁</button>
                 <button className="rb" title="Increase indent"
                   onClick={() => setStyle({ indent: Math.min(15, (anchorStyle.indent ?? 0) + 1) })}>▷</button>
-                <select className="rb-sel" value={String(anchorStyle.rotate ?? 0)} title="Text orientation" style={{ width: 56 }}
-                  onChange={(e) => setStyle({ rotate: Number(e.target.value) || undefined })}>
-                  {[0, 45, 90, -45, -90].map((d) => <option key={d} value={d}>{d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`}</option>)}
-                </select>
+                <RbDrop title="Text orientation" width={92}
+                  label={<span>{anchorStyle.rotate ? `${anchorStyle.rotate > 0 ? "+" : ""}${anchorStyle.rotate}°` : "0°"}</span>}>
+                  {(close) => <>
+                    {[0, 45, 90, -45, -90].map((d) => (
+                      <button key={d} className={`menu-li ${(anchorStyle.rotate ?? 0) === d ? "font-opt on" : ""}`}
+                        onClick={() => { setStyle({ rotate: d || undefined }); close(); }}>{d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`}</button>
+                    ))}
+                  </>}
+                </RbDrop>
                 <button className="rb" title="Merge selection" onClick={mergeSel}>▦</button>
                 <button className="rb" title="Unmerge" onClick={unmergeSel}>▢</button>
               </>},
               { id: "num", label: "Number", node: <>
-                <select className="rb-sel" value={!anchorStyle.fmt ? "auto" : NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "custom"} title="Number format"
-                  onChange={(e) => {
-                    if (e.target.value === "auto") return setStyle({ fmt: undefined });
-                    if (e.target.value === "custom") {
-                      const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):", anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
+                <RbDrop title="Number format — currency, dates, percent" width={210}
+                  label={<span className="font-label">
+                    {!anchorStyle.fmt ? "Automatic"
+                      : NUM_FORMATS.find((f) => f.id === anchorStyle.fmt)?.label.split(" (")[0] ?? "Custom"}
+                  </span>}>
+                  {(close) => <>
+                    {([["num", "Number"], ["cur", "Currency"], ["date", "Date & time"], ["other", "Other"]] as const).map(([g, head]) => (
+                      <div key={g}>
+                        <div className="drop-head">{head}</div>
+                        {NUM_FORMATS.filter((f) => f.g === g).map((f) => (
+                          <button key={f.id}
+                            className={`menu-li ${(anchorStyle.fmt ?? "auto") === f.id || (!anchorStyle.fmt && f.id === "auto") ? "font-opt on" : ""}`}
+                            onClick={() => { setStyle({ fmt: f.id === "auto" ? undefined : f.id }); close(); }}>{f.label}</button>
+                        ))}
+                      </div>
+                    ))}
+                    <div className="menu-divider" />
+                    <button className="menu-li" onClick={() => {
+                      const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):",
+                        anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
                       if (code) setStyle({ fmt: code });
-                      return;
-                    }
-                    setStyle({ fmt: e.target.value });
-                  }}>
-                  {NUM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-                  <option value="custom">Custom code…</option>
-                </select>
-                <select className="rb-sel" value={wb.locale ?? "en-US"} style={{ width: 76 }}
-                  title="Workbook locale — separators & month names (a [$-xxxx] tag in a custom code overrides per cell)"
-                  onChange={(e) => setWb({ ...wb, locale: e.target.value === "en-US" ? undefined : e.target.value })}>
-                  {["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ru-RU", "ja-JP", "zh-CN", "ar-SA", "hi-IN", "tr-TR", "sv-SE"].map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
+                      close();
+                    }}>Custom code…</button>
+                  </>}
+                </RbDrop>
+                <RbDrop title="Workbook locale — separators & month names" width={130}
+                  label={<span>{wb.locale ?? "en-US"}</span>}>
+                  {(close) => <div className="font-list" style={{ maxHeight: 300, overflow: "auto" }}>
+                    {["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ru-RU", "ja-JP", "zh-CN", "ar-SA", "hi-IN", "tr-TR", "sv-SE"].map((l) => (
+                      <button key={l} className={`menu-li ${(wb.locale ?? "en-US") === l ? "font-opt on" : ""}`}
+                        onClick={() => { setWb({ ...wb, locale: l === "en-US" ? undefined : l }); close(); }}>{l}</button>
+                    ))}
+                  </div>}
+                </RbDrop>
               </>},
               { id: "styles", label: "Styles", node: <>
-                <select className="rb-sel" value="" title="Cell style preset (replaces formatting)" style={{ width: 84 }}
-                  onChange={(e) => {
-                    const p = CELL_STYLES.find(([id]) => id === e.target.value);
-                    if (!p) return;
-                    const st = p[2];
-                    mutateSheet((s) => selRefs.forEach((r) => {
-                      s.cells[r] = { ...s.cells[r], s: p[0] === "normal" ? undefined : { ...st } };
-                    }));
-                  }}>
-                  <option value="" disabled>Style…</option>
-                  {CELL_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-                </select>
+                <RbDrop title="Cell style preset (replaces formatting)" width={150}
+                  label={<span>Style</span>}>
+                  {(close) => <div className="font-list">
+                    {CELL_STYLES.map(([id, label, st]) => (
+                      <button key={id} className="menu-li"
+                        onClick={() => {
+                          mutateSheet((s) => selRefs.forEach((r) => {
+                            s.cells[r] = { ...s.cells[r], s: id === "normal" ? undefined : { ...st } };
+                          }));
+                          close();
+                        }}>{label}</button>
+                    ))}
+                  </div>}
+                </RbDrop>
                 <button className="rb" title="Conditional formatting" onClick={() => setCfOpen(true)}>◐</button>
               </>},
               { id: "cells", label: "Cells", node: <>
@@ -3025,6 +3057,32 @@ const COND_OPS: [string, string][] = [
   ["<", "less than"], ["<=", "≤"], ["contains", "contains"], ["notcontains", "doesn't contain"],
   ["starts", "begins with"], ["ends", "ends with"], ["blank", "is blank"], ["notblank", "is not blank"],
 ];
+
+/** Labeled dropdown-button for the ribbon — replaces bare <select>s so menu
+ *  items are discoverable. Closes on click-outside / Escape. */
+function RbDrop({ label, title, width, children }: {
+  label: React.ReactNode; title?: string; width?: number;
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const out = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", out);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", out); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  return (
+    <div className="rb-drop" ref={ref}>
+      <button className={`rb rb-dropbtn ${open ? "on" : ""}`} title={title} onClick={() => setOpen(!open)}>
+        {label} <span className="rb-caret">▾</span>
+      </button>
+      {open && <div className="rb-drop-menu" style={width ? { width } : undefined}>{children(() => setOpen(false))}</div>}
+    </div>
+  );
+}
 
 /** AutoFilter dropdown menu for one column (S5.1). */
 function FilterMenu({ wb, sheet, col, x, y, onSet, onSort, onClose }: {
