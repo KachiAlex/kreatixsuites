@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --target=node20 --external:better-sqlite3 --external:pg --external:pg-native --outfile=dist/server.cjs",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --target=node20 --external:better-sqlite3 --external:pg --external:pg-native --external:sharp --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:mfa": "tsx test-mfa.mts",
