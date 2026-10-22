@@ -114,16 +114,20 @@ export async function monitorSweep(log: { warn: (o: unknown, m: string) => void;
     }).catch((e) => log.warn(e, "alert webhook failed"));
   }
 
-  // email org owners/admins when Brevo is configured
-  try {
-    const orgs = await q<{ org_id: string }>(`SELECT DISTINCT org_id FROM users`);
-    const m = tpl.systemAlert(lines);
-    for (const { org_id } of orgs) {
-      const recips = await orgAdminRecipients(org_id);
-      for (const r of recips) sendMailSafe(log, { to: r.email, toName: r.name, subject: m.subject, html: m.html });
+  // email org owners/admins — crit checks only (warns stay on the webhook +
+  // /api/admin/health; KREATIX_HEALTH_EMAILS=off silences mail entirely)
+  const emailOff = /^(0|off|false)$/i.test(process.env.KREATIX_HEALTH_EMAILS ?? "");
+  if (!emailOff && bad.some((c) => c.status === "crit")) {
+    try {
+      const orgs = await q<{ org_id: string }>(`SELECT DISTINCT org_id FROM users`);
+      const m = tpl.systemAlert(lines);
+      for (const { org_id } of orgs) {
+        const recips = await orgAdminRecipients(org_id);
+        for (const r of recips) sendMailSafe(log, { to: r.email, toName: r.name, subject: m.subject, html: m.html });
+      }
+    } catch (e) {
+      log.warn(e, "health alert email failed");
     }
-  } catch (e) {
-    log.warn(e, "health alert email failed");
   }
   return { alerts: bad.length, checks };
 }
