@@ -36,6 +36,8 @@ services:
       - PORT=3001
       # optional config — empty values are ignored by the app
       - KREATIX_DATA_KEY=${KREATIX_DATA_KEY:-}
+      - KREATIX_HEALTH_EMAILS=${KREATIX_HEALTH_EMAILS:-}
+      - KREATIX_ALERT_WEBHOOK=${KREATIX_ALERT_WEBHOOK:-}
       - KREATIX_SCAN_CMD=${KREATIX_SCAN_CMD:-}
       - KREATIX_AI_KEY=${KREATIX_AI_KEY:-}
       - KREATIX_AI_BASE_URL=${KREATIX_AI_BASE_URL:-}
