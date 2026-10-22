@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import QRCode from "qrcode";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
 import { BrandLockup, AppIcon } from "../components/AppIcon";
@@ -28,18 +29,80 @@ function AndroidGlyph() {
 export function Download() {
   const t = useT();
   const [manifest, setManifest] = useState<Manifest | null>(null);
+  const [qr, setQr] = useState<string | null>(null);
   const year = new Date().getFullYear();
+
+  /* Show the visitor's own platform first + highlighted. */
+  const onAndroid = /android/i.test(navigator.userAgent);
+  const onWindows = /windows/i.test(navigator.userAgent);
+  const mobile = onAndroid || /iphone|ipod/i.test(navigator.userAgent);
 
   useEffect(() => {
     document.title = `${t("dl.title")} · Kreatix Suites`;
     api.get<Manifest>("/api/downloads")
       .then(setManifest)
       .catch(() => {}); // keep null → buttons still render without size info
+    /* QR so a desktop visitor can pull the APK straight onto their phone;
+       points at the page (not the binary) so the install steps show first. */
+    QRCode.toDataURL(`${location.origin}/download`, {
+      width: 132, margin: 1,
+      color: { dark: "#231F1A", light: "#FFFFFF" },
+    }).then(setQr).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const meta = (e: DlEntry | null) =>
     e ? `v${e.version ?? "—"} · ${MB(e.size)}` : null;
+
+  const windowsCard = (
+    <div className={`dl-card${onWindows ? " primary" : ""}`} key="win">
+      {onWindows && <span className="dl-rec">{t("dl.rec")}</span>}
+      <div className="dl-card-top">
+        <span className="dl-icon"><WindowsGlyph /></span>
+        <div>
+          <h2>{t("dl.win.name")}</h2>
+          <p className="dl-meta">{meta(manifest?.desktop ?? null) ?? t("dl.win.meta")}</p>
+        </div>
+      </div>
+      <p className="dl-desc">{t("dl.win.desc")}</p>
+      {manifest?.desktop === null ? (
+        <span className="dl-btn disabled">{t("dl.soon")}</span>
+      ) : (
+        <a className="dl-btn" href="/api/downloads/desktop">
+          {t("dl.win.btn")} {manifest?.desktop && <span className="dl-btn-meta">{MB(manifest.desktop.size)}</span>}
+        </a>
+      )}
+      <p className="dl-req">{t("dl.win.req")}</p>
+    </div>
+  );
+
+  const androidCard = (
+    <div className={`dl-card${onAndroid ? " primary" : ""}`} key="and">
+      {onAndroid && <span className="dl-rec">{t("dl.rec")}</span>}
+      <div className="dl-card-top">
+        <span className="dl-icon"><AndroidGlyph /></span>
+        <div>
+          <h2>{t("dl.and.name")}</h2>
+          <p className="dl-meta">{meta(manifest?.android ?? null) ?? t("dl.and.meta")}</p>
+        </div>
+      </div>
+      <p className="dl-desc">{t("dl.and.desc")}</p>
+      {manifest?.android === null ? (
+        <span className="dl-btn disabled">{t("dl.soon")}</span>
+      ) : (
+        <a className={`dl-btn${onAndroid ? "" : " ghost"}`} href="/api/downloads/android">
+          {t("dl.and.btn")} {manifest?.android && <span className="dl-btn-meta">{MB(manifest.android.size)}</span>}
+        </a>
+      )}
+      <p className="dl-req">{t("dl.and.req")}</p>
+      {qr && !mobile && manifest?.android !== null && (
+        <div className="dl-qr">
+          <img src={qr} alt={t("dl.and.qr")} width={118} height={118} />
+          <p>{t("dl.and.qr")}</p>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="dl">
@@ -58,43 +121,7 @@ export function Download() {
         <p className="dl-sub">{t("dl.sub")}</p>
 
         <div className="dl-cards">
-          <div className="dl-card primary">
-            <div className="dl-card-top">
-              <span className="dl-icon"><WindowsGlyph /></span>
-              <div>
-                <h2>{t("dl.win.name")}</h2>
-                <p className="dl-meta">{meta(manifest?.desktop ?? null) ?? t("dl.win.meta")}</p>
-              </div>
-            </div>
-            <p className="dl-desc">{t("dl.win.desc")}</p>
-            {manifest?.desktop === null ? (
-              <span className="dl-btn disabled">{t("dl.soon")}</span>
-            ) : (
-              <a className="dl-btn" href="/api/downloads/desktop">
-                {t("dl.win.btn")} {manifest?.desktop && <span className="dl-btn-meta">{MB(manifest.desktop.size)}</span>}
-              </a>
-            )}
-            <p className="dl-req">{t("dl.win.req")}</p>
-          </div>
-
-          <div className="dl-card">
-            <div className="dl-card-top">
-              <span className="dl-icon"><AndroidGlyph /></span>
-              <div>
-                <h2>{t("dl.and.name")}</h2>
-                <p className="dl-meta">{meta(manifest?.android ?? null) ?? t("dl.and.meta")}</p>
-              </div>
-            </div>
-            <p className="dl-desc">{t("dl.and.desc")}</p>
-            {manifest?.android === null ? (
-              <span className="dl-btn disabled">{t("dl.soon")}</span>
-            ) : (
-              <a className="dl-btn ghost" href="/api/downloads/android">
-                {t("dl.and.btn")} {manifest?.android && <span className="dl-btn-meta">{MB(manifest.android.size)}</span>}
-              </a>
-            )}
-            <p className="dl-req">{t("dl.and.req")}</p>
-          </div>
+          {onAndroid ? [androidCard, windowsCard] : [windowsCard, androidCard]}
         </div>
 
         <div className="dl-steps">

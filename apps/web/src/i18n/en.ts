@@ -432,6 +432,8 @@ export const en: Record<string, string> = {
   "dl.and.desc": "The same suite on your phone or tablet — install the signed APK directly.",
   "dl.and.btn": "Download APK",
   "dl.and.req": "Android 9+ · Allow installs from unknown sources",
+  "dl.and.qr": "On your phone? Scan to open this page and install the APK.",
+  "dl.rec": "This device",
   "dl.soon": "Coming soon",
   "dl.s1.h": "Download the installer",
   "dl.s1.p": "Pick your platform above — the signed package downloads straight from us.",
