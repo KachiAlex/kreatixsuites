@@ -93,6 +93,7 @@ const FEATURE_LABELS: [string, string][] = [
   ["pdf_edit", "lp.price.f.pdf_edit"],
   ["share_protect", "lp.price.f.share_protect"],
   ["writer_advanced", "lp.price.f.writer_advanced"],
+  ["docmgmt", "lp.price.f.docmgmt"],
   ["sso", "lp.price.f.sso"],
   ["scim", "lp.price.f.scim"],
   ["priority_support", "lp.price.f.priority_support"],
@@ -485,10 +486,11 @@ export function Landing() {
                 {[0, 1, 2].map((i) => <div key={i} className="lp-plan lp-plan-skel" />)}
               </div>
             ) : (
-              <div className="lp-plans">
-                {plans.map((p) => {
+              (() => {
+                const planCard = (p: PublicPlan) => {
                   const members = p.limits.max_members ?? 0;
                   const vdays = p.limits.version_days ?? 0;
+                  const perUser = p.memberPriceNgn > 0;
                   return (
                     <article key={p.slug} className={`lp-plan lp-reveal${p.slug === "biz_standard" ? " popular" : ""}`}>
                       {p.slug === "biz_standard" && <span className="lp-plan-badge">{t("lp.price.popular")}</span>}
@@ -496,9 +498,11 @@ export function Landing() {
                       <div className="lp-plan-price">
                         {p.priceNgn === 0
                           ? <b>{t("lp.price.free")}</b>
-                          : <><b>₦{p.priceNgn.toLocaleString()}</b><span>{t("lp.price.perMonth")}</span></>}
+                          : perUser
+                            ? <><b>₦{p.memberPriceNgn.toLocaleString()}</b><span>{t("lp.price.perUserMonth")}</span></>
+                            : <><b>₦{p.priceNgn.toLocaleString()}</b><span>{t("lp.price.perMonth")}</span></>}
                       </div>
-                      {p.memberPriceNgn > 0 && (
+                      {perUser && p.memberPriceNgn !== p.priceNgn && (
                         <small className="lp-plan-member">{t("lp.price.member", { n: p.memberPriceNgn.toLocaleString() })}</small>
                       )}
                       <ul className="lp-plan-feats">
@@ -515,8 +519,20 @@ export function Landing() {
                       </Link>
                     </article>
                   );
-                })}
-              </div>
+                };
+                const personal = plans.filter((p) => !p.memberPriceNgn);
+                const business = plans.filter((p) => p.memberPriceNgn > 0);
+                return (
+                  <>
+                    <div className="lp-plans-label lp-reveal">{t("lp.price.personal")}</div>
+                    <div className="lp-plans">{personal.map(planCard)}</div>
+                    {business.length > 0 && <>
+                      <div className="lp-plans-label lp-reveal">{t("lp.price.business")}</div>
+                      <div className="lp-plans">{business.map(planCard)}</div>
+                    </>}
+                  </>
+                );
+              })()
             )}
           </div>
         </section>

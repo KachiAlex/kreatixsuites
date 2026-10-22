@@ -3064,6 +3064,8 @@ html[data-theme="dark"]{
 .rbpro{display:block;font-size:8px;font-weight:700;color:var(--k-orange,#F2782E);letter-spacing:.5px;margin-top:1px}
 
 /* ── landing pricing — live plan catalog ── */
+.lp-plans-label{font-size:11px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:var(--l-muted);margin:26px 0 14px}
+.lp-plans-label:first-of-type{margin-top:0}
 .lp-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;max-width:1020px}
 .lp-plan{border:1px solid var(--l-line);border-radius:14px;padding:30px 26px 26px;background:#fff;position:relative;display:flex;flex-direction:column;transition:transform .35s,box-shadow .35s}
 .lp-plan:hover{transform:translateY(-6px);box-shadow:0 18px 45px #0000000c}
