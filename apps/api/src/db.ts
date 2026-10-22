@@ -1225,7 +1225,7 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     INSERT INTO plans (slug, name, price_ngn, member_price_ngn, features, limits, sort) VALUES
     ('free', 'Free', 0, 0,
       '{"ai":false,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false,"docmgmt":false}',
-      '{"ai_daily":0,"ai_per_min":0,"ai_tokens_base":0,"ai_tokens_per_seat":0,"storage_mb":2048,"max_members":3,"version_days":7,"sites":1}', 0),
+      '{"ai_daily":0,"ai_per_min":0,"ai_tokens_base":0,"ai_tokens_per_seat":0,"storage_mb":2048,"max_members":1,"version_days":7,"sites":1}', 0),
     ('pro', 'Pro', 1500, 0,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":false,"docmgmt":true}',
       '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":20480,"max_members":1,"version_days":0,"sites":5}', 1),
