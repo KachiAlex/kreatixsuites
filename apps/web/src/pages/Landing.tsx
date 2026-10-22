@@ -323,6 +323,15 @@ export function Landing() {
               <span>{t("lp.promise.shared")}</span>
               <span>{t("lp.promise.ai")}</span>
             </div>
+
+            <div className="lp-stats">
+              {[1, 2, 3, 4].map((n) => (
+                <div className="lp-stat" key={n}>
+                  <b>{t(`lp.stats.${n}v`)}</b>
+                  <span>{t(`lp.stats.${n}l`)}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -411,6 +420,27 @@ export function Landing() {
                   <div className="lp-symbol">{["↗", "◈", "✦"][n - 1]}</div>
                   <h3>{t(`lp.feat.${n}t`)}</h3>
                   <p>{t(`lp.feat.${n}p`)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ===== trust & security ===== */}
+        <section className="lp-section" id="trust">
+          <div className="lp-wrap">
+            <div className="lp-section-top lp-reveal">
+              <div>
+                <div className="lp-eyebrow">{t("lp.trust.eyebrow")}</div>
+                <h2>{t("lp.trust.h1")}<br />{t("lp.trust.h2")}</h2>
+              </div>
+              <p>{t("lp.trust.lead")}</p>
+            </div>
+            <div className="lp-trust-grid lp-reveal">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <div className="lp-trust-item" key={n}>
+                  <h3><span className="lp-tick" aria-hidden="true">✓</span>{t(`lp.trust.${n}t`)}</h3>
+                  <p>{t(`lp.trust.${n}p`)}</p>
                 </div>
               ))}
             </div>
@@ -540,6 +570,7 @@ export function Landing() {
             <div className="lp-foot-links">
               <a href="#products">{t("lp.foot.apps")}</a>
               <a href="#workflow">{t("lp.nav.why")}</a>
+              <a href="#trust">{t("lp.foot.security")}</a>
               <a href="#faq">{t("lp.nav.faq")}</a>
               <Link to="/download">{t("dl.title")}</Link>
               <Link to="/login">{t("lp.nav.signin")}</Link>

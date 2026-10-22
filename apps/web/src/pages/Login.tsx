@@ -280,7 +280,19 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
 
   return (
     <div className="auth-wrap">
-      <div>
+      <div className="auth-stage">
+        <aside className="auth-side" aria-hidden="true">
+          <BrandLockup light size={42} />
+          <h1>{t("auth.side.h1")}</h1>
+          <p className="auth-side-sub">{t("auth.side.sub")}</p>
+          <ul>
+            <li>{t("auth.side.p1")}</li>
+            <li>{t("auth.side.p2")}</li>
+            <li>{t("auth.side.p3")}</li>
+          </ul>
+          <div className="auth-side-trust">{t("auth.side.trust")}</div>
+        </aside>
+      <div className="auth-form-col">
         <div className="auth-brand">
           {inviteBrand?.logoUrl
             ? <img src={inviteBrand.logoUrl} alt={inviteBrand.name} style={{ height: 64, width: "auto", maxWidth: 280, objectFit: "contain" }} />
@@ -487,6 +499,8 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
           </select>
         </div>
       </form>
+      <div className="auth-trustline">{t("auth.side.trust")}</div>
+      </div>
       </div>
     </div>
   );
