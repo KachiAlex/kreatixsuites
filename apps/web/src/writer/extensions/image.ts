@@ -39,6 +39,18 @@ export const effectiveWrap = (a: { wrap?: ImageWrap; align?: string }): ImageWra
 
 const clampCrop = (v: unknown) => Math.max(0, Math.min(49, Number(v) || 0));
 
+/** Server-side derivative ladder — must match apps/api/src/images.ts. */
+const IMG_LADDER = [480, 960, 1920] as const;
+/** App-internal image URLs get a ?w= hint so the API serves a right-sized
+ * WebP derivative instead of the full-resolution original. */
+export const sizedSrc = (src: string, displayWidth?: number | null): string => {
+  if (!displayWidth || !/^\/api\/(files|links)\//.test(src)) return src;
+  const want = Math.ceil(displayWidth * (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1));
+  const w = IMG_LADDER.find((r) => want <= r);
+  if (!w) return src;
+  return `${src}${src.includes("?") ? "&" : "?"}w=${w}`;
+};
+
 /**
  * Image node: width/height, alignment, Word-style text wrapping (square /
  * tight / top-bottom / behind / in-front), anchor offsets, z-order, rotate,
@@ -104,7 +116,12 @@ export const RichImage = Image.extend({
         "data-lock-aspect": a.lockAspect === false ? 0 : 1,
         style: figureStyle(a),
       },
-      ["img", mergeAttributes(HTMLAttributes, { style: imgStyle(a) })],
+      ["img", mergeAttributes(HTMLAttributes, {
+        src: sizedSrc(a.src, a.width),
+        style: imgStyle(a),
+        loading: "lazy",
+        decoding: "async",
+      })],
       ...(a.caption ? [["figcaption", {}, a.caption] as const] : []),
     ];
   },
@@ -127,8 +144,9 @@ export const RichImage = Image.extend({
         dom.dataset.align = a.align || "none";
         dom.dataset.wrap = a.wrap || "inline";
         dom.style.cssText = figureStyle(a);
-        img.src = a.src;
+        img.src = sizedSrc(a.src, a.width ?? (dom.offsetWidth || null));
         img.alt = a.alt ?? "";
+        img.decoding = "async";
         img.style.cssText = imgStyle(a);
         if (a.caption && !cap) {
           cap = document.createElement("figcaption");

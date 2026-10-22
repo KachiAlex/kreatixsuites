@@ -8,6 +8,7 @@ import {
   type AuthedRequest, type UserRow,
 } from "../auth.js";
 import { getBlob } from "../blobs.js";
+import { derivativeBlob } from "../images.js";
 import { getPolicies, dlpHit, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 import { entitled } from "../billing.js";
 import { sendRawBlob } from "./content.js";
@@ -200,8 +201,14 @@ export function sharingRoutes(app: FastifyInstance) {
     if (row.link.block_download || orgBlocked) {
       return reply.code(403).send({ error: "forbidden", message: "Download disabled" });
     }
-    return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
-      { etag: `${v.blob_key}${wm.watermarked ? ":wm:guest" : ""}` });
+    if (wm.watermarked) {
+      return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
+        { etag: `${v.blob_key}:wm:guest` });
+    }
+    const w = Number((req.query as { w?: string }).w);
+    const d = await derivativeBlob(v.blob_key, blob, item.mime,
+      Number.isInteger(w) && w > 0 && w <= 4096 ? w : undefined);
+    return sendRawBlob(reply, d.mime, d.blob, itemName(item), { etag: d.key });
   });
 }
 

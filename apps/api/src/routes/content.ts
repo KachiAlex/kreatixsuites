@@ -12,6 +12,7 @@ import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from ".
 import type { Permission } from "@kreatix/shared";
 import { storageQuota } from "../billing.js";
 import { putBlob, getBlob } from "../blobs.js";
+import { derivativeBlob } from "../images.js";
 import { indexFile } from "../indexer.js";
 import { getPolicies, dlpScanText, scanDlp, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 
@@ -164,6 +165,12 @@ export async function notifySubmitter(
 /** MIME types that must never execute in an origin-bearing context. */
 const SCRIPTABLE = /^(text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)/i;
 
+/** ?w= width hint for image derivatives — undefined unless a sane positive int. */
+function reqWidth(req: { query: unknown }): number | undefined {
+  const w = Number((req.query as { w?: string }).w);
+  return Number.isInteger(w) && w > 0 && w <= 4096 ? w : undefined;
+}
+
 /**
  * Stream raw binary content. Scriptable types are served inside a CSP sandbox
  * and as attachments so stored HTML/SVG can't run scripts on the app origin.
@@ -265,9 +272,13 @@ export function contentRoutes(app: FastifyInstance) {
         message: "Your workspace blocks downloads of this file — view it in the app" });
     }
     const wm = watermarkIfNeeded(blob, item.mime, item.label ?? "internal", policies, user.email);
-    if (wm.watermarked) reply.header(WATERMARK_HEADER, item.label);
-    return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
-      { etag: `${v.blob_key}${wm.watermarked ? `:wm:${user.id}` : ""}` });
+    if (wm.watermarked) {
+      reply.header(WATERMARK_HEADER, item.label);
+      return sendRawBlob(reply, item.mime, wm.blob, itemName(item),
+        { etag: `${v.blob_key}:wm:${user.id}` });
+    }
+    const d = await derivativeBlob(v.blob_key, blob, item.mime, reqWidth(req));
+    return sendRawBlob(reply, d.mime, d.blob, itemName(item), { etag: d.key });
   });
 
   /** GET the PDF bytes — the LATEST version whose blob is a real PDF (page
@@ -290,7 +301,13 @@ export function contentRoutes(app: FastifyInstance) {
       if (blob && blob.subarray(0, 5).equals(Buffer.from("%PDF-")))
         return sendRawBlob(reply, item.mime, blob, itemName(item), { etag: v.blob_key });
     }
-    return reply.code(404).send({ error: "not_found", message: "No PDF bytes" });
+    // non-PDF binaries (images, media, office files embedded/downloaded via
+    // /raw): serve the head blob — Writer inserts /raw URLs for these
+    const head = rows[0];
+    const headBlob = head && await getBlob(head.blob_key);
+    if (!headBlob) return reply.code(404).send({ error: "not_found", message: "No PDF bytes" });
+    const d = await derivativeBlob(head!.blob_key, headBlob, item.mime, reqWidth(req));
+    return sendRawBlob(reply, d.mime, d.blob, itemName(item), { etag: d.key });
   });
 
   /** PUT new PDF bytes (page-organization output) — stores an immutable raw
@@ -521,7 +538,8 @@ export function contentRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "download_blocked",
           message: "Your workspace blocks downloads of this file — view it in the app" });
       }
-      return sendRawBlob(reply, item.mime, blob, itemName(item), { immutable: true });
+      const d = await derivativeBlob(v.blob_key, blob, item.mime, reqWidth(req));
+      return sendRawBlob(reply, d.mime, d.blob, itemName(item), { immutable: true });
     }
   });
 

@@ -1208,6 +1208,15 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     ok BOOLEAN NOT NULL,
     detail TEXT
   )`);
+  // lazily generated image derivatives — <source blob_key, width> → blob
+  await pool.query(`CREATE TABLE IF NOT EXISTS image_derivatives (
+    source_key TEXT NOT NULL,
+    width INT NOT NULL,
+    derivative_key TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_key, width)
+  )`);
   // seed the default billing config row (idempotent)
   await pool.query(`INSERT INTO billing_config (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
   // seed the plan catalog (idempotent — superadmin edits are never overwritten)
