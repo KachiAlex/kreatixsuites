@@ -89,6 +89,7 @@ export function superadminRoutes(app: FastifyInstance) {
       features: z.record(z.string(), z.boolean()).optional(),
       limits: z.record(z.string(), z.number().int().min(0).max(1_000_000_000)).optional(),
       active: z.boolean().optional(),
+      listed: z.boolean().optional(),
       sort: z.number().int().min(0).max(999).optional(),
     }).parse(req.body);
     const before = await one<Plan>("SELECT * FROM plans WHERE slug = $1", [slug]);
@@ -101,6 +102,7 @@ export function superadminRoutes(app: FastifyInstance) {
       features: body.features ? { ...before.features, ...body.features } : before.features,
       limits: body.limits ? { ...before.limits, ...body.limits } : before.limits,
       active: body.active ?? before.active,
+      listed: body.listed ?? before.listed,
       sort: body.sort ?? before.sort,
     };
     if (after.slug === "free" && (after.price_ngn > 0 || after.member_price_ngn > 0)) {
@@ -110,9 +112,9 @@ export function superadminRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "bad_request", message: "The free plan cannot be deactivated" });
     }
     await run(
-      `UPDATE plans SET name=$2, price_ngn=$3, member_price_ngn=$4, features=$5, limits=$6, active=$7, sort=$8 WHERE slug=$1`,
+      `UPDATE plans SET name=$2, price_ngn=$3, member_price_ngn=$4, features=$5, limits=$6, active=$7, listed=$8, sort=$9 WHERE slug=$1`,
       [slug, after.name, after.price_ngn, after.member_price_ngn,
-       JSON.stringify(after.features), JSON.stringify(after.limits), after.active, after.sort]);
+       JSON.stringify(after.features), JSON.stringify(after.limits), after.active, after.listed, after.sort]);
     bustPlanCache();
     await logSa(user, "plan.update", `${after.name} (${slug})`,
       { priceNgn: { from: before.price_ngn, to: after.price_ngn },

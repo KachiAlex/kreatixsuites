@@ -41,6 +41,7 @@ export interface Plan {
   features: Record<string, boolean>;
   limits: Record<string, number>;
   active: boolean;
+  listed: boolean;
   sort: number;
 }
 
@@ -49,7 +50,7 @@ const PLAN_ALIAS: Record<string, string> = { standard: "pro" };
 
 const FREE_PLAN: Plan = {
   slug: "free", name: "Free", price_ngn: 0, member_price_ngn: 0,
-  features: { ai: true, export: true }, limits: { ai_daily: 20 }, active: true, sort: 0,
+  features: { ai: false, export: true }, limits: { ai_daily: 0 }, active: true, listed: true, sort: 0,
 };
 
 let planCache: { rows: Plan[]; at: number } | null = null;

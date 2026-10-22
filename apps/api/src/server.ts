@@ -326,7 +326,7 @@ async function main() {
    */
   app.get("/api/plans", async (_req, reply) => {
     reply.header("Cache-Control", "public, max-age=60");
-    const plans = await getPlans(true);
+    const plans = (await getPlans(true)).filter((p) => p.listed);
     return {
       plans: plans.map((p) => ({
         slug: p.slug, name: p.name,

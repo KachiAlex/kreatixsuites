@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS plans (
   features JSONB NOT NULL DEFAULT '{}'::jsonb,
   limits JSONB NOT NULL DEFAULT '{}'::jsonb,
   active BOOLEAN NOT NULL DEFAULT true,
+  listed BOOLEAN NOT NULL DEFAULT true,   -- false = still resolvable for existing subs, hidden from public pricing
   sort INTEGER NOT NULL DEFAULT 0
 );
 
@@ -1223,20 +1224,31 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`
     INSERT INTO plans (slug, name, price_ngn, member_price_ngn, features, limits, sort) VALUES
     ('free', 'Free', 0, 0,
-      '{"ai":true,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false,"docmgmt":false}',
-      '{"ai_daily":20,"ai_per_min":5,"ai_tokens_base":300000,"ai_tokens_per_seat":0,"storage_mb":1024,"max_members":3,"version_days":30,"sites":1}', 0),
-    ('pro', 'Pro', 1000, 0,
-      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":true,"docmgmt":true}',
-      '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":51200,"max_members":5,"version_days":0,"sites":10}', 1),
-    ('family', 'Family', 2000, 0,
+      '{"ai":false,"export":true,"pdf_sign":false,"pdf_edit":false,"share_protect":false,"writer_comments":true,"writer_version_history":true,"writer_advanced":false,"sso":false,"scim":false,"priority_support":false,"docmgmt":false}',
+      '{"ai_daily":0,"ai_per_min":0,"ai_tokens_base":0,"ai_tokens_per_seat":0,"storage_mb":2048,"max_members":3,"version_days":7,"sites":1}', 0),
+    ('pro', 'Pro', 1500, 0,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":false,"docmgmt":true}',
-      '{"ai_daily":500,"ai_per_min":20,"ai_tokens_base":6000000,"ai_tokens_per_seat":1000000,"storage_mb":204800,"max_members":6,"version_days":0,"sites":5}', 2),
-    ('business', 'Business', 2000, 500,
+      '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":1000000,"storage_mb":20480,"max_members":1,"version_days":0,"sites":5}', 1),
+    ('family', 'Family', 2000, 0,
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":false,"docmgmt":false}',
+      '{"ai_daily":300,"ai_per_min":20,"ai_tokens_base":6000000,"ai_tokens_per_seat":1000000,"storage_mb":20480,"max_members":6,"version_days":0,"sites":0}', 2),
+    ('biz_basic', 'Business Basic', 1500, 1500,
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":false,"scim":false,"priority_support":false,"docmgmt":true}',
+      '{"ai_daily":200,"ai_per_min":20,"ai_tokens_base":3000000,"ai_tokens_per_seat":2000000,"storage_mb":20480,"max_members":0,"version_days":0,"sites":5}', 3),
+    ('biz_standard', 'Business Standard', 3500, 3500,
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":false,"priority_support":true,"docmgmt":true}',
+      '{"ai_daily":500,"ai_per_min":30,"ai_tokens_base":6000000,"ai_tokens_per_seat":3000000,"storage_mb":20480,"max_members":0,"version_days":0,"sites":25}', 4),
+    ('biz_premium', 'Business Premium', 6000, 6000,
       '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true,"docmgmt":true}',
-      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":512000,"max_members":0,"version_days":0,"sites":0}', 3)
+      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":20480,"max_members":0,"version_days":0,"sites":0}', 5),
+    ('business', 'Business (legacy)', 2000, 500,
+      '{"ai":true,"export":true,"pdf_sign":true,"pdf_edit":true,"share_protect":true,"writer_comments":true,"writer_version_history":true,"writer_advanced":true,"sso":true,"scim":true,"priority_support":true,"docmgmt":true}',
+      '{"ai_daily":1000,"ai_per_min":40,"ai_tokens_base":12000000,"ai_tokens_per_seat":4000000,"storage_mb":20480,"max_members":0,"version_days":0,"sites":0}', 9)
     -- stored values win on shared keys; newly introduced seed keys get added
     ON CONFLICT (slug) DO UPDATE SET features = EXCLUDED.features || plans.features,
       limits = EXCLUDED.limits || plans.limits`);
+  await pool.query(`ALTER TABLE plans ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT true`);
+  await pool.query(`UPDATE plans SET listed = false WHERE slug = 'business'`); // legacy tier stays resolvable, never listed
 }
 
 export const now = () => new Date().toISOString();

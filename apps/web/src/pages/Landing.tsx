@@ -490,8 +490,8 @@ export function Landing() {
                   const members = p.limits.max_members ?? 0;
                   const vdays = p.limits.version_days ?? 0;
                   return (
-                    <article key={p.slug} className={`lp-plan lp-reveal${p.slug === "pro" ? " popular" : ""}`}>
-                      {p.slug === "pro" && <span className="lp-plan-badge">{t("lp.price.popular")}</span>}
+                    <article key={p.slug} className={`lp-plan lp-reveal${p.slug === "biz_standard" ? " popular" : ""}`}>
+                      {p.slug === "biz_standard" && <span className="lp-plan-badge">{t("lp.price.popular")}</span>}
                       <h3>{p.name}</h3>
                       <div className="lp-plan-price">
                         {p.priceNgn === 0

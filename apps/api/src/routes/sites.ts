@@ -221,6 +221,8 @@ export function siteRoutes(app: FastifyInstance) {
       const body = createSiteSchema.parse(req.body);
       // plan gate: sites count is a paid-tier limit (free = 1)
       const plan = await effectivePlan(await ensureSubscription(user.orgId));
+      if (!(await entitled(user.orgId, "docmgmt")))
+        return reply.code(402).send({ error: "plan_required", message: "Sites are a business feature — upgrade to create one" });
       const max = planLimit(plan, "sites", 1);
       if (max > 0) {
         const n = await one<{ n: number }>("SELECT COUNT(*) AS n FROM sites WHERE org_id = $1", [user.orgId]);
