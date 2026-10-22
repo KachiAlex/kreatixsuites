@@ -696,6 +696,37 @@ export function parseInput(raw: string): CellData {
   if (/^-?[\d,]*\.?\d+%$/.test(t)) return { v: Number(t.replace(/[%,]/g, "")) / 100 };
   if (/^-?[\d,]*\.?\d+$/.test(t)) return { v: Number(t.replace(/,/g, "")) };
   if (/^(true|false)$/i.test(t)) return { v: /^t/i.test(t) };
+  // bare dates Excel auto-parses on CSV import: 20-Sep / 20-Sep-2026 / Sep-20
+  const dm = /^(\d{1,2})[-/]([A-Za-z]{3,9})(?:[-/](\d{2,4}))?$/.exec(t)
+    ?? /^([A-Za-z]{3,9})[-/](\d{1,2})(?:[-/](\d{2,4}))?$/.exec(t);
+  if (dm) {
+    const [a, b, yr] = [dm[1], dm[2], dm[3]];
+    const mi = /^\d/.test(a) ? MONTHS_L.findIndex((mn) => mn.toLowerCase().startsWith(b.toLowerCase()))
+      : MONTHS_L.findIndex((mn) => mn.toLowerCase().startsWith(a.toLowerCase()));
+    if (mi >= 0) {
+      const day = Number(/^\d/.test(a) ? a : b);
+      const year = yr ? (yr.length === 2 ? 2000 + Number(yr) : Number(yr)) : new Date().getFullYear();
+      const serial = Math.round((Date.UTC(year, mi, day) - Date.UTC(1899, 11, 30)) / 86400000);
+      if (day >= 1 && day <= 31) return { v: serial, s: { fmt: yr ? "d-mmm-yyyy" : "d-mmm" } };
+    }
+  }
+  // currency-prefixed/suffixed numbers: ₦1,500.00 | -$2.50 | 100€ | ?41,500.00 |
+  // N50,000 — symbol letters only count when the digits carry , or . so codes
+  // like "Item1"/"A12" stay text. Symbol is quoted into the fmt literal so the
+  // display round-trips byte-for-byte (and exports back to Excel cleanly).
+  const cur = /^(-?)\s*([^\d\s()]{0,4})\s*([\d,]*\.?\d+)\s*([^\d\s()]{0,4})$/.exec(t);
+  const par = cur ? null : /^\(\s*([^\d\s()]{0,4})\s*([\d,]*\.?\d+)\s*([^\d\s()]{0,4})\s*\)$/.exec(t); // accounting parens
+  const sign = par ? "-" : (cur?.[1] ?? "");
+  const pre = par ? par[1] : cur?.[2], numPart = par ? par[2] : cur?.[3], suf = par ? par[3] : cur?.[4];
+  const sym = pre || suf;
+  if ((cur || par) && sym && !/[-+]/.test(sym)) {
+    const lettersOk = /^\w+$/.test(sym) ? /[.,]/.test(numPart!) : true;
+    if (lettersOk) {
+      const decs = /\.(\d+)$/.exec(numPart!)?.[1].length ?? 0;
+      const fmt = `${pre ? `"${pre}"` : ""}#,##0${decs ? "." + "0".repeat(decs) : ""}${suf ? `"${suf}"` : ""}`;
+      return { v: Number(`${sign}${numPart!.replace(/,/g, "")}`), s: { fmt } };
+    }
+  }
   return { v: raw };
 }
 

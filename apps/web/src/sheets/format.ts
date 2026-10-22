@@ -1,4 +1,4 @@
-// Number formats â presets + a subset of Excel custom format codes (S4.5)
+// Number formats — presets + a subset of Excel custom format codes (S4.5)
 export const NUM_FORMATS = [
   { id: "auto", label: "Automatic" },
   { id: "0", label: "Integer (0)" },
@@ -9,7 +9,7 @@ export const NUM_FORMATS = [
   { id: "0.00%", label: "Percent (0.00%)" },
   { id: "$#,##0.00", label: "Currency ($1,234.56)" },
   { id: '"$"#,##0.00_);("$"#,##0.00)', label: "Accounting ($1,234.56)" },
-  { id: "â¦#,##0.00", label: "Naira (â¦1,234.56)" },
+  { id: "₦#,##0.00", label: "Naira (₦1,234.56)" },
   { id: "0.00E+00", label: "Scientific (1.23E+04)" },
   { id: "# ?/?", label: "Fraction (1 1/4)" },
   { id: "@", label: "Text" },
@@ -108,7 +108,7 @@ function group(n: string): string {
 // ---------- custom format-code engine ----------
 
 /** Split a format code into `pos;neg;zero;text` sections, respecting
- *  "â¦" literals and [â¦] conditions/colors. */
+ *  "…" literals and […] conditions/colors. */
 function splitSections(code: string): string[] {
   const out: string[] = [];
   let cur = "", depth = 0;
@@ -130,7 +130,7 @@ function splitSections(code: string): string[] {
 }
 
 /** Strip control tokens: _x spacer, *x fill, [Color]/[cond], \x escape.
- *  Quoted "â¦" literals keep their text. */
+ *  Quoted "…" literals keep their text. */
 function cleanSection(sec: string): string {
   return sec
     .replace(/\[\$([^\]-]*)-[^\]]*\]/g, "$1") // [$€-407] keeps "€", drops tag
@@ -234,7 +234,7 @@ function formatNumber(n: number, sec: string, loc?: string): string {
     const mant = localizeDigits(c.includes(",") ? group(m[1]) : m[1], loc);
     return `${mant}E${sci[3]}${exp}`;
   }
-  // fraction: # ?/? or ??/?? â max denominator from ? count
+  // fraction: # ?/? or ??/?? — max denominator from ? count
   const fr = c.match(/([0#?]*)\s*(\?+)\/(\?+)/);
   if (fr) {
     const maxD = Math.min(Math.pow(10, fr[3].length) - 1, 999);
