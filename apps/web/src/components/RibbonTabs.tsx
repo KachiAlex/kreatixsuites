@@ -58,7 +58,7 @@ function loadHidden(persistKey: string): Record<string, string[]> {
  */
 export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTabsProps) {
   const tabIds = tabs.map((t) => t.id).join("|");
-  const firstPanel = tabs.find((t) => !t.menu)?.id ?? tabs[0]?.id ?? "";
+  const firstPanel = tabs.find((t) => t.groups)?.id ?? tabs[0]?.id ?? "";
   const [inner, setInner] = useState<string>(() => load(`kx-ribtab-${persistKey}`) ?? "");
   const [collapsed, setCollapsed] = useState(() => load(`kx-ribcol-${persistKey}`) === "1");
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
@@ -71,14 +71,14 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
   const custRef = useRef<HTMLDivElement>(null);
   const custBtnRef = useRef<HTMLButtonElement>(null);
   const [custPos, setCustPos] = useState<{ left: number; top: number } | null>(null);
-  const activeId = active ?? (tabs.some((t) => t.id === inner && !t.menu) ? inner : firstPanel);
+  const activeId = active ?? (tabs.some((t) => t.id === inner && !!t.groups) ? inner : firstPanel);
   const rootRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   // a previously-active contextual tab may disappear — fall back to the first panel tab
   useEffect(() => {
     const cur = active ?? inner;
-    if (!tabs.some((t) => t.id === cur) || tabs.find((t) => t.id === cur)?.menu) {
+    if (!tabs.some((t) => t.id === cur) || !tabs.find((t) => t.id === cur)?.groups) {
       if (!menuOpen) pick(firstPanel);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,8 +127,10 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
 
   const onTabClick = (tab: RibbonTab) => {
     if (tab.menu) {
-      if (menuOpen === tab.id) setMenuOpen(null);
-      else openMenu(tab);
+      if (menuOpen === tab.id) { setMenuOpen(null); return; }
+      // hybrid tab (menu + groups): the dropdown also activates the panel
+      if (tab.groups) { pick(tab.id); if (collapsed) toggleCollapse(); }
+      openMenu(tab);
       return;
     }
     setMenuOpen(null);
@@ -148,7 +150,7 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
     tabRefs.current.get(ids[next])?.focus();
   };
 
-  const activeTab = tabs.find((t) => t.id === activeId && !t.menu);
+  const activeTab = tabs.find((t) => t.id === activeId);
   const openMenuTab = tabs.find((t) => t.id === menuOpen && t.menu);
   const hiddenIds = new Set(hidden[activeId] ?? []);
   const visibleGroups = activeTab?.groups?.filter((g) => !hiddenIds.has(g.id));
@@ -202,7 +204,8 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
     <div className="ribbon-wrap" ref={rootRef}>
       <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs" onKeyDown={onTabsKeyDown}>
         {tabs.map((tab) => {
-          const isMenu = !!tab.menu;
+          const isMenu = !!tab.menu && !tab.groups;
+          const isHybrid = !!tab.menu && !!tab.groups;
           const selected = isMenu ? menuOpen === tab.id : activeId === tab.id;
           return (
             <div key={tab.id} className="ribbon-tab-root">
@@ -211,17 +214,18 @@ export function RibbonTabs({ tabs, persistKey, end, active, onActive }: RibbonTa
                 className={`ribbon-tab${isMenu ? " menu-tab" : ""}${tab.contextual ? " ctx" : ""}`}
                 role={isMenu ? "button" : "tab"}
                 aria-selected={!isMenu && selected}
-                aria-expanded={isMenu ? selected : undefined}
-                aria-haspopup={isMenu ? "menu" : undefined}
+                aria-expanded={tab.menu ? menuOpen === tab.id : undefined}
+                aria-haspopup={tab.menu ? "menu" : undefined}
                 tabIndex={selected ? 0 : -1}
                 onClick={() => onTabClick(tab)}
                 // menubar convention: while a menu is open, hovering another
                 // menu tab switches the open menu to it
-                onMouseEnter={() => { if (isMenu && menuOpen && menuOpen !== tab.id) openMenu(tab); }}
+                onMouseEnter={() => { if (menuOpen && menuOpen !== tab.id) { if (tab.menu) openMenu(tab); else setMenuOpen(null); } }}
                 onDoubleClick={() => !isMenu && toggleCollapse()}
               >
                 {tab.icon && <span className="rt-ico" aria-hidden>{tab.icon}</span>}
                 <span className="rt-label">{tab.label}</span>
+                {isHybrid && <span className="rt-caret" aria-hidden>▾</span>}
               </button>
             </div>
           );

@@ -10,6 +10,7 @@ import { AiPanel, type AiOp } from "../ai/AiPanel";
 import { ShareDialog } from "../components/ShareDialog";
 import { AppIcon } from "../components/AppIcon";
 import { RibbonTabs } from "../components/RibbonTabs";
+import type { MenuItem } from "../writer/MenuBar";
 import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
 import { OpenCancelledError } from "../lib/passwordPrompt";
@@ -124,6 +125,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const [painter, setPainter] = useState<{ s: CellStyle } | null>(null);
   const csvRef = useRef<HTMLInputElement>(null);
   const xlsxRef = useRef<HTMLInputElement>(null);
+  const textColorRef = useRef<HTMLInputElement>(null);
+  const fillColorRef = useRef<HTMLInputElement>(null);
   const nameBoxRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const pendingJson = useRef<unknown>(null);
@@ -1612,7 +1615,62 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
               { label: "Version history", onClick: () => setPanel("versions") },
               { label: "Workbook properties…", onClick: () => setPropsDlg(true) },
             ]},
-            { id: "home", label: "Home", icon: "🏠", groups: [
+            { id: "home", label: "Home", icon: "🏠", menu: [
+              { label: "Undo", shortcut: "Ctrl+Z", disabled: !undoStack.current.length, onClick: undo },
+              { label: "Redo", shortcut: "Ctrl+Y", disabled: !redoStack.current.length, onClick: redo },
+              { divider: true },
+              { label: "Paste Special…", shortcut: "Ctrl+Alt+V", onClick: () => getCopyBuffer() ? setPasteSpec(true) : toast("Nothing copied yet") },
+              { label: "Copy as picture", onClick: copyAsPicture },
+              { label: "Format Painter", checked: !!painter, onClick: () => setPainter(painter ? null : { s: { ...anchorStyle } }) },
+              { divider: true },
+              { label: "Font", submenu: FONTS.map((f) => ({ label: f, checked: (anchorStyle.font ?? "Inter") === f, onClick: () => setStyle({ font: f === "Inter" ? undefined : f }) })) },
+              { label: "Font size", submenu: SIZES.map((n) => ({ label: String(n), checked: (anchorStyle.size ?? 12) === n, onClick: () => setStyle({ size: n === 12 ? undefined : n }) })) },
+              { label: "Bold", shortcut: "Ctrl+B", checked: !!anchorStyle.b, onClick: () => toggleStyle("b") },
+              { label: "Italic", shortcut: "Ctrl+I", checked: !!anchorStyle.i, onClick: () => toggleStyle("i") },
+              { label: "Underline", shortcut: "Ctrl+U", checked: !!anchorStyle.u, onClick: () => toggleStyle("u") },
+              { label: "Strikethrough", checked: !!anchorStyle.st, onClick: () => toggleStyle("st") },
+              { label: "Text color…", onClick: () => textColorRef.current?.click() },
+              { label: "Fill color…", onClick: () => fillColorRef.current?.click() },
+              { label: "Borders…", onClick: () => setBorderMenu(true) },
+              { divider: true },
+              { label: "Align", submenu: (["left", "center", "right"] as const).map((a) => ({ label: `Align ${a}`, checked: anchorStyle.align === a, onClick: () => setStyle({ align: a }) })) },
+              { label: "More alignments", submenu: ([["justify", "Justify"], ["distributed", "Distributed"], ["fill", "Fill"], ["centerAcross", "Center across"]] as const).map(([v, l]) => ({ label: l, checked: anchorStyle.align === v, onClick: () => setStyle({ align: anchorStyle.align === v ? undefined : v }) })) },
+              { label: "Vertical align", submenu: ([["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]] as const).map(([v, l]) => ({ label: l, checked: anchorStyle.valign === v, onClick: () => setStyle({ valign: anchorStyle.valign === v ? undefined : v }) })) },
+              { label: "Wrap text", checked: !!anchorStyle.wrap, onClick: () => setStyle({ wrap: !anchorStyle.wrap || undefined }) },
+              { label: "Shrink to fit", checked: !!anchorStyle.shrink, onClick: () => setStyle({ shrink: !anchorStyle.shrink || undefined }) },
+              { label: "Decrease indent", onClick: () => setStyle({ indent: Math.max(0, (anchorStyle.indent ?? 0) - 1) || undefined }) },
+              { label: "Increase indent", onClick: () => setStyle({ indent: Math.min(15, (anchorStyle.indent ?? 0) + 1) }) },
+              { label: "Text orientation", submenu: [0, 45, 90, -45, -90].map((d) => ({ label: d === 0 ? "0°" : `${d > 0 ? "+" : ""}${d}°`, checked: (anchorStyle.rotate ?? 0) === d, onClick: () => setStyle({ rotate: d || undefined }) })) },
+              { label: "Merge selection", onClick: mergeSel },
+              { label: "Unmerge", onClick: unmergeSel },
+              { divider: true },
+              { label: "Number format", submenu: (() => {
+                const items: MenuItem[] = [];
+                (["num", "cur", "date", "other"] as const).forEach((g, gi) => {
+                  if (gi) items.push({ divider: true });
+                  NUM_FORMATS.filter((f) => f.g === g).forEach((f) => items.push({
+                    label: f.label, checked: (anchorStyle.fmt ?? "auto") === f.id,
+                    onClick: () => setStyle({ fmt: f.id === "auto" ? undefined : f.id }),
+                  }));
+                });
+                items.push({ divider: true }, { label: "Custom code…", onClick: () => {
+                  const code = prompt("Custom format code (e.g. #,##0.00;[Red]-#,##0.00):",
+                    anchorStyle.fmt && !NUM_FORMATS.some((f) => f.id === anchorStyle.fmt) ? anchorStyle.fmt : "");
+                  if (code) setStyle({ fmt: code });
+                }});
+                return items;
+              })() },
+              { label: "Workbook locale", submenu: ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR", "nl-NL", "pl-PL", "ru-RU", "ja-JP", "zh-CN", "ar-SA", "hi-IN", "tr-TR", "sv-SE"].map((l) => ({ label: l, checked: (wb.locale ?? "en-US") === l, onClick: () => setWb({ ...wb, locale: l === "en-US" ? undefined : l }) })) },
+              { divider: true },
+              { label: "Cell style", submenu: CELL_STYLES.map(([id, label, st]) => ({ label, onClick: () => mutateSheet((s) => selRefs.forEach((r) => { s.cells[r] = { ...s.cells[r], s: id === "normal" ? undefined : { ...st } }; })) })) },
+              { label: "Conditional formatting…", onClick: () => setCfOpen(true) },
+              { divider: true },
+              { label: "Insert / delete cells…", onClick: () => setCellShiftDlg(true) },
+              { label: "Insert rows above", onClick: insRows },
+              { label: "Delete rows", onClick: delRows },
+              { label: "Insert columns left", onClick: insCols },
+              { label: "Delete columns", onClick: delCols },
+            ], groups: [
               { id: "clip", label: "Clipboard", node: <>
                 <button className="rb" title="Undo" disabled={!undoStack.current.length} onClick={undo}>↶</button>
                 <button className="rb" title="Redo" disabled={!redoStack.current.length} onClick={redo}>↷</button>
@@ -1646,11 +1704,11 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                 <button className={`rb ${anchorStyle.u ? "on" : ""}`} title="Underline (Ctrl+U)" onClick={() => toggleStyle("u")}><u>U</u></button>
                 <button className={`rb ${anchorStyle.st ? "on" : ""}`} title="Strikethrough" onClick={() => toggleStyle("st")}><s>S</s></button>
                 <label className="rb" title="Text color" style={{ padding: 4, cursor: "pointer" }}>
-                  A<input type="color" value={anchorStyle.color ?? "#171717"} style={{ position: "absolute", opacity: 0, width: 0 }}
+                  A<input ref={textColorRef} type="color" value={anchorStyle.color ?? "#171717"} style={{ position: "absolute", opacity: 0, width: 0 }}
                     onChange={(e) => setStyle({ color: e.target.value })} />
                 </label>
                 <label className="rb" title="Fill color" style={{ padding: 4, cursor: "pointer" }}>
-                  ▨<input type="color" value={anchorStyle.bg ?? "#ffffff"} style={{ position: "absolute", opacity: 0, width: 0 }}
+                  ▨<input ref={fillColorRef} type="color" value={anchorStyle.bg ?? "#ffffff"} style={{ position: "absolute", opacity: 0, width: 0 }}
                     onChange={(e) => setStyle({ bg: e.target.value })} />
                 </label>
                 <div style={{ position: "relative" }}>
@@ -1784,7 +1842,17 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                 <button className="rb" title="Delete columns" onClick={delCols}>C−</button>
               </>},
             ]},
-            { id: "insert", label: "Insert", icon: "➕", groups: [
+            { id: "insert", label: "Insert", icon: "➕", menu: [
+              { label: "Picture…", onClick: () => setPicDlg(true) },
+              { label: "Chart from selection…", onClick: () => setChartOpen(true) },
+              { label: "Sparkline…", onClick: () => setSparkDlg(true) },
+              { label: "Format as Table…", onClick: () => setTableDlg(true) },
+              { label: "Slicer…", onClick: () => setSlicerDlg(true) },
+              { label: "Data-type entity", onClick: insertEntity },
+              { divider: true },
+              { label: "Link…", shortcut: "Ctrl+K", onClick: () => setLinkDlg(true) },
+              { label: "Symbol…", onClick: () => setSymbolDlg(true) },
+            ], groups: [
               { id: "ill", label: "Illustrations", node: <>
                 <button className="rb" title="Insert picture — floating over the grid"
                   onClick={() => setPicDlg(true)}>🖼</button>
@@ -1802,7 +1870,18 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                 <button className="rb" title="Insert symbol" onClick={() => setSymbolDlg(true)}>Ω</button>
               </>},
             ]},
-            { id: "formulas", label: "Formulas", icon: "𝑓x", groups: [
+            { id: "formulas", label: "Formulas", icon: "𝑓x", menu: [
+              { label: "Name Manager…", onClick: () => setNameMgr(true) },
+              { label: "Insert function…", onClick: () => setFnWiz(true) },
+              { divider: true },
+              { label: "Show formulas", shortcut: "Ctrl+`", checked: showFormulas, onClick: () => setShowFormulas(!showFormulas) },
+              { label: "Trace precedents", checked: audit === "pre", onClick: () => setAudit(audit === "pre" ? null : "pre") },
+              { label: "Trace dependents", checked: audit === "dep", onClick: () => setAudit(audit === "dep" ? null : "dep") },
+              { label: "Formula inspector…", onClick: () => setInspDlg(true) },
+              { divider: true },
+              { label: "Calculation options…", onClick: () => setCalcDlg(true) },
+              { label: "Calculate now", shortcut: "F9", disabled: !manualCalc, onClick: recalc },
+            ], groups: [
               { id: "names", label: "Named & Insert", node: <>
                 <button className="rb" title="Name Manager — define named ranges" onClick={() => setNameMgr(true)}>📛</button>
                 <button className="rb" title="Insert function — guided wizard" onClick={() => setFnWiz(true)}>ƒx</button>
@@ -1823,7 +1902,33 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                 {manualCalc && <button className="rb" title="Calculate now (F9)" onClick={recalc}>⟳</button>}
               </>},
             ]},
-            { id: "data", label: "Data", icon: "🗃", groups: [
+            { id: "data", label: "Data", icon: "🗃", menu: [
+              { label: "Sort A→Z", onClick: () => sortSel(true) },
+              { label: "Sort Z→A", onClick: () => sortSel(false) },
+              { label: "Sort — multiple levels…", onClick: () => setSortDlg(true) },
+              { label: "AutoFilter", checked: !!sheet.filter, onClick: toggleFilter },
+              { divider: true },
+              { label: "Remove duplicates…", onClick: () => setDedupeDlg(true) },
+              { label: "Text to Columns…", onClick: () => setT2cDlg(true) },
+              { label: "Flash Fill", onClick: flashFill },
+              { label: "Data validation…", onClick: () => setValDlg(true) },
+              { label: "Subtotal…", onClick: () => setSubtotalDlg(true) },
+              { label: "Go To Special…", onClick: () => setGtsDlg(true) },
+              { divider: true },
+              { label: "Group rows", onClick: () => groupSel(1) },
+              { label: "Ungroup rows", onClick: () => groupSel(-1) },
+              { label: "Group columns", onClick: () => groupCols(1) },
+              { label: "Ungroup columns", onClick: () => groupCols(-1) },
+              { divider: true },
+              { label: "Scenario Manager…", onClick: () => setScenDlg(true) },
+              { label: "Goal Seek…", onClick: () => setSeekDlg(true) },
+              { label: "Data Table…", onClick: () => setDtDlg(true) },
+              { label: "Solver…", onClick: () => setSolverDlg(true) },
+              { divider: true },
+              { label: "PivotTable…", onClick: () => setPivotDlg(true) },
+              { label: "Get & Transform…", onClick: () => setQueryDlg(true) },
+              { label: "Scripts…", onClick: () => setScriptDlg(true) },
+            ], groups: [
               { id: "sort", label: "Sort & Filter", node: <>
                 <button className="rb" title="Sort A→Z" onClick={() => sortSel(true)}>A↓</button>
                 <button className="rb" title="Sort Z→A" onClick={() => sortSel(false)}>Z↑</button>
@@ -1867,7 +1972,15 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   onClick={() => setScriptDlg(true)}>📜</button>
               </>},
             ]},
-            { id: "review", label: "Review", icon: "✓", groups: [
+            { id: "review", label: "Review", icon: "✓", menu: [
+              { label: "Spelling", checked: spellOn, onClick: () => spellOn ? setSpellDlg(true) : setSpellOn(true) },
+              { label: "New comment on cell", onClick: () => { setNewComment(true); setPanel("comments"); } },
+              { divider: true },
+              { label: "Show change marks", checked: showChanges, onClick: () => setShowChanges(!showChanges) },
+              { label: `Review tracked changes${sheet.changeLog?.length ? ` (${sheet.changeLog.length})` : ""}…`, onClick: () => setReviewDlg(true) },
+              { divider: true },
+              { label: "Protect sheet…", checked: !!sheet.protected, onClick: () => setProtectDlg(true) },
+            ], groups: [
               { id: "proof", label: "Proofing", node: <>
                 <button className={`rb ${spellOn ? "on" : ""}`} title="Spelling — toggle underlines; click again to review"
                   onClick={() => spellOn ? setSpellDlg(true) : setSpellOn(true)}>✓abc</button>
@@ -1886,7 +1999,14 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
                   onClick={() => setProtectDlg(true)}>🔒</button>
               </>},
             ]},
-            { id: "view", label: "View", icon: "👁", groups: [
+            { id: "view", label: "View", icon: "👁", menu: [
+              { label: `Freeze ${selection.r1 || "no"} rows above`, onClick: () => mutateSheet((s) => { s.freeze = { rows: selection.r1, cols: s.freeze?.cols ?? 0 }; }) },
+              { label: `Freeze ${selection.c1 || "no"} columns left`, onClick: () => mutateSheet((s) => { s.freeze = { rows: s.freeze?.rows ?? 0, cols: selection.c1 }; }) },
+              { label: "Split at selection row", checked: !!sheet.splitRow, onClick: () => mutateSheet((s) => { s.splitRow = s.splitRow ? undefined : Math.max(1, selection.r1); }) },
+              { divider: true },
+              { label: "Page-break preview", checked: pbPreview, onClick: () => setPbPreview(!pbPreview) },
+              { label: "Custom views…", onClick: () => setViewsDlg(true) },
+            ], groups: [
               { id: "views", label: "Views", node: <>
                 <button className="rb" title="Freeze rows above" style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
                   onClick={() => mutateSheet((s) => { s.freeze = { rows: selection.r1, cols: s.freeze?.cols ?? 0 }; })}>
