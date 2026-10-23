@@ -5,8 +5,8 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, SheetObject, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
-import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey, COL_W, ROW_H } from "./model";
+import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, SheetObject, ChartSpec, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
+import { toA1, parseA1, rangeRefs, parseRange, rangeToA1, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey, COL_W, ROW_H } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
 import { saveFile } from "../lib/saveFile";
@@ -578,17 +578,100 @@ function anchorMarker(body: string, tag: "from" | "to") {
   return { col: n("col"), colOff: n("colOff"), row: n("row"), rowOff: n("rowOff") };
 }
 
-/** worksheet <drawing r:id> → drawing part → xdr:pic anchors → SheetObjects.
- *  Anchors convert to grid px using the sheet's own col/row geometry
- *  (hidden rows/cols count as 0, matching the render layer). Charts and
- *  shapes in the same drawing are skipped for now. */
-async function sheetDrawingObjects(zip: ZipLike, sheetPart: string, sheetXml: string, sheet: SheetData): Promise<SheetObject[]> {
+const xmlUnesc = (t: string) => t
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+  .replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+
+/** First rich-text run of a c:title — a:t strings concatenated. */
+const chartText = (block: string) => {
+  const t = /<c:title>([\s\S]*?)<\/c:title>/.exec(block)?.[1];
+  if (!t) return undefined;
+  const txt = [...t.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => xmlUnesc(m[1])).join("");
+  return txt || undefined;
+};
+
+/** Strip a sheet qualifier + $ anchors → local A1 range, or null when the ref
+ *  points at a different sheet / isn't a range our model can express. */
+function localChartRef(raw: string, sheetName: string): string | null {
+  const f = xmlUnesc(raw);
+  const q = /^'((?:[^']|'')+)'!/.exec(f)?.[1] ?? /^([A-Za-z0-9_.]+)!/.exec(f)?.[1];
+  if (q !== undefined && q.replace(/''/g, "'") !== sheetName) return null;
+  const ref = f.replace(/^'[^']+'!|^[A-Za-z0-9_.]+!/, "").replace(/\$/g, "");
+  return /^[A-Za-z]+\d+(:[A-Za-z]+\d+)?$/.test(ref) ? ref : null;
+}
+
+/** c:chartSpace XML → ChartSpec (range rebuilt from ser cat/val refs). */
+function chartFromXml(cx: string, sheetName: string, x: number, y: number): ChartSpec | undefined {
+  const chart = /<c:chart>([\s\S]*?)<\/c:chart>\s*(<c:printSettings|<\/c:chartSpace|$)/.exec(cx)?.[1] ?? cx;
+  const TYPE: [RegExp, ChartSpec["type"]][] = [
+    [/<c:barChart>/, "bar"], [/<c:lineChart>/, "line"], [/<c:areaChart>/, "area"],
+    [/<c:scatterChart>/, "scatter"], [/<c:radarChart>/, "radar"],
+    [/<c:doughnutChart>/, "doughnut"], [/<c:pieChart>|<c:ofPieChart>/, "pie"],
+    [/<c:stockChart>/, "stock"], [/<c:bubbleChart>|<c:surfaceChart>/, "scatter"],
+    [/<cx:(treemap)\b/, "treemap"], [/<cx:(funnel)\b/, "funnel"],
+    [/<cx:(waterfall)\b/, "waterfall"], [/<cx:(histogram)\b/, "histogram"],
+    [/<cx:(boxWhisker)\b/, "boxwhisker"],
+  ];
+  const hits = TYPE.filter(([re]) => re.test(chart));
+  const type = hits.length > 1 ? "combo" : hits[0]?.[1];
+  if (!type) return undefined;
+  // data range: bounding box of every same-sheet c:f ref (cat + val + tx)
+  const ranges: Range[] = [];
+  for (const fm of chart.matchAll(/<c:f>([^<]+)<\/c:f>/g)) {
+    const loc = localChartRef(fm[1], sheetName);
+    const r = loc ? parseRange(loc) : null;
+    if (r) ranges.push(r);
+  }
+  // best-effort cx refs (chartex namespace — treemap/funnel/waterfall)
+  if (!ranges.length)
+    for (const fm of chart.matchAll(/<cx:f>([^<]+)<\/cx:f>/g)) {
+      const loc = localChartRef(fm[1], sheetName);
+      const r = loc ? parseRange(loc) : null;
+      if (r) { ranges.push(r); break; }
+    }
+  if (!ranges.length) return undefined;
+  const range = rangeToA1({
+    c1: Math.min(...ranges.map((r) => r.c1)), r1: Math.min(...ranges.map((r) => r.r1)),
+    c2: Math.max(...ranges.map((r) => r.c2)), r2: Math.max(...ranges.map((r) => r.r2)),
+  });
+  const bar = /<c:barChart>([\s\S]*?)<\/c:barChart>/.exec(chart)?.[1] ?? "";
+  const grp = xAttr(/<c:grouping\b[^>]*\/?>/.exec(bar)?.[0] ?? "", "val");
+  const legendPos = xAttr(/<c:legendPos\b[^>]*\/?>/.exec(chart)?.[0] ?? "", "val");
+  const spec: ChartSpec = {
+    id: crypto.randomUUID(),
+    type: type === "bar" && /^(stacked|percentStacked)$/.test(grp ?? "") ? "stacked" : type,
+    range,
+    title: chartText(chart),
+    legend: /<c:legend>/.test(chart) ? (legendPos === "r" ? "right" : "bottom") : "none",
+    dataLabels: /<c:dLbls>[\s\S]*?<c:showVal\b[^>]*val="1"/.test(chart) || undefined,
+    trendline: (() => {
+      const t = /<c:trendlineType\b[^>]*val="([a-zA-Z]+)"/.exec(chart)?.[1];
+      return t ? (/exp/i.test(t) ? "exponential" as const : "linear" as const) : undefined;
+    })(),
+    x, y,
+  };
+  const catAx = /<c:catAx>([\s\S]*?)<\/c:catAx>/.exec(chart)?.[1] ?? "";
+  const valAx = /<c:valAx>([\s\S]*?)<\/c:valAx>/.exec(chart)?.[1] ?? "";
+  const xt = chartText(catAx); if (xt) spec.xTitle = xt;
+  const yt = chartText(valAx); if (yt) spec.yTitle = yt;
+  const mn = /<c:min\b[^>]*val="([-\d.]+)"/.exec(valAx)?.[1], mx = /<c:max\b[^>]*val="([-\d.]+)"/.exec(valAx)?.[1];
+  if (mn !== undefined) spec.yMin = Number(mn);
+  if (mx !== undefined) spec.yMax = Number(mx);
+  return spec;
+}
+
+/** worksheet <drawing r:id> → drawing part → xdr:pic / graphicFrame anchors
+ *  → SheetObjects + ChartSpecs. Anchors convert to grid px using the sheet's
+ *  own col/row geometry (hidden rows/cols count as 0, matching the render
+ *  layer). Text shapes are skipped for now. */
+async function sheetDrawingParts(zip: ZipLike, sheetPart: string, sheetXml: string, sheet: SheetData): Promise<{ objects: SheetObject[]; charts: ChartSpec[] }> {
   const drid = xAttr(/<drawing\b[^>]*\/?>/.exec(sheetXml)?.[0] ?? "", "r:id");
-  if (!drid) return [];
+  if (!drid) return { objects: [], charts: [] };
   const drawPart = (await partRels(zip, sheetPart, /drawings\//)).get(drid);
   const dXml = drawPart ? await zip.file(drawPart)?.async("string") : undefined;
-  if (!dXml) return [];
+  if (!dXml) return { objects: [], charts: [] };
   const imgRels = await partRels(zip, drawPart!, /media\//);
+  const chartRels = await partRels(zip, drawPart!, /charts\//);
   const hidC = new Set(sheet.hiddenCols ?? []), hidR = new Set(sheet.hiddenRows ?? []);
   const xOf = (col: number) => {
     let x = 0;
@@ -601,16 +684,9 @@ async function sheetDrawingObjects(zip: ZipLike, sheetPart: string, sheetXml: st
     return y;
   };
   const objects: SheetObject[] = [];
+  const charts: ChartSpec[] = [];
   for (const m of dXml.matchAll(/<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[^>]*>([\s\S]*?)<\/xdr:\1>/g)) {
     const body = m[2];
-    const pic = /<xdr:pic\b[\s\S]*?<\/xdr:pic>/.exec(body)?.[0];
-    if (!pic) continue; // graphicFrame charts / sp shapes — not imported yet
-    const rid = xAttr(/<a:blip\b[^>]*\/?>/.exec(pic)?.[0] ?? "", "r:embed");
-    const imgPart = rid ? imgRels.get(rid) : undefined;
-    const file = imgPart ? zip.file(imgPart) : undefined;
-    if (!file) continue;
-    const ext = /\.([a-z0-9]+)$/i.exec(imgPart!)?.[1]?.toLowerCase() ?? "png";
-    const src = `data:${MEDIA_MIME[ext] ?? "application/octet-stream"};base64,${await file.async("base64")}`;
     let x = 0, y = 0, w = 0, h = 0;
     if (m[1] === "absoluteAnchor") {
       const pos = /<xdr:pos\b[^>]*\/?>/.exec(body)?.[0] ?? "";
@@ -632,14 +708,112 @@ async function sheetDrawingObjects(zip: ZipLike, sheetPart: string, sheetXml: st
         h = Math.max(8, Number(xAttr(ext2, "cy") ?? 0) * EMU_PX);
       }
     }
-    const cnv = /<xdr:cNvPr\b[^>]*\/?>/.exec(pic)?.[0] ?? "";
-    objects.push({
-      id: crypto.randomUUID(), kind: "image", src, x, y, w, h,
-      name: xAttr(cnv, "name") || undefined,
-      alt: xAttr(cnv, "descr") || undefined,
-    });
+    const pic = /<xdr:pic\b[\s\S]*?<\/xdr:pic>/.exec(body)?.[0];
+    if (pic) {
+      const rid = xAttr(/<a:blip\b[^>]*\/?>/.exec(pic)?.[0] ?? "", "r:embed");
+      const imgPart = rid ? imgRels.get(rid) : undefined;
+      const file = imgPart ? zip.file(imgPart) : undefined;
+      if (!file) continue;
+      const ext = /\.([a-z0-9]+)$/i.exec(imgPart!)?.[1]?.toLowerCase() ?? "png";
+      const src = `data:${MEDIA_MIME[ext] ?? "application/octet-stream"};base64,${await file.async("base64")}`;
+      const cnv = /<xdr:cNvPr\b[^>]*\/?>/.exec(pic)?.[0] ?? "";
+      objects.push({
+        id: crypto.randomUUID(), kind: "image", src, x, y, w, h,
+        name: xAttr(cnv, "name") || undefined,
+        alt: xAttr(cnv, "descr") || undefined,
+      });
+      continue;
+    }
+    // chart graphicFrame — c:chart rel → xl/charts/chartN.xml
+    const crid = xAttr(/<c:chart\b[^>]*\/?>/.exec(body)?.[0] ?? "", "r:id");
+    const chartPart = crid ? chartRels.get(crid) : undefined;
+    const cXml = chartPart ? await zip.file(chartPart)?.async("string") : undefined;
+    if (cXml) {
+      const spec = chartFromXml(cXml, sheet.name, x, y);
+      if (spec) charts.push(spec);
+    }
   }
-  return objects;
+  return { objects, charts };
+}
+
+// ---------- S19.1 export: drawing layer → OOXML ----------
+
+const PX_EMU = 9525;
+
+/** px → cell marker {idx,off} walking the sheet's own col/row geometry. */
+function pxMarker(px: number, dims: Record<number, number> | undefined, hidden: Set<number>, def: number) {
+  let i = 0, acc = 0;
+  while (i < 16384) {
+    const w = hidden.has(i) ? 0 : (dims?.[i] ?? def);
+    if (acc + w > px || (w === 0 && acc >= px)) break;
+    acc += w; i++;
+  }
+  return { idx: i, off: Math.max(0, Math.round((px - acc) * PX_EMU)) };
+}
+
+const markerXml = (tag: "from" | "to", col: { idx: number; off: number }, row: { idx: number; off: number }) =>
+  `<xdr:${tag}><xdr:col>${col.idx}</xdr:col><xdr:colOff>${col.off}</xdr:colOff><xdr:row>${row.idx}</xdr:row><xdr:rowOff>${row.off}</xdr:rowOff></xdr:${tag}>`;
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpeg", "image/jpg": "jpg", "image/gif": "gif",
+  "image/bmp": "bmp", "image/svg+xml": "svg", "image/webp": "webp",
+};
+
+/** ChartSpec → c:chartSpace XML. Series derive from the spec range the same
+ *  way the renderer reads it: col 1 = categories, row 1 = series names. */
+function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
+  const r = parseRange(spec.range);
+  if (!r) return undefined;
+  const q = /[^A-Za-z0-9_]/.test(sheetName) ? `'${sheetName.replace(/'/g, "''")}'` : sheetName;
+  const qf = (c: number, rr: number) => `${q}!$${colLabel(c)}$${rr + 1}`;
+  const qrng = (c1: number, r1: number, c2: number, r2: number) => `${q}!$${colLabel(c1)}$${r1 + 1}:$${colLabel(c2)}$${r2 + 1}`;
+  const singleCol = r.c1 === r.c2;
+  const catRef = singleCol ? "" : `<c:cat><c:strRef><c:f>${qrng(r.c1, r.r1 + 1, r.c1, r.r2)}</c:f></c:strRef></c:cat>`;
+  const sers: string[] = [];
+  for (let c = singleCol ? r.c1 : r.c1 + 1, i = 0; c <= r.c2; c++, i++) {
+    const trend = spec.trendline ? `<c:trendline><c:trendlineType val="${spec.trendline === "exponential" ? "exp" : "linear"}"/></c:trendline>` : "";
+    if (spec.type === "scatter") {
+      sers.push(`<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>${qf(c, r.r1)}</c:f></c:strRef></c:tx>${singleCol ? "" : `<c:xVal><c:numRef><c:f>${qrng(r.c1, r.r1 + 1, r.c1, r.r2)}</c:f></c:numRef></c:xVal>`}<c:yVal><c:numRef><c:f>${qrng(c, r.r1 + 1, c, r.r2)}</c:f></c:numRef></c:yVal>${trend}</c:ser>`);
+    } else {
+      sers.push(`<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>${qf(c, r.r1)}</c:f></c:strRef></c:tx>${catRef}<c:val><c:numRef><c:f>${qrng(c, r.r1 + 1, c, r.r2)}</c:f></c:numRef></c:val>${trend}</c:ser>`);
+    }
+  }
+  const dLbls = spec.dataLabels ? `<c:dLbls><c:showVal val="1"/></c:dLbls>` : "";
+  const barEl = (grouping: string, list: string[]) =>
+    `<c:barChart><c:barDir val="col"/><c:grouping val="${grouping}"/>${list.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:barChart>`;
+  const blocks: Record<string, string> = {
+    bar: barEl("clustered", sers),
+    stacked: barEl("stacked", sers),
+    line: `<c:lineChart><c:grouping val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:lineChart>`,
+    area: `<c:areaChart><c:grouping val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:areaChart>`,
+    scatter: `<c:scatterChart><c:scatterStyle val="lineMarker"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:scatterChart>`,
+    pie: `<c:pieChart>${sers.slice(0, 1).join("")}${dLbls}</c:pieChart>`,
+    doughnut: `<c:doughnutChart>${sers.slice(0, 1).join("")}${dLbls}</c:doughnutChart>`,
+    radar: `<c:radarChart><c:radarStyle val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:radarChart>`,
+    stock: `<c:stockChart>${sers.join("")}<c:axId val="111"/><c:axId val="222"/></c:stockChart>`,
+    // first series columns, rest overlaid lines — the classic combo shape
+    combo: barEl("clustered", sers.slice(0, 1)) +
+      (sers.length > 1 ? `<c:lineChart><c:grouping val="standard"/>${sers.slice(1).join("")}<c:axId val="111"/><c:axId val="222"/></c:lineChart>` : ""),
+    // types Excel keeps in the chartex namespace degrade to columns —
+    // a bar approximation beats silently dropping the chart
+    waterfall: barEl("stacked", sers), funnel: barEl("clustered", sers),
+    histogram: barEl("clustered", sers), treemap: barEl("clustered", sers),
+    boxwhisker: barEl("clustered", sers),
+  };
+  const plot = blocks[spec.type] ?? blocks.bar;
+  const rich = (t: string) =>
+    `<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>${t.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</a:t></a:r></a:p></c:rich></c:tx></c:title>`;
+  const scaling = (spec.yMin !== undefined || spec.yMax !== undefined)
+    ? `<c:scaling>${spec.yMax !== undefined ? `<c:max val="${spec.yMax}"/>` : ""}${spec.yMin !== undefined ? `<c:min val="${spec.yMin}"/>` : ""}</c:scaling>`
+    : `<c:scaling><c:orientation val="minMax"/></c:scaling>`;
+  return `<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
+    + `<c:chart>${spec.title ? rich(spec.title) : ""}`
+    + `<c:plotArea><c:layout/>${plot}`
+    + `<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>${spec.xTitle ? rich(spec.xTitle) : ""}<c:tickLblPos val="nextTo"/><c:crossAx val="222"/></c:catAx>`
+    + `<c:valAx><c:axId val="222"/>${scaling}<c:delete val="0"/><c:axPos val="l"/>${spec.yTitle ? rich(spec.yTitle) : ""}<c:tickLblPos val="nextTo"/><c:crossAx val="111"/></c:valAx>`
+    + `</c:plotArea>`
+    + (spec.legend && spec.legend !== "none" ? `<c:legend><c:legendPos val="${spec.legend === "right" ? "r" : "b"}"/></c:legend>` : "")
+    + `</c:chart></c:chartSpace>`;
 }
 
 function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
@@ -821,13 +995,14 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   const needed = wb.sheets.some((s) =>
     (s.freeze && (s.freeze.rows || s.freeze.cols)) || s.tabColor ||
     s.validations?.length || s.cf?.length || s.tables?.length ||
+    s.objects?.length || s.charts?.length ||
     Object.values(s.cells).some((c) => richRunsMatch(c.rt, c.v)))
     || !!wb.print || !!wb.calc;
   if (!needed) return bytes;
   const m = await import("jszip");
   const JSZip = ((m as { default?: unknown }).default ?? m) as {
     loadAsync: (d: Uint8Array) => Promise<{
-      file: (n: string, d?: string) => { async: (t: string) => Promise<string> } | null;
+      file: (n: string, d?: string | Uint8Array) => { async: (t: string) => Promise<string> } | null;
       generateAsync: (o: { type: string }) => Promise<Uint8Array>;
     }>;
   };
@@ -835,8 +1010,10 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   // dxfs accumulated across sheets → one <dxfs> block in styles.xml
   const dxfs: string[] = [];
-  let tableId = 0;
+  let tableId = 0, drawingId = 0, mediaId = 0, chartId = 0;
   const tableParts: { path: string; xml: string }[] = [];
+  const drawParts: { path: string; data: string | Uint8Array; mime: string }[] = [];
+  const ctDefaults = new Set<string>();
   const newRels: Record<number, string[]> = {};
   const rPr = (s?: Partial<CellStyle>) => {
     if (!s) return "";
@@ -978,6 +1155,72 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
         changed = true;
       }
     }
+    // floating objects + charts → drawing part + media/chart parts
+    const floatObjs = sheet.objects ?? [];
+    const floatCharts = (sheet.charts ?? []).filter((c) => parseRange(c.range));
+    if (floatObjs.length || floatCharts.length) {
+      if (!/xmlns:r=/.test(xml))
+        xml = xml.replace(/<worksheet\b([^>]*)>/, `<worksheet$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`);
+      const n = ++drawingId;
+      const drawPart = `xl/drawings/drawing${n}.xml`;
+      const rels: string[] = newRels[i] ?? (newRels[i] = []);
+      rels.push(`<Relationship Id="rIdDraw${n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${n}.xml"/>`);
+      xml = insertOrdered(xml, /<legacyDrawing\b|<picture\b|<oleObjects\b|<controls\b|<tableParts\b|<extLst\b/,
+        `<drawing r:id="rIdDraw${n}"/>`);
+      changed = true;
+      const hidC = new Set(sheet.hiddenCols ?? []), hidR = new Set(sheet.hiddenRows ?? []);
+      const cm = (px: number) => pxMarker(px, sheet.colWidths, hidC, COL_W);
+      const rm = (px: number) => pxMarker(px, sheet.rowHeights, hidR, ROW_H);
+      const anchors: string[] = [];
+      const dRels: string[] = [];
+      let nvId = 2, dRid = 0;
+      for (const o of floatObjs) {
+        if (o.kind !== "image" || !o.src) continue;
+        const data = /^data:([^;,]+);base64,(.*)$/s.exec(o.src);
+        const extUrl = /^https?:/i.test(o.src) ? o.src : undefined;
+        if (!data && !extUrl) continue;
+        dRid++;
+        let blip: string;
+        if (data) {
+          const ext = MIME_EXT[data[1].toLowerCase()] ?? "png";
+          mediaId++;
+          const b64 = data[2].replace(/\s/g, "");
+          const bin = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+          drawParts.push({ path: `xl/media/image${mediaId}.${ext}`, data: bin, mime: data[1] });
+          ctDefaults.add(ext);
+          dRels.push(`<Relationship Id="rIdI${dRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${mediaId}.${ext}"/>`);
+          blip = `<a:blip r:embed="rIdI${dRid}"/>`;
+        } else {
+          dRels.push(`<Relationship Id="rIdI${dRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${esc(extUrl!)}" TargetMode="External"/>`);
+          blip = `<a:blip r:link="rIdI${dRid}"/>`;
+        }
+        const x1 = cm(o.x), y1 = rm(o.y), x2 = cm(o.x + o.w), y2 = rm(o.y + o.h);
+        anchors.push(`<xdr:twoCellAnchor>${markerXml("from", x1, y1)}${markerXml("to", x2, y2)}`
+          + `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${nvId++}" name="${esc(o.name ?? `Picture ${nvId}`)}"${o.alt ? ` descr="${esc(o.alt)}"` : ""}/><xdr:cNvPicPr/></xdr:nvPicPr>`
+          + `<xdr:blipFill>${blip}<a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`);
+      }
+      for (const c of floatCharts) {
+        const cXml = chartToXml(c, sheet.name);
+        if (!cXml) continue;
+        dRid++; chartId++;
+        drawParts.push({ path: `xl/charts/chart${chartId}.xml`, data: cXml, mime: "application/vnd.openxmlformats-officedocument.drawingml.chart+xml" });
+        dRels.push(`<Relationship Id="rIdC${dRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart${chartId}.xml"/>`);
+        const x1 = cm(c.x), y1 = rm(c.y), x2 = cm(c.x + 440), y2 = rm(c.y + 284);
+        anchors.push(`<xdr:twoCellAnchor>${markerXml("from", x1, y1)}${markerXml("to", x2, y2)}`
+          + `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${nvId++}" name="${esc(c.title ?? `Chart ${chartId}`)}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/>`
+          + `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rIdC${dRid}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>`);
+      }
+      if (anchors.length) {
+        drawParts.push({
+          path: drawPart, mime: "application/vnd.openxmlformats-officedocument.drawing+xml",
+          data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join("")}</xdr:wsDr>`,
+        });
+        drawParts.push({
+          path: `xl/drawings/_rels/drawing${n}.xml.rels`, mime: "application/vnd.openxmlformats-package.relationships+xml",
+          data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${dRels.join("")}</Relationships>`,
+        });
+      }
+    }
     if (changed) zip.file(`xl/worksheets/sheet${i + 1}.xml`, xml);
   }
   // worksheet rels — append table relationships to the existing part (or
@@ -992,12 +1235,20 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
     zip.file(path, body);
   }
   for (const p of tableParts) zip.file(p.path, p.xml);
-  if (tableParts.length) {
+  for (const p of drawParts) zip.file(p.path, p.data);
+  if (tableParts.length || drawParts.length || ctDefaults.size) {
     const ct = await zip.file("[Content_Types].xml")?.async("string");
     if (ct) {
-      const overrides = tableParts.map((p) =>
-        `<Override PartName="/${p.path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`).join("");
-      zip.file("[Content_Types].xml", ct.replace("</Types>", `${overrides}</Types>`));
+      const defs = [...ctDefaults]
+        .filter((e) => !new RegExp(`Extension="${e}"`, "i").test(ct))
+        .map((e) => `<Default Extension="${e}" ContentType="${MEDIA_MIME[e] ?? "image/png"}"/>`).join("");
+      const overrides = [
+        ...tableParts.map((p) =>
+          `<Override PartName="/${p.path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`),
+        ...drawParts.filter((p) => !p.path.endsWith(".rels") && !ctDefaults.has(/\.([a-z0-9]+)$/i.exec(p.path)?.[1] ?? ""))
+          .map((p) => `<Override PartName="/${p.path}" ContentType="${p.mime}"/>`),
+      ].join("");
+      zip.file("[Content_Types].xml", ct.replace("</Types>", `${defs}${overrides}</Types>`));
     }
   }
   // styles.xml — append <dxfs> (must sit after cellStyles, before tableStyles)
@@ -1410,10 +1661,11 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     }
     if (!sheet.rowHeights && odsX && Object.keys(odsX.rowHeights).length) sheet.rowHeights = odsX.rowHeights;
     if (ws["!autofilter"]?.ref) sheet.filter = { range: ws["!autofilter"].ref, cols: {} };
-    // floating pictures — after col/row geometry so anchors convert to px
+    // floating pictures + charts — after col/row geometry so anchors convert to px
     if (zip && sheetXml && partMap.get(name)) {
-      const objs = await sheetDrawingObjects(zip, partMap.get(name)!, sheetXml, sheet);
-      if (objs.length) sheet.objects = objs;
+      const { objects, charts } = await sheetDrawingParts(zip, partMap.get(name)!, sheetXml, sheet);
+      if (objects.length) sheet.objects = objects;
+      if (charts.length) sheet.charts = charts;
     }
     return sheet;
   }));

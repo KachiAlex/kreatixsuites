@@ -599,6 +599,11 @@ ${OPARA}
         validations: [{ range: "A2:A10", type: "list", list: "Yes,No" }] as never,
         cf: [{ range: "B2:B4", type: "value", op: ">", value: 500, bg: "#FF0000" }] as never,
         tables: [{ name: "Sales", range: "A1:B4", style: "banded" }] as never,
+        objects: [{ id: "img1", kind: "image",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          x: 220, y: 78, w: 150, h: 90, name: "Logo", alt: "brand mark" }] as never,
+        charts: [{ id: "ch1", type: "bar", range: "A1:B4", title: "P&L",
+          legend: "bottom", x: 60, y: 200 }] as never,
       },
       { name: "Notes", cells: { A1: { v: "second sheet" } }, hidden: true },
     ],
@@ -635,6 +640,15 @@ ${OPARA}
     && back.sheets[0].tables?.[0]?.style === "banded");
   check("xlsx: print rt", back.print?.orientation === "landscape" && back.print?.gridlines === true);
   check("xlsx: calc rt", back.calc?.mode === "manual");
+  // drawing layer round-trip: objects + charts survive export → import
+  check("xlsx: image rt", back.sheets[0].objects?.length === 1
+    && back.sheets[0].objects[0].src.startsWith("data:image/png;base64,")
+    && back.sheets[0].objects[0].name === "Logo" && back.sheets[0].objects[0].alt === "brand mark");
+  check("xlsx: image geom rt", Math.abs((back.sheets[0].objects?.[0]?.x ?? 0) - 220) < 120
+    && Math.abs((back.sheets[0].objects?.[0]?.w ?? 0) - 150) < 120);
+  check("xlsx: chart rt", back.sheets[0].charts?.length === 1
+    && back.sheets[0].charts[0].type === "bar" && back.sheets[0].charts[0].range === "A1:B4"
+    && back.sheets[0].charts[0].legend === "bottom" && back.sheets[0].charts[0].title === "P&L");
 }
 
 // ---------- XLSX: drawing-layer image import ----------
@@ -650,7 +664,7 @@ ${OPARA}
   zip.file("xl/_rels/workbook.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`);
   zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Report</t></is></c><c r="B1"><v>5</v></c></row></sheetData><drawing r:id="rId9"/></worksheet>`);
   zip.file("xl/worksheets/_rels/sheet1.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`);
-  zip.file("xl/drawings/_rels/drawing1.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.png"/></Relationships>`);
+  zip.file("xl/drawings/_rels/drawing1.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.png"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>`);
   zip.file("xl/drawings/drawing1.xml", `<?xml version="1.0"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <xdr:twoCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>6</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
 <xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Logo" descr="company logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>
@@ -661,6 +675,17 @@ ${OPARA}
 </xdr:wsDr>`);
   zip.file("xl/media/image1.png", PNG, { base64: true });
   zip.file("xl/media/image2.png", PNG, { base64: true });
+  zip.file("xl/charts/chart1.xml", `<?xml version="1.0"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Revenue by Q</a:t></a:r></a:p></c:rich></c:tx></c:title>
+<c:plotArea><c:layout/>
+<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser>
+<c:tx><c:strRef><c:f>Dash!$B$1</c:f></c:strRef></c:tx>
+<c:cat><c:strRef><c:f>Dash!$A$2:$A$5</c:f></c:strRef></c:cat>
+<c:val><c:numRef><c:f>Dash!$B$2:$B$5</c:f></c:numRef></c:val></c:ser>
+<c:dLbls><c:showVal val="1"/></c:dLbls><c:axId val="111"/><c:axId val="222"/></c:barChart>
+<c:catAx><c:axId val="111"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx></c:title></c:catAx>
+<c:valAx><c:axId val="222"/><c:scaling><c:min val="0"/><c:max val="2000"/></c:scaling><c:title><c:tx><c:rich><a:p><a:r><a:t>Amount</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx>
+</c:plotArea><c:legend><c:legendPos val="b"/></c:legend></c:chart></c:chartSpace>`);
   const back = await xlsxToWorkbook(fileOf(await zip.generateAsync({ type: "arraybuffer" }), "imgs.xlsx"));
   const objs = back.sheets[0].objects ?? [];
   check("xlsx img: two pictures imported", objs.length === 2);
@@ -670,6 +695,12 @@ ${OPARA}
   check("xlsx img: name + alt", objs[0]?.name === "Logo" && objs[0]?.alt === "company logo");
   // oneCellAnchor: ext cx/cy EMU → px
   check("xlsx img: oneCell geometry", objs[1]?.x === 400 && objs[1]?.w === 96 && objs[1]?.h === 48);
+  // graphicFrame chart → ChartSpec (bounding range B1 + A2:A5 + B2:B5 → A1:B5)
+  const chs = back.sheets[0].charts ?? [];
+  check("xlsx chart: imported", chs.length === 1 && chs[0].type === "bar" && chs[0].range === "A1:B5");
+  check("xlsx chart: title + axes", chs[0]?.title === "Revenue by Q" && chs[0]?.xTitle === "Quarter" && chs[0]?.yTitle === "Amount");
+  check("xlsx chart: legend/labels/scaling", chs[0]?.legend === "bottom" && chs[0]?.dataLabels === true && chs[0]?.yMax === 2000);
+  check("xlsx chart: anchor pos", chs[0]?.x === 0 && chs[0]?.y === 8 * 26);
 }
 
 // ---------- XFDF ----------
