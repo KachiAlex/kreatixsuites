@@ -5,8 +5,8 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
-import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey } from "./model";
+import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, SheetObject, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
+import { toA1, parseA1, rangeRefs, parseRange, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey, COL_W, ROW_H } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
 import { saveFile } from "../lib/saveFile";
@@ -161,7 +161,7 @@ function styleFromXLSX(x: XLSX.CellObject): CellData["s"] | undefined {
 // freeze panes or tab colors — parse the package XML directly. Regex-based
 // (DOMParser is unavailable in the Node test harness).
 
-type ZipEntry = { name: string; async: (t: "string") => Promise<string> };
+type ZipEntry = { name: string; async: (t: "string" | "base64") => Promise<string> };
 interface ZipLike {
   file(n: string): ZipEntry | null;
   file(re: RegExp): ZipEntry[];
@@ -526,6 +526,120 @@ async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Pro
     if (spec.range) out.push(spec);
   }
   return out;
+}
+
+// ---------- S19.1: drawing layer (images) ----------
+
+const EMU_PX = 96 / 914400; // English Metric Units → CSS px
+
+/** rel Target relative to its source part → absolute package path. */
+const relTarget = (part: string, target: string): string => {
+  if (target.startsWith("/")) return target.slice(1);
+  const seg = part.slice(0, part.lastIndexOf("/")).split("/");
+  for (const s of target.split("/")) {
+    if (s === "..") seg.pop();
+    else if (s && s !== ".") seg.push(s);
+  }
+  return seg.join("/");
+};
+
+/** part path → its sibling _rels path. */
+const relsPath = (part: string) => {
+  const i = part.lastIndexOf("/");
+  return `${part.slice(0, i)}/_rels/${part.slice(i + 1)}.rels`;
+};
+
+/** rId → absolute package path for a part's rels matching `match`. */
+async function partRels(zip: ZipLike, part: string, match: RegExp): Promise<Map<string, string>> {
+  const relsXml = await zip.file(relsPath(part))?.async("string");
+  const out = new Map<string, string>();
+  if (!relsXml) return out;
+  for (const m of relsXml.matchAll(/<Relationship\b[^>]*\/?>/g)) {
+    const id = xAttr(m[0], "Id"), tgt = xAttr(m[0], "Target");
+    if (id && tgt && !/TargetMode="External"/.test(m[0])) {
+      const abs = relTarget(part, tgt);
+      if (match.test(abs)) out.set(id, abs);
+    }
+  }
+  return out;
+}
+
+const MEDIA_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  bmp: "image/bmp", svg: "image/svg+xml", webp: "image/webp",
+  tif: "image/tiff", tiff: "image/tiff", emf: "image/emf", wmf: "image/wmf",
+};
+
+/** <xdr:from>/<xdr:to> cell marker — col/row + EMU offsets. */
+function anchorMarker(body: string, tag: "from" | "to") {
+  const m = new RegExp(`<xdr:${tag}>([\\s\\S]*?)</xdr:${tag}>`).exec(body);
+  if (!m) return undefined;
+  const n = (nm: string) => Number(new RegExp(`<xdr:${nm}>(-?\\d+)</xdr:${nm}>`).exec(m[1])?.[1] ?? 0);
+  return { col: n("col"), colOff: n("colOff"), row: n("row"), rowOff: n("rowOff") };
+}
+
+/** worksheet <drawing r:id> → drawing part → xdr:pic anchors → SheetObjects.
+ *  Anchors convert to grid px using the sheet's own col/row geometry
+ *  (hidden rows/cols count as 0, matching the render layer). Charts and
+ *  shapes in the same drawing are skipped for now. */
+async function sheetDrawingObjects(zip: ZipLike, sheetPart: string, sheetXml: string, sheet: SheetData): Promise<SheetObject[]> {
+  const drid = xAttr(/<drawing\b[^>]*\/?>/.exec(sheetXml)?.[0] ?? "", "r:id");
+  if (!drid) return [];
+  const drawPart = (await partRels(zip, sheetPart, /drawings\//)).get(drid);
+  const dXml = drawPart ? await zip.file(drawPart)?.async("string") : undefined;
+  if (!dXml) return [];
+  const imgRels = await partRels(zip, drawPart!, /media\//);
+  const hidC = new Set(sheet.hiddenCols ?? []), hidR = new Set(sheet.hiddenRows ?? []);
+  const xOf = (col: number) => {
+    let x = 0;
+    for (let c = 0; c < col; c++) x += hidC.has(c) ? 0 : (sheet.colWidths?.[c] ?? COL_W);
+    return x;
+  };
+  const yOf = (row: number) => {
+    let y = 0;
+    for (let r = 0; r < row; r++) y += hidR.has(r) ? 0 : (sheet.rowHeights?.[r] ?? ROW_H);
+    return y;
+  };
+  const objects: SheetObject[] = [];
+  for (const m of dXml.matchAll(/<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[^>]*>([\s\S]*?)<\/xdr:\1>/g)) {
+    const body = m[2];
+    const pic = /<xdr:pic\b[\s\S]*?<\/xdr:pic>/.exec(body)?.[0];
+    if (!pic) continue; // graphicFrame charts / sp shapes — not imported yet
+    const rid = xAttr(/<a:blip\b[^>]*\/?>/.exec(pic)?.[0] ?? "", "r:embed");
+    const imgPart = rid ? imgRels.get(rid) : undefined;
+    const file = imgPart ? zip.file(imgPart) : undefined;
+    if (!file) continue;
+    const ext = /\.([a-z0-9]+)$/i.exec(imgPart!)?.[1]?.toLowerCase() ?? "png";
+    const src = `data:${MEDIA_MIME[ext] ?? "application/octet-stream"};base64,${await file.async("base64")}`;
+    let x = 0, y = 0, w = 0, h = 0;
+    if (m[1] === "absoluteAnchor") {
+      const pos = /<xdr:pos\b[^>]*\/?>/.exec(body)?.[0] ?? "";
+      x = Number(xAttr(pos, "x") ?? 0) * EMU_PX; y = Number(xAttr(pos, "y") ?? 0) * EMU_PX;
+      const ext2 = /<xdr:ext\b[^>]*\/?>/.exec(body)?.[0] ?? "";
+      w = Number(xAttr(ext2, "cx") ?? 0) * EMU_PX; h = Number(xAttr(ext2, "cy") ?? 0) * EMU_PX;
+    } else {
+      const from = anchorMarker(body, "from");
+      if (!from) continue;
+      x = xOf(from.col) + from.colOff * EMU_PX;
+      y = yOf(from.row) + from.rowOff * EMU_PX;
+      if (m[1] === "twoCellAnchor") {
+        const to = anchorMarker(body, "to");
+        w = Math.max(8, (to ? xOf(to.col) + to.colOff * EMU_PX : x) - x);
+        h = Math.max(8, (to ? yOf(to.row) + to.rowOff * EMU_PX : y) - y);
+      } else {
+        const ext2 = /<xdr:ext\b[^>]*\/?>/.exec(body)?.[0] ?? "";
+        w = Math.max(8, Number(xAttr(ext2, "cx") ?? 0) * EMU_PX);
+        h = Math.max(8, Number(xAttr(ext2, "cy") ?? 0) * EMU_PX);
+      }
+    }
+    const cnv = /<xdr:cNvPr\b[^>]*\/?>/.exec(pic)?.[0] ?? "";
+    objects.push({
+      id: crypto.randomUUID(), kind: "image", src, x, y, w, h,
+      name: xAttr(cnv, "name") || undefined,
+      alt: xAttr(cnv, "descr") || undefined,
+    });
+  }
+  return objects;
 }
 
 function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
@@ -1296,6 +1410,11 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     }
     if (!sheet.rowHeights && odsX && Object.keys(odsX.rowHeights).length) sheet.rowHeights = odsX.rowHeights;
     if (ws["!autofilter"]?.ref) sheet.filter = { range: ws["!autofilter"].ref, cols: {} };
+    // floating pictures — after col/row geometry so anchors convert to px
+    if (zip && sheetXml && partMap.get(name)) {
+      const objs = await sheetDrawingObjects(zip, partMap.get(name)!, sheetXml, sheet);
+      if (objs.length) sheet.objects = objs;
+    }
     return sheet;
   }));
   const out: Workbook = { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
