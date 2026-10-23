@@ -816,6 +816,92 @@ function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
     + `</c:chart></c:chartSpace>`;
 }
 
+// ---------- S13: pivot table import ----------
+
+/** pivotTable rels → pivotCacheDefinition → field names, shared items, source. */
+async function pivotCache(zip: ZipLike, ptPart: string) {
+  const defs = await partRels(zip, ptPart, /pivotCache\//);
+  const defPart = defs.values().next().value;
+  const xml = defPart ? await zip.file(defPart)?.async("string") : undefined;
+  if (!xml) return { fields: [] as { name: string; items: string[] }[], srcRef: undefined as string | undefined, srcSheet: undefined as string | undefined };
+  const fields: { name: string; items: string[] }[] = [];
+  for (const m of xml.matchAll(/<cacheField\b([^>]*)>([\s\S]*?)<\/cacheField>/g)) {
+    const items = /<sharedItems\b[^>]*>([\s\S]*?)<\/sharedItems>/.exec(m[2])?.[1] ?? "";
+    fields.push({
+      name: xmlUnesc(xAttr(m[1], "name") ?? ""),
+      items: [...items.matchAll(/<[snm]\b[^>]*v="([^"]*)"/g)].map((v) => xmlUnesc(v[1])),
+    });
+  }
+  const ws = /<worksheetSource\b[^>]*\/?>/.exec(xml)?.[0] ?? "";
+  return { fields, srcRef: xAttr(ws, "ref"), srcSheet: xAttr(ws, "sheet") };
+}
+
+/** worksheet → xl/pivotTables parts → PivotSpecs. Source is the cache's
+ *  worksheetSource (qualified "Sheet!A1:D50"); output anchor is the
+ *  pivotTable <location> top-left. Field names resolve through the cache's
+ *  cacheFields (pivotField order = cacheField order). */
+async function sheetPivots(zip: ZipLike, sheetPart: string): Promise<PivotSpec[]> {
+  const rels = await partRels(zip, sheetPart, /pivotTables\//);
+  const out: PivotSpec[] = [];
+  for (const ptPart of rels.values()) {
+    const xml = await zip.file(ptPart)?.async("string");
+    if (!xml) continue;
+    const cache = await pivotCache(zip, ptPart);
+    const cf = cache.fields;
+    const fields = cf.map((f) => f.name);
+    const fname = (x: number) => fields[x];
+    const AGG: Record<string, PivotSpec["vals"][number]["agg"]> = {
+      sum: "sum", count: "count", countNums: "count", average: "avg", max: "max", min: "min",
+    };
+    const SHOW: Record<string, PivotSpec["vals"][number]["showAs"]> = {
+      percentOfTotal: "%total", percentOfRow: "%row", percentOfCol: "%col",
+      runTotal: "running", runningTotal: "running", difference: "diff",
+    };
+    const spec: PivotSpec = { src: "", at: "", rows: [], cols: [], vals: [] };
+    const loc = /<location\b[^>]*\/?>/.exec(xml)?.[0] ?? "";
+    spec.at = (xAttr(loc, "ref") ?? "").split(":")[0];
+    for (const m of xml.matchAll(/<rowFields[^>]*>([\s\S]*?)<\/rowFields>/g))
+      for (const f of m[1].matchAll(/<field\b[^>]*\/?>/g)) {
+        const x = Number(xAttr(f[0], "x") ?? -3);
+        const n = x >= 0 ? fname(x) : undefined;
+        if (n) spec.rows.push(n);
+      }
+    for (const m of xml.matchAll(/<colFields[^>]*>([\s\S]*?)<\/colFields>/g))
+      for (const f of m[1].matchAll(/<field\b[^>]*\/?>/g)) {
+        const x = Number(xAttr(f[0], "x") ?? -3);
+        const n = x >= 0 ? fname(x) : undefined; // x=-2 is the "Values" pseudo-field
+        if (n) spec.cols.push(n);
+      }
+    for (const m of xml.matchAll(/<dataField\b[^>]*\/?>/g)) {
+      const fld = Number(xAttr(m[0], "fld") ?? -1);
+      const n = fld >= 0 ? fname(fld) : undefined;
+      if (!n) continue;
+      const v: PivotSpec["vals"][number] = {
+        field: n, agg: AGG[xAttr(m[0], "subtotal") ?? "sum"] ?? "sum",
+      };
+      const show = SHOW[xAttr(m[0], "showDataAs") ?? ""];
+      if (show) v.showAs = show;
+      spec.vals.push(v);
+    }
+    // page fields → report filters (single-item selections only)
+    for (const m of xml.matchAll(/<pageField\b[^>]*\/?>/g)) {
+      const fld = Number(xAttr(m[0], "fld") ?? -1);
+      const item = Number(xAttr(m[0], "item") ?? -1);
+      const n = fld >= 0 ? fname(fld) : undefined;
+      const val = cf[fld]?.items[item];
+      if (n && val !== undefined) spec.filters = [...(spec.filters ?? []), { field: n, sel: [val] }];
+    }
+    // source range — cacheSource worksheetSource carries ref + sheet
+    if (!cache.srcRef) continue; // non-worksheet source (query/OLAP) — can't materialize
+    spec.src = cache.srcSheet ? `'${xmlUnesc(cache.srcSheet).replace(/'/g, "''")}'!${cache.srcRef}` : cache.srcRef;
+    if (spec.at && (spec.rows.length || spec.cols.length) && spec.vals.length) {
+      spec.refreshOnOpen = true;
+      out.push(spec);
+    }
+  }
+  return out;
+}
+
 function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
   const out = XLSX.utils.book_new();
   if (wb.props)
@@ -1666,11 +1752,22 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       const { objects, charts } = await sheetDrawingParts(zip, partMap.get(name)!, sheetXml, sheet);
       if (objects.length) sheet.objects = objects;
       if (charts.length) sheet.charts = charts;
+      const pivots = await sheetPivots(zip, partMap.get(name)!);
+      if (pivots.length) sheet.pivots = pivots;
     }
     return sheet;
   }));
   const out: Workbook = { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
   if (pendingPrint) out.print = pendingPrint;
+  // materialize imported pivots now (sources may live on other sheets)
+  for (const sheet of out.sheets)
+    for (const spec of sheet.pivots ?? []) {
+      const built = buildPivotCells(out, sheet, spec);
+      if (built) {
+        Object.assign(sheet.cells, built.cells);
+        spec.span = { r: built.rows, c: built.cols };
+      }
+    }
   // workbook.xml calcPr — manual/iterative calc options
   const wbXmlText = zip ? await zip.file("xl/workbook.xml")?.async("string") : undefined;
   const calcPr = wbXmlText ? /<calcPr\b[^>]*\/?>/.exec(wbXmlText)?.[0] : undefined;

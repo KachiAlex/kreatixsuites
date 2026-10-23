@@ -703,6 +703,39 @@ ${OPARA}
   check("xlsx chart: anchor pos", chs[0]?.x === 0 && chs[0]?.y === 8 * 26);
 }
 
+// ---------- XLSX: pivot table import ----------
+// Two sheets: "Data" carries the A1:C5 source; "Piv" has a pivotTable rel →
+// pivotTable1.xml → pivotCacheDefinition1.xml (worksheetSource + field names
+// + sharedItems for the page-field filter).
+{
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  const NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const SS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  zip.file("[Content_Types].xml", `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
+  zip.file("xl/workbook.xml", `<?xml version="1.0"?><workbook xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Piv" sheetId="2" r:id="rId2"/></sheets></workbook>`);
+  zip.file("xl/_rels/workbook.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`);
+  const rows = [["Region", "Product", "Sales"], ["East", "A", 10], ["West", "A", 20], ["East", "B", 30], ["West", "B", 40]];
+  const sheetData = rows.map((r, i) =>
+    `<row r="${i + 1}">${r.map((v, c) => `<c r="${"ABC"[c]}${i + 1}"${typeof v === "string" ? ' t="inlineStr"><is><t>' + v + "</t></is>" : "><v>" + v}</v></c>`).join("")}</row>`).join("");
+  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0"?><worksheet xmlns="${SS}"><sheetData>${sheetData}</sheetData></worksheet>`);
+  zip.file("xl/worksheets/sheet2.xml", `<?xml version="1.0"?><worksheet xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData/></worksheet>`);
+  zip.file("xl/worksheets/_rels/sheet2.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>`);
+  zip.file("xl/pivotTables/_rels/pivotTable1.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>`);
+  zip.file("xl/pivotCache/pivotCacheDefinition1.xml", `<?xml version="1.0"?><pivotCacheDefinition xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"><cacheSource type="worksheet"><worksheetSource ref="A1:C5" sheet="Data"/></cacheSource><cacheFields count="3"><cacheField name="Region"><sharedItems><s v="East"/><s v="West"/></sharedItems></cacheField><cacheField name="Product"><sharedItems><s v="A"/><s v="B"/></sharedItems></cacheField><cacheField name="Sales"><sharedItems containsNumber="1"/></cacheField></cacheFields></pivotCacheDefinition>`);
+  zip.file("xl/pivotTables/pivotTable1.xml", `<?xml version="1.0"?><pivotTableDefinition xmlns="${SS}" name="Pivot1" cacheId="1" dataCaption="Values"><location ref="E2:H8" firstHeaderRow="1" firstDataRow="2"/><pivotFields count="3"><pivotField axis="axisRow"><items><item x="0"/><item x="1"/></items></pivotField><pivotField axis="axisPage"/><pivotField axis="axisValues"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><pageFields count="1"><pageField fld="1" item="0" hier="-1"/></pageFields><dataFields count="1"><dataField name="Sum of Sales" fld="2" subtotal="sum"/></dataFields></pivotTableDefinition>`);
+  const back = await xlsxToWorkbook(fileOf(await zip.generateAsync({ type: "arraybuffer" }), "piv.xlsx"));
+  const spec = back.sheets[1].pivots?.[0];
+  check("xlsx piv: spec imported", !!spec && spec.src === "'Data'!A1:C5" && spec.at === "E2");
+  check("xlsx piv: row field", spec?.rows.join() === "Region");
+  check("xlsx piv: data field", spec?.vals[0]?.field === "Sales" && spec?.vals[0]?.agg === "sum");
+  check("xlsx piv: page filter", spec?.filters?.[0]?.field === "Product" && spec?.filters?.[0]?.sel[0] === "A");
+  // materialized at E2 — pageField "A" keeps only Product=A rows (East 10 / West 20)
+  const pc = back.sheets[1].cells;
+  check("xlsx piv: headers", pc.E2?.v === "Region" && /Sum/.test(String(pc.F2?.v)) && pc.G2?.v === "Grand Total");
+  check("xlsx piv: values", pc.F3?.v === 10 && pc.F4?.v === 20 && pc.F5?.v === 30);
+}
+
 // ---------- XFDF ----------
 {
   const { parseFdf } = await import("./src/pdf/fdf");
