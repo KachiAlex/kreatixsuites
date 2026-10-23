@@ -406,6 +406,8 @@ export interface Workbook {
   passwordHash?: string;
   /** S17.3 — external-workbook value cache: file name → last-fetched workbook */
   externs?: Record<string, Workbook>;
+  /** Watch window — cross-sheet cells monitored in the watch panel */
+  watch?: { sheet: string; ref: string }[];
   /** S16.1 — named custom views: per-sheet display snapshots */
   views?: {
     name: string;

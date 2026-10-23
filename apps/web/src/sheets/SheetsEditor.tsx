@@ -22,7 +22,7 @@ import { saveFile } from "../lib/saveFile";
 import { clampToViewport } from "../lib/mobile";
 import type { Workbook, SheetData, Range, Ref, CellStyle, ChartSpec, CellData, CondFormat, PivotSpec, QuerySpec, SheetObject, Scenario, RichRun } from "./model";
 import { toA1, colLabel, rangeToA1, rangeRefs, parseInput, cellEditText, parseA1, parseRange, shiftForFill, adjustForRowsCols, translateFormula, renameSheetRefs, validRangeName, validNameRef, validationsAt, validateValue, detectSeries, seriesValue, cellLocked, shiftCells, toggleOutline, richRunsMatch, type Validation, type FilterCrit, type TableSpec, type AllowRange } from "./model";
-import { evaluateSheetIn, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
+import { evaluateSheetIn, evaluateWorkbook, createSheetEvaluator, refsInFormula, displayValue, explainFormula, type EvalResult } from "./engine";
 import { formatValue, NUM_FORMATS } from "./format";
 import { sheetToCSV, sheetToTSV, csvToSheet, workbookToXLSXBytes, workbookToODSBytes, xlsxToWorkbook, tsvToCells, usedRangeA1, getCopyBuffer, pasteCells, type PasteMode, type PasteOp, findInWorkbook, replaceInCell, type FindHit, listItems, filterValues, computeFilteredRows, printSheet, type PrintOpts, buildPivotCells, pivotDrillRows, solveGoalSeek, errorCheck, flashFillTemplate, goToSpecial, applySubtotals, slicerHiddenRows, slicerValues, htmlToCells, scanExternRefs } from "./io";
 import { ExportDialog, type ExportFormat } from "../components/ExportDialog";
@@ -85,6 +85,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const [findDlg, setFindDlg] = useState<null | { replace: boolean }>(null);
   const [valDlg, setValDlg] = useState(false);
   const [cellMenu, setCellMenu] = useState<{ ref: string; x: number; y: number } | null>(null);
+  const [watchOpen, setWatchOpen] = useState(false);
   const [noteEdit, setNoteEdit] = useState<{ ref: string; text: string } | null>(null);
   const [filterMenu, setFilterMenu] = useState<{ col: number; x: number; y: number } | null>(null);
   const [sortDlg, setSortDlg] = useState(false);
@@ -1886,6 +1887,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
               { label: "Trace precedents", checked: audit === "pre", onClick: () => setAudit(audit === "pre" ? null : "pre") },
               { label: "Trace dependents", checked: audit === "dep", onClick: () => setAudit(audit === "dep" ? null : "dep") },
               { label: "Formula inspector…", onClick: () => setInspDlg(true) },
+              { label: "Watch window", checked: watchOpen, onClick: () => setWatchOpen((v) => !v) },
               { divider: true },
               { label: "Calculation options…", onClick: () => setCalcDlg(true) },
               { label: "Calculate now", shortcut: "F9", disabled: !manualCalc, onClick: recalc },
@@ -2269,6 +2271,11 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
             </div>
             <div className="hmenu-item" onMouseDown={() => { copyAsPicture(); setCellMenu(null); }}>Copy as picture</div>
             <div className="hmenu-item" onMouseDown={() => {
+              const w = { sheet: sheet.name, ref: cellMenu.ref };
+              setWb({ ...wb, watch: [...(wb.watch ?? []).filter((x) => x.sheet !== w.sheet || x.ref !== w.ref), w] });
+              setWatchOpen(true); setCellMenu(null);
+            }}>Add to Watch window</div>
+            <div className="hmenu-item" onMouseDown={() => {
               setNoteEdit({ ref: cellMenu.ref, text: sheet.notes?.[cellMenu.ref] ?? "" });
               setCellMenu(null);
             }}>{sheet.notes?.[cellMenu.ref] ? "Edit note" : "Add note"}</div>
@@ -2280,6 +2287,18 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
             )}
           </div>
         </div>
+      )}
+      {watchOpen && (
+        <WatchPanel wb={wb} onGoto={(sh, ref) => {
+          const i = wb.sheets.findIndex((s) => s.name === sh);
+          if (i < 0) return;
+          setActive(i);
+          const a = parseA1(ref);
+          if (a) setSelections([{ c1: a.col, r1: a.row, c2: a.col, r2: a.row }]);
+        }}
+          onRemove={(i) => setWb({ ...wb, watch: (wb.watch ?? []).filter((_, j) => j !== i) })}
+          onClear={() => setWb({ ...wb, watch: undefined })}
+          onClose={() => setWatchOpen(false)} />
       )}
       {noteEdit && (
         <div className="dlg-back" onClick={() => setNoteEdit(null)}>
@@ -3310,6 +3329,46 @@ function FilterMenu({ wb, sheet, col, x, y, onSet, onSort, onClose }: {
 }
 
 /** Multi-key sort dialog (S5.2). */
+/** S11.7 — Watch window: live values of cells across any sheet (Excel-style
+ *  dockable monitor). One workbook eval shared across rows. */
+function WatchPanel({ wb, onGoto, onRemove, onClear, onClose }: {
+  wb: Workbook;
+  onGoto: (sheet: string, ref: string) => void;
+  onRemove: (i: number) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const allEvals = useMemo(() => evaluateWorkbook(wb), [wb]);
+  const rows = (wb.watch ?? []).map((w, i) => {
+    const ev = allEvals.get(w.sheet)?.get(w.ref);
+    const cell = wb.sheets.find((s) => s.name === w.sheet)?.cells[w.ref];
+    return { ...w, i, ev, cell };
+  });
+  return (
+    <div className="watch-panel">
+      <div className="watch-head">
+        <b>Watch window</b>
+        <span style={{ flex: 1 }} />
+        {rows.length > 0 && <button className="btn-ghost btn-sm" onClick={onClear}>Clear all</button>}
+        <button className="btn-ghost btn-sm" onClick={onClose} title="Close">✕</button>
+      </div>
+      <div className="watch-body">
+        {rows.length === 0 && <div className="watch-empty">No cells watched — right-click a cell → “Add to Watch window”.</div>}
+        {rows.map((r) => (
+          <div key={`${r.sheet}!${r.ref}`} className="watch-row" title={`Go to ${r.sheet}!${r.ref}`}
+            onClick={() => onGoto(r.sheet, r.ref)}>
+            <span className="watch-sheet">{r.sheet}</span>
+            <span className="watch-ref">{r.ref}</span>
+            <span className="watch-val">{r.ev?.error ? <span className="watch-err">{r.ev.error}</span>
+              : displayValue(r.ev, r.cell)}</span>
+            <button className="watch-x" title="Remove" onClick={(e) => { e.stopPropagation(); onRemove(r.i); }}>✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SortDialog({ range, onSort, onClose }: {
   range: Range;
   onSort: (keys: { col: number; asc: boolean; order?: string[]; color?: string }[]) => void;
