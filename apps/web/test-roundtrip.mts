@@ -746,6 +746,56 @@ ${OPARA}
   check("xlsx vba: warning", back.importWarnings?.some((w) => /VBA/i.test(w)) === true);
 }
 
+// ---------- XLSX: table slicer import/export ----------
+// Table slicer = worksheet extLst x14:slicerList → xl/slicers → cache's
+// x15:tableSlicerCache (tableId + tableColumn id); selection state lives in
+// the table's own filterColumn.
+{
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  const NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const SS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const X14 = "http://schemas.microsoft.com/office/spreadsheetml/2009/9";
+  const X15 = "http://schemas.microsoft.com/office/spreadsheetml/2010/11/main";
+  zip.file("[Content_Types].xml", `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/><Override PartName="/xl/slicers/slicer1.xml" ContentType="application/vnd.ms-excel.slicer+xml"/><Override PartName="/xl/slicerCaches/slicerCache1.xml" ContentType="application/vnd.ms-excel.slicerCache+xml"/></Types>`);
+  zip.file("xl/workbook.xml", `<?xml version="1.0"?><workbook xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="T" sheetId="1" r:id="rId1"/></sheets><extLst><ext uri="{46BE6895-7355-4a93-B00E-2C351335B9C9}"><x15:slicerCaches xmlns:x15="${X15}"><x15:slicerCache r:id="rIdSc1"/></x15:slicerCaches></ext></extLst></workbook>`);
+  zip.file("xl/_rels/workbook.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rIdSc1" Type="http://schemas.microsoft.com/office/spreadsheetml/2010/11/relationships/slicerCache" Target="slicerCaches/slicerCache1.xml"/></Relationships>`);
+  const rows = [["Region", "Sales"], ["East", 10], ["West", 20], ["East", 30]];
+  const sheetData = rows.map((r, i) =>
+    `<row r="${i + 1}">${r.map((v, c) => `<c r="${"AB"[c]}${i + 1}"${typeof v === "string" ? ' t="inlineStr"><is><t>' + v + "</t></is>" : "><v>" + v}</v></c>`).join("")}</row>`).join("");
+  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0"?><worksheet xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData>${sheetData}</sheetData><tableParts count="1"><tablePart r:id="rIdT1"/></tableParts><extLst><ext uri="{3A4CF648-6AED-40f4-86FF-DC5316D8AED3}" xmlns:x14="${X14}"><x14:slicerList><x14:slicer r:id="rIdSl1"/></x14:slicerList></ext></extLst></worksheet>`);
+  zip.file("xl/worksheets/_rels/sheet1.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rIdT1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/><Relationship Id="rIdSl1" Type="http://schemas.microsoft.com/office/spreadsheetml/2009/9/relationships/slicer" Target="../slicers/slicer1.xml"/></Relationships>`);
+  zip.file("xl/tables/table1.xml", `<?xml version="1.0"?><table xmlns="${SS}" id="1" name="SalesTbl" displayName="SalesTbl" ref="A1:B4"><autoFilter ref="A1:B4"><filterColumn colId="0"><filters><filter val="East"/></filters></filterColumn></autoFilter><tableColumns count="2"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Sales"/></tableColumns><tableStyleInfo name="TableStyleMedium9" showRowStripes="1"/></table>`);
+  zip.file("xl/slicers/slicer1.xml", `<?xml version="1.0"?><slicers xmlns="${X14}"><slicer name="Slicer_Region" cache="Slicer_Region" caption="Pick region"/></slicers>`);
+  zip.file("xl/slicerCaches/slicerCache1.xml", `<?xml version="1.0"?><slicerCacheDefinition xmlns="${X14}" name="Slicer_Region" sourceName="Region"><extLst><ext uri="{2F2917AC-EB37-4324-AD4E-5DD8C200BD13}" xmlns:x15="${X15}"><x15:tableSlicerCache tableId="1" column="1"/></ext></extLst></slicerCacheDefinition>`);
+  const back = await xlsxToWorkbook(fileOf(await zip.generateAsync({ type: "arraybuffer" }), "sl.xlsx"));
+  const sl = back.sheets[0].slicers ?? [];
+  check("xlsx slicer: imported", sl.length === 1 && sl[0].col === 0);
+  check("xlsx slicer: caption + sel", sl[0]?.title === "Pick region" && sl[0]?.sel.join() === "East");
+  check("xlsx slicer: filters rows", back.sheets[0].tables?.length === 1);
+
+  // export → reimport: slicer, its table binding, and filter state survive
+  const wb2: Workbook = { sheets: [{ name: "T", cells: {
+    A1: { v: "Region" }, B1: { v: "Sales" }, A2: { v: "East" }, B2: { v: 10 },
+    A3: { v: "West" }, B3: { v: 20 }, A4: { v: "East" }, B4: { v: 30 },
+  }, tables: [{ name: "SalesTbl", range: "A1:B4" }], slicers: [{ col: 0, title: "Pick region", sel: ["East"] }] } as SheetData] };
+  const out2 = await workbookToXLSXBytes(wb2);
+  const z2 = await JSZip.loadAsync(out2);
+  const tblXml = await z2.file("xl/tables/table1.xml")?.async("string");
+  check("xlsx slicer ex: filterColumn", !!tblXml && /<filterColumn colId="0"><filters><filter val="East"\/><\/filters><\/filterColumn>/.test(tblXml));
+  const wXml = await z2.file("xl/worksheets/sheet1.xml")?.async("string");
+  check("xlsx slicer ex: slicerList ext", !!wXml && /x14:slicerList/.test(wXml) && /x14:slicer r:id/.test(wXml));
+  const scXml = await z2.file("xl/slicerCaches/slicerCache1.xml")?.async("string");
+  check("xlsx slicer ex: cache binding", !!scXml && /tableSlicerCache tableId="1" column="1"/.test(scXml));
+  const wbXml2 = await z2.file("xl/workbook.xml")?.async("string");
+  check("xlsx slicer ex: wb slicerCaches", !!wbXml2 && /x15:slicerCaches/.test(wbXml2));
+  const drXml = await z2.file("xl/drawings/drawing1.xml")?.async("string");
+  check("xlsx slicer ex: shape", !!drXml && /drawingml\/2010\/slicer/.test(drXml) && /mc:AlternateContent/.test(drXml));
+  const back2 = await xlsxToWorkbook(fileOf(out2, "sl2.xlsx"));
+  const sl2 = back2.sheets[0].slicers ?? [];
+  check("xlsx slicer rt: round-trip", sl2.length === 1 && sl2[0].col === 0 && sl2[0].sel.join() === "East");
+}
+
 // ---------- XFDF ----------
 {
   const { parseFdf } = await import("./src/pdf/fdf");

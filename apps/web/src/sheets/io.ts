@@ -484,8 +484,17 @@ function sheetXmlExtras(xml: string, theme: string[], st?: ReturnType<typeof par
   };
 }
 
-/** worksheet tableParts → xl/tables/tableN.xml → TableSpec[] */
-async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Promise<TableSpec[]> {
+/** Table part enriched with the binding details slicer caches reference:
+ *  the table's numeric id, its tableColumn ids, and applied filterColumn vals. */
+interface TablePartInfo {
+  spec: TableSpec;
+  id: number;
+  cols: { id: number; name: string }[];
+  filters: Map<number, string[]>; // 0-based tableColumn index → selected values
+}
+
+/** worksheet tableParts → xl/tables/tableN.xml → TablePartInfo[] */
+async function sheetTableParts(zip: ZipLike, sheetPart: string, rids: string[]): Promise<TablePartInfo[]> {
   if (!rids.length) return [];
   const dir = sheetPart.slice(0, sheetPart.lastIndexOf("/"));
   const nm = sheetPart.slice(sheetPart.lastIndexOf("/") + 1);
@@ -499,7 +508,7 @@ async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Pro
       if (/tables\//.test(abs)) rels.set(id, abs);
     }
   }
-  const out: TableSpec[] = [];
+  const out: TablePartInfo[] = [];
   const FN: Record<string, "sum" | "avg" | "count" | "min" | "max" | "none"> =
     { sum: "sum", average: "avg", count: "count", min: "min", max: "max", none: "none" };
   for (const rid of rids) {
@@ -515,6 +524,8 @@ async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Pro
     const sName = xAttr(si, "name") ?? "";
     spec.style = xAttr(si, "showRowStripes") === "1" ? "banded"
       : /Light|None/.test(sName) ? "plain" : /Dark/.test(sName) ? "dark" : "accent";
+    const cols = [...tXml.matchAll(/<tableColumn\b[^>]*(?:\/>|>[\s\S]*?<\/tableColumn>)/g)]
+      .map((m) => ({ id: Number(xAttr(m[0], "id") ?? 0), name: xmlUnesc(xAttr(m[0], "name") ?? "") }));
     if (xAttr(tTag, "totalsRowShown") === "1") {
       spec.totals = {};
       [...tXml.matchAll(/<tableColumn\b[^>]*(?:\/>|>[\s\S]*?<\/tableColumn>)/g)]
@@ -523,7 +534,54 @@ async function sheetTables(zip: ZipLike, sheetPart: string, rids: string[]): Pro
           spec.totals![i] = fn;
         });
     }
-    if (spec.range) out.push(spec);
+    const filters = new Map<number, string[]>();
+    for (const m of tXml.matchAll(/<filterColumn\b[^>]*(?:\/>|>[\s\S]*?<\/filterColumn>)/g)) {
+      const colId = Number(xAttr(m[0], "colId") ?? -1);
+      const vals = [...m[0].matchAll(/<filter\b[^>]*\/?>/g)]
+        .map((f) => xmlUnesc(xAttr(f[0], "val") ?? "")).filter((v) => v !== "");
+      if (colId >= 0 && vals.length) filters.set(colId, vals);
+    }
+    if (spec.range) out.push({ spec, id: Number(xAttr(tTag, "id") ?? 0), cols, filters });
+  }
+  return out;
+}
+
+/** worksheet extLst x14:slicerList → xl/slicers → cache's x15:tableSlicerCache
+ *  (tableId + tableColumn id) → bound column. Selection state is the table's
+ *  own filterColumn — that's where Excel stores applied table-slicer picks. */
+async function sheetSlicers(zip: ZipLike, sheetPart: string, sheetXml: string,
+  tableParts: TablePartInfo[]): Promise<{ col: number; title: string; sel: string[] }[]> {
+  const rids = [...sheetXml.matchAll(/<x14:slicer\b[^>]*\/?>/g)]
+    .map((m) => xAttr(m[0], "r:id")).filter(Boolean) as string[];
+  if (!rids.length) return [];
+  const slRels = await partRels(zip, sheetPart, /slicers\//);
+  // cache part name → its table binding
+  const caches = new Map<string, { tableId: number; column: number }>();
+  for (const f of zip.file(/xl\/slicerCaches\/[^/]+\.xml$/)) {
+    const cx = await f.async("string");
+    const name = xAttr(/<slicerCacheDefinition\b[^>]*>/.exec(cx)?.[0] ?? "", "name");
+    const tsc = /<x15:tableSlicerCache\b[^>]*\/?>/.exec(cx)?.[0]
+      ?? /<tableSlicerCache\b[^>]*\/?>/.exec(cx)?.[0] ?? "";
+    if (name && tsc)
+      caches.set(name, { tableId: Number(xAttr(tsc, "tableId") ?? 0), column: Number(xAttr(tsc, "column") ?? 0) });
+  }
+  const out: { col: number; title: string; sel: string[] }[] = [];
+  for (const rid of rids) {
+    const part = slRels.get(rid);
+    const xml = part ? await zip.file(part)?.async("string") : undefined;
+    if (!xml) continue;
+    for (const m of xml.matchAll(/<slicer\b[^>]*\/?>/g)) {
+      const b = caches.get(xAttr(m[0], "cache") ?? xAttr(m[0], "name") ?? "");
+      const tp = b && tableParts.find((t) => t.id === b.tableId);
+      const colIdx = tp ? tp.cols.findIndex((c) => c.id === b!.column) : -1;
+      const rng = tp && parseRange(tp.spec.range);
+      if (!tp || colIdx < 0 || !rng) continue;
+      out.push({
+        col: rng.c1 + colIdx,
+        title: xmlUnesc(xAttr(m[0], "caption") ?? "") || tp.cols[colIdx].name || "Slicer",
+        sel: tp.filters.get(colIdx) ?? [],
+      });
+    }
   }
   return out;
 }
@@ -607,10 +665,11 @@ function chartFromXml(cx: string, sheetName: string, x: number, y: number): Char
     [/<c:barChart>/, "bar"], [/<c:lineChart>/, "line"], [/<c:areaChart>/, "area"],
     [/<c:scatterChart>/, "scatter"], [/<c:radarChart>/, "radar"],
     [/<c:doughnutChart>/, "doughnut"], [/<c:pieChart>|<c:ofPieChart>/, "pie"],
-    [/<c:stockChart>/, "stock"], [/<c:bubbleChart>|<c:surfaceChart>/, "scatter"],
+    [/<c:stockChart>/, "stock"], [/<c:bubbleChart>/, "bubble"],
+    [/<c:surfaceChart>/, "scatter"],
     [/<cx:(treemap)\b/, "treemap"], [/<cx:(funnel)\b/, "funnel"],
     [/<cx:(waterfall)\b/, "waterfall"], [/<cx:(histogram)\b/, "histogram"],
-    [/<cx:(boxWhisker)\b/, "boxwhisker"],
+    [/<cx:(boxWhisker)\b/, "boxwhisker"], [/<cx:(sunburstChart)\b/, "sunburst"],
   ];
   const hits = TYPE.filter(([re]) => re.test(chart));
   const type = hits.length > 1 ? "combo" : hits[0]?.[1];
@@ -772,7 +831,21 @@ function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
   const sers: string[] = [];
   for (let c = singleCol ? r.c1 : r.c1 + 1, i = 0; c <= r.c2; c++, i++) {
     const trend = spec.trendline ? `<c:trendline><c:trendlineType val="${spec.trendline === "exponential" ? "exp" : "linear"}"/></c:trendline>` : "";
-    if (spec.type === "scatter") {
+    if (spec.type === "bubble") {
+      // x | y | size layout — single series; extra cols become extra series pairs
+      const sizeCol = Math.min(r.c1 + 2, r.c2);
+      sers.push(`<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>${qf(r.c1 + 1, r.r1)}</c:f></c:strRef></c:tx>`
+        + `<c:xVal><c:numRef><c:f>${qrng(r.c1, r.r1 + 1, r.c1, r.r2)}</c:f></c:numRef></c:xVal>`
+        + `<c:yVal><c:numRef><c:f>${qrng(r.c1 + 1, r.r1 + 1, r.c1 + 1, r.r2)}</c:f></c:numRef></c:yVal>`
+        + `<c:bubbleSize><c:numRef><c:f>${qrng(sizeCol, r.r1 + 1, sizeCol, r.r2)}</c:f></c:numRef></c:bubbleSize></c:ser>`);
+      break;
+    } else if (spec.type === "sunburst") {
+      // degrade to a doughnut on the last (value) column — chartex can't be written
+      sers.push(`<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>${qf(r.c2, r.r1)}</c:f></c:strRef></c:tx>`
+        + `<c:cat><c:strRef><c:f>${qrng(r.c1, r.r1 + 1, r.c1, r.r2)}</c:f></c:strRef></c:cat>`
+        + `<c:val><c:numRef><c:f>${qrng(r.c2, r.r1 + 1, r.c2, r.r2)}</c:f></c:numRef></c:val></c:ser>`);
+      break;
+    } else if (spec.type === "scatter") {
       sers.push(`<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>${qf(c, r.r1)}</c:f></c:strRef></c:tx>${singleCol ? "" : `<c:xVal><c:numRef><c:f>${qrng(r.c1, r.r1 + 1, r.c1, r.r2)}</c:f></c:numRef></c:xVal>`}<c:yVal><c:numRef><c:f>${qrng(c, r.r1 + 1, c, r.r2)}</c:f></c:numRef></c:yVal>${trend}</c:ser>`);
     } else {
       sers.push(`<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>${qf(c, r.r1)}</c:f></c:strRef></c:tx>${catRef}<c:val><c:numRef><c:f>${qrng(c, r.r1 + 1, c, r.r2)}</c:f></c:numRef></c:val>${trend}</c:ser>`);
@@ -787,6 +860,8 @@ function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
     line: `<c:lineChart><c:grouping val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:lineChart>`,
     area: `<c:areaChart><c:grouping val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:areaChart>`,
     scatter: `<c:scatterChart><c:scatterStyle val="lineMarker"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:scatterChart>`,
+    bubble: `<c:bubbleChart><c:varyColors val="0"/>${sers.join("")}${dLbls}<c:bubbleScale val="60"/><c:axId val="111"/><c:axId val="222"/></c:bubbleChart>`,
+    sunburst: `<c:doughnutChart><c:varyColors val="1"/>${sers.join("")}${dLbls}<c:firstSliceAng val="0"/></c:doughnutChart>`,
     pie: `<c:pieChart>${sers.slice(0, 1).join("")}${dLbls}</c:pieChart>`,
     doughnut: `<c:doughnutChart>${sers.slice(0, 1).join("")}${dLbls}</c:doughnutChart>`,
     radar: `<c:radarChart><c:radarStyle val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:radarChart>`,
@@ -1087,17 +1162,22 @@ function validationXml(v: Validation): string {
   return `<dataValidation ${attrs}>${body}</dataValidation>`;
 }
 
-/** TableSpec → xl/tables/tableN.xml part. */
-function tablePartXml(t: TableSpec, id: number, headers: string[]): string {
+/** TableSpec → xl/tables/tableN.xml part. `filters` (0-based col → values)
+ *  becomes autoFilter filterColumn entries — where table-slicer state lives. */
+function tablePartXml(t: TableSpec, id: number, headers: string[], filters?: Map<number, string[]>): string {
   const esc = (t2: string) => t2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const FN: Record<string, string> = { sum: "sum", avg: "average", count: "count", min: "min", max: "max", none: "none" };
   const styleName = t.style === "plain" ? "TableStyleLight1" : t.style === "dark" ? "TableStyleDark1" : "TableStyleMedium9";
   const stripes = t.style === "banded" ? "1" : "0";
   const cols = headers.map((h, i) =>
     `<tableColumn id="${i + 1}" name="${esc(h || `Column${i + 1}`)}"${t.totals?.[i] && t.totals[i] !== "none" ? ` totalsRowFunction="${FN[t.totals[i]]}"` : ""}/>`).join("");
+  const filterCols = filters && filters.size
+    ? [...filters.entries()].map(([c, vals]) =>
+      `<filterColumn colId="${c}"><filters>${vals.map((v) => `<filter val="${esc(v)}"/>`).join("")}</filters></filterColumn>`).join("")
+    : "";
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
     + `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${esc(t.name || `Table${id}`)}" displayName="${esc(t.name || `Table${id}`)}" ref="${t.range}"${t.totals ? ' totalsRowShown="1"' : ""} headerRowCount="1">`
-    + `<autoFilter ref="${t.range}"/>`
+    + `<autoFilter ref="${t.range}">${filterCols}</autoFilter>`
     + `<tableColumns count="${headers.length}">${cols}</tableColumns>`
     + `<tableStyleInfo name="${styleName}" showRowStripes="${stripes}" showFirstColumn="0" showLastColumn="0" showColumnStripes="0"/>`
     + `</table>`;
@@ -1136,9 +1216,12 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   // dxfs accumulated across sheets → one <dxfs> block in styles.xml
   const dxfs: string[] = [];
-  let tableId = 0, drawingId = 0, mediaId = 0, chartId = 0;
+  let tableId = 0, drawingId = 0, mediaId = 0, chartId = 0, slicerSeq = 1;
   const tableParts: { path: string; xml: string }[] = [];
   const drawParts: { path: string; data: string | Uint8Array; mime: string }[] = [];
+  const slicerParts: { path: string; xml: string }[] = [];
+  const cacheParts: { path: string; xml: string }[] = [];
+  const emittedTableIds = new Map<number, number>(); // sheet.tables idx → emitted table id
   const ctDefaults = new Set<string>();
   const newRels: Record<number, string[]> = {};
   const rPr = (s?: Partial<CellStyle>) => {
@@ -1258,33 +1341,84 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
       }
     }
     // table objects → tableParts + rels + xl/tables/tableN.xml parts
+    // Slicers bound to a table column feed the table's filterColumn + get a
+    // full slicer package (slicerList ext, slicer/cache parts, drawing shape).
+    const boundSlicers = (sheet.slicers ?? []).flatMap((sl) => {
+      const tIdx = (sheet.tables ?? []).findIndex((t) => {
+        const rng = parseRange(t.range);
+        return rng && sl.col >= rng.c1 && sl.col <= rng.c2;
+      });
+      if (tIdx < 0) return [];
+      const rng = parseRange(sheet.tables![tIdx].range)!;
+      return [{ sl, tIdx, colIdx: sl.col - rng.c1, rng }];
+    });
     if (sheet.tables?.length) {
       if (!/xmlns:r=/.test(xml))
         xml = xml.replace(/<worksheet\b([^>]*)>/, `<worksheet$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`);
       const parts: string[] = [];
       const rels: string[] = newRels[i] ?? (newRels[i] = []);
-      for (const t of sheet.tables) {
+      sheet.tables.forEach((t, ti) => {
         const rng = parseRange(t.range);
-        if (!rng) continue;
+        if (!rng) return;
         const hdrs: string[] = [];
         for (let c = rng.c1; c <= rng.c2; c++) {
           const cell = sheet.cells[toA1(c, rng.r1)];
           hdrs.push(String(cell?.v ?? `Column${c - rng.c1 + 1}`));
         }
+        const filters = new Map<number, string[]>();
+        for (const b of boundSlicers)
+          if (b.tIdx === ti && b.sl.sel.length) filters.set(b.colIdx, b.sl.sel);
         const rid = `rIdTbl${++tableId}`;
-        tableParts.push({ path: `xl/tables/table${tableId}.xml`, xml: tablePartXml(t, tableId, hdrs) });
+        emittedTableIds.set(ti, tableId);
+        tableParts.push({ path: `xl/tables/table${tableId}.xml`, xml: tablePartXml(t, tableId, hdrs, filters) });
         rels.push(`<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships" Target="../tables/table${tableId}.xml"/>`);
         parts.push(`<tablePart r:id="${rid}"/>`);
-      }
+      });
       if (parts.length) {
         xml = insertOrdered(xml, /<extLst\b/, `<tableParts count="${parts.length}">${parts.join("")}</tableParts>`);
         changed = true;
       }
     }
-    // floating objects + charts → drawing part + media/chart parts
+    // slicer package: worksheet extLst slicerList + slicer/cache parts + rels
+    const sheetSlicerShapes: { name: string; title: string; rng: Range }[] = [];
+    if (boundSlicers.length) {
+      const slicerPart = `xl/slicers/slicer${i + 1}.xml`;
+      const slRid = `rIdSl${i + 1}`;
+      (newRels[i] ?? (newRels[i] = [])).push(
+        `<Relationship Id="${slRid}" Type="http://schemas.microsoft.com/office/spreadsheetml/2009/9/relationships/slicer" Target="../slicers/slicer${i + 1}.xml"/>`);
+      const defs: string[] = [];
+      for (const b of boundSlicers) {
+        const tblId = emittedTableIds.get(b.tIdx);
+        if (!tblId) continue;
+        const colName = String(sheet.cells[toA1(b.rng.c1 + b.colIdx, b.rng.r1)]?.v ?? `Column${b.colIdx + 1}`);
+        const sn = slicerSeq++;
+        const nm = `Slicer_${(b.sl.title || colName).replace(/[^\w]/g, "_")}_${sn}`;
+        sheetSlicerShapes.push({ name: nm, title: b.sl.title || colName, rng: b.rng });
+        defs.push(`<slicer name="${esc(nm)}" cache="${esc(nm)}" caption="${esc(b.sl.title || colName)}" startItem="0" columnCount="1" showCaption="1" style="SlicerStyleLight1"/>`);
+        cacheParts.push({
+          path: `xl/slicerCaches/slicerCache${sn}.xml`,
+          xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+            + `<slicerCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="x" xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="${esc(nm)}" sourceName="${esc(colName)}">`
+            + `<extLst><ext uri="{2F2917AC-EB37-4324-AD4E-5DD8C200BD13}" xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main">`
+            + `<x15:tableSlicerCache tableId="${tblId}" column="${b.colIdx + 1}"/></ext></extLst></slicerCacheDefinition>`,
+        });
+      }
+      slicerParts.push({
+        path: slicerPart,
+        xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+          + `<slicers xmlns="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="x" xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${defs.join("")}</slicers>`,
+      });
+      // extLst lands last in the worksheet schema — merge or append
+      const ext = `<ext uri="{3A4CF648-6AED-40f4-86FF-DC5316D8AED3}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9"><x14:slicerList><x14:slicer r:id="${slRid}"/></x14:slicerList></ext>`;
+      xml = /<extLst>/.test(xml)
+        ? xml.replace(/<extLst>/, `<extLst>${ext}`)
+        : xml.replace("</worksheet>", `<extLst>${ext}</extLst></worksheet>`);
+      changed = true;
+    }
+    // floating objects + charts + slicer shapes → drawing part
     const floatObjs = sheet.objects ?? [];
     const floatCharts = (sheet.charts ?? []).filter((c) => parseRange(c.range));
-    if (floatObjs.length || floatCharts.length) {
+    if (floatObjs.length || floatCharts.length || sheetSlicerShapes.length) {
       if (!/xmlns:r=/.test(xml))
         xml = xml.replace(/<worksheet\b([^>]*)>/, `<worksheet$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`);
       const n = ++drawingId;
@@ -1336,6 +1470,19 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
           + `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${nvId++}" name="${esc(c.title ?? `Chart ${chartId}`)}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/>`
           + `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rIdC${dRid}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>`);
       }
+      sheetSlicerShapes.forEach((sh, si) => {
+        // AlternateContent: a14-capable readers get the live slicer, others a static shape
+        const from = { col: { idx: sh.rng.c2 + 1, off: 0 }, row: { idx: sh.rng.r1 + si * 9, off: 0 } };
+        const to = { col: { idx: sh.rng.c2 + 3, off: 0 }, row: { idx: sh.rng.r1 + si * 9 + 8, off: 0 } };
+        anchors.push(`<xdr:twoCellAnchor>${markerXml("from", from.col, from.row)}${markerXml("to", to.col, to.row)}`
+          + `<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">`
+          + `<mc:Choice xmlns:sle="http://schemas.microsoft.com/office/drawingml/2010/slicer" Requires="sle"><sle:slicer name="${esc(sh.name)}"/></mc:Choice>`
+          + `<mc:Fallback><xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="${nvId++}" name="${esc(sh.title)}"/><xdr:cNvSpPr/><xdr:nvPr/></xdr:nvSpPr>`
+          + `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>`
+          + `<a:solidFill><a:schemeClr val="bg1"/></a:solidFill><a:ln><a:solidFill><a:schemeClr val="tx1"/></a:solidFill></a:ln></xdr:spPr>`
+          + `<xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US" sz="1100"/><a:t>${esc(sh.title)}</a:t></a:r></a:p></xdr:txBody></xdr:sp></mc:Fallback>`
+          + `</mc:AlternateContent><xdr:clientData/></xdr:twoCellAnchor>`);
+      });
       if (anchors.length) {
         drawParts.push({
           path: drawPart, mime: "application/vnd.openxmlformats-officedocument.drawing+xml",
@@ -1362,7 +1509,9 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   }
   for (const p of tableParts) zip.file(p.path, p.xml);
   for (const p of drawParts) zip.file(p.path, p.data);
-  if (tableParts.length || drawParts.length || ctDefaults.size) {
+  for (const p of slicerParts) zip.file(p.path, p.xml);
+  for (const p of cacheParts) zip.file(p.path, p.xml);
+  if (tableParts.length || drawParts.length || ctDefaults.size || slicerParts.length || cacheParts.length) {
     const ct = await zip.file("[Content_Types].xml")?.async("string");
     if (ct) {
       const defs = [...ctDefaults]
@@ -1371,10 +1520,31 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
       const overrides = [
         ...tableParts.map((p) =>
           `<Override PartName="/${p.path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`),
+        ...slicerParts.map((p) =>
+          `<Override PartName="/${p.path}" ContentType="application/vnd.ms-excel.slicer+xml"/>`),
+        ...cacheParts.map((p) =>
+          `<Override PartName="/${p.path}" ContentType="application/vnd.ms-excel.slicerCache+xml"/>`),
         ...drawParts.filter((p) => !p.path.endsWith(".rels") && !ctDefaults.has(/\.([a-z0-9]+)$/i.exec(p.path)?.[1] ?? ""))
           .map((p) => `<Override PartName="/${p.path}" ContentType="${p.mime}"/>`),
       ].join("");
       zip.file("[Content_Types].xml", ct.replace("</Types>", `${defs}${overrides}</Types>`));
+    }
+  }
+  // workbook.xml — x15:slicerCaches extLst + rels → xl/slicerCaches parts
+  if (cacheParts.length) {
+    const wx = await zip.file("xl/workbook.xml")?.async("string");
+    const wr = await zip.file("xl/_rels/workbook.xml.rels")?.async("string");
+    if (wx && wr) {
+      if (!/xmlns:r=/.test(wx))
+        zip.file("xl/workbook.xml", wx.replace(/<workbook\b([^>]*)>/,
+          `<workbook$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`));
+      const wx2 = await zip.file("xl/workbook.xml")!.async("string");
+      const ext = `<ext uri="{46BE6895-7355-4a93-B00E-2C351335B9C9}"><x15:slicerCaches xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main">${cacheParts.map((_, k) => `<x15:slicerCache r:id="rIdWbSc${k + 1}"/>`).join("")}</x15:slicerCaches></ext>`;
+      zip.file("xl/workbook.xml", /<extLst>/.test(wx2)
+        ? wx2.replace(/<extLst>/, `<extLst>${ext}`)
+        : wx2.replace("</workbook>", `<extLst>${ext}</extLst></workbook>`));
+      zip.file("xl/_rels/workbook.xml.rels", wr.replace("</Relationships>",
+        `${cacheParts.map((_, k) => `<Relationship Id="rIdWbSc${k + 1}" Type="http://schemas.microsoft.com/office/spreadsheetml/2010/11/relationships/slicerCache" Target="slicerCaches/slicerCache${k + 1}.xml"/>`).join("")}</Relationships>`));
     }
   }
   // styles.xml — append <dxfs> (must sit after cellStyles, before tableStyles)
@@ -1754,8 +1924,12 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     if (extras?.validations) sheet.validations = extras.validations;
     if (extras?.cf) sheet.cf = extras.cf;
     if (extras?.tablePartRids.length && zip && partMap.get(name)) {
-      const tables = await sheetTables(zip, partMap.get(name)!, extras.tablePartRids);
-      if (tables.length) sheet.tables = tables;
+      const tparts = await sheetTableParts(zip, partMap.get(name)!, extras.tablePartRids);
+      if (tparts.length) sheet.tables = tparts.map((t) => t.spec);
+      if (sheetXml) {
+        const slicers = await sheetSlicers(zip, partMap.get(name)!, sheetXml, tparts);
+        if (slicers.length) sheet.slicers = slicers;
+      }
     }
     if (extras?.print && !sheetXmlPrintFound) { sheetXmlPrintFound = true; pendingPrint = extras.print; }
     if (Object.keys(notes).length) sheet.notes = notes;

@@ -207,7 +207,8 @@ export interface CondFormat {
 export interface ChartSpec {
   id: string;
   type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut"
-    | "waterfall" | "funnel" | "histogram" | "treemap" | "radar" | "stock" | "boxwhisker";
+    | "waterfall" | "funnel" | "histogram" | "treemap" | "radar" | "stock" | "boxwhisker"
+    | "bubble" | "sunburst";
   range: string;
   /** S13.4 — index into sheet.pivots; the chart's data range follows the
    *  pivot's materialized span (header + data cells, totals excluded) */

@@ -85,9 +85,10 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
   const PR = rightLegend ? 92 : 12;
 
   const isPie = spec.type === "pie" || spec.type === "doughnut";
-  const isScatter = spec.type === "scatter";
+  const isScatter = spec.type === "scatter" || spec.type === "bubble";
   // types without cartesian axes / generic x labels
-  const noAxes = isPie || spec.type === "treemap" || spec.type === "funnel" || spec.type === "radar";
+  const noAxes = isPie || spec.type === "treemap" || spec.type === "funnel" || spec.type === "radar"
+    || spec.type === "sunburst";
   const noXLabels = noAxes || spec.type === "histogram" || spec.type === "boxwhisker";
 
   // stacked: cumulative sums per index; max is the tallest stack
@@ -106,7 +107,8 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
   const secMax = secSeries ? Math.max(1, ...secSeries.values.map(Math.abs)) : 0;
 
   const labels = series[0]?.labels ?? [];
-  const xs = labels.map((l) => Number(l)); // scatter X coords come from the label column
+  // scatter/bubble X coords come from the label column; non-numeric labels fall back to index
+  const xs = labels.map((l, i) => { const n = Number(l); return Number.isFinite(n) && l !== "" ? n : i + 1; });
   const xMin = Math.min(...xs), xMax = Math.max(...xs, xMin + 1);
 
   const plotW = W - PL - PR, plotH = H - PT - PB;
@@ -267,6 +269,22 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
         tx += ww; tw -= ww; horiz = true;
       }
     });
+  } else if (spec.type === "bubble") {
+    // x | y | size layout — labels are x, series[0] is y, series[1] is bubble size
+    const ys = series[0]?.values ?? [];
+    const sz = series[1]?.values ?? ys.map(() => 1);
+    const smax = Math.max(1, ...sz.map((v) => Math.abs(v)));
+    ys.forEach((v, i) => {
+      const rr = 3 + 15 * Math.sqrt(Math.abs(sz[i] ?? 0) / smax);
+      els.push(<circle key={`b${i}`} cx={xAt(i)} cy={yOf(v)} r={rr}
+        fill={COLORS[i % COLORS.length]} fillOpacity={0.55}
+        stroke={COLORS[i % COLORS.length]} strokeWidth={1.5}>
+        <title>{labels[i]}: {fmtTick(v)}</title>
+      </circle>);
+      if (spec.dataLabels) els.push(
+        <text key={`bd${i}`} x={xAt(i)} y={yOf(v) - rr - 3} textAnchor="middle" fontSize={8} fill="#6E6862">
+          {fmtTick(v)}</text>);
+    });
   } else {
     series.forEach((s, si) => {
       const color = COLORS[si % COLORS.length];
@@ -344,7 +362,7 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
     window.addEventListener("pointercancel", up);
   };
 
-  const legendEl = legendPos !== "none" && series.length > 0 && (
+  const legendEl = legendPos !== "none" && series.length > 0 && spec.type !== "sunburst" && (
     <g>
       {series.map((s, i) => (
         <g key={i} transform={rightLegend
@@ -390,7 +408,10 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
             ))}
           </>}
         </>}
-        {isPie ? (
+        {spec.type === "sunburst" ? (
+          <Sunburst sheet={sheet} wb={wb} rangeA1={effectiveRange} dataLabels={spec.dataLabels}
+            cx={PL + plotW / 2} cy={PT + plotH / 2} r={Math.min(plotH, plotW) / 2 - 6} />
+        ) : isPie ? (
           <Pie series={series} doughnut={spec.type === "doughnut"} dataLabels={spec.dataLabels}
             cx={(PL + plotW) / 2 + PL / 2 - PL} cy={PT + plotH / 2} r={Math.min(plotH, plotW) / 2 - 8} />
         ) : els}
@@ -413,6 +434,79 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
       </svg>
     </div>
   );
+}
+
+/** lighten a hex color toward white — child rings shade off their parent */
+function lighten(hex: string, f: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (s: number) => Math.min(255, Math.round(((n >> s) & 255) + (255 - ((n >> s) & 255)) * f));
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, "0")}`;
+}
+
+/** ring-segment path between radii rIn..rOut sweeping a0→a1 */
+function ringSeg(cx: number, cy: number, a0: number, a1: number, rIn: number, rOut: number): string {
+  const cos = Math.cos, sin = Math.sin, large = a1 - a0 > Math.PI ? 1 : 0;
+  return `M${cx + rOut * cos(a0)},${cy + rOut * sin(a0)}`
+    + ` A${rOut},${rOut} 0 ${large} 1 ${cx + rOut * cos(a1)},${cy + rOut * sin(a1)}`
+    + ` L${cx + rIn * cos(a1)},${cy + rIn * sin(a1)}`
+    + ` A${rIn},${rIn} 0 ${large} 0 ${cx + rIn * cos(a0)},${cy + rIn * sin(a0)} Z`;
+}
+
+/** Sunburst — range layout: label cols 0..n-2 = hierarchy levels, last col = value.
+ *  Each ring is a hierarchy level; child arcs subdivide their parent's span. */
+function Sunburst({ sheet, wb, rangeA1, cx, cy, r, dataLabels }: {
+  sheet: SheetData; wb?: Workbook; rangeA1: string;
+  cx: number; cy: number; r: number; dataLabels?: boolean;
+}) {
+  const target = resolveRange(wb, sheet, rangeA1);
+  const rr = parseRange(target.rangeA1);
+  if (!rr || rr.c2 - rr.c1 < 1) return null;
+  const evals = wb ? evaluateSheetIn(wb, target.sheet.name) : evaluateSheet(target.sheet.cells);
+  const val = (c: number, row: number): unknown => {
+    const cell = target.sheet.cells[toA1(c, row)];
+    if (!cell) return null;
+    const res = evals.get(toA1(c, row));
+    return cell.f ? res?.value : cell.v;
+  };
+  const levels = rr.c2 - rr.c1; // hierarchy depth; last column is the value
+  const rows: { path: string[]; v: number }[] = [];
+  for (let row = rr.r1 + 1; row <= rr.r2; row++) {
+    const path: string[] = [];
+    for (let c = rr.c1; c < rr.c2; c++) path.push(String(val(c, row) ?? ""));
+    rows.push({ path, v: Math.max(0, Number(val(rr.c2, row)) || 0) });
+  }
+  const total = rows.reduce((a, x) => a + x.v, 0) || 1;
+  const hole = r * 0.18, th = (r - hole) / levels;
+  const out: JSX.Element[] = [];
+  const emit = (depth: number, items: typeof rows, a0: number, a1: number, colorIdx: number) => {
+    if (depth >= levels || !items.length) return;
+    const groups = new Map<string, typeof rows>();
+    for (const it of items) {
+      const k = it.path[depth] || "(blank)";
+      (groups.get(k) ?? groups.set(k, []).get(k)!).push(it);
+    }
+    const sum = items.reduce((a, x) => a + x.v, 0) || 1;
+    let a = a0;
+    let gi = 0;
+    for (const [k, g] of groups) {
+      const span = (a1 - a0) * (g.reduce((x, it) => x + it.v, 0) / sum);
+      const b0 = a, b1 = a + span;
+      const color = lighten(COLORS[(colorIdx + gi) % COLORS.length], depth * 0.28);
+      out.push(<path key={`${depth}-${k}-${b0}`} d={ringSeg(cx, cy, b0, b1, hole + depth * th, hole + (depth + 1) * th - 1)}
+        fill={color} stroke="#fff" strokeWidth={1}>
+        <title>{k}: {fmtTick(g.reduce((x, it) => x + it.v, 0))}</title>
+      </path>);
+      if (dataLabels && span > 0.35) {
+        const mid = (b0 + b1) / 2, rad = hole + (depth + 0.5) * th;
+        out.push(<text key={`l${depth}-${k}`} x={cx + rad * Math.cos(mid)} y={cy + rad * Math.sin(mid) + 3}
+          textAnchor="middle" fontSize={8} fill="#fff">{k.slice(0, 8)}</text>);
+      }
+      emit(depth + 1, g, b0, b1, colorIdx + gi);
+      a = b1; gi++;
+    }
+  };
+  emit(0, rows, -Math.PI / 2, -Math.PI / 2 + (rows.reduce((a, x) => a + x.v, 0) / total) * Math.PI * 2, 0);
+  return <g>{out}</g>;
 }
 
 function Pie({ series, cx, cy, r, doughnut, dataLabels }: {

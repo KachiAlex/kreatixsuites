@@ -3403,8 +3403,16 @@ function SortDialog({ range, onSort, onClose }: {
               </select>
             )}
             {k.on === "list" && (
-              <input className="inp" style={{ width: 160 }} placeholder="e.g. High, Medium, Low"
-                value={k.order} onChange={(e) => upd(i, { order: e.target.value })} />
+              <>
+                <input className="inp" style={{ width: 160 }} placeholder="e.g. High, Medium, Low"
+                  list="sort-lists" value={k.order} onChange={(e) => upd(i, { order: e.target.value })} />
+                <datalist id="sort-lists">
+                  {["Sun,Mon,Tue,Wed,Thu,Fri,Sat", "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+                    "Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec",
+                    "January,February,March,April,May,June,July,August,September,October,November,December",
+                    "Q1,Q2,Q3,Q4", "High,Medium,Low"].map((l) => <option key={l} value={l} />)}
+                </datalist>
+              </>
             )}
             {k.on === "color" && (
               <input type="color" value={k.color} onChange={(e) => upd(i, { color: e.target.value })}
@@ -3554,6 +3562,7 @@ const CHART_TYPES: [ChartSpec["type"], string][] = [
   ["doughnut", "Doughnut"], ["scatter", "Scatter"], ["stacked", "Stacked"], ["combo", "Combo"],
   ["waterfall", "Waterfall"], ["funnel", "Funnel"], ["histogram", "Histogram"],
   ["treemap", "Treemap"], ["radar", "Radar"], ["stock", "Stock (OHLC)"], ["boxwhisker", "Box & Whisker"],
+  ["bubble", "Bubble"], ["sunburst", "Sunburst"],
 ];
 
 /** Chart settings dialog (S7.2): type, titles, legend, data labels, range. */
