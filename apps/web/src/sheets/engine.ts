@@ -538,6 +538,32 @@ export function extraFunctions(
       }
       return pick;
     },
+    // XMATCH(key, vector [, mode] [, search]) — modern MATCH.
+    // mode: 0 exact (default), -1 exact-or-smaller, 1 exact-or-larger,
+    // 2 wildcard (* ?). search: ±1 linear order, ±2 binary (same result).
+    XMATCH: (p) => {
+      const [lv, arr, mode, search] = p;
+      const vec = lookupArr(arr);
+      const mm = Math.trunc(Number(mode ?? 0));
+      const rev = Number(search ?? 1) < 0;
+      const esc = String(lv).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const wRe = mm === 2 ? new RegExp(`^${esc.replace(/\\\*/g, ".*").replace(/\\\?/g, ".")}$`, "i") : null;
+      const idxs = vec.map((_, i) => i);
+      if (rev) idxs.reverse();
+      const eq = (v: unknown) => wRe ? wRe.test(String(v)) : sameKey(v, lv);
+      if (mm === 0 || mm === 2) {
+        const i = idxs.find((i) => eq(vec[i]));
+        return i === undefined ? "#N/A" : i + 1;
+      }
+      const exact = idxs.filter((i) => sameKey(vec[i], lv));
+      if (exact.length) return exact[0] + 1;
+      let best = -1, bd = Infinity;
+      for (const i of idxs) {
+        const d = mm === -1 ? Number(lv) - Number(vec[i]) : Number(vec[i]) - Number(lv);
+        if (Number.isFinite(d) && d >= 0 && d < bd) { bd = d; best = i; }
+      }
+      return best < 0 ? "#N/A" : best + 1;
+    },
     XLOOKUP: (p) => {
       const [lv, arr, ret, ifna, matchMode] = p;
       const vec = lookupArr(arr), out = lookupArr(ret);

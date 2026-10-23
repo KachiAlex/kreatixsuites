@@ -23,6 +23,8 @@ export interface CellStyle {
   shrink?: boolean;      // shrink to fit
   rotate?: number;       // degrees, -90..90 (or 90 vertical-stack handled as 90)
   fmt?: string;          // preset id or custom format code (S4.5)
+  /** renders the boolean cell value as an in-cell checkbox (Excel 2024-style) */
+  cb?: boolean;
   borders?: { top?: BorderEdge; right?: BorderEdge; bottom?: BorderEdge; left?: BorderEdge };
 }
 

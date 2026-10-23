@@ -237,6 +237,13 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
       D6: { f: "LOOKUP(6,B1:B3,A1:A3)" },        // ≤6 → "pear"
       D7: { f: "VLOOKUP(\"plum\",Sheet2!A1:B3,2,0)" }, // cross-sheet lookup
       D8: { f: "INDIRECT(\"B\"&2)" },
+      // XMATCH modes: exact / exact-or-smaller / exact-or-larger / wildcard / reverse
+      E1: { f: "XMATCH(\"pear\",A1:A3)" },
+      E2: { f: "XMATCH(4,B1:B3,-1)" },           // 4 → next smaller is 3 at pos 1
+      E3: { f: "XMATCH(4,B1:B3,1)" },            // 4 → next larger is 5 at pos 2
+      E4: { f: "XMATCH(\"p*m\",A1:A3,2)" },      // wildcard → "plum" pos 3
+      E5: { f: "XMATCH(\"pear\",A1:A3,0,-1)" },  // reverse search → pos 2
+      E6: { f: "XMATCH(\"nope\",A1:A3)" },       // #N/A
     } },
     { name: "Sheet2", cells: {
       A1: { v: "apple" }, B1: { v: 30 },
@@ -251,6 +258,12 @@ const val = (wb: Workbook, sheet: string, ref: string) =>
   check("LOOKUP approximate", val(wb, "S", "D6")?.value === "pear");
   check("VLOOKUP cross-sheet", val(wb, "S", "D7")?.value === 70);
   check("INDIRECT built ref", val(wb, "S", "D8")?.value === 5);
+  check("XMATCH exact", val(wb, "S", "E1")?.value === 2);
+  check("XMATCH next-smaller", val(wb, "S", "E2")?.value === 1);
+  check("XMATCH next-larger", val(wb, "S", "E3")?.value === 2);
+  check("XMATCH wildcard", val(wb, "S", "E4")?.value === 3);
+  check("XMATCH reverse", val(wb, "S", "E5")?.value === 2);
+  check("XMATCH no-hit", val(wb, "S", "E6")?.value === "#N/A");
 }
 
 // ---------- missing core fns (S1.5) ----------

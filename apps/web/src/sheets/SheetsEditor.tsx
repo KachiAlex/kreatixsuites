@@ -1849,6 +1849,14 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
               { label: "Format as Table…", onClick: () => setTableDlg(true) },
               { label: "Slicer…", onClick: () => setSlicerDlg(true) },
               { label: "Data-type entity", onClick: insertEntity },
+              { label: "Checkbox", checked: !!anchorStyle.cb, onClick: () => mutateSheet((s) => {
+                for (const ref of rangeRefs(selection)) {
+                  const cur = s.cells[ref];
+                  const st = { ...(cur?.s ?? {}) };
+                  if (st.cb) { delete st.cb; s.cells[ref] = { ...cur, s: st }; }
+                  else s.cells[ref] = { ...cur, v: cur?.v ?? false, s: { ...st, cb: true } };
+                }
+              }) },
               { divider: true },
               { label: "Link…", shortcut: "Ctrl+K", onClick: () => setLinkDlg(true) },
               { label: "Symbol…", onClick: () => setSymbolDlg(true) },
@@ -2070,6 +2078,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
             audit: auditRefs ? { refs: auditRefs, kind: audit! } : undefined,
             selections, selection, setSelection: selWithPaint,
             addSelection, extendSelection: extWithPaint,
+            onRemoveSelection: (i: number) => setSelections((p) => p.length > 1 ? p.filter((_, j) => j !== i) : p),
             invalid: invalidCells,
             noted: notedCells,
             commented: commentedCells,

@@ -24,6 +24,8 @@ interface GridProps {
   setSelection: (r: Range) => void;
   /** Ctrl+click — append a new range */
   addSelection?: (r: Range) => void;
+  /** Ctrl+click on a cell inside aux selection `i` removes that selection. */
+  onRemoveSelection?: (i: number) => void;
   /** drag-extend the most recently added range */
   extendSelection?: (r: Range) => void;
   onCommit: (ref: string, raw: string, rt?: RichRun[]) => void;
@@ -73,7 +75,7 @@ interface GridProps {
 
 interface Run { start: number; end: number; gapBefore: number }
 
-export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, extendSelection, onCommit, onClear, onPaste, onPasteImage, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, commented, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir, showFormulas, onOpenLink, onObjects, spellMisses, onQuickAction }: GridProps) {
+export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, setSelection, addSelection, onRemoveSelection, extendSelection, onCommit, onClear, onPaste, onPasteImage, onFillHandle, onGeom, onHeader, invalid, listDrop, noted, commented, onCellMenu, onFilterClick, evalFormula, showChanges, onOutlineToggle, paneRows, pageBreaks, onFillDir, showFormulas, onOpenLink, onObjects, spellMisses, onQuickAction }: GridProps) {
   const [selObj, setSelObj] = useState<string | null>(null);
   const [objDrag, setObjDrag] = useState<{ id: string; dx: number; dy: number; x: number; y: number; w: number; h: number; mode: "move" | "size" } | null>(null);
   const [qaOpen, setQaOpen] = useState(false);
@@ -435,8 +437,15 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
         extendSelection?.({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
         if (!extendSelection) setSelection({ c1: Math.min(selection.c1, box.c1), r1: Math.min(selection.r1, box.r1), c2: Math.max(selection.c2, box.c2), r2: Math.max(selection.r2, box.r2) });
       } else if ((e.ctrlKey || e.metaKey) && addSelection) {
-        addSelection(box);
-        setDragging(true);
+        // Ctrl+click inside an existing aux selection deselects it (Excel);
+        // the active selection can't be deselected below a single cell.
+        const hit = allSels.slice(0, -1).findIndex((s) =>
+          box.c1 >= s.c1 && box.c1 <= s.c2 && box.r1 >= s.r1 && box.r1 <= s.r2);
+        if (hit >= 0 && onRemoveSelection) onRemoveSelection(hit);
+        else {
+          addSelection(box);
+          setDragging(true);
+        }
       } else {
         setSelection(box);
         setDragging(true);
@@ -585,6 +594,10 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
     // IMAGE() renders its result URL as an in-cell image (S18.1)
     const isImgFn = /^IMAGE\s*\(/i.test(cell?.f ?? "");
     if (spark || cell?.img || cell?.ent || (isImgFn && typeof res?.value === "string")) content = null;
+    // in-cell checkbox (Excel 2024-style) — the underlying value is a boolean;
+    // formula cells keep normal rendering since the box can't edit them
+    const isCb = s.cb === true && !cell?.f;
+    if (isCb) content = null;
     const richContent = runs && content !== null
       ? <>{runs.map((rr, i) => <span key={i} style={runCss(rr.s)}>{rr.t}</span>)}</>
       : content;
@@ -642,6 +655,12 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
           showChanges && cell?.h ? `Edited by ${cell.h.by} · ${new Date(cell.h.at).toLocaleString()}` : "",
         ].filter(Boolean).join("\n") || undefined}
         onContextMenu={(e) => { if (onCellMenu) { e.preventDefault(); if (!inSel(c, r)) setSelection({ c1: c, r1: r, c2: c, r2: r }); onCellMenu(ref, e.clientX, e.clientY); } }}>
+        {isCb && (
+          <input type="checkbox" className="cell-cb" checked={rawV === true}
+            disabled={!canEdit}
+            onPointerDown={(e) => e.stopPropagation()}
+            onChange={(e) => onCommit(ref, e.target.checked ? "TRUE" : "FALSE")} />
+        )}
         {cfx?.bar && (
           <span className="cf-bar" style={{ width: `${cfx.bar.pct}%`, background: cfx.bar.color }} />
         )}

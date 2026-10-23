@@ -891,6 +891,7 @@ textarea.inp{padding:8px 10px;height:auto}
 .cell-flag.chg{left:0;top:0;border-left:7px solid #8E6BC8;border-top:7px solid #8E6BC8}
 .cell-flag.cmt{right:0;bottom:0;border-right:7px solid #3574E0;border-bottom:7px solid #3574E0}
 .cell-img{display:block;object-fit:contain;pointer-events:none}
+.cell-cb{margin:0;width:15px;height:15px;accent-color:var(--k-orange);cursor:pointer}
 .cell-ent{display:inline-flex;align-items:center;gap:3px;pointer-events:none}
 .cell-ent .ent-ico{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:3px;background:#E8F0FE;color:#1A56DB;font-size:9px;line-height:1}
 .list-drop-btn{position:absolute;z-index:35;width:18px;height:18px;border:1px solid var(--line);border-radius:4px;background:var(--surface);color:var(--muted);font-size:9px;line-height:1;cursor:pointer;padding:0}
