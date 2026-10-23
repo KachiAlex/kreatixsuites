@@ -1655,10 +1655,14 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
         const ext = block.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/);
         return ext ? { wrap: "inline", w: Math.round(+ext[1] / EMU), h: Math.round(+ext[2] / EMU) } : {};
       })();
+      // shape fill — white text on a dark badge is invisible without it
+      const spPr = block.match(/<wps:spPr[^>]*>[\s\S]*?<\/wps:spPr>/)?.[0]
+        ?? block.match(/<wps:spPr[^>]*\/>/)?.[0] ?? "";
+      const fill = spPr.match(/<a:solidFill>[\s\S]*?<a:srgbClr\b[^>]*\bval="([0-9A-Fa-f]{6})"/)?.[1];
       let marker = "";
       let out = block.replace(/⟦KXTBBOX:(\d+)⟧/g, (_m, i) => {
-        boxes[+i].geo = geo;
-        marker += `⟦KXTB:${b64enc(JSON.stringify({ i: +i, ...geo }))}⟧`;
+        boxes[+i].geo = fill ? { ...geo, bg: `#${fill}` } : geo;
+        marker += `⟦KXTB:${b64enc(JSON.stringify({ i: +i, ...boxes[+i].geo }))}⟧`;
         return "";
       });
       if (/<a:blip\b/.test(out)) marker += `⟦KXFO:${b64enc(JSON.stringify(geo))}⟧`;
@@ -1792,7 +1796,7 @@ function breakMarkersToHtml(html: string): string {
     return `<div data-type="section-break" ${s} class="page-break section-break"></div>`;
   };
 
-  const re = /(<p>)?⟦KXSB:([A-Za-z0-9+/=]*)⟧(<\/p>)?/g;
+  const re = /(<p[^>]*>)?⟦KXSB:([A-Za-z0-9+/=]*)⟧(<\/p>)?/g;
   let out = "", colsOpen = false, pos = 0;
   const closeCols = () => { if (colsOpen) { out += "</div>"; colsOpen = false; } };
   for (const m of html.matchAll(re)) {
@@ -1800,17 +1804,31 @@ function breakMarkersToHtml(html: string): string {
     out += html.slice(pos, m.index);
     pos = (m.index ?? 0) + tok.length;
     const p: SectMarkerProps = tryB64Json<SectMarkerProps>(b64) ?? {};
-    closeCols();
-    const wholePara = Boolean(openP && closeP);
     const hasCols = (p.cols ?? 0) > 1;
-    if (!wholePara) out += "</p>";
-    // continuous + columns == our bare `columns` node (no visible break)
-    if (!hasCols || p.type !== "continuous") out += sectDiv(p);
-    if (hasCols) {
+    // continuous boundaries that only toggle columns (or carry nothing at
+    // all — the last section has no "next" props) aren't visible breaks
+    const invisible = p.type === "continuous"
+      && p.pageWidth == null && p.pageHeight == null && p.pnStart == null
+      && !p.vAlign && !p.headerText && !p.footerText;
+    const reopenPara = !closeP;
+    if (!openP) out += "</p>";
+    closeCols();
+    // continuous + columns == our bare `columns` node (no visible break);
+    // a real page-boundary section opening into columns still gets its break
+    if (hasCols && p.type === "continuous") {
+      out += `<div data-type="columns" data-cols="${p.cols}" style="column-gap:${p.colGap ?? 36}px">`;
+      colsOpen = true;
+    } else if (Object.keys(p).length && !invisible) {
+      out += sectDiv(p);
+      if (hasCols) {
+        out += `<div data-type="columns" data-cols="${p.cols}" style="column-gap:${p.colGap ?? 36}px">`;
+        colsOpen = true;
+      }
+    } else if (hasCols) {
       out += `<div data-type="columns" data-cols="${p.cols}" style="column-gap:${p.colGap ?? 36}px">`;
       colsOpen = true;
     }
-    if (!wholePara) out += "<p>";
+    if (reopenPara) out += "<p>";
   }
   closeCols();
   return out + html.slice(pos);
@@ -2483,7 +2501,7 @@ function runFmtMarkersToHtml(html: string): string {
  *  other sentinels (KXPS, KXN, comment marks) sitting ahead of it. */
 function paraFmtMarkersToHtml(html: string): string {
   html = html.replace(
-    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?:<[^>]+>)|⟦KX[A-Z]+(?::[^⟧]*)?⟧)*)⟦KXPF:([A-Za-z0-9+/=]*)⟧/g,
+    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?!<\/?(?:p|h[1-6]|li|td|th|ul|ol|table|tr|div|blockquote)\b)<[^>]+>|⟦KX[A-Z]+(?::[^⟧]*)?⟧)*)⟦KXPF:([A-Za-z0-9+/=]*)⟧/g,
     (_m, tag, attrs: string, lead: string, b: string) => {
       const p = tryB64Json<Record<string, unknown>>(b);
       if (!p) return `<${tag}${attrs}>${lead}`;
@@ -2539,7 +2557,7 @@ function firstSectionMarkerToHtml(html: string): string {
  *  ⟦KXTBB⟧…⟦KXTBE⟧ staging region); ⟦KXFO⟧+img → figure wrap/position attrs. */
 function floatMarkersToHtml(html: string): string {
   const bodies = new Map<string, string>();
-  html = html.replace(/<p>⟦KXTBB:(\d+)⟧<\/p>([\s\S]*?)<p>⟦KXTBE⟧<\/p>/g, (_m, i, body) => {
+  html = html.replace(/<p[^>]*>⟦KXTBB:(\d+)⟧<\/p>([\s\S]*?)<p[^>]*>⟦KXTBE⟧<\/p>/g, (_m, i, body) => {
     bodies.set(i, body);
     return "";
   });

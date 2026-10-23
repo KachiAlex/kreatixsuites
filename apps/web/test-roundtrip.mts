@@ -725,7 +725,7 @@ ${OPARA}
   // anchored objects: wp:anchor geometry must reach the text box node —
   // previously every box was flattened to a plain paragraph at the doc end
   const anchored = await zipOf(
-    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body>${para("Before.")}<w:p><w:r><w:drawing><wp:anchor behindDoc="0" layoutInCell="0" allowOverlap="1" relativeHeight="0" simplePos="0" locked="0" distT="0" distB="0" distL="0" distR="0"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>457200</wp:posOffset></wp:positionV><wp:extent cx="1828800" cy="914400"/><wp:wrapSquare wrapText="bothSides"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent>${para("Boxed callout.")}</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>${para("After.")}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`);
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body>${para("Before.")}<w:p><w:r><w:drawing><wp:anchor behindDoc="0" layoutInCell="0" allowOverlap="1" relativeHeight="0" simplePos="0" locked="0" distT="0" distB="0" distL="0" distR="0"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>457200</wp:posOffset></wp:positionV><wp:extent cx="1828800" cy="914400"/><wp:wrapSquare wrapText="bothSides"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:spPr><a:solidFill><a:srgbClr val="1F4E79"/></a:solidFill></wps:spPr><wps:txbx><w:txbxContent><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr><w:t>Boxed callout.</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>${para("After.")}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`);
   const boxRes = await importDocx(fileOf(anchored, "anchored.docx"));
   check("docx: anchored text box → kx-textbox",
     boxRes.html.includes('data-type="kx-textbox"') && boxRes.html.includes("Boxed callout."));
@@ -733,6 +733,22 @@ ${OPARA}
     /data-wrap="square"/.test(boxRes.html) && /data-w="192"/.test(boxRes.html));
   check("docx: box renders at anchor position, not doc end",
     boxRes.html.indexOf("Boxed callout") < boxRes.html.indexOf("After."));
+  check("docx: text box keeps shape fill",
+    boxRes.html.includes('data-bg="#1F4E79"'));
+  check("docx: text box keeps styled body",
+    /data-type="kx-textbox"[^>]*>\s*<p[^>]*style="[^"]*text-align:center[^"]*"[^>]*>[\s\S]*color:#FFFFFF/.test(boxRes.html));
+
+  // continuous multi-column sections: the closing pPr-level sectPr belongs to
+  // the old section, so the marker must carry the NEXT section's props
+  const colsXml = await zipOf(
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${para("Front matter.")}<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:cols w:num="1"/></w:sectPr></w:pPr></w:p>${para("Awards")}<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:cols w:num="2" w:space="360"/></w:sectPr></w:pPr><w:r><w:t>In columns.</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:cols w:num="1"/></w:sectPr></w:pPr><w:r><w:t>After columns.</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  const colsRes = await importDocx(fileOf(colsXml, "cols.docx"));
+  check("docx: continuous cols → columns node",
+    colsRes.html.includes('data-type="columns"') && colsRes.html.includes('data-cols="2"') && colsRes.html.includes('column-gap:24px'));
+  check("docx: columns content wrapped",
+    /<div data-type="columns"[^>]*>[\s\S]*Awards[\s\S]*<\/div>[\s\S]*After columns/.test(colsRes.html));
+  check("docx: no column sentinel leak or nested p",
+    !colsRes.html.includes("⟦") && !colsRes.html.includes("<p><p>") && !colsRes.html.includes("</p></p>"));
 
   // section vertical alignment: body-sectPr vAlign → first block; pPr-level
   // vAlign → the sectionBreak introducing that section
