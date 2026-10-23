@@ -720,7 +720,10 @@ ${OPARA}
     `<row r="${i + 1}">${r.map((v, c) => `<c r="${"ABC"[c]}${i + 1}"${typeof v === "string" ? ' t="inlineStr"><is><t>' + v + "</t></is>" : "><v>" + v}</v></c>`).join("")}</row>`).join("");
   zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0"?><worksheet xmlns="${SS}"><sheetData>${sheetData}</sheetData></worksheet>`);
   zip.file("xl/worksheets/sheet2.xml", `<?xml version="1.0"?><worksheet xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData/></worksheet>`);
-  zip.file("xl/worksheets/_rels/sheet2.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>`);
+  zip.file("xl/worksheets/_rels/sheet2.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/><Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/></Relationships>`);
+  zip.file("xl/persons/person.xml", `<?xml version="1.0"?><persons xmlns="${SS}"><person id="{A1B2C3}" displayName="Ada Lovelace"/></persons>`);
+  zip.file("xl/threadedComments/threadedComment1.xml", `<?xml version="1.0"?><threadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"><threadedComment ref="A1" dT="2024-05-01T10:00:00Z" personId="{A1B2C3}" id="{ROOT1}"><text>check this total</text></threadedComment><threadedComment ref="A1" dT="2024-05-01T11:00:00Z" personId="{A1B2C3}" id="{CHILD1}" parentId="{ROOT1}" done="0"><text>verified — correct</text></threadedComment></threadedComments>`);
+  zip.file("xl/vbaProject.bin", new Uint8Array([1, 2, 3]));
   zip.file("xl/pivotTables/_rels/pivotTable1.xml.rels", `<Relationships xmlns="${NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>`);
   zip.file("xl/pivotCache/pivotCacheDefinition1.xml", `<?xml version="1.0"?><pivotCacheDefinition xmlns="${SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"><cacheSource type="worksheet"><worksheetSource ref="A1:C5" sheet="Data"/></cacheSource><cacheFields count="3"><cacheField name="Region"><sharedItems><s v="East"/><s v="West"/></sharedItems></cacheField><cacheField name="Product"><sharedItems><s v="A"/><s v="B"/></sharedItems></cacheField><cacheField name="Sales"><sharedItems containsNumber="1"/></cacheField></cacheFields></pivotCacheDefinition>`);
   zip.file("xl/pivotTables/pivotTable1.xml", `<?xml version="1.0"?><pivotTableDefinition xmlns="${SS}" name="Pivot1" cacheId="1" dataCaption="Values"><location ref="E2:H8" firstHeaderRow="1" firstDataRow="2"/><pivotFields count="3"><pivotField axis="axisRow"><items><item x="0"/><item x="1"/></items></pivotField><pivotField axis="axisPage"/><pivotField axis="axisValues"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><pageFields count="1"><pageField fld="1" item="0" hier="-1"/></pageFields><dataFields count="1"><dataField name="Sum of Sales" fld="2" subtotal="sum"/></dataFields></pivotTableDefinition>`);
@@ -734,6 +737,13 @@ ${OPARA}
   const pc = back.sheets[1].cells;
   check("xlsx piv: headers", pc.E2?.v === "Region" && /Sum/.test(String(pc.F2?.v)) && pc.G2?.v === "Grand Total");
   check("xlsx piv: values", pc.F3?.v === 10 && pc.F4?.v === 20 && pc.F5?.v === 30);
+  // threaded comments: root → replies[0], child attaches by parentId, person name resolves
+  const thr = back.sheets[1].comments?.A1;
+  check("xlsx cmt: thread imported", !!thr && thr.replies.length === 2
+    && thr.replies[0].text === "check this total" && thr.replies[1].text === "verified — correct");
+  check("xlsx cmt: author resolved", thr?.replies[0].by === "Ada Lovelace");
+  // vbaProject.bin → import warning
+  check("xlsx vba: warning", back.importWarnings?.some((w) => /VBA/i.test(w)) === true);
 }
 
 // ---------- XFDF ----------

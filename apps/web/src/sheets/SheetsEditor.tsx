@@ -1404,7 +1404,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
       const imported = await xlsxToWorkbook(f);
       mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); }, canEdit);
       setActive(0);
-      toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}`);
+      toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}${imported.importWarnings?.length ? ` — ${imported.importWarnings.join(" ")}` : ""}`);
     } catch (e) {
       if (e instanceof OpenCancelledError) return;
       toast(e instanceof Error && e.message ? e.message : "Could not read that workbook");

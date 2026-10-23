@@ -5,7 +5,7 @@ const xlsxLib = async (): Promise<typeof XLSX> => {
   const m = await import("xlsx-js-style");
   return ((m as { default?: typeof XLSX }).default ?? m) as typeof XLSX;
 };
-import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, SheetObject, ChartSpec, Workbook, Validation, CondFormat, TableSpec, Range, Ref } from "./model";
+import type { CellData, CellStyle, BorderEdge, RichRun, SheetData, SheetObject, ChartSpec, Workbook, Validation, CondFormat, TableSpec, Range, Ref, CommentThread } from "./model";
 import { toA1, parseA1, rangeRefs, parseRange, rangeToA1, colLabel, shiftForFill, adjustForRowsCols, parseInput, richRunsMatch, richStyleKey, COL_W, ROW_H } from "./model";
 import { evaluateSheet, evaluateSheetIn, createSheetEvaluator, toR1C1, type EvalResult } from "./engine";
 import { ensureDecryptedFile } from "../lib/passwordPrompt";
@@ -902,6 +902,46 @@ async function sheetPivots(zip: ZipLike, sheetPart: string): Promise<PivotSpec[]
   return out;
 }
 
+/** worksheet → threadedComments parts → CommentThreads keyed by cell ref.
+ *  personIds resolve through xl/persons/person.xml displayNames; children
+ *  attach by parentId (root = no parentId, lands as replies[0]). */
+async function sheetThreadedComments(zip: ZipLike, sheetPart: string): Promise<Record<string, CommentThread>> {
+  const rels = await partRels(zip, sheetPart, /threadedComments\//);
+  if (!rels.size) return {};
+  const persons = new Map<string, string>();
+  const pXml = await zip.file(/xl\/persons\/person\d*\.xml/)[0]?.async("string");
+  for (const m of pXml?.matchAll(/<person\b[^>]*\/?>/g) ?? []) {
+    const id = xAttr(m[0], "id"), dn = xmlUnesc(xAttr(m[0], "displayName") ?? "");
+    if (id && dn) persons.set(id, dn);
+  }
+  const out: Record<string, CommentThread> = {};
+  for (const part of rels.values()) {
+    const xml = await zip.file(part)?.async("string");
+    if (!xml) continue;
+    type Cmt = { ref: string; id: string; parent?: string; text: string; by?: string; at: number; done: boolean };
+    const items: Cmt[] = [];
+    for (const m of xml.matchAll(/<threadedComment\b([^>]*)>([\s\S]*?)<\/threadedComment>/g)) {
+      items.push({
+        ref: xAttr(m[1], "ref") ?? "", id: xAttr(m[1], "id") ?? "",
+        parent: xAttr(m[1], "parentId"),
+        text: xmlUnesc(/<text>([\s\S]*?)<\/text>/.exec(m[2])?.[1] ?? ""),
+        by: persons.get(xAttr(m[1], "personId") ?? "") || undefined,
+        at: Date.parse(xAttr(m[1], "dT") ?? "") || 0,
+        done: xAttr(m[1], "done") === "1",
+      });
+    }
+    for (const c of items) {
+      if (c.parent || !c.ref) continue;
+      const kids = items.filter((k) => k.parent === c.id).sort((a, b) => a.at - b.at);
+      out[c.ref] = {
+        by: c.by, at: c.at, resolved: c.done || undefined,
+        replies: [{ by: c.by, at: c.at, text: c.text }, ...kids.map((k) => ({ by: k.by, at: k.at, text: k.text }))],
+      };
+    }
+  }
+  return out;
+}
+
 function buildBook(XLSX: typeof import("xlsx-js-style"), wb: Workbook) {
   const out = XLSX.utils.book_new();
   if (wb.props)
@@ -1754,10 +1794,14 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
       if (charts.length) sheet.charts = charts;
       const pivots = await sheetPivots(zip, partMap.get(name)!);
       if (pivots.length) sheet.pivots = pivots;
+      const threads = await sheetThreadedComments(zip, partMap.get(name)!);
+      if (Object.keys(threads).length) sheet.comments = { ...(sheet.comments ?? {}), ...threads };
     }
     return sheet;
   }));
   const out: Workbook = { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
+  if (zip?.file("xl/vbaProject.bin"))
+    out.importWarnings = ["VBA macros are not supported — they were dropped on import"];
   if (pendingPrint) out.print = pendingPrint;
   // materialize imported pivots now (sources may live on other sheets)
   for (const sheet of out.sheets)

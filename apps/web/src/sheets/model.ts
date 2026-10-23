@@ -408,6 +408,8 @@ export interface Workbook {
   externs?: Record<string, Workbook>;
   /** Watch window — cross-sheet cells monitored in the watch panel */
   watch?: { sheet: string; ref: string }[];
+  /** transient: features dropped during the last xlsx import (surfaced as a toast) */
+  importWarnings?: string[];
   /** S16.1 — named custom views: per-sheet display snapshots */
   views?: {
     name: string;
