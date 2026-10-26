@@ -3,11 +3,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import type { ContentType, DriveItem, FileKind, Library, LibraryColumn, LibraryView, Site, ViewConfig } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useFiles, useItemActions } from "../lib/hooks";
-import { FileList } from "../components/FileList";
+import { useAuth } from "../lib/auth";
+import { LibraryGrid } from "../components/LibraryGrid";
+import { ItemDetailsPane } from "../components/ItemDetailsPane";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
-import { ChainDialog, ColumnsDialog, ContentTypeDialog, PermsDialog, PresetDialog, PropertiesDialog, presetFor } from "../components/LibraryDialogs";
+import { ChainDialog, ColumnsDialog, ContentTypeDialog, PermsDialog, PresetDialog, presetFor } from "../components/LibraryDialogs";
 import { prefetchEditorsFor } from "./editors";
 import { kindForPath } from "../lib/offline/openLocal";
 
@@ -39,11 +41,16 @@ export function LibraryPage() {
   const [contentTypes, setContentTypes] = useState<ContentType[]>([]);
   const [viewMenu, setViewMenu] = useState(false);
   const [checkin, setCheckin] = useState<DriveItem | null>(null);
-  const [propsFor, setPropsFor] = useState<DriveItem | null>(null);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState<string | null>(null);
+  const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const newRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   const libBase = `/api/sites/${siteId}/libraries/${libId}`;
 
@@ -106,12 +113,33 @@ export function LibraryPage() {
 
   const uploadTo = async (f: File) => {
     const kind = (kindForPath(f.name) ?? (f.type === "application/pdf" ? "pdf" : "file")) as FileKind;
-    try {
-      await api.upload(
-        `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}${folderId ? `&parent=${folderId}` : `&library=${libId}`}`, f);
-      refresh();
-      toast("Uploaded");
-    } catch (e) { toast(e instanceof Error ? e.message : "Upload failed"); }
+    await api.upload(
+      `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}${folderId ? `&parent=${folderId}` : `&library=${libId}`}`, f);
+    refresh();
+  };
+
+  const uploadMany = async (files: File[]) => {
+    if (!files.length) return;
+    let failed = 0;
+    for (const [i, f] of files.entries()) {
+      setUploading(`${i + 1}/${files.length} · ${f.name}`);
+      try {
+        await uploadTo(f);
+      } catch (e) {
+        failed++;
+        toast(e instanceof Error ? e.message : "Upload failed");
+      }
+    }
+    setUploading(null);
+    if (files.length > 1) toast(`Uploaded ${files.length - failed}/${files.length} files`);
+    else if (!failed) toast("Uploaded");
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    void uploadMany(Array.from(e.dataTransfer?.files ?? []));
   };
 
   // ---- saved views ----
@@ -193,11 +221,37 @@ export function LibraryPage() {
       if (val) out = out.filter((i) => (i.metadata?.[cid] ?? "") === val);
     }
     const dir = filter.dir === "asc" ? 1 : -1;
-    if (filter.sort === "name") out = [...out].sort((a, b) => a.name.localeCompare(b.name) * dir);
+    if (filter.sortColumnId) {
+      const cid = filter.sortColumnId;
+      const numeric = columns.find((c) => c.id === cid)?.type === "number";
+      out = [...out].sort((a, b) => {
+        const av = a.metadata?.[cid] ?? "";
+        const bv = b.metadata?.[cid] ?? "";
+        const cmp = numeric ? (Number(av) || 0) - (Number(bv) || 0) : String(av).localeCompare(String(bv));
+        return cmp * dir;
+      });
+    }
+    else if (filter.sort === "name") out = [...out].sort((a, b) => a.name.localeCompare(b.name) * dir);
     else if (filter.sort === "size") out = [...out].sort((a, b) => (a.size - b.size) * dir);
     else if (filter.sort === "updated") out = [...out].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) * -dir);
     return out;
-  }, [items, filter]);
+  }, [items, filter, columns]);
+
+  /** Column-header sort (SharePoint-style): click toggles direction on the
+   *  same column, or switches to ascending on a new one. */
+  const onSort = (sort: ViewConfig["sort"], columnId?: string) => {
+    setFilter((f) => {
+      const sameCol = columnId ? f.sortColumnId === columnId : !f.sortColumnId && f.sort === sort;
+      return {
+        ...f,
+        sort,
+        sortColumnId: columnId,
+        dir: sameCol ? (f.dir === "asc" ? "desc" : "asc") : "asc",
+      };
+    });
+  };
+
+  const details = detailsId ? items.find((i) => i.id === detailsId) ?? null : null;
 
   const canManage = site?.myRole === "owner";
 
@@ -307,16 +361,26 @@ export function LibraryPage() {
             <option value="sheets">Sheets</option><option value="present">Present</option>
             <option value="pdf">PDF</option><option value="file">Files</option>
           </select>
-          <select value={`${filter.sort ?? "updated"}:${filter.dir ?? "desc"}`}
+          <select value={filter.sortColumnId ? "custom" : `${filter.sort ?? "updated"}:${filter.dir ?? "desc"}`}
             onChange={(e) => {
+              if (e.target.value === "custom") return;
               const [sort, dir] = e.target.value.split(":") as [ViewConfig["sort"], ViewConfig["dir"]];
-              setFilter((f) => ({ ...f, sort, dir }));
+              setFilter((f) => ({ ...f, sort, dir, sortColumnId: undefined }));
             }}>
+            {filter.sortColumnId && <option value="custom">Custom</option>}
             <option value="updated:desc">Newest</option>
             <option value="updated:asc">Oldest</option>
             <option value="name:asc">Name A→Z</option>
             <option value="name:desc">Name Z→A</option>
             <option value="size:desc">Largest</option>
+          </select>
+          <select value={filter.groupBy ?? ""} aria-label="Group by"
+            onChange={(e) => setFilter((f) => ({ ...f, groupBy: e.target.value || undefined }))}>
+            <option value="">Group by: none</option>
+            <option value="kind">Kind</option>
+            <option value="label">Label</option>
+            <option value="contentType">Content type</option>
+            {columns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           {columns.filter((c) => c.type === "choice").map((c) => (
             <select key={c.id} value={filter.columnFilters?.[c.id] ?? ""}
@@ -345,20 +409,48 @@ export function LibraryPage() {
         </div>
       )}
 
-      <FileList items={shown} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions}
-        toast={toast} onCheckin={setCheckin} onProperties={setPropsFor}
-        ctNames={new Map(contentTypes.map((c) => [c.id, c.name]))} />
+      <div className="lib-drop"
+        onDragEnter={(e) => {
+          if (!e.dataTransfer?.types.includes("Files")) return;
+          e.preventDefault();
+          dragDepth.current++;
+          setDragging(true);
+        }}
+        onDragOver={(e) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); }}
+        onDragLeave={(e) => {
+          if (!e.dataTransfer?.types.includes("Files")) return;
+          if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); }
+        }}
+        onDrop={onDrop}>
+        <div className="lib-layout">
+          <LibraryGrid items={shown} columns={columns}
+            ctNames={new Map(contentTypes.map((c) => [c.id, c.name]))}
+            filter={filter} onSort={onSort}
+            onOpen={open} onSelect={(it) => setDetailsId(it.id)} onRefresh={refresh}
+            onShare={setSharing} onVersions={setVersions} onCheckin={setCheckin}
+            toast={toast} isAdmin={isAdmin} />
+          {details && (
+            <ItemDetailsPane item={details} columns={columns}
+              ctColumns={details.contentTypeId
+                ? contentTypes.find((c) => c.id === details.contentTypeId)?.columns
+                : undefined}
+              contentTypeName={details.contentTypeId
+                ? contentTypes.find((c) => c.id === details.contentTypeId)?.name
+                : undefined}
+              onClose={() => setDetailsId(null)} onRefresh={refresh}
+              onShare={setSharing} onVersions={setVersions} onOpen={open} toast={toast} />
+          )}
+        </div>
+        {dragging && <div className="lib-drop-overlay">Drop files to upload</div>}
+      </div>
 
-      <input ref={fileInput} type="file" hidden
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTo(f); e.target.value = ""; }} />
+      {uploading && <div className="upload-status" role="status">⭱ {uploading}</div>}
+
+      <input ref={fileInput} type="file" hidden multiple
+        onChange={(e) => { void uploadMany(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
       {sharing && <ShareDialog item={sharing} onClose={() => setSharing(null)} toast={toast} />}
       {versions && <VersionsPanel item={versions} onClose={() => setVersions(null)} onRestore={refresh} toast={toast} />}
       {checkin && <CheckInDialog item={checkin} onClose={() => setCheckin(null)} onDone={refresh} toast={toast} />}
-      {propsFor && <PropertiesDialog item={propsFor} siteId={siteId} libId={libId} columns={columns}
-        ctColumns={propsFor.contentTypeId
-          ? contentTypes.find((c) => c.id === propsFor.contentTypeId)?.columns
-          : undefined}
-        onClose={() => setPropsFor(null)} onDone={refresh} toast={toast} />}
       {colsOpen && <ColumnsDialog siteId={siteId} libId={libId} columns={columns}
         onClose={() => setColsOpen(false)} onChange={setColumns} toast={toast} />}
       {permsOpen && lib && <PermsDialog siteId={siteId} lib={lib}

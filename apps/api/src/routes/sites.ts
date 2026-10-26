@@ -83,10 +83,13 @@ const viewSchema = z.object({
   config: z.object({
     sort: z.enum(["name", "updated", "size"]).optional(),
     dir: z.enum(["asc", "desc"]).optional(),
+    sortColumnId: z.string().optional(),
     kind: z.string().optional(),
     label: z.string().optional(),
     query: z.string().max(200).optional(),
     columnFilters: z.record(z.string(), z.string()).optional(),
+    pending: z.boolean().optional(),
+    groupBy: z.string().max(100).optional(),
   }).default({}),
   shared: z.boolean().default(true),
 });

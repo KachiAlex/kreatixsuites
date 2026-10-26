@@ -283,12 +283,29 @@ export function driveRoutes(app: FastifyInstance) {
     } else {
       // home + recent: items I own, shared with me, or in libraries I can see
       const limit = q.view === "home" ? 8 : 50;
-      rows = await dbq<ItemRow>(
-        `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.kind != 'folder'
-         AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
-         ORDER BY i.updated_at DESC LIMIT ${limit}`,
-        [user.id, libIds],
-      );
+      const siteScope = (req.query as { site?: string }).site;
+      if (siteScope) {
+        // site-scoped recent (SharePoint "recently modified" rollup): every
+        // item in the site's libraries, for site members only
+        const site = await getSite(siteScope);
+        const role = site ? await siteRoleFor(user, site) : null;
+        if (!site || !role) {
+          return reply.code(404).send({ error: "not_found" });
+        }
+        rows = await dbq<ItemRow>(
+          `SELECT * FROM items WHERE trashed = false AND media_for IS NULL AND kind != 'folder'
+           AND library_id IN (SELECT id FROM libraries WHERE site_id = $1)
+           ORDER BY updated_at DESC LIMIT ${limit}`,
+          [site.id],
+        );
+      } else {
+        rows = await dbq<ItemRow>(
+          `${base} WHERE i.trashed = false AND i.media_for IS NULL AND i.kind != 'folder'
+           AND (i.owner_id = $1 OR s.user_id IS NOT NULL OR i.library_id = ANY($2))
+           ORDER BY i.updated_at DESC LIMIT ${limit}`,
+          [user.id, libIds],
+        );
+      }
     }
 
     // viewer-level readers never see items that have only draft versions

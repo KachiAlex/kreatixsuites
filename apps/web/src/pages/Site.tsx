@@ -103,6 +103,11 @@ export function SitePage() {
         ))}
       </div>
 
+      <div className="site-home">
+        <SiteRecent site={site} libraries={libraries} />
+        <SiteActivity site={site} onShowAll={() => setActivityDlg(true)} />
+      </div>
+
       {site.associatedSites && site.associatedSites.length > 0 && (
         <>
           <div className="section-head"><h2>Associated sites</h2></div>
@@ -511,6 +516,64 @@ function ActivityDialog({ site, onClose }: { site: Site; onClose: () => void }) 
         <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
       </div>
     </Modal>
+  );
+}
+
+/** Recently modified items across the site's libraries (SharePoint's
+ *  "recently modified" rollup) — jumps straight into the right library. */
+function SiteRecent({ site, libraries }: { site: Site; libraries: Library[] }) {
+  const navigate = useNavigate();
+  const [items, setItems] = useState<DriveItem[] | null>(null);
+  useEffect(() => {
+    void api.get<{ items: DriveItem[] }>(`/api/drive?view=recent&site=${site.id}`)
+      .then((r) => setItems(r.items.slice(0, 8))).catch(() => setItems([]));
+  }, [site.id]);
+
+  const libName = (id: string | null | undefined) => libraries.find((l) => l.id === id)?.name;
+
+  return (
+    <div className="panel site-home-card">
+      <div className="section-head" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 14 }}>Recent</h2>
+      </div>
+      {!items && <p className="d-sub">Loading…</p>}
+      {items && !items.length && <p className="empty" style={{ margin: "8px 0" }}>Nothing yet.</p>}
+      {items?.map((it) => (
+        <button key={it.id} className="site-home-row" onClick={() => navigate(`/edit/${it.id}`)}>
+          <b>{it.name}</b>
+          <span>
+            {libName(it.libraryId) ?? "File"} · {timeAgo(it.updatedAt)}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Inline site activity feed — the head of the full activity log. */
+function SiteActivity({ site, onShowAll }: { site: Site; onShowAll: () => void }) {
+  const [events, setEvents] = useState<SiteEvent[] | null>(null);
+  useEffect(() => {
+    void api.get<{ events: SiteEvent[] }>(`/api/sites/${site.id}/activity`)
+      .then((r) => setEvents(r.events.slice(0, 8))).catch(() => setEvents([]));
+  }, [site.id]);
+
+  return (
+    <div className="panel site-home-card">
+      <div className="section-head" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 14 }}>Activity</h2>
+        <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={onShowAll}>View all</button>
+      </div>
+      {!events && <p className="d-sub">Loading…</p>}
+      {events && !events.length && <p className="empty" style={{ margin: "8px 0" }}>Nothing yet.</p>}
+      {events?.map((e) => (
+        <div className="site-home-row" key={e.id}>
+          <b><span className="c-av" style={{ marginRight: 6, display: "inline-grid" }}>{e.actor.initials}</span>
+            {e.actor.displayName}</b>
+          <span>{e.action}{e.detail ? ` · ${e.detail}` : ""} · {timeAgo(e.createdAt)}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

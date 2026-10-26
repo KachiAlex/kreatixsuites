@@ -401,6 +401,8 @@ export interface LibraryColumn {
 export interface ViewConfig {
   sort?: "name" | "updated" | "size";
   dir?: "asc" | "desc";
+  /** Sort by a custom metadata column instead of a system field */
+  sortColumnId?: string;
   kind?: FileKind | "";
   label?: string;
   query?: string;
@@ -408,6 +410,8 @@ export interface ViewConfig {
   columnFilters?: Record<string, string>;
   /** Show only items whose head draft awaits approval */
   pending?: boolean;
+  /** Group rows under collapsible headers: "label" | "kind" | "contentType" | a columnId */
+  groupBy?: string;
 }
 
 export interface LibraryView {
