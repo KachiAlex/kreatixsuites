@@ -248,6 +248,10 @@ async function main() {
   // shared resolveSession cache — no extra user lookup.
   app.addHook("preHandler", async (req, reply) => {
     if (!req.url.startsWith("/api/")) return;
+    // public form-fill endpoints are unauthenticated by design — a workspace
+    // member whose admin disabled Forms must still be able to fill someone
+    // else's public form link
+    if (req.url.startsWith("/api/forms/public")) return;
     const appSlug = appForApiPath(req.url);
     if (!appSlug) return;
     const { user } = await resolveSession(req);
