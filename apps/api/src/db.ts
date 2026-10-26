@@ -633,6 +633,39 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
       PRIMARY KEY (library_id, group_id)
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_library_group_perms_group ON library_group_permissions(group_id)`);
+  // lists (Microsoft Lists) — kind='list' libraries hold structured rows
+  // instead of files; values mirror item_metadata and encrypt at rest
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS list_rows (
+      id TEXT PRIMARY KEY,
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_list_rows_lib ON list_rows(library_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS list_row_values (
+      row_id TEXT NOT NULL REFERENCES list_rows(id) ON DELETE CASCADE,
+      column_id TEXT NOT NULL REFERENCES library_columns(id) ON DELETE CASCADE,
+      value TEXT,
+      PRIMARY KEY (row_id, column_id)
+    )`);
+  // site pages (SharePoint modern pages) — block-composed pages; a site can
+  // mark one is_home to use as its landing view
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS site_pages (
+      id TEXT PRIMARY KEY,
+      site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      blocks JSONB NOT NULL DEFAULT '[]'::jsonb,
+      is_home BOOLEAN NOT NULL DEFAULT false,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_site_pages_site ON site_pages(site_id)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false`);
   // TOTP second factor — secret stored field-encrypted; backups are sha256 hashes

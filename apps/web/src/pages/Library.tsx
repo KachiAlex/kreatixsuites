@@ -6,6 +6,8 @@ import { useFiles, useItemActions } from "../lib/hooks";
 import { useAuth } from "../lib/auth";
 import { LibraryGrid } from "../components/LibraryGrid";
 import { ItemDetailsPane } from "../components/ItemDetailsPane";
+import { MediaGallery } from "../components/MediaGallery";
+import { ListLibraryPage } from "./ListLibrary";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
 import { CheckInDialog } from "../components/CheckInDialog";
@@ -43,6 +45,7 @@ export function LibraryPage() {
   const [checkin, setCheckin] = useState<DriveItem | null>(null);
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [gallery, setGallery] = useState(true);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
   const dragDepth = useRef(0);
@@ -113,18 +116,29 @@ export function LibraryPage() {
 
   const uploadTo = async (f: File) => {
     const kind = (kindForPath(f.name) ?? (f.type === "application/pdf" ? "pdf" : "file")) as FileKind;
-    await api.upload(
+    const r = await api.upload<{ item: DriveItem }>(
       `/api/drive/upload?name=${encodeURIComponent(f.name)}&kind=${kind}${folderId ? `&parent=${folderId}` : `&library=${libId}`}`, f);
     refresh();
+    return r.item;
   };
 
   const uploadMany = async (files: File[]) => {
     if (!files.length) return;
     let failed = 0;
+    const tagJobs: Promise<number>[] = [];
     for (const [i, f] of files.entries()) {
       setUploading(`${i + 1}/${files.length} · ${f.name}`);
       try {
-        await uploadTo(f);
+        const item = await uploadTo(f);
+        // AI auto-tag per upload when the library has metadata columns —
+        // fills only empty fields, so explicit edits always win
+        if (item && columns.length && !folderId) {
+          tagJobs.push(
+            api.post<{ values: Record<string, string> }>(`${libBase}/items/${item.id}/suggest-metadata`, {})
+              .then((r) => Object.keys(r.values).length)
+              .catch(() => 0),
+          );
+        }
       } catch (e) {
         failed++;
         toast(e instanceof Error ? e.message : "Upload failed");
@@ -133,6 +147,10 @@ export function LibraryPage() {
     setUploading(null);
     if (files.length > 1) toast(`Uploaded ${files.length - failed}/${files.length} files`);
     else if (!failed) toast("Uploaded");
+    if (tagJobs.length) {
+      const n = (await Promise.all(tagJobs)).filter((c) => c > 0).length;
+      if (n) { toast(`✨ Auto-tagged ${n} file${n === 1 ? "" : "s"}`); refresh(); }
+    }
   };
 
   const onDrop = (e: React.DragEvent) => {
@@ -252,6 +270,9 @@ export function LibraryPage() {
   };
 
   const details = detailsId ? items.find((i) => i.id === detailsId) ?? null : null;
+
+  // list libraries are row stores, not file containers — different page
+  if (lib?.kind === "list") return <ListLibraryPage />;
 
   const canManage = site?.myRole === "owner";
 
@@ -400,6 +421,12 @@ export function LibraryPage() {
           {canManage && (
             <button className="btn-ghost btn-sm" onClick={() => setCtOpen(true)}>📋 Content types</button>
           )}
+          {lib?.kind === "media" && (
+            <button className="btn-ghost btn-sm" title="Toggle gallery / list view"
+              onClick={() => setGallery((g) => !g)}>
+              {gallery ? "☷ List" : "🖼 Gallery"}
+            </button>
+          )}
           <button className="btn-ghost btn-sm" title="Get notified when files change in this library"
             onClick={() => void api.put<{ subscribed: boolean }>(`${libBase}/alert`, { on: !subscribed })
               .then((r) => { setSubscribed(r.subscribed); toast(r.subscribed ? "Alerts on" : "Alerts off"); })
@@ -423,13 +450,17 @@ export function LibraryPage() {
         }}
         onDrop={onDrop}>
         <div className="lib-layout">
-          <LibraryGrid items={shown} columns={columns}
-            ctNames={new Map(contentTypes.map((c) => [c.id, c.name]))}
-            filter={filter} onSort={onSort}
-            onOpen={open} onSelect={(it) => setDetailsId(it.id)} onRefresh={refresh}
-            onShare={setSharing} onVersions={setVersions} onCheckin={setCheckin}
-            toast={toast} isAdmin={isAdmin} />
-          {details && (
+          {lib?.kind === "media" && gallery ? (
+            <MediaGallery items={shown} onOpen={open} toast={toast} />
+          ) : (
+            <LibraryGrid items={shown} columns={columns}
+              ctNames={new Map(contentTypes.map((c) => [c.id, c.name]))}
+              filter={filter} onSort={onSort}
+              onOpen={open} onSelect={(it) => setDetailsId(it.id)} onRefresh={refresh}
+              onShare={setSharing} onVersions={setVersions} onCheckin={setCheckin}
+              toast={toast} isAdmin={isAdmin} />
+          )}
+          {details && !(lib?.kind === "media" && gallery) && (
             <ItemDetailsPane item={details} columns={columns}
               ctColumns={details.contentTypeId
                 ? contentTypes.find((c) => c.id === details.contentTypeId)?.columns

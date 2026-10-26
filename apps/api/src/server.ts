@@ -29,6 +29,7 @@ import { calendarRoutes, sweepCalendarReminders } from "./routes/calendar.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
 import { runScheduleSweep } from "./rules.js";
+import { sweepSiteDigests } from "./siteDigest.js";
 import { sweepWebhookDeliveries } from "./integrations.js";
 import { formRoutes, formPublicRoutes, sweepFormRetention } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
@@ -506,6 +507,9 @@ async function main() {
     runSweep("retention.forms", 717009, () => sweepFormRetention())
       .then((n) => { if (n) app.log.info({ deleted: n }, "form response retention applied"); })
       .catch((e) => app.log.warn(e, "form retention sweep failed"));
+    runSweep("sites.digest", 717010, () => sweepSiteDigests(app.log))
+      .then((n) => { if (n) app.log.info({ detail: n }, "site digest sweep"); })
+      .catch((e) => app.log.warn(e, "site digest sweep failed"));
   };
   setImmediate(sweep);
   setInterval(sweep, 24 * 60 * 60 * 1000).unref();

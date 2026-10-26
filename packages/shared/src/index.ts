@@ -310,7 +310,7 @@ export interface Library {
   id: string;
   siteId: string;
   name: string;
-  kind: "documents" | "media" | "form";
+  kind: "documents" | "media" | "form" | "list";
   /** major = every save publishes; minor = check-in/out produces drafts */
   versioning?: "major" | "minor";
   /** Content approval — member publishes become owner-reviewed submissions */
@@ -422,6 +422,39 @@ export interface LibraryView {
   createdBy: string | null;
   shared: boolean;
   createdAt: string;
+}
+
+/** A row in a 'list' library (Microsoft Lists) — columnId → value. */
+export interface ListRow {
+  id: string;
+  libraryId: string;
+  /** Display label — first grid column, editable */
+  title: string;
+  data: Record<string, string | null>;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Block types composing a site page (SharePoint modern-page web parts,
+ *  but each block is a first-class live object, not a static iframe). */
+export type SiteBlock =
+  | { type: "heading"; text: string }
+  | { type: "text"; text: string }
+  | { type: "links"; title?: string; links: { label: string; url: string }[] }
+  | { type: "library"; libraryId: string; limit?: number }
+  | { type: "files"; itemIds: string[] }
+  | { type: "activity"; limit?: number };
+
+export interface SitePage {
+  id: string;
+  siteId: string;
+  title: string;
+  blocks: SiteBlock[];
+  isHome: boolean;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // --- API payloads ---

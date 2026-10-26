@@ -1,16 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { SiteRole, FileKind, SiteBlueprint } from "@kreatix/shared";
-import { q, one, run, now } from "../db.js";
-import { requireAuth, type AuthedRequest } from "../auth.js";
+import type { SiteRole, FileKind, SiteBlueprint, SiteBlock } from "@kreatix/shared";
+import { q, one, run, now, tx } from "../db.js";
+import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import {
   getSite, getLibrary, siteRoleFor, libraryRoleFor, toSite, toLibrary, memberOut,
   notifyLibrarySubscribers, normalizeChain, SITE_ROLE_SQL, type SiteRow, type LibraryRow,
 } from "../sites.js";
 import { ensureSubscription, effectivePlan, planLimit, entitled } from "../billing.js";
 import { encryptField, decryptField } from "../crypto.js";
-import { logActivity } from "../items.js";
+import { logActivity, getItem, itemName } from "../items.js";
+import { aiComplete, extractJson, gateAi } from "../aiComplete.js";
 
 const createSiteSchema = z.object({
   name: z.string().min(1).max(120),
@@ -51,7 +52,7 @@ const roleSchema = z.object({ role: z.enum(["owner", "member", "visitor"]) });
 
 const librarySchema = z.object({
   name: z.string().min(1).max(120),
-  kind: z.enum(["documents", "media", "form"]).default("documents"),
+  kind: z.enum(["documents", "media", "form", "list"]).default("documents"),
 });
 
 const libraryPatchSchema = librarySchema.partial().extend({
@@ -1458,6 +1459,375 @@ export function siteRoutes(app: FastifyInstance) {
       }
       await run("DELETE FROM library_views WHERE id = $1", [vid]);
       return { ok: true };
+    });
+
+    // ---- lists (Microsoft Lists) — structured rows in kind='list' libraries ----
+
+    interface ListRowRow {
+      id: string; library_id: string; title: string;
+      created_by: string | null; created_at: string; updated_at: string;
+    }
+    const rowOut = async (r: ListRowRow) => {
+      const vals = await q<{ column_id: string; value: string | null }>(
+        "SELECT column_id, value FROM list_row_values WHERE row_id = $1", [r.id]);
+      const data: Record<string, string | null> = {};
+      for (const v of vals) data[v.column_id] = v.value === null ? null : (decryptField(v.value) ?? v.value);
+      return {
+        id: r.id, libraryId: r.library_id,
+        title: decryptField(r.title) ?? r.title, data,
+        createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at,
+      };
+    };
+
+    /** Validate + normalize one column value against the column's type —
+     *  same rules as item metadata (drive.ts). Throws {status,message}. */
+    const checkRowValue = (
+      col: { id: string; type: string; choices: unknown; term_set_id: string | null },
+      v: string, termNames?: Set<string>,
+    ) => {
+      if (col.type === "number" && Number.isNaN(Number(v))) throw { status: 400, message: "Expected a number" };
+      if (col.type === "yesno" && !["yes", "no"].includes(v.toLowerCase())) throw { status: 400, message: "Expected yes or no" };
+      if (col.type === "choice" && Array.isArray(col.choices) && !(col.choices as string[]).includes(v))
+        throw { status: 400, message: "Value is not an allowed choice" };
+      if (col.type === "managed" && col.term_set_id && termNames && !termNames.has(v))
+        throw { status: 400, message: "Value is not a term in the bound set" };
+      return v.slice(0, 500);
+    };
+
+    /** Validate a columnId→value payload against the library's columns;
+     *  returns normalized writes. Throws {status,message} on bad input. */
+    const validateRowData = async (libId: string, data: Record<string, string | null>) => {
+      const cols = await q<{ id: string; type: string; choices: unknown; term_set_id: string | null }>(
+        "SELECT id, type, choices, term_set_id FROM library_columns WHERE library_id = $1", [libId]);
+      const colById = new Map(cols.map((c) => [c.id, c]));
+      const termNames = new Map<string, Set<string>>();
+      for (const c of cols.filter((c) => c.type === "managed" && c.term_set_id)) {
+        const names = (await q<{ name: string }>("SELECT name FROM terms WHERE set_id = $1", [c.term_set_id]))
+          .map((t) => decryptField(t.name) ?? t.name);
+        termNames.set(c.id, new Set(names));
+      }
+      const writes: { cid: string; v: string | null }[] = [];
+      for (const [cid, raw] of Object.entries(data)) {
+        const col = colById.get(cid);
+        if (!col) throw { status: 400, message: `Unknown column ${cid}` };
+        writes.push({ cid, v: raw === null || raw === "" ? null : checkRowValue(col, String(raw), termNames.get(cid)) });
+      }
+      return writes;
+    };
+
+    const writeRowValues = async (rowId: string, writes: { cid: string; v: string | null }[]) => {
+      for (const { cid, v } of writes) {
+        if (v === null) {
+          await run("DELETE FROM list_row_values WHERE row_id = $1 AND column_id = $2", [rowId, cid]);
+          continue;
+        }
+        await run(
+          `INSERT INTO list_row_values (row_id, column_id, value) VALUES ($1,$2,$3)
+           ON CONFLICT (row_id, column_id) DO UPDATE SET value = excluded.value`,
+          [rowId, cid, encryptField(v)],
+        );
+      }
+    };
+
+    const listGuard = async (req: FastifyRequest, reply: FastifyReply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return null;
+      if (ctx.lib.kind !== "list") {
+        void reply.code(400).send({ error: "bad_request", message: "Not a list library" });
+        return null;
+      }
+      return ctx;
+    };
+
+    authed.get("/api/sites/:id/libraries/:lid/rows", async (req, reply) => {
+      const ctx = await listGuard(req, reply);
+      if (!ctx) return;
+      const rows = await q<ListRowRow>(
+        "SELECT * FROM list_rows WHERE library_id = $1 ORDER BY created_at", [ctx.lib.id]);
+      return { rows: await Promise.all(rows.map(rowOut)) };
+    });
+
+    authed.post("/api/sites/:id/libraries/:lid/rows", async (req, reply) => {
+      const ctx = await listGuard(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const body = z.object({
+        title: z.string().min(1).max(500),
+        data: z.record(z.string(), z.string().nullable()).default({}),
+      }).parse(req.body);
+      const id = randomUUID();
+      try {
+        const writes = await validateRowData(ctx.lib.id, body.data);
+        await run(
+          "INSERT INTO list_rows (id, library_id, title, created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$5)",
+          [id, ctx.lib.id, encryptField(body.title.trim()), ctx.user.id, now()]);
+        await writeRowValues(id, writes);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        return reply.code(err.status ?? 400).send({ error: "bad_request", message: err.message ?? "Invalid values" });
+      }
+      const r = await one<ListRowRow>("SELECT * FROM list_rows WHERE id = $1", [id]);
+      return { row: await rowOut(r!) };
+    });
+
+    authed.patch("/api/sites/:id/libraries/:lid/rows/:rid", async (req, reply) => {
+      const ctx = await listGuard(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const { rid } = req.params as { rid: string };
+      const row = await one<ListRowRow>(
+        "SELECT * FROM list_rows WHERE id = $1 AND library_id = $2", [rid, ctx.lib.id]);
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      const body = z.object({
+        title: z.string().min(1).max(500).optional(),
+        data: z.record(z.string(), z.string().nullable()).optional(),
+      }).parse(req.body);
+      try {
+        if (body.title !== undefined) {
+          await run("UPDATE list_rows SET title = $2, updated_at = $3 WHERE id = $1",
+            [rid, encryptField(body.title.trim()), now()]);
+        }
+        if (body.data) await writeRowValues(rid, await validateRowData(ctx.lib.id, body.data));
+        await run("UPDATE list_rows SET updated_at = $2 WHERE id = $1", [rid, now()]);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        return reply.code(err.status ?? 400).send({ error: "bad_request", message: err.message ?? "Invalid values" });
+      }
+      return { row: await rowOut((await one<ListRowRow>("SELECT * FROM list_rows WHERE id = $1", [rid]))!) };
+    });
+
+    authed.delete("/api/sites/:id/libraries/:lid/rows/:rid", async (req, reply) => {
+      const ctx = await listGuard(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const { rid } = req.params as { rid: string };
+      const r = await run("DELETE FROM list_rows WHERE id = $1 AND library_id = $2", [rid, ctx.lib.id]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return { ok: true };
+    });
+
+    // ---- site pages (SharePoint modern pages) ----
+
+    interface PageRow {
+      id: string; site_id: string; title: string; blocks: unknown;
+      is_home: boolean; created_by: string | null;
+      created_at: string; updated_at: string;
+    }
+    const pageOut = (r: PageRow) => ({
+      id: r.id, siteId: r.site_id,
+      title: decryptField(r.title) ?? r.title,
+      blocks: (r.blocks as SiteBlock[] | null) ?? [],
+      isHome: !!r.is_home, createdBy: r.created_by,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    });
+    const blockSchema = z.discriminatedUnion("type", [
+      z.object({ type: z.literal("heading"), text: z.string().max(300) }),
+      z.object({ type: z.literal("text"), text: z.string().max(20000) }),
+      z.object({ type: z.literal("links"), title: z.string().max(120).optional(),
+        links: z.array(z.object({ label: z.string().max(120), url: z.string().max(2000) })).max(30) }),
+      z.object({ type: z.literal("library"), libraryId: z.string(), limit: z.number().int().min(1).max(20).optional() }),
+      z.object({ type: z.literal("files"), itemIds: z.array(z.string()).max(12) }),
+      z.object({ type: z.literal("activity"), limit: z.number().int().min(1).max(20).optional() }),
+    ]);
+    const pagesSchema = z.object({
+      title: z.string().min(1).max(120),
+      blocks: z.array(blockSchema).max(40).default([]),
+      isHome: z.boolean().optional(),
+    });
+    const pagePatchSchema = z.object({
+      title: z.string().min(1).max(120).optional(),
+      blocks: z.array(blockSchema).max(40).optional(),
+      isHome: z.boolean().optional(),
+    });
+
+    const siteCtx = async (req: FastifyRequest, reply: FastifyReply) => {
+      const { user } = req as AuthedRequest;
+      const site = await getSite((req.params as { id: string }).id);
+      const role = site ? await siteRoleFor(user, site) : null;
+      if (!site || !role) {
+        void reply.code(404).send({ error: "not_found", message: "Site not found" });
+        return null;
+      }
+      return { user, site, role };
+    };
+
+    authed.get("/api/sites/:id/pages", async (req, reply) => {
+      const ctx = await siteCtx(req, reply);
+      if (!ctx) return;
+      const rows = await q<PageRow>("SELECT * FROM site_pages WHERE site_id = $1 ORDER BY created_at", [ctx.site.id]);
+      return { pages: rows.map(pageOut) };
+    });
+
+    authed.post("/api/sites/:id/pages", async (req, reply) => {
+      const ctx = await siteCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const body = pagesSchema.parse(req.body);
+      const id = randomUUID();
+      await tx(async (c) => {
+        if (body.isHome) await c.query("UPDATE site_pages SET is_home = false WHERE site_id = $1", [ctx.site.id]);
+        await c.query(
+          "INSERT INTO site_pages (id, site_id, title, blocks, is_home, created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)",
+          [id, ctx.site.id, encryptField(body.title), JSON.stringify(body.blocks),
+            body.isHome ?? false, ctx.user.id, now()]);
+      });
+      return { page: pageOut((await one<PageRow>("SELECT * FROM site_pages WHERE id = $1", [id]))!) };
+    });
+
+    authed.patch("/api/sites/:id/pages/:pid", async (req, reply) => {
+      const ctx = await siteCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const { pid } = req.params as { pid: string };
+      const row = await one<PageRow>("SELECT * FROM site_pages WHERE id = $1 AND site_id = $2", [pid, ctx.site.id]);
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      const body = pagePatchSchema.parse(req.body);
+      await tx(async (c) => {
+        if (body.isHome) await c.query("UPDATE site_pages SET is_home = false WHERE site_id = $1", [ctx.site.id]);
+        if (body.title !== undefined)
+          await c.query("UPDATE site_pages SET title = $2, updated_at = $3 WHERE id = $1", [pid, encryptField(body.title), now()]);
+        if (body.blocks !== undefined)
+          await c.query("UPDATE site_pages SET blocks = $2, updated_at = $3 WHERE id = $1", [pid, JSON.stringify(body.blocks), now()]);
+        if (body.isHome !== undefined)
+          await c.query("UPDATE site_pages SET is_home = $2, updated_at = $3 WHERE id = $1", [pid, body.isHome, now()]);
+      });
+      return { page: pageOut((await one<PageRow>("SELECT * FROM site_pages WHERE id = $1", [pid]))!) };
+    });
+
+    authed.delete("/api/sites/:id/pages/:pid", async (req, reply) => {
+      const ctx = await siteCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const { pid } = req.params as { pid: string };
+      const r = await run("DELETE FROM site_pages WHERE id = $1 AND site_id = $2", [pid, ctx.site.id]);
+      if (!r) return reply.code(404).send({ error: "not_found" });
+      return { ok: true };
+    });
+
+    // ---- site AI: copilot + metadata auto-tagging ----
+
+    /** Copilot: answer a question from the site's indexed library content. */
+    authed.post("/api/sites/:id/ask", async (req, reply) => {
+      const ctx = await siteCtx(req, reply);
+      if (!ctx) return;
+      const { question } = z.object({ question: z.string().min(3).max(2000) }).parse(req.body);
+      const gate = await gateAi(ctx.user.orgId, ctx.user.id);
+      if (!gate.allowed) {
+        return reply.code(gate.http ?? 403).send({ error: gate.error, message: gate.message });
+      }
+      // bounded candidate set: newest items across the site's libraries, then
+      // name/content match in JS (index bodies are ciphertext — never ILIKE)
+      const candidates = await q<{ id: string; name: string; body: string | null }>(
+        `SELECT i.id, i.name, si.body FROM items i
+         JOIN libraries l ON l.id = i.library_id
+         LEFT JOIN search_index si ON si.file_id = i.id
+         WHERE l.site_id = $1 AND i.trashed = false AND i.kind != 'folder'
+         ORDER BY i.updated_at DESC LIMIT 60`, [ctx.site.id]);
+      const qLower = question.toLowerCase();
+      const terms = qLower.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+      const scored = candidates.map((c) => {
+        const name = decryptField(c.name) ?? c.name;
+        const body = c.body ? decryptField(c.body) ?? "" : "";
+        let score = 0;
+        for (const t of terms) {
+          if (name.toLowerCase().includes(t)) score += 3;
+          if (body.toLowerCase().includes(t)) score += 1;
+        }
+        return { name, body, score };
+      }).filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score).slice(0, 8);
+      const context = scored.map((s, i) =>
+        `[${i + 1}] ${s.name}\n${s.body.slice(0, 1200)}`).join("\n\n");
+      const r = await aiComplete({
+        orgId: ctx.user.orgId, userId: ctx.user.id,
+        system: `You are the copilot for the "${ctx.site.name}" workspace site. Answer the user's question using ONLY the provided site documents. Cite sources as [n]. If the documents don't cover it, say so honestly. Reply as JSON: {"answer": string, "sources": number[]}.`,
+        user: `Documents:\n${context || "(no relevant documents found)"}\n\nQuestion: ${question}`,
+      });
+      if ("error" in r) return reply.code(r.status).send({ error: "ai_error", message: r.error });
+      const parsed = extractJson(r.text);
+      return {
+        answer: typeof parsed?.answer === "string" ? parsed.answer : r.text.slice(0, 2000),
+        sources: scored.map((s, i) => ({ n: i + 1, name: s.name }))
+          .filter((s) => Array.isArray(parsed?.sources) ? (parsed.sources as number[]).includes(s.n) : true),
+        model: r.model,
+      };
+    });
+
+    /** Auto-tag: suggest content type + column values for a library item from
+     *  its indexed content. Runs after upload client-side; only fills empty
+     *  fields so explicit user edits always win. */
+    authed.post("/api/sites/:id/libraries/:lid/items/:iid/suggest-metadata", async (req, reply) => {
+      const ctx = await libCtx(req, reply);
+      if (!ctx) return;
+      if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
+      const { iid } = req.params as { iid: string };
+      const item = await getItem(iid);
+      if (!item || item.library_id !== ctx.lib.id) return reply.code(404).send({ error: "not_found" });
+      if (!hasPermission(await permissionFor(ctx.user.id, item), "editor")) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      const gate = await gateAi(ctx.user.orgId, ctx.user.id);
+      if (!gate.allowed) {
+        return reply.code(gate.http ?? 403).send({ error: gate.error, message: gate.message });
+      }
+      const cols = await q<ColumnRow>(
+        "SELECT * FROM library_columns WHERE library_id = $1 ORDER BY position", [ctx.lib.id]);
+      // only suggest for empty fields — never overwrite user-set values
+      const have = await q<{ column_id: string }>(
+        "SELECT column_id FROM item_metadata WHERE item_id = $1 AND value IS NOT NULL", [item.id]);
+      const haveSet = new Set(have.map((h) => h.column_id));
+      const open = cols.filter((c) => !haveSet.has(c.id));
+      const cts = await q<{ id: string; name: string }>(
+        "SELECT id, name FROM content_types WHERE library_id = $1 OR site_id = $2", [ctx.lib.id, ctx.site.id]);
+      if (!open.length && (item.content_type_id || !cts.length)) {
+        return { values: {}, contentTypeId: null, reason: "nothing_to_suggest" };
+      }
+      const idx = await one<{ body: string | null }>(
+        "SELECT body FROM search_index WHERE file_id = $1", [item.id]);
+      const text = idx?.body ? (decryptField(idx.body) ?? "").slice(0, 3000) : "";
+      if (!text) return { values: {}, contentTypeId: null, reason: "no_indexed_content" };
+      const colSpec = open.map((c) => ({
+        name: decryptField(c.name) ?? c.name, id: c.id, type: c.type,
+        choices: Array.isArray(c.choices) ? c.choices : undefined,
+      }));
+      const termSets = new Map<string, string[]>();
+      for (const c of open.filter((c) => c.type === "managed" && c.term_set_id)) {
+        termSets.set(c.id, (await q<{ name: string }>(
+          "SELECT name FROM terms WHERE set_id = $1", [c.term_set_id]))
+          .map((t) => decryptField(t.name) ?? t.name));
+      }
+      const r = await aiComplete({
+        orgId: ctx.user.orgId, userId: ctx.user.id, fileId: item.id,
+        system: `You tag documents in a business document library. Given the document text, the library's column schema, and available content types, return JSON:
+{"values": {"<columnId>": "<value>"}, "contentType": "<contentTypeId or null>"}
+Rules: only set columns you're confident about; 'choice' values must be one of the listed choices; 'yesno' must be "yes"/"no"; 'date' must be YYYY-MM-DD; 'managed' must be one of the listed terms; 'person' a display name or email. Omit rather than guess.`,
+        user: `Document name: ${itemName(item)}\nContent:\n${text}\n\nColumns: ${JSON.stringify(colSpec.map((c) => ({ ...c, terms: termSets.get(c.id) })))}\nContent types: ${JSON.stringify(cts.map((c) => ({ id: c.id, name: decryptField(c.name) ?? c.name })))}`,
+      });
+      if ("error" in r) return reply.code(r.status).send({ error: "ai_error", message: r.error });
+      const parsed = extractJson(r.text);
+      const suggested = (parsed?.values ?? {}) as Record<string, string>;
+      // apply through the same validation path as manual edits
+      const colById = new Map(cols.map((c) => [c.id, c]));
+      const applied: Record<string, string> = {};
+      for (const [cid, raw] of Object.entries(suggested)) {
+        const c = colById.get(cid);
+        if (!c || typeof raw !== "string" || !raw.trim() || haveSet.has(cid)) continue;
+        try {
+          checkRowValue(c, raw, termSets.has(cid) ? new Set(termSets.get(cid)) : undefined);
+        } catch { continue; }
+        await run(
+          `INSERT INTO item_metadata (item_id, column_id, value) VALUES ($1,$2,$3)
+           ON CONFLICT (item_id, column_id) DO UPDATE SET value = excluded.value`,
+          [item.id, cid, encryptField(raw.slice(0, 500))]);
+        applied[cid] = raw;
+      }
+      let contentTypeId: string | null = null;
+      if (!item.content_type_id && typeof parsed?.contentType === "string"
+        && cts.some((c) => c.id === parsed.contentType)) {
+        await run("UPDATE items SET content_type_id = $2 WHERE id = $1", [item.id, parsed.contentType]);
+        contentTypeId = parsed.contentType;
+      }
+      return { values: applied, contentTypeId, model: r.model };
     });
   });
 }

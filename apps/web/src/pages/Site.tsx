@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { DriveItem, GroupGrant, Library, OrgGroup, Site, SiteMember, SiteRole } from "@kreatix/shared";
+import type { DriveItem, GroupGrant, Library, OrgGroup, Site, SiteMember, SitePage as SitePageType, SiteRole } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { useToast } from "../lib/hooks";
 import { KIND_META, timeAgo } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { ContentTypeDialog } from "../components/LibraryDialogs";
+import { Block } from "./SitePageView";
 
 type SearchItem = DriveItem & { match?: "name" | "content"; snippet?: string };
 
@@ -26,6 +27,7 @@ export function SitePage() {
   const [site, setSite] = useState<Site | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [members, setMembers] = useState<SiteMember[]>([]);
+  const [pages, setPages] = useState<SitePageType[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [libDlg, setLibDlg] = useState(false);
   const [memberDlg, setMemberDlg] = useState(false);
@@ -33,6 +35,7 @@ export function SitePage() {
   const [activityDlg, setActivityDlg] = useState(false);
   const [trashDlg, setTrashDlg] = useState(false);
   const [ctDlg, setCtDlg] = useState(false);
+  const [copilotDlg, setCopilotDlg] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -44,12 +47,26 @@ export function SitePage() {
     } catch { setNotFound(true); }
   }, [siteId]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void api.get<{ pages: SitePageType[] }>(`/api/sites/${siteId}/pages`)
+      .then((r) => setPages(r.pages)).catch(() => {});
+  }, [siteId]);
 
   if (notFound) return <div className="panel"><div className="empty">Site not found or you don't have access.</div></div>;
   if (!site) return <div className="empty">Loading…</div>;
 
   const canManage = site.myRole === "owner";
   const canWrite = site.myRole === "owner" || site.myRole === "member";
+  const homePage = pages.find((p) => p.isHome);
+
+  const newPage = async () => {
+    const title = prompt("Page title:", "Untitled page")?.trim();
+    if (!title) return;
+    try {
+      const r = await api.post<{ page: SitePageType }>(`/api/sites/${siteId}/pages`, { title });
+      navigate(`/sites/${siteId}/page/${r.page.id}`);
+    } catch (e) { toast(e instanceof Error ? e.message : "Failed to create page"); }
+  };
 
   return (
     <>
@@ -70,6 +87,7 @@ export function SitePage() {
           <div className="people" title="Members">
             {members.slice(0, 5).map((m) => <span key={m.userId} title={`${m.user.displayName} — ${m.role}`}>{m.user.initials}</span>)}
           </div>
+          <button className="btn-ghost btn-sm" onClick={() => setCopilotDlg(true)}>✦ Ask</button>
           <button className="btn-ghost btn-sm" onClick={() => setMemberDlg(true)}>Members</button>
           <button className="btn-ghost btn-sm" onClick={() => setActivityDlg(true)}>Activity</button>
           {canManage && <button className="btn-ghost btn-sm" onClick={() => setTrashDlg(true)}>Recycle bin</button>}
@@ -78,21 +96,39 @@ export function SitePage() {
         </div>
       </div>
 
+      {homePage && homePage.blocks.length > 0 && (
+        <div className="site-home-page">
+          <div className="home-section-head">
+            <h3>{homePage.title}</h3>
+            <button className="btn-ghost btn-sm" onClick={() => navigate(`/sites/${siteId}/page/${homePage.id}`)}>
+              {canWrite ? "Edit page →" : "Open page →"}
+            </button>
+          </div>
+          {homePage.blocks.map((b, i) => (
+            <div className="page-block" key={i}>
+              <Block b={b} i={i} siteId={siteId} libraries={libraries} edit={false}
+                onChange={() => {}} navigate={navigate} />
+            </div>
+          ))}
+        </div>
+      )}
+
       <SiteSearch siteId={site.id} />
 
       <div className="section-head">
         <h2>Document libraries</h2>
         {canWrite && (
-          <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => setLibDlg(true)}>
-            ＋ New library
-          </button>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <button className="btn-ghost btn-sm" onClick={() => void newPage()}>＋ Page</button>
+            <button className="btn-ghost btn-sm" onClick={() => setLibDlg(true)}>＋ New library</button>
+          </div>
         )}
       </div>
 
       <div className="site-grid">
         {libraries.map((l) => (
           <button key={l.id} className="site-card" onClick={() => navigate(`/sites/${site.id}/library/${l.id}`)}>
-            <span className="site-card-ico">{l.inheritPermissions === false ? "🔒" : "🗂"}</span>
+            <span className="site-card-ico">{l.inheritPermissions === false ? "🔒" : l.kind === "list" ? "☰" : "🗂"}</span>
             <span className="site-card-body">
               <b>{l.name}</b>
               <span>{l.itemCount ?? 0} item{(l.itemCount ?? 0) === 1 ? "" : "s"} · {l.kind}
@@ -102,6 +138,24 @@ export function SitePage() {
           </button>
         ))}
       </div>
+
+      {pages.length > 0 && (
+        <>
+          <div className="section-head"><h2>Pages</h2></div>
+          <div className="site-grid">
+            {pages.map((p) => (
+              <button key={p.id} className="site-card" onClick={() => navigate(`/sites/${siteId}/page/${p.id}`)}>
+                <span className="site-card-ico">📄</span>
+                <span className="site-card-body">
+                  <b>{p.title}</b>
+                  <span>{p.isHome ? "Site home · " : ""}{p.blocks.length} block{p.blocks.length === 1 ? "" : "s"} · {timeAgo(p.updatedAt)}</span>
+                </span>
+                <span style={{ color: "var(--muted)" }}>›</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="site-home">
         <SiteRecent site={site} libraries={libraries} />
@@ -120,6 +174,7 @@ export function SitePage() {
               </button>
             ))}
           </div>
+          <HubRollup sites={site.associatedSites} />
         </>
       )}
 
@@ -133,6 +188,7 @@ export function SitePage() {
       {activityDlg && <ActivityDialog site={site} onClose={() => setActivityDlg(false)} />}
       {trashDlg && <TrashDialog site={site} toast={toast} onClose={() => setTrashDlg(false)} />}
       {ctDlg && <ContentTypeDialog siteId={site.id} onClose={() => setCtDlg(false)} toast={toast} />}
+      {copilotDlg && <SiteCopilot site={site} onClose={() => setCopilotDlg(false)} />}
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
     </>
   );
@@ -222,6 +278,7 @@ function NewLibraryDialog({ siteId, onClose, onCreated, toast }: {
         <label>Kind</label>
         <select value={kind} onChange={(e) => setKind(e.target.value as Library["kind"])}>
           <option value="documents">Documents</option>
+          <option value="list">List (structured rows)</option>
           <option value="media">Media assets</option>
           <option value="form">Forms</option>
         </select>
@@ -623,6 +680,121 @@ function TrashDialog({ site, toast, onClose }: { site: Site; toast: (m: string) 
       ))}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn-ghost btn-sm" onClick={onClose}>Done</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Hub roll-up — recent files + activity merged across the hub's associated
+ *  sites (SharePoint hub roll-up web part). */
+function HubRollup({ sites }: { sites: { id: string; name: string }[] }) {
+  const navigate = useNavigate();
+  const [items, setItems] = useState<(DriveItem & { siteName?: string })[] | null>(null);
+  const [events, setEvents] = useState<(SiteEvent & { siteName?: string })[] | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const docs: (DriveItem & { siteName?: string })[] = [];
+      const acts: (SiteEvent & { siteName?: string })[] = [];
+      for (const s of sites) {
+        try {
+          const r = await api.get<{ items: DriveItem[] }>(`/api/drive?view=recent&site=${s.id}`);
+          for (const it of r.items.slice(0, 4)) docs.push({ ...it, siteName: s.name });
+        } catch { /* site not accessible to this user */ }
+        try {
+          const a = await api.get<{ events: SiteEvent[] }>(`/api/sites/${s.id}/activity`);
+          for (const e of a.events.slice(0, 4)) acts.push({ ...e, siteName: s.name });
+        } catch { /* site not accessible to this user */ }
+      }
+      docs.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      acts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      setItems(docs.slice(0, 8));
+      setEvents(acts.slice(0, 8));
+    })();
+  }, [sites]);
+
+  return (
+    <div className="site-home" style={{ marginTop: 8 }}>
+      <div className="panel site-home-card">
+        <div className="section-head" style={{ marginTop: 0 }}>
+          <h2 style={{ fontSize: 14 }}>Across the hub — recent</h2>
+        </div>
+        {!items && <p className="d-sub">Loading…</p>}
+        {items && !items.length && <p className="empty" style={{ margin: "8px 0" }}>Nothing yet.</p>}
+        {items?.map((it) => (
+          <button key={it.id} className="site-home-row" onClick={() => navigate(`/edit/${it.id}`)}>
+            <b>{it.name}</b>
+            <span>{it.siteName} · {timeAgo(it.updatedAt)}</span>
+          </button>
+        ))}
+      </div>
+      <div className="panel site-home-card">
+        <div className="section-head" style={{ marginTop: 0 }}>
+          <h2 style={{ fontSize: 14 }}>Across the hub — activity</h2>
+        </div>
+        {!events && <p className="d-sub">Loading…</p>}
+        {events && !events.length && <p className="empty" style={{ margin: "8px 0" }}>Nothing yet.</p>}
+        {events?.map((e) => (
+          <div className="site-home-row" key={e.id}>
+            <b><span className="c-av" style={{ marginRight: 6, display: "inline-grid" }}>{e.actor.initials}</span>
+              {e.actor.displayName}</b>
+            <span>{e.siteName} · {e.action}{e.detail ? ` · ${e.detail}` : ""} · {timeAgo(e.createdAt)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Site copilot — ask questions grounded in the site's indexed content and
+ *  activity ("what changed this week?", "what's pending approval?"). */
+function SiteCopilot({ site, onClose }: { site: Site; onClose: () => void }) {
+  const [q, setQ] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<{ q: string; a: string; sources: { id: string; name: string }[] }[]>([]);
+
+  const ask = async () => {
+    const question = q.trim();
+    if (!question || asking) return;
+    setAsking(true); setError(null);
+    try {
+      const r = await api.post<{ answer: string; sources: { id: string; name: string }[] }>(
+        `/api/sites/${site.id}/ai/ask`, { question });
+      setHistory((h) => [{ q: question, a: r.answer, sources: r.sources }, ...h]);
+      setQ("");
+    } catch (e) { setError(e instanceof Error ? e.message : "Couldn't answer right now"); }
+    setAsking(false);
+  };
+
+  return (
+    <Modal onClose={onClose} label={`Ask about ${site.name}`}>
+      <h2 style={{ marginBottom: 4 }}>✦ Site copilot</h2>
+      <p className="d-sub">Answers grounded in this site's indexed documents and activity log.</p>
+      <div className="copilot-input">
+        <input value={q} placeholder="What changed this week?" autoFocus
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void ask(); }} />
+        <button className="btn-primary btn-sm" disabled={asking || !q.trim()} onClick={() => void ask()}>
+          {asking ? "…" : "Ask"}
+        </button>
+      </div>
+      {error && <p className="m-err" style={{ margin: "8px 0" }}>{error}</p>}
+      <div className="copilot-history">
+        {history.map((h, i) => (
+          <div key={i} className="copilot-qa">
+            <div className="copilot-q">{h.q}</div>
+            <div className="copilot-a">{h.a}</div>
+            {h.sources.length > 0 && (
+              <div className="copilot-src">Sources: {h.sources.map((s) => s.name).join(", ")}</div>
+            )}
+          </div>
+        ))}
+        {!history.length && (
+          <div className="d-sub" style={{ fontSize: 12 }}>
+            Try: "What's pending approval?" · "Summarize recent activity" · "Which documents mention onboarding?"
+          </div>
+        )}
       </div>
     </Modal>
   );

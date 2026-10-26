@@ -24,6 +24,7 @@ const PdfTools = lazy(() => import("./pages/PdfTools").then((m) => ({ default: m
 const Sites = lazy(() => import("./pages/Sites").then((m) => ({ default: m.Sites })));
 const SitePage = lazy(() => import("./pages/Site").then((m) => ({ default: m.SitePage })));
 const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
+const SitePageView = lazy(() => import("./pages/SitePageView").then((m) => ({ default: m.SitePageView })));
 const Download = lazy(() => import("./pages/Download").then((m) => ({ default: m.Download })));
 const Mail = lazy(() => import("./pages/Mail").then((m) => ({ default: m.Mail })));
 const Meet = lazy(() => import("./pages/Meet").then((m) => ({ default: m.Meet })));
@@ -161,6 +162,7 @@ export default function App() {
             <Route path="/sites/:siteId" element={<RequireApp slug="sites"><SitePage /></RequireApp>} />
             <Route path="/sites/:siteId/library/:libId" element={<RequireApp slug="sites"><LibraryPage /></RequireApp>} />
             <Route path="/sites/:siteId/library/:libId/folder/:folderId" element={<RequireApp slug="sites"><LibraryPage /></RequireApp>} />
+            <Route path="/sites/:siteId/page/:pageId" element={<RequireApp slug="sites"><SitePageView /></RequireApp>} />
             <Route path="/admin" element={<Admin />} />
             <Route path="/account" element={<Account />} />
           </Route>

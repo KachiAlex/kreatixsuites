@@ -3699,3 +3699,105 @@ button.site-home-row:hover{background:var(--subtle)}
 .site-home-row span{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:900px){.site-home{grid-template-columns:1fr}.details-pane{width:220px}}
 @media (max-width:640px){.lib-layout{flex-direction:column}.details-pane{width:100%;position:static}}
+
+/* ── List library ───────────────────────────────────────────────── */
+.list-new-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 10px; border: 1px dashed var(--line); border-radius: 10px;
+  margin-top: 8px; color: var(--muted); font-size: 13px; cursor: pointer;
+  background: transparent; width: 100%; text-align: left; transition: .15s;
+}
+.list-new-row:hover { border-color: var(--k-orange); color: var(--ink); background: var(--k-orange-soft); }
+.cell-input { width: 100%; font-size: 12.5px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); }
+.cell-input:focus { outline: none; border-color: var(--k-orange); box-shadow: 0 0 0 2px rgba(242,120,46,.15); }
+
+/* ── Media gallery ──────────────────────────────────────────────── */
+.media-gallery {
+  flex: 1; overflow: auto; padding: 12px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px;
+  align-content: start;
+}
+.media-card {
+  position: relative; border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; background: var(--surface); cursor: pointer; padding: 0;
+  display: flex; flex-direction: column; transition: .15s; text-align: left;
+}
+.media-card:hover { border-color: var(--k-orange); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.media-card img { width: 100%; height: 130px; object-fit: cover; display: block; background: var(--bg); }
+.media-card--file { align-items: center; padding-top: 24px; gap: 10px; height: 130px; justify-content: center; }
+.media-card--file .thumb { width: 44px; height: 44px; font-size: 18px; }
+.media-card--file span { font-size: 11.5px; color: var(--muted); }
+.media-card-name {
+  padding: 7px 10px; font-size: 12px; font-weight: 600; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.media-lb {
+  position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column;
+  background: rgba(10,10,12,.92); backdrop-filter: blur(4px);
+}
+.media-lb-top {
+  display: flex; align-items: center; gap: 14px; padding: 12px 18px; color: #fff;
+}
+.media-lb-top b { flex: 1; font-size: 14px; }
+.media-lb-top span { font-size: 12px; color: rgba(255,255,255,.65); }
+.media-lb-body { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 60px 40px; }
+.media-lb-body img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.media-lb-nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  background: rgba(255,255,255,.12); color: #fff; border: 0; border-radius: 50%;
+  width: 42px; height: 42px; font-size: 22px; cursor: pointer; transition: .15s;
+}
+.media-lb-nav:hover { background: var(--k-orange); }
+.media-lb-nav--prev { left: 16px; }
+.media-lb-nav--next { right: 16px; }
+.media-lb-x { background: rgba(255,255,255,.12); color: #fff; border: 0; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
+.media-lb-x:hover { background: var(--danger); }
+
+/* ── Site pages ─────────────────────────────────────────────────── */
+.page-canvas { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.page-block { position: relative; }
+.page-block-tools {
+  position: absolute; top: 4px; right: 6px; display: flex; gap: 4px; z-index: 2;
+}
+.page-block-tools button {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+  font-size: 11px; padding: 1px 6px; cursor: pointer; color: var(--muted);
+}
+.page-block-tools button:hover:not(:disabled) { color: var(--k-orange); border-color: var(--k-orange); }
+.page-heading { margin: 4px 0; font-size: 17px; }
+.page-hd-edit { width: 100%; font-size: 17px; font-weight: 700; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+.page-text { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
+.page-text-edit { width: 100%; font-size: 13.5px; line-height: 1.65; padding: 10px; border-radius: 8px; border: 1px solid var(--line); resize: vertical; }
+.page-links { display: flex; flex-direction: column; gap: 4px; }
+.page-links a { font-size: 13px; color: var(--k-orange); text-decoration: none; }
+.page-links a:hover { text-decoration: underline; }
+.page-item-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 4px;
+  background: none; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; text-align: left;
+}
+.page-item-row:last-child { border-bottom: 0; }
+.page-item-row:hover { background: var(--bg); }
+.page-item-row b { font-size: 13px; }
+.page-item-row span:last-child { font-size: 11px; color: var(--muted); }
+.page-file-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.page-file-card {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; width: 120px;
+}
+.page-file-card:hover { border-color: var(--k-orange); }
+.page-file-card b { font-size: 11.5px; text-align: center; word-break: break-word; }
+.page-add {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.site-home-page { margin: 10px 0; display: flex; flex-direction: column; gap: 10px; }
+.site-home-page .page-block .panel { margin: 0; }
+
+/* ── Site copilot ───────────────────────────────────────────────── */
+.copilot-input { display: flex; gap: 8px; margin: 12px 0; }
+.copilot-input input { flex: 1; }
+.copilot-history { display: flex; flex-direction: column; gap: 12px; max-height: 46vh; overflow: auto; }
+.copilot-qa { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.copilot-q { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.copilot-a { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.copilot-src { margin-top: 8px; font-size: 11px; color: var(--muted); }
