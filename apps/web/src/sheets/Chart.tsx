@@ -88,7 +88,7 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
   const isScatter = spec.type === "scatter" || spec.type === "bubble";
   // types without cartesian axes / generic x labels
   const noAxes = isPie || spec.type === "treemap" || spec.type === "funnel" || spec.type === "radar"
-    || spec.type === "sunburst";
+    || spec.type === "sunburst" || spec.type === "surface";
   const noXLabels = noAxes || spec.type === "histogram" || spec.type === "boxwhisker";
 
   // stacked: cumulative sums per index; max is the tallest stack
@@ -285,6 +285,42 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
         <text key={`bd${i}`} x={xAt(i)} y={yOf(v) - rr - 3} textAnchor="middle" fontSize={8} fill="#6E6862">
           {fmtTick(v)}</text>);
     });
+  } else if (spec.type === "pareto") {
+    // descending bars + cumulative-percentage line on the axis scale
+    const items = (series[0]?.values ?? []).map((v, i) => ({ v, l: labels[i] }))
+      .sort((a, b) => b.v - a.v);
+    const total = items.reduce((a, x) => a + Math.max(0, x.v), 0) || 1;
+    const bw = plotW / Math.max(1, items.length);
+    let cum = 0;
+    const pts: number[][] = [];
+    items.forEach((it, i) => {
+      cum += Math.max(0, it.v);
+      const x = PL + i * bw + bw * 0.15;
+      const yv = yOf(Math.max(0, it.v));
+      els.push(<rect key={`pa${i}`} x={x} y={yv} width={bw * 0.7} height={Math.max(1, y0 - yv)} fill={COLORS[0]} rx={2}>
+        <title>{it.l}: {fmtTick(it.v)}</title></rect>);
+      pts.push([x + bw * 0.35, PT + plotH - (cum / total) * plotH]);
+      if (spec.dataLabels) els.push(
+        <text key={`pal${i}`} x={x + bw * 0.35} y={PT + plotH - (cum / total) * plotH - 4}
+          textAnchor="middle" fontSize={8} fill={COLORS[1]}>{Math.round((cum / total) * 100)}%</text>);
+    });
+    if (pts.length > 1)
+      els.push(<path key="pal" d={pts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ")}
+        fill="none" stroke={COLORS[1]} strokeWidth={2} />);
+    pts.forEach((p, i) => els.push(<circle key={`pap${i}`} cx={p[0]} cy={p[1]} r={3} fill={COLORS[1]} />));
+  } else if (spec.type === "surface") {
+    // 2D contour view — series columns × label rows as a value-mapped grid
+    const nr = Math.max(1, series[0]?.values.length ?? 0), nc = Math.max(1, series.length);
+    const cw = plotW / nc, rh = plotH / nr;
+    series.forEach((s, si) => {
+      s.values.forEach((v, i) => {
+        const t = (v - vmin) / (vmax - vmin || 1);
+        els.push(<rect key={`sf${si}-${i}`} x={PL + si * cw} y={PT + i * rh}
+          width={Math.max(1, cw - 1)} height={Math.max(1, rh - 1)}
+          fill={`hsl(${210 - t * 190},80%,${55 - t * 12}%)`}>
+          <title>{labels[i]} / {s.name}: {fmtTick(v)}</title></rect>);
+      });
+    });
   } else {
     series.forEach((s, si) => {
       const color = COLORS[si % COLORS.length];
@@ -415,8 +451,10 @@ export function ChartCard({ spec, sheet, wb, onMove, onRemove, onEdit }: {
           <Pie series={series} doughnut={spec.type === "doughnut"} dataLabels={spec.dataLabels}
             cx={(PL + plotW) / 2 + PL / 2 - PL} cy={PT + plotH / 2} r={Math.min(plotH, plotW) / 2 - 8} />
         ) : els}
-        {/* x labels */}
-        {!noXLabels && labels.map((l, i) => (
+        {/* x labels — pareto re-sorts its categories descending */}
+        {!noXLabels && (spec.type === "pareto"
+          ? (series[0]?.values ?? []).map((v, i) => ({ v, l: labels[i] })).sort((a, b) => b.v - a.v).map((x) => x.l)
+          : labels).map((l, i) => (
           <text key={i} x={isScatter ? xAt(i) : PL + i * groupW + groupW / 2} y={PT + plotH + 14}
             textAnchor={isScatter ? "middle" : "middle"} fontSize={9} fill="#A19A95">
             {isScatter ? fmtTick(xs[i]) : String(l).slice(0, 8)}

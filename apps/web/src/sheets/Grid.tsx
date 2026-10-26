@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type CSSProperties } from "react";
+import { useMemo, useRef, useState, useEffect, useCallback, Fragment, type KeyboardEvent, type ClipboardEvent, type CSSProperties, type JSX } from "react";
 import type { SheetData, Range, Ref, Workbook, SheetObject, RichRun, CellStyle } from "./model";
 import { colLabel, toA1, ROW_H, COL_W, HEADER_W, parseA1, rangeRefs, parseRange, outlineHiddenFields, richStyleRuns, richRunsMatch, richRunsForEdit } from "./model";
 import type { EvalResult } from "./engine";
+import { evaluateSheet, evaluateSheetIn } from "./engine";
 import { formatValue } from "./format";
 import { rangeToTSV, rangeToCells, setCopyBuffer, cfEffects, columnSuggestions } from "./io";
 import { FxInput } from "./FxInput";
@@ -988,7 +989,11 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
               style={{ left: HEADER_W + pos.x, top: HEADER_H + pos.y, width: pos.w, height: pos.h }}
               onPointerDown={(e) => startDrag(e, "move")}
               onContextMenu={(e) => { e.preventDefault(); setSelObj(o.id); }}>
-              <img src={o.src} alt={o.alt ?? ""} draggable={false} />
+              {o.kind === "linkedrange" && o.range ? (
+                <LinkedRangeView sheet={sheet} wb={wb} rangeA1={o.range} />
+              ) : (
+                <img src={o.src} alt={o.alt ?? ""} draggable={false} />
+              )}
               {canEdit && selObj === o.id && (
                 <>
                   <span className="obj-grip" title="Drag to resize" onPointerDown={(e) => startDrag(e, "size")} />
@@ -1074,4 +1079,34 @@ export function Grid({ sheet, evals, canEdit, wb, audit, selections, selection, 
       </div>
     </div>
   );
+}
+
+/** Camera-tool object — a live picture of a cell range. Renders the source
+ *  range's evaluated values in a mini grid; updates as cells change. */
+function LinkedRangeView({ sheet, wb, rangeA1 }: { sheet: SheetData; wb?: Workbook; rangeA1: string }) {
+  const m = rangeA1.match(/^(?:'([^']+)'|([\w.]+))!(.+)$/);
+  const name = m?.[1] ?? m?.[2];
+  const target = name && wb
+    ? wb.sheets.find((s) => s.name.toLowerCase() === name.toLowerCase())
+    : sheet;
+  const r = target && parseRange((m ? m[3] : rangeA1).replace(/\$/g, ""));
+  const evals = useMemo(
+    () => (target ? (wb ? evaluateSheetIn(wb, target.name) : evaluateSheet(target.cells)) : null),
+    [target, wb]);
+  if (!target || !r || !evals) return <div className="linked-range-miss">#REF!</div>;
+  const rows: JSX.Element[] = [];
+  for (let row = r.r1; row <= Math.min(r.r2, r.r1 + 40); row++) {
+    const tds: JSX.Element[] = [];
+    for (let c = r.c1; c <= Math.min(r.c2, r.c1 + 16); c++) {
+      const ref = toA1(c, row), cell = target.cells[ref];
+      const v = cell?.f ? evals.get(ref)?.value : cell?.v;
+      const s = cell?.s;
+      tds.push(<td key={c} style={{
+        fontWeight: s?.b ? 600 : undefined, fontStyle: s?.i ? "italic" : undefined,
+        color: s?.color, background: s?.bg, textAlign: s?.align === "right" ? "right" : s?.align === "center" ? "center" : "left",
+      }}>{String(v ?? "")}</td>);
+    }
+    rows.push(<tr key={row}>{tds}</tr>);
+  }
+  return <table className="linked-range"><tbody>{rows}</tbody></table>;
 }

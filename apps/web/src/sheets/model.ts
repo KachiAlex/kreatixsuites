@@ -163,9 +163,13 @@ export function richRunsForEdit(oldText: string, rt: RichRun[] | undefined, newT
  *  px offsets from the grid's top-left (below the headers). */
 export interface SheetObject {
   id: string;
-  kind: "image";
+  /** image = embedded/linked picture; linkedrange = camera tool — a live
+   *  picture of a cell range that updates as the source cells change */
+  kind: "image" | "linkedrange";
   /** data URL or external image URL */
-  src: string;
+  src?: string;
+  /** source range for kind "linkedrange" (e.g. "A1:D10" or "Sheet2!A1:D10") */
+  range?: string;
   x: number; y: number; w: number; h: number;
   name?: string;
   /** alt text for accessibility */
@@ -208,7 +212,7 @@ export interface ChartSpec {
   id: string;
   type: "bar" | "line" | "pie" | "area" | "scatter" | "stacked" | "combo" | "doughnut"
     | "waterfall" | "funnel" | "histogram" | "treemap" | "radar" | "stock" | "boxwhisker"
-    | "bubble" | "sunburst";
+    | "bubble" | "sunburst" | "pareto" | "surface";
   range: string;
   /** S13.4 — index into sheet.pivots; the chart's data range follows the
    *  pivot's materialized span (header + data cells, totals excluded) */
@@ -358,6 +362,8 @@ export interface PivotSpec {
     field: string; agg: "sum" | "count" | "avg" | "min" | "max";
     showAs?: "value" | "%total" | "%col" | "%row" | "running" | "diff";
     base?: string;
+    /** custom dataField caption (xlsx round-trip); default is "Sum of X" etc. */
+    name?: string;
   }[];
   /** report-filter area (S13.1) — keep only rows where field ∈ sel */
   filters?: { field: string; sel: string[] }[];

@@ -666,10 +666,11 @@ function chartFromXml(cx: string, sheetName: string, x: number, y: number): Char
     [/<c:scatterChart>/, "scatter"], [/<c:radarChart>/, "radar"],
     [/<c:doughnutChart>/, "doughnut"], [/<c:pieChart>|<c:ofPieChart>/, "pie"],
     [/<c:stockChart>/, "stock"], [/<c:bubbleChart>/, "bubble"],
-    [/<c:surfaceChart>/, "scatter"],
+    [/<c:surface(3D)?Chart>/, "surface"],
     [/<cx:(treemap)\b/, "treemap"], [/<cx:(funnel)\b/, "funnel"],
     [/<cx:(waterfall)\b/, "waterfall"], [/<cx:(histogram)\b/, "histogram"],
     [/<cx:(boxWhisker)\b/, "boxwhisker"], [/<cx:(sunburstChart)\b/, "sunburst"],
+    [/<cx:pareto/, "pareto"], [/<cx:mapChart/, "treemap"], // map has no native renderer — degrade but keep the data
   ];
   const hits = TYPE.filter(([re]) => re.test(chart));
   const type = hits.length > 1 ? "combo" : hits[0]?.[1];
@@ -769,6 +770,17 @@ async function sheetDrawingParts(zip: ZipLike, sheetPart: string, sheetXml: stri
     }
     const pic = /<xdr:pic\b[\s\S]*?<\/xdr:pic>/.exec(body)?.[0];
     if (pic) {
+      // camera tool / linked picture — the range formula lives in pic@macro
+      const macro = xAttr(/<xdr:pic\b[^>]*>/.exec(pic)?.[0] ?? "", "macro");
+      const linked = macro && /!/.test(macro) ? xmlUnesc(macro).replace(/^=/, "") : undefined;
+      if (linked && parseRange(linked.split("!")[1].replace(/\$/g, ""))) {
+        const cnv = /<xdr:cNvPr\b[^>]*\/?>/.exec(pic)?.[0] ?? "";
+        objects.push({
+          id: crypto.randomUUID(), kind: "linkedrange", range: linked, x, y, w, h,
+          name: xAttr(cnv, "name") || undefined,
+        });
+        continue;
+      }
       const rid = xAttr(/<a:blip\b[^>]*\/?>/.exec(pic)?.[0] ?? "", "r:embed");
       const imgPart = rid ? imgRels.get(rid) : undefined;
       const file = imgPart ? zip.file(imgPart) : undefined;
@@ -798,6 +810,48 @@ async function sheetDrawingParts(zip: ZipLike, sheetPart: string, sheetXml: stri
 // ---------- S19.1 export: drawing layer → OOXML ----------
 
 const PX_EMU = 9525;
+
+/** Rasterize a cell range to a PNG data URL — the static snapshot Excel's
+ *  linked-picture part carries (the live link rides in pic@macro). Browser
+ *  only; returns undefined in the Node harness so export still emits the
+ *  anchor + macro without media. */
+function rangePng(sheet: SheetData, wb: Workbook, rangeA1: string): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  const target = resolveSheetRange(wb, sheet, rangeA1);
+  const r = target && parseRange(target.range.replace(/\$/g, ""));
+  if (!r || r.c2 - r.c1 > 24 || r.r2 - r.r1 > 100) return undefined;
+  const CW = 90, RH = 24;
+  const cv = document.createElement("canvas");
+  cv.width = (r.c2 - r.c1 + 1) * CW; cv.height = (r.r2 - r.r1 + 1) * RH;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return undefined;
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = "#E4DFDA"; ctx.font = "11px Inter, sans-serif"; ctx.textBaseline = "middle";
+  const evals = evalsFor(target.sheet, wb);
+  for (let c = r.c1; c <= r.c2; c++) for (let row = r.r1; row <= r.r2; row++) {
+    const ref = toA1(c, row), cell = target.sheet.cells[ref];
+    const v = cell?.f ? evals.get(ref)?.value : cell?.v;
+    const x = (c - r.c1) * CW, y = (row - r.r1) * RH;
+    ctx.strokeRect(x + 0.5, y + 0.5, CW, RH);
+    if (v !== null && v !== undefined && v !== "") {
+      const s = cell?.s;
+      ctx.fillStyle = s?.color ?? "#171717";
+      ctx.font = `${s?.i ? "italic " : ""}${s?.b ? "600 " : ""}11px Inter, sans-serif`;
+      ctx.fillText(String(v).slice(0, 24), x + 5, y + RH / 2, CW - 8);
+    }
+  }
+  return cv.toDataURL("image/png");
+}
+
+/** "Sheet!A1:B2" or bare "A1:B2" → {sheet, range} — range may be quoted. */
+function resolveSheetRange(wb: Workbook, fallback: SheetData, ref: string) {
+  const m = ref.match(/^(?:'([^']+)'|([\w.]+))!(.+)$/);
+  const name = m?.[1] ?? m?.[2];
+  const sheet = name
+    ? wb.sheets.find((s) => s.name.toLowerCase() === name.toLowerCase())
+    : fallback;
+  return sheet ? { sheet, range: m ? m[3] : ref } : undefined;
+}
 
 /** px → cell marker {idx,off} walking the sheet's own col/row geometry. */
 function pxMarker(px: number, dims: Record<number, number> | undefined, hidden: Set<number>, def: number) {
@@ -862,6 +916,8 @@ function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
     scatter: `<c:scatterChart><c:scatterStyle val="lineMarker"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:scatterChart>`,
     bubble: `<c:bubbleChart><c:varyColors val="0"/>${sers.join("")}${dLbls}<c:bubbleScale val="60"/><c:axId val="111"/><c:axId val="222"/></c:bubbleChart>`,
     sunburst: `<c:doughnutChart><c:varyColors val="1"/>${sers.join("")}${dLbls}<c:firstSliceAng val="0"/></c:doughnutChart>`,
+    surface: `<c:surfaceChart><c:wireframe val="0"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/><c:axId val="333"/></c:surfaceChart>`,
+    pareto: barEl("clustered", sers.slice(0, 1)), // degrade — Excel pareto is chartex
     pie: `<c:pieChart>${sers.slice(0, 1).join("")}${dLbls}</c:pieChart>`,
     doughnut: `<c:doughnutChart>${sers.slice(0, 1).join("")}${dLbls}</c:doughnutChart>`,
     radar: `<c:radarChart><c:radarStyle val="standard"/>${sers.join("")}${dLbls}<c:axId val="111"/><c:axId val="222"/></c:radarChart>`,
@@ -886,6 +942,7 @@ function chartToXml(spec: ChartSpec, sheetName: string): string | undefined {
     + `<c:plotArea><c:layout/>${plot}`
     + `<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>${spec.xTitle ? rich(spec.xTitle) : ""}<c:tickLblPos val="nextTo"/><c:crossAx val="222"/></c:catAx>`
     + `<c:valAx><c:axId val="222"/>${scaling}<c:delete val="0"/><c:axPos val="l"/>${spec.yTitle ? rich(spec.yTitle) : ""}<c:tickLblPos val="nextTo"/><c:crossAx val="111"/></c:valAx>`
+    + (spec.type === "surface" ? `<c:serAx><c:axId val="333"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/></c:serAx>` : "")
     + `</c:plotArea>`
     + (spec.legend && spec.legend !== "none" ? `<c:legend><c:legendPos val="${spec.legend === "right" ? "r" : "b"}"/></c:legend>` : "")
     + `</c:chart></c:chartSpace>`;
@@ -956,6 +1013,8 @@ async function sheetPivots(zip: ZipLike, sheetPart: string): Promise<PivotSpec[]
       };
       const show = SHOW[xAttr(m[0], "showDataAs") ?? ""];
       if (show) v.showAs = show;
+      const caption = xAttr(m[0], "name");
+      if (caption) v.name = xmlUnesc(caption);
       spec.vals.push(v);
     }
     // page fields → report filters (single-item selections only)
@@ -1221,6 +1280,11 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   const drawParts: { path: string; data: string | Uint8Array; mime: string }[] = [];
   const slicerParts: { path: string; xml: string }[] = [];
   const cacheParts: { path: string; xml: string }[] = [];
+  const tcParts: { path: string; xml: string }[] = [];
+  const pivotParts: { path: string; xml: string; mime: string }[] = [];
+  const wbPivotCaches: number[] = [];
+  const personIds = new Map<string, string>();
+  let personSeq = 1, pivotSeq = 0;
   const emittedTableIds = new Map<number, number>(); // sheet.tables idx → emitted table id
   const ctDefaults = new Set<string>();
   const newRels: Record<number, string[]> = {};
@@ -1415,6 +1479,160 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
         : xml.replace("</worksheet>", `<extLst>${ext}</extLst></worksheet>`);
       changed = true;
     }
+    // threaded comments → xl/threadedComments part (+ shared persons part)
+    {
+      const comments = sheet.comments ?? {};
+      const noteOnly = Object.keys(sheet.notes ?? {}).filter((r) => !comments[r]);
+      if (Object.keys(comments).length || noteOnly.length) {
+        (newRels[i] ??= []).push(
+          `<Relationship Id="rIdTC${i + 1}" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment${i + 1}.xml"/>`);
+        const iso = (at?: number) => {
+          const d = at ? new Date(at) : new Date();
+          return Number.isFinite(d.getTime()) ? d.toISOString().replace(/\.\d+Z$/, "Z") : new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        };
+        const pid = (by?: string) => {
+          if (!by) return undefined;
+          let p = personIds.get(by);
+          if (!p) {
+            p = `{00000000-0000-4000-8000-${(personSeq++).toString(16).padStart(12, "0").slice(-12)}}`;
+            personIds.set(by, p);
+          }
+          return p;
+        };
+        const tcs: string[] = [];
+        let cid = 1;
+        const guid = () => `{00000000-0000-4000-9000-${(cid++).toString(16).padStart(12, "0").slice(-12)}}`;
+        for (const [ref, thr] of Object.entries(comments)) {
+          const rootId = guid();
+          thr.replies.forEach((rep, ri) => {
+            const p = pid(rep.by ?? thr.by);
+            tcs.push(`<threadedComment ref="${ref}" dT="${iso(rep.at ?? thr.at)}"${p ? ` personId="${p}"` : ""} id="${ri ? guid() : rootId}"${ri ? ` parentId="${rootId}"` : ""}${ri === thr.replies.length - 1 && thr.resolved ? ' done="1"' : ""}><text>${esc(rep.text)}</text></threadedComment>`);
+          });
+        }
+        for (const ref of noteOnly)
+          tcs.push(`<threadedComment ref="${ref}" dT="${iso()}" id="${guid()}"><text>${esc(sheet.notes![ref])}</text></threadedComment>`);
+        tcParts.push({
+          path: `xl/threadedComments/threadedComment${i + 1}.xml`,
+          xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><threadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">${tcs.join("")}</threadedComments>`,
+        });
+      }
+    }
+    // pivot tables → xl/pivotTables + pivotCacheDefinition/Records + workbook pivotCaches
+    for (const spec of sheet.pivots ?? []) {
+      const srcRef = spec.src.includes("!") ? spec.src.split("!")[1] : spec.src;
+      const srcName = spec.src.includes("!") ? spec.src.split("!")[0].replace(/^'|'$/g, "") : sheet.name;
+      const srcSheet = wb.sheets.find((s) => s.name.toLowerCase() === srcName.toLowerCase()) ?? sheet;
+      const sr = parseRange(srcRef.replace(/\$/g, ""));
+      if (!sr) continue;
+      const cellV = (c: number, r: number) => srcSheet.cells[toA1(c, r)]?.v;
+      const hdrs: string[] = [];
+      for (let c = sr.c1; c <= sr.c2; c++) hdrs.push(String(cellV(c, sr.r1) ?? `Field${c - sr.c1 + 1}`));
+      const dataRows: string[][] = [];
+      for (let r = sr.r1 + 1; r <= sr.r2; r++) {
+        const row: string[] = [];
+        for (let c = sr.c1; c <= sr.c2; c++) row.push(String(cellV(c, r) ?? ""));
+        dataRows.push(row);
+      }
+      const fieldOf = (name: string) => hdrs.findIndex((h) => h === name);
+      const rowFlds = spec.rows.map(fieldOf).filter((x) => x >= 0);
+      const colFlds = (spec.cols ?? []).map(fieldOf).filter((x) => x >= 0);
+      const pageFlds = (spec.filters ?? []).flatMap((f) => {
+        const fi = fieldOf(f.field);
+        return fi >= 0 ? [{ fi, sel: f.sel }] : [];
+      });
+      const valFlds = spec.vals.flatMap((v) => {
+        const fi = fieldOf(v.field);
+        return fi >= 0 ? [{ fi, agg: v.agg, showAs: v.showAs, name: v.name }] : [];
+      });
+      if (!valFlds.length) continue;
+      // sharedItems: enumerated for row/col/page fields (records index into them)
+      const sharedSet = new Set([...rowFlds, ...colFlds, ...pageFlds.map((p) => p.fi)]);
+      const items = hdrs.map((_, fi) => {
+        if (!sharedSet.has(fi)) return [] as string[];
+        const seen = new Set<string>();
+        for (const row of dataRows) seen.add(row[fi]);
+        return [...seen];
+      });
+      const pivotFields = hdrs.map((_, fi) => {
+        const axis = rowFlds.includes(fi) ? "axisRow" : colFlds.includes(fi) ? "axisCol"
+          : pageFlds.some((p) => p.fi === fi) ? "axisPage" : undefined;
+        if (valFlds.some((v) => v.fi === fi))
+          return `<pivotField dataField="1"><items count="1"><item t="default"/></items></pivotField>`;
+        if (!axis) return `<pivotField/>`;
+        const its = items[fi].map((_, xi) => `<item x="${xi}"/>`).join("") + `<item t="default"/>`;
+        return `<pivotField axis="${axis}"><items count="${items[fi].length + 1}">${its}</items></pivotField>`;
+      }).join("");
+      const AGG: Record<string, string> = { sum: "sum", count: "count", avg: "average", min: "min", max: "max" };
+      const SHOW: Record<string, string> = {
+        "%total": "percentOfTotal", "%col": "percentOfCol", "%row": "percentOfRow",
+        running: "runTotal", diff: "difference",
+      };
+      const dataFields = valFlds.map((v) =>
+        `<dataField name="${esc(v.name ?? `${v.agg === "avg" ? "Average" : v.agg[0].toUpperCase() + v.agg.slice(1)} of ${hdrs[v.fi]}`)}" fld="${v.fi}" subtotal="${AGG[v.agg] ?? "sum"}"${v.showAs && SHOW[v.showAs] ? ` showDataAs="${SHOW[v.showAs]}"` : ""} baseField="0" baseItem="0"/>`).join("");
+      const pageFields = pageFlds.map((p) => {
+        const selIdx = p.sel.length === 1 ? items[p.fi].indexOf(p.sel[0]) : -1;
+        return `<pageField fld="${p.fi}"${selIdx >= 0 ? ` item="${selIdx}"` : ' item="-2"'} hier="-1"/>`;
+      }).join("");
+      // materialized span → <location>; build on demand when not cached
+      let span = spec.span;
+      if (!span) {
+        const built = buildPivotCells(wb, sheet, spec);
+        if (built) span = { r: built.rows, c: built.cols };
+      }
+      const at = parseA1(spec.at);
+      if (!at) continue;
+      const end = span ? toA1(at.col + span.c - 1, at.row + span.r - 1) : spec.at;
+      const pk = ++pivotSeq;
+      const cacheFields = hdrs.map((h, fi) => {
+        const si = items[fi].length
+          ? `<sharedItems count="${items[fi].length}">${items[fi].map((v) => /^-?\d+(\.\d+)?$/.test(v) ? `<n v="${esc(v)}"/>` : `<s v="${esc(v)}"/>`).join("")}</sharedItems>`
+          : `<sharedItems${dataRows.some((r) => /^-?\d+(\.\d+)?$/.test(r[fi])) ? ' containsNumber="1"' : ""}/>`;
+        return `<cacheField name="${esc(h)}" numFmtId="0">${si}</cacheField>`;
+      }).join("");
+      const records = dataRows.map((row) =>
+        `<r>${row.map((v, fi) => {
+          const xi = items[fi].indexOf(v);
+          if (xi >= 0) return `<x v="${xi}"/>`;
+          return /^-?\d+(\.\d+)?$/.test(v) ? `<n v="${esc(v)}"/>` : v === "" ? `<m/>` : `<s v="${esc(v)}"/>`;
+        }).join("")}</r>`).join("");
+      (newRels[i] ??= []).push(
+        `<Relationship Id="rIdPt${pk}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable${pk}.xml"/>`);
+      pivotParts.push({
+        path: `xl/pivotTables/pivotTable${pk}.xml`,
+        xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+          + `<pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable${pk}" cacheId="${pk}" dataCaption="Values">`
+          + `<location ref="${spec.at}:${end}" firstHeaderRow="1" firstDataRow="1"/>`
+          + `<pivotFields count="${hdrs.length}">${pivotFields}</pivotFields>`
+          + `${rowFlds.length ? `<rowFields count="${rowFlds.length}">${rowFlds.map((x) => `<field x="${x}"/>`).join("")}</rowFields>` : ""}`
+          + `<rowItems count="1"><i/></rowItems>`
+          + `${colFlds.length ? `<colFields count="${colFlds.length}">${colFlds.map((x) => `<field x="${x}"/>`).join("")}</colFields>` : ""}`
+          + `<colItems count="1"><i/></colItems>`
+          + `${pageFields ? `<pageFields count="${pageFlds.length}">${pageFields}</pageFields>` : ""}`
+          + `<dataFields count="${valFlds.length}">${dataFields}</dataFields>`
+          + `<pivotTableStyleInfo name="PivotStyleMedium9" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0" showLastColumn="1"/>`
+          + `</pivotTableDefinition>`,
+        mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml",
+      });
+      pivotParts.push({
+        path: `xl/pivotCache/pivotCacheDefinition${pk}.xml`,
+        xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+          + `<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdPCr${pk}" refreshOnLoad="1" recordCount="${dataRows.length}">`
+          + `<cacheSource type="worksheet"><worksheetSource ref="${rangeToA1(sr)}" sheet="${esc(srcName)}"/></cacheSource>`
+          + `<cacheFields count="${hdrs.length}">${cacheFields}</cacheFields></pivotCacheDefinition>`,
+        mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml",
+      });
+      pivotParts.push({
+        path: `xl/pivotCache/_rels/pivotCacheDefinition${pk}.xml.rels`,
+        xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdPCr${pk}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords" Target="pivotCacheRecords${pk}.xml"/></Relationships>`,
+        mime: "application/vnd.openxmlformats-package.relationships+xml",
+      });
+      pivotParts.push({
+        path: `xl/pivotCache/pivotCacheRecords${pk}.xml`,
+        xml: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${dataRows.length}">${records}</pivotCacheRecords>`,
+        mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml",
+      });
+      wbPivotCaches.push(pk);
+    }
     // floating objects + charts + slicer shapes → drawing part
     const floatObjs = sheet.objects ?? [];
     const floatCharts = (sheet.charts ?? []).filter((c) => parseRange(c.range));
@@ -1435,6 +1653,26 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
       const dRels: string[] = [];
       let nvId = 2, dRid = 0;
       for (const o of floatObjs) {
+        if (o.kind === "linkedrange" && o.range) {
+          // camera tool → xdr:pic with the range formula in pic@macro + a
+          // raster snapshot when a canvas is available (browser exports)
+          const ref = o.range.includes("!") ? o.range : `${sheet.name}!${o.range}`;
+          const snap = rangePng(sheet, wb, o.range);
+          let blip = `<a:blip/>`;
+          if (snap) {
+            const b64 = snap.split(",")[1];
+            mediaId++; dRid++;
+            drawParts.push({ path: `xl/media/image${mediaId}.png`, data: Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)), mime: "image/png" });
+            ctDefaults.add("png");
+            dRels.push(`<Relationship Id="rIdI${dRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${mediaId}.png"/>`);
+            blip = `<a:blip r:embed="rIdI${dRid}"/>`;
+          }
+          const x1 = cm(o.x), y1 = rm(o.y), x2 = cm(o.x + o.w), y2 = rm(o.y + o.h);
+          anchors.push(`<xdr:twoCellAnchor>${markerXml("from", x1, y1)}${markerXml("to", x2, y2)}`
+            + `<xdr:pic macro="=${esc(ref)}"><xdr:nvPicPr><xdr:cNvPr id="${nvId++}" name="${esc(o.name ?? `Link ${nvId}`)}"/><xdr:cNvPicPr/></xdr:nvPicPr>`
+            + `<xdr:blipFill>${blip}<a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`);
+          continue;
+        }
         if (o.kind !== "image" || !o.src) continue;
         const data = /^data:([^;,]+);base64,(.*)$/s.exec(o.src);
         const extUrl = /^https?:/i.test(o.src) ? o.src : undefined;
@@ -1511,7 +1749,10 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
   for (const p of drawParts) zip.file(p.path, p.data);
   for (const p of slicerParts) zip.file(p.path, p.xml);
   for (const p of cacheParts) zip.file(p.path, p.xml);
-  if (tableParts.length || drawParts.length || ctDefaults.size || slicerParts.length || cacheParts.length) {
+  for (const p of tcParts) zip.file(p.path, p.xml);
+  for (const p of pivotParts) zip.file(p.path, p.xml);
+  if (tableParts.length || drawParts.length || ctDefaults.size || slicerParts.length
+    || cacheParts.length || tcParts.length || pivotParts.length) {
     const ct = await zip.file("[Content_Types].xml")?.async("string");
     if (ct) {
       const defs = [...ctDefaults]
@@ -1524,27 +1765,55 @@ async function patchSheetXml(bytes: Uint8Array, wb: Workbook): Promise<Uint8Arra
           `<Override PartName="/${p.path}" ContentType="application/vnd.ms-excel.slicer+xml"/>`),
         ...cacheParts.map((p) =>
           `<Override PartName="/${p.path}" ContentType="application/vnd.ms-excel.slicerCache+xml"/>`),
+        ...tcParts.map((p) =>
+          `<Override PartName="/${p.path}" ContentType="application/vnd.ms-excel.threadedcomments+xml"/>`),
+        ...pivotParts.filter((p) => !p.path.endsWith(".rels")).map((p) =>
+          `<Override PartName="/${p.path}" ContentType="${p.mime}"/>`),
         ...drawParts.filter((p) => !p.path.endsWith(".rels") && !ctDefaults.has(/\.([a-z0-9]+)$/i.exec(p.path)?.[1] ?? ""))
           .map((p) => `<Override PartName="/${p.path}" ContentType="${p.mime}"/>`),
       ].join("");
       zip.file("[Content_Types].xml", ct.replace("</Types>", `${defs}${overrides}</Types>`));
     }
   }
-  // workbook.xml — x15:slicerCaches extLst + rels → xl/slicerCaches parts
-  if (cacheParts.length) {
+  // workbook.xml — x15:slicerCaches extLst, pivotCaches, persons part + rels
+  if (cacheParts.length || wbPivotCaches.length || personIds.size) {
     const wx = await zip.file("xl/workbook.xml")?.async("string");
     const wr = await zip.file("xl/_rels/workbook.xml.rels")?.async("string");
     if (wx && wr) {
-      if (!/xmlns:r=/.test(wx))
-        zip.file("xl/workbook.xml", wx.replace(/<workbook\b([^>]*)>/,
-          `<workbook$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`));
-      const wx2 = await zip.file("xl/workbook.xml")!.async("string");
-      const ext = `<ext uri="{46BE6895-7355-4a93-B00E-2C351335B9C9}"><x15:slicerCaches xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main">${cacheParts.map((_, k) => `<x15:slicerCache r:id="rIdWbSc${k + 1}"/>`).join("")}</x15:slicerCaches></ext>`;
-      zip.file("xl/workbook.xml", /<extLst>/.test(wx2)
-        ? wx2.replace(/<extLst>/, `<extLst>${ext}`)
-        : wx2.replace("</workbook>", `<extLst>${ext}</extLst></workbook>`));
-      zip.file("xl/_rels/workbook.xml.rels", wr.replace("</Relationships>",
-        `${cacheParts.map((_, k) => `<Relationship Id="rIdWbSc${k + 1}" Type="http://schemas.microsoft.com/office/spreadsheetml/2010/11/relationships/slicerCache" Target="slicerCaches/slicerCache${k + 1}.xml"/>`).join("")}</Relationships>`));
+      let wx2 = wx;
+      if (!/xmlns:r=/.test(wx2))
+        wx2 = wx2.replace(/<workbook\b([^>]*)>/,
+          `<workbook$1 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`);
+      if (cacheParts.length) {
+        const ext = `<ext uri="{46BE6895-7355-4a93-B00E-2C351335B9C9}"><x15:slicerCaches xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main">${cacheParts.map((_, k) => `<x15:slicerCache r:id="rIdWbSc${k + 1}"/>`).join("")}</x15:slicerCaches></ext>`;
+        wx2 = /<extLst>/.test(wx2)
+          ? wx2.replace(/<extLst>/, `<extLst>${ext}`)
+          : wx2.replace("</workbook>", `<extLst>${ext}</extLst></workbook>`);
+      }
+      if (wbPivotCaches.length)
+        wx2 = wx2.replace("</workbook>",
+          `<pivotCaches>${wbPivotCaches.map((k) => `<pivotCache cacheId="${k}" r:id="rIdWbPc${k}"/>`).join("")}</pivotCaches></workbook>`);
+      zip.file("xl/workbook.xml", wx2);
+      const newRels = [
+        ...cacheParts.map((_, k) =>
+          `<Relationship Id="rIdWbSc${k + 1}" Type="http://schemas.microsoft.com/office/spreadsheetml/2010/11/relationships/slicerCache" Target="slicerCaches/slicerCache${k + 1}.xml"/>`),
+        ...wbPivotCaches.map((k) =>
+          `<Relationship Id="rIdWbPc${k}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition${k}.xml"/>`),
+        ...(personIds.size
+          ? [`<Relationship Id="rIdPersons" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/>`]
+          : []),
+      ].join("");
+      zip.file("xl/_rels/workbook.xml.rels", wr.replace("</Relationships>", `${newRels}</Relationships>`));
+      if (personIds.size) {
+        const persons = [...personIds.entries()].map(([name, id]) =>
+          `<person id="${id}" displayName="${esc(name)}"/>`).join("");
+        zip.file("xl/persons/person.xml",
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><persons xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${persons}</persons>`);
+        const ct2 = await zip.file("[Content_Types].xml")?.async("string");
+        if (ct2 && !/person\.xml/.test(ct2))
+          zip.file("[Content_Types].xml", ct2.replace("</Types>",
+            `<Override PartName="/xl/persons/person.xml" ContentType="application/vnd.ms-excel.person+xml"/></Types>`));
+      }
     }
   }
   // styles.xml — append <dxfs> (must sit after cellStyles, before tableStyles)
@@ -1974,8 +2243,13 @@ export async function xlsxToWorkbook(file: File): Promise<Workbook> {
     return sheet;
   }));
   const out: Workbook = { sheets: sheets.length ? sheets : [{ name: "Sheet1", cells: {} }] };
+  const importWarnings: string[] = [];
   if (zip?.file("xl/vbaProject.bin"))
-    out.importWarnings = ["VBA macros are not supported — they were dropped on import"];
+    importWarnings.push("VBA macros are not supported — they were dropped on import");
+  if (zip && (zip.file(/xl\/(model|queryTables|webExtensions)\//).length
+    || zip.file("xl/connections.xml") || zip.file(/xl\/externalLinks\//).length))
+    importWarnings.push("Power Query / data-model connections are not supported — they were dropped on import");
+  if (importWarnings.length) out.importWarnings = importWarnings;
   if (pendingPrint) out.print = pendingPrint;
   // materialize imported pivots now (sources may live on other sheets)
   for (const sheet of out.sheets)
