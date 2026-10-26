@@ -18,8 +18,64 @@ export interface User {
   emailVerified?: boolean;
   /** onboarding checklist dismissed — persists across devices */
   onboardingDismissed?: boolean;
+  /** Suite apps the workspace admin has turned off for this user
+   *  (SuiteApp slugs; empty/absent = every app allowed) */
+  disabledApps?: string[];
   createdAt: string;
 }
+
+/** Per-user app entitlements — admin-toggleable suite apps (M365-style
+ *  "licenses → apps"). `apiPrefixes` are gated server-side per request;
+ *  `itemKind` gates editor open/create by the file's kind. */
+export type SuiteApp =
+  | "writer" | "sheets" | "present" | "board" | "pdf"
+  | "mail" | "meet" | "chat" | "calendar" | "tasks" | "notes" | "forms" | "sites";
+
+export interface SuiteAppDef {
+  slug: SuiteApp;
+  name: string;
+  path?: string;          // SPA route — hidden from nav when disabled
+  apiPrefixes?: string[]; // 403'd server-side when disabled
+  itemKind?: FileKind;    // editor apps gate on the item's kind instead
+}
+
+export const SUITE_APPS: SuiteAppDef[] = [
+  { slug: "writer", name: "Writer", itemKind: "writer" },
+  { slug: "sheets", name: "Sheets", itemKind: "sheets" },
+  { slug: "present", name: "Present", itemKind: "present" },
+  { slug: "board", name: "Board", itemKind: "board" },
+  { slug: "pdf", name: "PDF", itemKind: "pdf" },
+  { slug: "mail", name: "Mail", path: "/mail", apiPrefixes: ["/api/mail"] },
+  { slug: "meet", name: "Meet", path: "/meet", apiPrefixes: ["/api/meet"] },
+  { slug: "chat", name: "Chat", path: "/chat", apiPrefixes: ["/api/chat"] },
+  { slug: "calendar", name: "Calendar", path: "/calendar", apiPrefixes: ["/api/calendar"] },
+  { slug: "tasks", name: "Tasks", path: "/tasks", apiPrefixes: ["/api/tasks"] },
+  { slug: "notes", name: "Notes", path: "/notes", apiPrefixes: ["/api/notes"] },
+  { slug: "forms", name: "Forms", path: "/forms", apiPrefixes: ["/api/forms"] },
+  { slug: "sites", name: "Sites", path: "/sites", apiPrefixes: ["/api/sites"] },
+];
+
+const APP_BY_PREFIX: [SuiteApp, string][] = SUITE_APPS.flatMap((a) =>
+  (a.apiPrefixes ?? []).map((p) => [a.slug, p] as [SuiteApp, string]));
+
+/** Resolve which suite app an API path belongs to (longest prefix wins). */
+export function appForApiPath(url: string): SuiteApp | undefined {
+  const path = url.split("?")[0];
+  let best: [SuiteApp, string] | undefined;
+  for (const e of APP_BY_PREFIX)
+    if (path === e[1] || path.startsWith(`${e[1]}/`))
+      if (!best || e[1].length > best[1].length) best = e;
+  return best?.[0];
+}
+
+/** Editor apps are gated by file kind — e.g. disabling "sheets" blocks
+ *  creating/opening kind:"sheets" items. */
+export function appForKind(kind: FileKind): SuiteApp | undefined {
+  return SUITE_APPS.find((a) => a.itemKind === kind)?.slug;
+}
+
+export const appEnabled = (disabled: string[] | undefined, slug: SuiteApp) =>
+  !disabled?.includes(slug);
 
 export interface Org {
   id: string;

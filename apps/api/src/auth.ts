@@ -272,6 +272,9 @@ export interface UserRow {
   email_verify_required?: boolean;
   onboarding_dismissed?: boolean;
   token_version: number;
+  disabled_apps?: string[];
+  mail_user_id?: number | null;
+  mail_email?: string | null;
   created_at: string;
 }
 
@@ -287,6 +290,7 @@ export function toUser(row: UserRow): User {
     mfaEnabled: !!row.totp_secret,
     emailVerified: !!row.email_verified,
     onboardingDismissed: !!row.onboarding_dismissed,
+    disabledApps: row.disabled_apps ?? [],
     createdAt: row.created_at,
   };
 }

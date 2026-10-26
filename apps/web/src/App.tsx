@@ -6,6 +6,7 @@ import { Login } from "./pages/Login";
 import { ResetPassword, VerifyEmail } from "./pages/AccountRecovery";
 import { Landing } from "./pages/Landing";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
+import { appEnabled, type SuiteApp } from "@kreatix/shared";
 import MfaEnrollScreen from "./components/MfaEnrollScreen";
 import { useGlobalModalA11y } from "./lib/a11y";
 import { isNativeMobile } from "./lib/platform";
@@ -52,6 +53,23 @@ function Protected({ children }: { children: ReactNode }) {
   // session to the portal; the API enforces the same boundary with 403s.
   if (user.isSuper && pathname !== "/admin") return <Navigate to="/admin" replace />;
   return <EntitlementGate>{children}</EntitlementGate>;
+}
+
+/** Tenant admins can disable apps per user (users.disabled_apps, enforced on
+ *  the API); deep links to a disabled app land on a notice instead of the app. */
+function RequireApp({ slug, children }: { slug: SuiteApp; children: ReactNode }) {
+  const { user } = useAuth();
+  if (!appEnabled(user?.disabledApps, slug)) {
+    return (
+      <div className="auth-wrap">
+        <div className="empty">
+          <h2>App unavailable</h2>
+          <p>This app isn't included in your workspace access. Ask your admin to enable it.</p>
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
 }
 
 /** Keeps document.title in sync with the route (editors overwrite it with
@@ -131,18 +149,18 @@ export default function App() {
             <Route path="/drive" element={<Drive />} />
             <Route path="/drive/:view" element={<Drive />} />
             <Route path="/drive/folder/:folderId" element={<Drive />} />
-            <Route path="/pdf-tools" element={<PdfTools />} />
-            <Route path="/mail" element={<Mail />} />
-            <Route path="/meet" element={<Meet />} />
-            <Route path="/chat" element={<Chat />} />
-            <Route path="/calendar" element={<Calendar />} />
-            <Route path="/tasks" element={<Tasks />} />
-            <Route path="/forms" element={<Forms />} />
-            <Route path="/notes" element={<Notes />} />
-            <Route path="/sites" element={<Sites />} />
-            <Route path="/sites/:siteId" element={<SitePage />} />
-            <Route path="/sites/:siteId/library/:libId" element={<LibraryPage />} />
-            <Route path="/sites/:siteId/library/:libId/folder/:folderId" element={<LibraryPage />} />
+            <Route path="/pdf-tools" element={<RequireApp slug="pdf"><PdfTools /></RequireApp>} />
+            <Route path="/mail" element={<RequireApp slug="mail"><Mail /></RequireApp>} />
+            <Route path="/meet" element={<RequireApp slug="meet"><Meet /></RequireApp>} />
+            <Route path="/chat" element={<RequireApp slug="chat"><Chat /></RequireApp>} />
+            <Route path="/calendar" element={<RequireApp slug="calendar"><Calendar /></RequireApp>} />
+            <Route path="/tasks" element={<RequireApp slug="tasks"><Tasks /></RequireApp>} />
+            <Route path="/forms" element={<RequireApp slug="forms"><Forms /></RequireApp>} />
+            <Route path="/notes" element={<RequireApp slug="notes"><Notes /></RequireApp>} />
+            <Route path="/sites" element={<RequireApp slug="sites"><Sites /></RequireApp>} />
+            <Route path="/sites/:siteId" element={<RequireApp slug="sites"><SitePage /></RequireApp>} />
+            <Route path="/sites/:siteId/library/:libId" element={<RequireApp slug="sites"><LibraryPage /></RequireApp>} />
+            <Route path="/sites/:siteId/library/:libId/folder/:folderId" element={<RequireApp slug="sites"><LibraryPage /></RequireApp>} />
             <Route path="/admin" element={<Admin />} />
             <Route path="/account" element={<Account />} />
           </Route>

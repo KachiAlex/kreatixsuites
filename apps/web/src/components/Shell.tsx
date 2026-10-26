@@ -4,6 +4,7 @@ import { useAuth } from "../lib/auth";
 import { useI18n, LOCALES } from "../lib/i18n";
 import { api } from "../lib/api";
 import type { DriveItem, FileKind } from "@kreatix/shared";
+import { appEnabled } from "@kreatix/shared";
 import { KIND_META } from "../lib/format";
 import { CommandPalette, renderSnippet } from "./CommandPalette";
 import { FeedbackWidget } from "./FeedbackWidget";
@@ -294,13 +295,13 @@ function Rail({ toast }: { toast: (m: string) => void }) {
   const items = [
     { to: "/", icon: "⌂", title: t("nav.home") },
     { to: "/drive", icon: "▣", title: t("nav.drive") },
-    { to: "/chat", icon: "💬", title: "Chat" },
-    { to: "/calendar", icon: "📅", title: "Calendar" },
-    { to: "/tasks", icon: "✓", title: "Tasks" },
-    { to: "/notes", icon: "📝", title: "Notes" },
-    { to: "/forms", icon: "▤", title: "Forms" },
-    ...(mailOn ? [{ to: "/mail", icon: "✉", title: "Mail" }] : []),
-    ...(meetOn ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
+    ...(appEnabled(user?.disabledApps, "chat") ? [{ to: "/chat", icon: "💬", title: "Chat" }] : []),
+    ...(appEnabled(user?.disabledApps, "calendar") ? [{ to: "/calendar", icon: "📅", title: "Calendar" }] : []),
+    ...(appEnabled(user?.disabledApps, "tasks") ? [{ to: "/tasks", icon: "✓", title: "Tasks" }] : []),
+    ...(appEnabled(user?.disabledApps, "notes") ? [{ to: "/notes", icon: "📝", title: "Notes" }] : []),
+    ...(appEnabled(user?.disabledApps, "forms") ? [{ to: "/forms", icon: "▤", title: "Forms" }] : []),
+    ...(mailOn && appEnabled(user?.disabledApps, "mail") ? [{ to: "/mail", icon: "✉", title: "Mail" }] : []),
+    ...(meetOn && appEnabled(user?.disabledApps, "meet") ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
   ];
   return (
     <aside className="rail">
@@ -440,10 +441,10 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         </button>
         {menuOpen && (
           <div className="create-menu">
-            <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Kreatix Writer</button>
-            <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>
-            <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>
-            <button onClick={() => createFile("board")}><span className="cm-ico board"><AppIcon kind="board" /></span>Kreatix Board</button>
+            {appEnabled(user?.disabledApps, "writer") && <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Kreatix Writer</button>}
+            {appEnabled(user?.disabledApps, "sheets") && <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>}
+            {appEnabled(user?.disabledApps, "present") && <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>}
+            {appEnabled(user?.disabledApps, "board") && <button onClick={() => createFile("board")}><span className="cm-ico board"><AppIcon kind="board" /></span>Kreatix Board</button>}
             <hr />
             <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>{t("nav.newFolder")}</button>
             <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>{t("nav.openFile")}</button>
@@ -467,30 +468,32 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <NavLink to="/drive/trash" className={navCls}><span className="dot" />{t("nav.trash")}</NavLink>
 
       <div className="section-label">{t("nav.applications")}</div>
-      <button type="button" className="nav" onClick={() => createFile("writer")}><AppIcon kind="writer" size={18} />{t("nav.writer")}</button>
-      <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />{t("nav.sheets")}</button>
-      <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>
-      <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>
-      <NavLink to="/chat" className={navCls}><AppIcon kind="chat" size={18} />Chat</NavLink>
-      <NavLink to="/calendar" className={navCls}><AppIcon kind="calendar" size={18} />Calendar</NavLink>
-      <NavLink to="/tasks" className={navCls}><AppIcon kind="tasks" size={18} />Tasks</NavLink>
-      <NavLink to="/notes" className={navCls}><AppIcon kind="notes" size={18} />Notes</NavLink>
-      <NavLink to="/forms" className={navCls}><AppIcon kind="forms" size={18} />Forms</NavLink>
-      {mailOn && <NavLink to="/mail" className={navCls}><AppIcon kind="mail" size={18} />Kreatix Mail</NavLink>}
-      {meetOn && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
+      {appEnabled(user?.disabledApps, "writer") && <button type="button" className="nav" onClick={() => createFile("writer")}><AppIcon kind="writer" size={18} />{t("nav.writer")}</button>}
+      {appEnabled(user?.disabledApps, "sheets") && <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />{t("nav.sheets")}</button>}
+      {appEnabled(user?.disabledApps, "present") && <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>}
+      {appEnabled(user?.disabledApps, "pdf") && <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>}
+      {appEnabled(user?.disabledApps, "chat") && <NavLink to="/chat" className={navCls}><AppIcon kind="chat" size={18} />Chat</NavLink>}
+      {appEnabled(user?.disabledApps, "calendar") && <NavLink to="/calendar" className={navCls}><AppIcon kind="calendar" size={18} />Calendar</NavLink>}
+      {appEnabled(user?.disabledApps, "tasks") && <NavLink to="/tasks" className={navCls}><AppIcon kind="tasks" size={18} />Tasks</NavLink>}
+      {appEnabled(user?.disabledApps, "notes") && <NavLink to="/notes" className={navCls}><AppIcon kind="notes" size={18} />Notes</NavLink>}
+      {appEnabled(user?.disabledApps, "forms") && <NavLink to="/forms" className={navCls}><AppIcon kind="forms" size={18} />Forms</NavLink>}
+      {mailOn && appEnabled(user?.disabledApps, "mail") && <NavLink to="/mail" className={navCls}><AppIcon kind="mail" size={18} />Kreatix Mail</NavLink>}
+      {meetOn && appEnabled(user?.disabledApps, "meet") && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
 
-      <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        {t("nav.sites")}
-        <button className="site-add" title={t("nav.newSite")} aria-label={t("nav.newSite")} onClick={() => setSiteDlg(true)}>＋</button>
-      </div>
-      <NavLink to="/sites" end className={navCls}><span className="dot" />{t("nav.allSites")}</NavLink>
-      {sites.map((s) => (
-        <NavLink key={s.id} to={`/sites/${s.id}`} className={navCls}><span className="dot" />{s.name}</NavLink>
-      ))}
+      {appEnabled(user?.disabledApps, "sites") && <>
+        <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          {t("nav.sites")}
+          <button className="site-add" title={t("nav.newSite")} aria-label={t("nav.newSite")} onClick={() => setSiteDlg(true)}>＋</button>
+        </div>
+        <NavLink to="/sites" end className={navCls}><span className="dot" />{t("nav.allSites")}</NavLink>
+        {sites.map((s) => (
+          <NavLink key={s.id} to={`/sites/${s.id}`} className={navCls}><span className="dot" />{s.name}</NavLink>
+        ))}
+      </>}
 
       <div className="section-label">{t(org?.kind === "family" ? "nav.familyTools" : "nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
-      <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>
+      {appEnabled(user?.disabledApps, "pdf") && <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>}
       {(user?.role === "owner" || user?.role === "admin") && (
         <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
       )}

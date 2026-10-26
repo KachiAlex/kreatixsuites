@@ -10,11 +10,21 @@ import { requestApproval } from "../approvals.js";
 import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import type { Permission } from "@kreatix/shared";
+import { appForKind, SUITE_APPS, type FileKind } from "@kreatix/shared";
 import { storageQuota } from "../billing.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { derivativeBlob } from "../images.js";
 import { indexFile } from "../indexer.js";
 import { getPolicies, dlpScanText, scanDlp, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
+
+/** Per-user app gate for editor kinds — returns the 403 message when the
+ *  user's admin disabled the app that owns this file kind, else null. */
+const kindGateMsg = (kind: string, disabled?: string[]) => {
+  const slug = appForKind(kind as FileKind);
+  return slug && disabled?.includes(slug)
+    ? `${SUITE_APPS.find((a) => a.slug === slug)?.name ?? slug} isn't enabled for your account`
+    : null;
+};
 
 interface VersionRow {
   id: string;
@@ -233,6 +243,8 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
+    const gated = kindGateMsg(item.kind, user.disabledApps);
+    if (gated) return reply.code(403).send({ error: "app_disabled", message: gated });
     // readers see the latest PUBLISHED version — drafts stay invisible to
     // viewer-level access (SharePoint draft-visibility semantics)
     const onlyPublished = !hasPermission(perm, "editor") ? "AND v.published" : "";
@@ -290,6 +302,8 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
+    const rawGated = kindGateMsg(item.kind, user.disabledApps);
+    if (rawGated) return reply.code(403).send({ error: "app_disabled", message: rawGated });
     if (await rawDownloadBlocked(item, perm)) {
       return reply.code(403).send({ error: "download_blocked",
         message: "Your workspace blocks downloads of this file — view it in the app" });
@@ -318,6 +332,8 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
+    const pdfGated = kindGateMsg(item.kind, user.disabledApps);
+    if (pdfGated) return reply.code(403).send({ error: "app_disabled", message: pdfGated });
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
     }
@@ -392,6 +408,8 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "reviewer")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
+    const putGated = kindGateMsg(item.kind, user.disabledApps);
+    if (putGated) return reply.code(403).send({ error: "app_disabled", message: putGated });
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else — changes are blocked until they check in" });
     }

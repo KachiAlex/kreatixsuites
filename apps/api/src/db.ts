@@ -1090,6 +1090,8 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   // Kreatix Mail bridge — suite user ↔ kreatix-mail account mapping
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_user_id INTEGER`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);
+  // per-user app entitlements — slugs the admin switched off (empty = all apps)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_apps TEXT[] NOT NULL DEFAULT '{}'`);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);

@@ -9,7 +9,7 @@ import { getSite, getLibrary, siteRoleFor, libraryPermission, visibleLibraryIds,
 import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
 import { putBlob, getBlob } from "../blobs.js";
-import { FILE_KINDS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
+import { FILE_KINDS, appForKind, SUITE_APPS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
 import { purgeItem, isHeld, scanDlp } from "../policies.js";
 import { fireTrigger } from "../rules.js";
 import { indexFile, indexBody } from "../indexer.js";
@@ -477,6 +477,13 @@ export function driveRoutes(app: FastifyInstance) {
   app.post("/api/drive", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const body = createSchema.parse(req.body);
+    // editor apps are per-user entitlements — a disabled app can't create
+    // items of its kind (open/save are gated in routes/content.ts)
+    const appSlug = appForKind(body.kind);
+    if (appSlug && user.disabledApps?.includes(appSlug)) {
+      return reply.code(403).send({ error: "app_disabled",
+        message: `${SUITE_APPS.find((a) => a.slug === appSlug)?.name ?? appSlug} isn't enabled for your account` });
+    }
     const id = randomUUID();
 
     // library derivation: explicit libraryId at a library root, else inherit
@@ -634,6 +641,11 @@ export function driveRoutes(app: FastifyInstance) {
       : ext === "pdf" || buf.subarray(0, 5).equals(Buffer.from("%PDF-"))
         ? "pdf"
         : "file";
+    const upApp = appForKind(fileKind);
+    if (upApp && user.disabledApps?.includes(upApp)) {
+      return reply.code(403).send({ error: "app_disabled",
+        message: `${SUITE_APPS.find((a) => a.slug === upApp)?.name ?? upApp} isn't enabled for your account` });
+    }
     // uploads honor folder permissions the same as item creation; a parent
     // inside a library stamps the upload with that library
     let libraryId: string | null = null;

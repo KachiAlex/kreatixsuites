@@ -14,6 +14,8 @@ import { samlEnabled } from "./saml.js";
 import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../billing.js";
 import { logActivity } from "../items.js";
+import { SUITE_APPS } from "@kreatix/shared";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -82,15 +84,183 @@ export function adminRoutes(app: FastifyInstance) {
   app.get("/api/admin/members", async (req) => {
     const { user } = req as AuthedRequest;
     const rows = await dbq<UserRow>(
-      "SELECT id, email, display_name, initials, role, disabled, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
+      "SELECT id, email, display_name, initials, role, disabled, disabled_apps, mail_user_id, mail_email, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
       [user.orgId],
     );
     return {
       members: rows.map((u) => ({
         id: u.id, email: u.email, displayName: u.display_name,
-        initials: u.initials, role: u.role, disabled: u.disabled, createdAt: u.created_at,
+        initials: u.initials, role: u.role, disabled: u.disabled,
+        disabledApps: u.disabled_apps ?? [],
+        mailAddress: u.mail_email, mailUserId: u.mail_user_id,
+        createdAt: u.created_at,
       })),
+      apps: SUITE_APPS,
     };
+  });
+
+  /** Per-member app entitlements — M365 "licenses → apps": the set of suite
+   *  apps turned OFF for this user. Empty array = everything allowed. */
+  const appsSchema = z.object({
+    disabledApps: z.array(z.string()).max(50)
+      .refine((v) => v.every((s) => SUITE_APPS.some((a) => a.slug === s)), "Unknown app slug"),
+  });
+  app.patch("/api/admin/members/:id/apps", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const target = await one<UserRow>(
+      "SELECT id, role, disabled_apps FROM users WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId],
+    );
+    if (!target) return reply.code(404).send({ error: "not_found" });
+    if (target.id === user.id) {
+      return reply.code(400).send({ error: "bad_request", message: "Cannot change your own app access" });
+    }
+    if (target.role === "owner") {
+      return reply.code(403).send({ error: "forbidden", message: "Cannot restrict the owner's apps" });
+    }
+    const { disabledApps } = appsSchema.parse(req.body);
+    await run("UPDATE users SET disabled_apps = $1 WHERE id = $2", [disabledApps, target.id]);
+    return { ok: true, disabledApps };
+  });
+
+  /** Force-provision a member's mailbox (admin doesn't wait for their first
+   *  Mail visit). Returns the address assigned. */
+  app.post("/api/admin/members/:id/mailbox", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const target = await one<UserRow>(
+      "SELECT id, email, display_name, org_id, disabled FROM users WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId],
+    );
+    if (!target) return reply.code(404).send({ error: "not_found" });
+    if (target.disabled) return reply.code(400).send({ error: "bad_request", message: "Member is disabled" });
+    const acct = await provisionMailbox({
+      id: target.id, email: target.email, displayName: target.display_name, orgId: target.org_id,
+    });
+    return { ok: true, address: acct.email };
+  });
+
+  /** Mail admin view — every mailbox on the mail service joined to org
+   *  members by address (member row is null for non-suite accounts like
+   *  role addresses). */
+  app.get("/api/admin/mail-accounts", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return { mailConfigured: false, accounts: [] };
+    const mailUsers = await mailAdminUsers();
+    if (!mailUsers) return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unreachable" });
+    const members = await dbq<UserRow>(
+      "SELECT id, email, display_name, mail_user_id, mail_email FROM users WHERE org_id = $1", [user.orgId]);
+    // Tenancy scope: only accounts linked to an org member, or on one of the
+    // org's verified domains (role/shared addresses) — never other tenants'.
+    const domains = new Set(
+      (await dbq<{ domain: string }>(
+        "SELECT domain FROM org_domains WHERE org_id = $1 AND status = 'verified'", [user.orgId]))
+        .map((d) => d.domain.toLowerCase()));
+    const byMailId = new Map(members.filter((m) => m.mail_user_id != null).map((m) => [m.mail_user_id!, m]));
+    const byAddress = new Map(members.map((m) => [m.email.toLowerCase(), m]));
+    return {
+      mailConfigured: true,
+      accounts: mailUsers.map((mu) => {
+        const member = byMailId.get(mu.id) ?? byAddress.get(mu.email.toLowerCase()) ?? null;
+        return {
+          mailUserId: mu.id, address: mu.email, displayName: mu.display_name,
+          active: !!mu.is_active, usedBytes: mu.storage_used, quotaBytes: mu.storage_quota,
+          lastLoginAt: mu.last_login_at,
+          memberId: member?.id ?? null, memberEmail: member?.email ?? null,
+        };
+      }).filter((a, i) => a.memberId != null || domains.has(mailUsers[i].email.split("@")[1]?.toLowerCase() ?? "")),
+    };
+  });
+
+  /** Allowed domains for new mailboxes: the org's verified domains, plus the
+   *  platform fallback so orgs without a custom domain can still create
+   *  role addresses. */
+  const orgMailDomains = async (orgId: string) => {
+    const rows = await dbq<{ domain: string }>(
+      "SELECT domain FROM org_domains WHERE org_id = $1 AND status = 'verified'", [orgId]);
+    const set = rows.map((r) => r.domain.toLowerCase());
+    const fallback = (process.env.KREATIX_MAIL_DOMAIN ?? "kreatixtech.com").toLowerCase();
+    return set.includes(fallback) ? set : [...set, fallback];
+  };
+
+  /** Create a shared/role mailbox (sales@, info@) on an org domain — not tied
+   *  to a suite user; delegation happens on the mail service. */
+  app.post("/api/admin/mail-accounts", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const { localPart, domain, displayName } = z.object({
+      localPart: z.string().min(1).max(64).regex(/^[a-z0-9._+-]+$/i, "Invalid mailbox name"),
+      domain: z.string().min(3).max(200),
+      displayName: z.string().max(120).optional(),
+    }).parse(req.body);
+    const allowed = await orgMailDomains(user.orgId);
+    if (!allowed.includes(domain.toLowerCase())) {
+      return reply.code(403).send({ error: "forbidden", message: "Domain isn't verified for this workspace" });
+    }
+    const address = `${localPart.toLowerCase()}@${domain.toLowerCase()}`;
+    try {
+      const acct = await createMailbox(address, displayName ?? localPart);
+      void logActivity(user.orgId, user.id, null, "admin.mailbox", `Mailbox created: ${address}`);
+      return { ok: true, mailUserId: acct.id, address: acct.email };
+    } catch (e) {
+      const msg = (e as Error).message === "address_taken" ? "That address is already taken" : "Mail service rejected the mailbox";
+      return reply.code(409).send({ error: "conflict", message: msg });
+    }
+  });
+
+  /** Suspend/restore a mailbox or change its quota — tenancy-scoped: the
+   *  mailbox must be linked to an org member or sit on an org domain. */
+  app.patch("/api/admin/mail-accounts/:mailUserId", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const mailUserId = Number((req.params as { mailUserId: string }).mailUserId);
+    if (!Number.isInteger(mailUserId)) return reply.code(400).send({ error: "bad_request" });
+    const { active, quotaBytes } = z.object({
+      active: z.boolean().optional(),
+      quotaBytes: z.number().int().min(1048576).max(1099511627776).optional(),
+    }).parse(req.body);
+    const owned = await one<UserRow>(
+      "SELECT id FROM users WHERE mail_user_id = $1 AND org_id = $2", [mailUserId, user.orgId]);
+    if (!owned) {
+      const acct = (await mailAdminUsers())?.find((u) => u.id === mailUserId);
+      const allowed = await orgMailDomains(user.orgId);
+      const dom = acct?.email.split("@")[1]?.toLowerCase();
+      if (!acct || !dom || !allowed.includes(dom)) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+    }
+    const patch: { is_active?: boolean; storage_quota?: number } = {};
+    if (active !== undefined) patch.is_active = active;
+    if (quotaBytes !== undefined) patch.storage_quota = quotaBytes;
+    if (!Object.keys(patch).length) return reply.code(400).send({ error: "bad_request", message: "Nothing to update" });
+    const ok = await updateMailbox(mailUserId, patch);
+    if (!ok) return reply.code(502).send({ error: "mail_unavailable", message: "Mail service rejected the change" });
+    void logActivity(user.orgId, user.id, null, "admin.mailbox",
+      `Mailbox ${mailUserId}: ${active !== undefined ? (active ? "restored" : "suspended") : `quota ${quotaBytes}`}`);
+    return { ok: true };
+  });
+
+  /** Bulk-provision mailboxes for every active org member who lacks one. */
+  app.post("/api/admin/mail-accounts/provision-all", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const missing = await dbq<UserRow>(
+      "SELECT id, email, display_name, org_id FROM users WHERE org_id = $1 AND mail_user_id IS NULL AND disabled = false",
+      [user.orgId]);
+    const results: { memberId: string; address?: string; error?: string }[] = [];
+    for (const m of missing) {
+      try {
+        const acct = await provisionMailbox({
+          id: m.id, email: m.email, displayName: m.display_name, orgId: m.org_id,
+        });
+        results.push({ memberId: m.id, address: acct.email });
+      } catch (e) {
+        results.push({ memberId: m.id, error: (e as Error).message });
+      }
+    }
+    void logActivity(user.orgId, user.id, null, "admin.mailbox",
+      `Bulk mailbox provisioning: ${results.filter((r) => r.address).length}/${missing.length} succeeded`);
+    return { ok: true, provisioned: results.filter((r) => r.address).length, results };
   });
 
   /** Change a member's role (cannot change your own, owner role is immutable here) */

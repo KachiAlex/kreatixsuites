@@ -39,6 +39,26 @@ const localpart = (email: string, id: string): string => {
 
 interface MailAccount { id: number; email: string }
 
+/** Claim an existing mailbox when it IS the suite user's own address —
+ *  e.g. an account created on the mail service before the bridge existed.
+ *  Never claims an address that belongs to a different identity; those
+ *  still collide and get a +suffix mailbox. */
+async function claimOwnMailbox(
+  address: string, user: { id: string; email: string },
+): Promise<MailAccount | null> {
+  if (address !== user.email.toLowerCase()) return null;
+  const res = await fetch(`${MAIL_BASE()}/api/admin/users`, {
+    headers: { "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+  });
+  if (!res.ok) return null;
+  const { users } = await res.json() as { users?: { id: number; email: string; is_active?: number }[] };
+  const match = (users ?? []).find((u) => u.email === address && u.is_active !== 0);
+  if (!match) return null;
+  await run("UPDATE users SET mail_user_id = $2, mail_email = $3 WHERE id = $1",
+    [user.id, match.id, match.email]);
+  return { id: match.id, email: match.email };
+}
+
 /** The org's verified primary domain, or the platform default. */
 async function mailDomainForOrg(orgId: string): Promise<string> {
   const row = await one<{ domain: string }>(
@@ -78,7 +98,13 @@ async function ensureMailAccount(user: { id: string; email: string; displayName:
       headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
       body: JSON.stringify({ email: address, password, display_name: user.displayName, role: "user" }),
     });
-    if (res.status === 409) continue; // address taken — retry with suffix
+    if (res.status === 409) {
+      // address taken — if it's the user's own address, adopt the existing
+      // mailbox (keeps prior mail); otherwise retry with a suffix
+      const claimed = await claimOwnMailbox(address, user).catch(() => null);
+      if (claimed) return claimed;
+      continue;
+    }
     if (!res.ok) throw new Error(`mail admin create failed: ${res.status}`);
     const created = await res.json() as { id?: number; email?: string };
     if (!created.id) throw new Error("mail admin create returned no id");
@@ -181,4 +207,56 @@ export async function mailStatus(user: { id: string; email: string; displayName:
   if (!mailEnabled()) return { enabled: false as const };
   const acct = await ensureMailAccount(user);
   return { enabled: true as const, address: acct.email };
+}
+
+/** Admin-forced provisioning — same lazy path a member's first Mail visit
+ *  takes, callable on behalf of any org member from the admin panel. */
+export async function provisionMailbox(user: { id: string; email: string; displayName: string; orgId: string }) {
+  return ensureMailAccount(user);
+}
+
+export interface MailAdminUser {
+  id: number; email: string; display_name: string; is_active: number;
+  storage_used: number; storage_quota: number; last_login_at: string | null;
+}
+
+/** Mail-service admin view — every mailbox on the service. Callers join it
+ *  to suite users by address. Null when mail is off or unreachable. */
+export async function mailAdminUsers(): Promise<MailAdminUser[] | null> {
+  if (!mailEnabled()) return null;
+  const res = await fetch(`${MAIL_BASE()}/api/admin/users`, {
+    headers: { "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const j = await res.json() as { users?: MailAdminUser[] };
+  return j.users ?? [];
+}
+
+/** Create a standalone mailbox (shared/role address like sales@org.com) —
+ *  no suite user is attached; members reach it via the mail service's
+ *  linked-account/delegation model. Throws on conflict (address taken). */
+export async function createMailbox(address: string, displayName: string): Promise<MailAccount> {
+  const res = await fetch(`${MAIL_BASE()}/api/admin/users`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+    body: JSON.stringify({ email: address, password: randomBytes(24).toString("hex"), display_name: displayName, role: "user" }),
+  });
+  if (res.status === 409) throw new Error("address_taken");
+  if (!res.ok) throw new Error(`mail admin create failed: ${res.status}`);
+  const created = await res.json() as { id?: number; email?: string };
+  if (!created.id) throw new Error("mail admin create returned no id");
+  return { id: created.id, email: created.email ?? address };
+}
+
+/** Patch mailbox state on the mail service (suspend/restore, quota, name). */
+export async function updateMailbox(
+  mailUserId: number,
+  patch: { is_active?: boolean; storage_quota?: number; display_name?: string },
+): Promise<boolean> {
+  const res = await fetch(`${MAIL_BASE()}/api/admin/users/${mailUserId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+    body: JSON.stringify(patch),
+  }).catch(() => null);
+  return !!res?.ok;
 }

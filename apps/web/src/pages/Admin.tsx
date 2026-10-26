@@ -8,9 +8,16 @@ import { timeAgo } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/hooks";
 import { SuperPortal } from "./SuperPortal";
+import { SUITE_APPS } from "@kreatix/shared";
 interface Member {
   id: string; email: string; displayName: string; initials: string;
   role: string; disabled: boolean; createdAt: string;
+  disabledApps: string[]; mailAddress: string | null; mailUserId: number | null;
+}
+interface MailAccount {
+  mailUserId: number; address: string; displayName: string | null;
+  active: boolean; usedBytes: number; quotaBytes: number; lastLoginAt: string | null;
+  memberId: string | null; memberEmail: string | null;
 }
 interface Invite {
   id: string; token: string; max_uses: number; uses: number;
@@ -109,6 +116,12 @@ export function Admin() {
   const { user, org } = useAuth();
   const isFamily = org?.kind === "family";
   const [members, setMembers] = useState<Member[]>([]);
+  const [appsFor, setAppsFor] = useState<string | null>(null);
+  const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [mailBusy, setMailBusy] = useState<string | null>(null);
+  const [mboxForm, setMboxForm] = useState({ localPart: "", domain: "", displayName: "" });
+  const [provisionAllBusy, setProvisionAllBusy] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [joinReqs, setJoinReqs] = useState<JoinRequest[]>([]);
   const [jrBusy, setJrBusy] = useState<string | null>(null);
@@ -227,8 +240,9 @@ export function Admin() {
         api.get<{ keys: typeof apiKeys }>("/api/admin/api-keys"),
         api.get<{ hooks: typeof webhooks }>("/api/admin/webhooks"),
         api.get<{ set: boolean }>("/api/admin/org-paystack"),
+        api.get<{ mailConfigured: boolean; accounts: MailAccount[] }>("/api/admin/mail-accounts").catch(() => null),
       ];
-      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py, mc] = await Promise.all(reqs) as [
         { members: Member[] },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
@@ -249,6 +263,7 @@ export function Admin() {
         { keys: typeof apiKeys },
         { hooks: typeof webhooks },
         { set: boolean },
+        { mailConfigured: boolean; accounts: MailAccount[] } | null,
       ];
       setMembers(m.members);
       setPolicies(p.policies);
@@ -274,6 +289,8 @@ export function Admin() {
       setApiKeys(ak.keys);
       setWebhooks(wh.hooks);
       setPaystackSet(py.set);
+      setMailConfigured(!!mc?.mailConfigured);
+      setMailAccounts(mc?.accounts ?? []);
     }
   }, [isSuper]);
 
@@ -286,6 +303,74 @@ export function Admin() {
       toast(`${m.displayName} is now ${ROLE_LABELS[role] ?? role}`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Role change failed");
+    }
+  };
+
+  const toggleApp = async (m: Member, slug: string) => {
+    const disabledApps = m.disabledApps.includes(slug)
+      ? m.disabledApps.filter((s) => s !== slug)
+      : [...m.disabledApps, slug];
+    try {
+      await api.patch(`/api/admin/members/${m.id}/apps`, { disabledApps });
+      setMembers((ms) => ms.map((x) => (x.id === m.id ? { ...x, disabledApps } : x)));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't update app access");
+    }
+  };
+
+  const provisionMailbox = async (m: Member) => {
+    setMailBusy(m.id);
+    try {
+      const r = await api.post<{ address: string }>(`/api/admin/members/${m.id}/mailbox`, {});
+      setMembers((ms) => ms.map((x) => (x.id === m.id ? { ...x, mailAddress: r.address } : x)));
+      toast(`Mailbox ready — ${r.address}`);
+      void load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Mailbox provisioning failed");
+    } finally {
+      setMailBusy(null);
+    }
+  };
+
+  const provisionAll = async () => {
+    setProvisionAllBusy(true);
+    try {
+      const r = await api.post<{ provisioned: number; results: { memberId: string; address?: string; error?: string }[] }>(
+        "/api/admin/mail-accounts/provision-all", {});
+      toast(`Provisioned ${r.provisioned} mailbox${r.provisioned === 1 ? "" : "es"}`);
+      void load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Bulk provisioning failed");
+    } finally {
+      setProvisionAllBusy(false);
+    }
+  };
+
+  const createSharedMailbox = async () => {
+    try {
+      const r = await api.post<{ address: string }>("/api/admin/mail-accounts", {
+        localPart: mboxForm.localPart.trim(), domain: mboxForm.domain,
+        displayName: mboxForm.displayName.trim() || undefined,
+      });
+      toast(`Mailbox created — ${r.address}`);
+      setMboxForm({ localPart: "", domain: mboxForm.domain, displayName: "" });
+      void load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't create mailbox");
+    }
+  };
+
+  const patchMailbox = async (a: MailAccount, patch: { active?: boolean; quotaBytes?: number }) => {
+    setMailBusy(`acct-${a.mailUserId}`);
+    try {
+      await api.patch(`/api/admin/mail-accounts/${a.mailUserId}`, patch);
+      setMailAccounts((xs) => xs.map((x) => x.mailUserId === a.mailUserId
+        ? { ...x, active: patch.active ?? x.active, quotaBytes: patch.quotaBytes ?? x.quotaBytes } : x));
+      toast(patch.active === false ? `${a.address} suspended` : patch.active === true ? `${a.address} restored` : "Quota updated");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Mailbox update failed");
+    } finally {
+      setMailBusy(null);
     }
   };
 
@@ -527,6 +612,13 @@ export function Admin() {
     return v;
   };
 
+  // domains a new shared mailbox can live on — verified org domains + the
+  // platform fallback (mirrors orgMailDomains() on the API)
+  const mailDomains = [...new Set([
+    ...domains.filter((d) => d.status === "verified").map((d) => d.domain),
+    "kreatixtech.com",
+  ])];
+
   const filtered = filter
     ? audit.filter((e) =>
         `${e.action} ${e.actor_name ?? ""} ${e.file_name ?? ""} ${e.detail ?? ""}`
@@ -539,7 +631,31 @@ export function Admin() {
       <>
       <h1>Administration</h1>
 
-      <section className="admin-card">
+      <nav className="admin-nav">
+        <span className="an-group">Users</span>
+        <a href="#members">Members</a>
+        {mailConfigured && <a href="#mailboxes">Mailboxes</a>}
+        <a href="#domains">Domains</a>
+        <a href="#scim">SCIM</a>
+        <span className="an-group">Licensing</span>
+        <a href="#billing">Subscription</a>
+        <a href="#payments">Payments</a>
+        <a href="#ai">AI usage</a>
+        <span className="an-group">Security</span>
+        <a href="#posture">Posture</a>
+        <a href="#policies">Policies</a>
+        <a href="#sso">SSO</a>
+        <a href="#holds">Holds &amp; eDiscovery</a>
+        <a href="#dlp">DLP</a>
+        <a href="#audit">Audit</a>
+        <span className="an-group">Org</span>
+        <a href="#health">Health</a>
+        <a href="#branding">Branding</a>
+        <a href="#api">API &amp; webhooks</a>
+        <a href="#automations">Automations</a>
+      </nav>
+
+      <section className="admin-card" id="posture">
         <h2>Security posture</h2>
         <div className="admin-flags">
           <div className={`flag ${encryption ? "on" : "off"}`}>
@@ -558,7 +674,7 @@ export function Admin() {
       </section>
 
       {metrics && (
-        <section className="admin-card">
+        <section className="admin-card" id="health">
           <h2>Health &amp; metrics</h2>
           <div className="admin-flags">
             <div className="flag on"><b>Uptime</b><span>{Math.floor(metrics.uptimeSec / 3600)}h {Math.floor((metrics.uptimeSec % 3600) / 60)}m</span></div>
@@ -573,7 +689,7 @@ export function Admin() {
         </section>
       )}
 
-      <section className="admin-card">
+      <section className="admin-card" id="policies">
         <h2>Data policies</h2>
         {policies && (
           <div className="admin-policies">
@@ -808,7 +924,7 @@ export function Admin() {
       {/* ── Enterprise SSO (per-org IdP) ── */}
       {isOwnerOrAdmin && (
         <section className="admin-card" id="sso">
-          <h2>Single sign-on</h2>
+          <h2 id="sso">Single sign-on</h2>
           <p className="d-sub" style={{ marginTop: 0 }}>
             Connect this workspace's own identity provider — members then sign in
             through your IdP (pair with "Require single sign-on" in Data policies).
@@ -876,7 +992,7 @@ export function Admin() {
       {/* ── Legal holds + eDiscovery ── */}
       {isOwnerOrAdmin && (
         <section className="admin-card">
-          <h2>Legal holds</h2>
+          <h2 id="holds">Legal holds</h2>
           <p className="d-sub" style={{ marginTop: 0 }}>
             Held items can't be trashed, purged, or swept by retention — until the hold is released.
           </p>
@@ -1023,7 +1139,7 @@ export function Admin() {
       {/* ── DLP engine: rules + violation queue ── */}
       {isOwnerOrAdmin && (
         <section className="admin-card">
-          <h2>DLP rules</h2>
+          <h2 id="dlp">DLP rules</h2>
           <p className="d-sub" style={{ marginTop: 0 }}>
             Named rules scanned by the pipeline on file saves, text uploads, and chat posts.
             "Block" rejects the write outright; "flag" records a reviewable violation.
@@ -1109,7 +1225,7 @@ export function Admin() {
 
       {billing && (
         <section className="admin-card" id="billing">
-          <h2>Subscription &amp; billing</h2>
+          <h2 id="billing">Subscription &amp; billing</h2>
           {(() => {
             const s = billing.subscription;
             const stateLabel: Record<string, string> = {
@@ -1175,7 +1291,7 @@ export function Admin() {
 
       {isOwnerOrAdmin && (
         <section className="admin-card" id="form-payments">
-          <h2>Form payments</h2>
+          <h2 id="payments">Form payments</h2>
           <p className="d-sub" style={{ marginTop: 0 }}>
             Payment fields on this workspace's forms settle to <b>your</b> Paystack account —
             paste a secret key to enable them. The key is stored encrypted and never shown again.
@@ -1210,7 +1326,7 @@ export function Admin() {
 
       {aiUsage && (
         <section className="admin-card" id="ai-usage">
-          <h2>Kreatix AI usage</h2>
+          <h2 id="ai">Kreatix AI usage</h2>
           <div className="admin-flags">
             <div className="flag on">
               <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : aiUsage.quota.plan === "free" ? "Free tier AI" : "This month"}</b>
@@ -1284,8 +1400,15 @@ export function Admin() {
         </section>
       )}
 
-      <section className="admin-card">
+      <section className="admin-card" id="members">
         <h2>{isFamily ? "Family members" : "Members"}</h2>
+        {billing && (
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            {billing.subscription.planName} plan · {billing.subscription.seats} licensed seat{billing.subscription.seats === 1 ? "" : "s"} ·{" "}
+            {members.filter((m) => !m.disabled).length} active member{members.filter((m) => !m.disabled).length === 1 ? "" : "s"}
+            {" — "}<a href="#billing">manage subscription</a>
+          </p>
+        )}
         <div className="audit-bar" style={{ marginBottom: 10 }}>
           <button className="btn-secondary" onClick={() => void createInvite()}>
             {isFamily ? "+ Invite family member" : "+ Invite link"}</button>
@@ -1294,6 +1417,12 @@ export function Admin() {
             onKeyDown={(e) => { if (e.key === "Enter" && inviteEmail.trim()) void createInvite(inviteEmail.trim()); }} />
           <button className="btn-secondary" disabled={!inviteEmail.trim()}
             onClick={() => void createInvite(inviteEmail.trim())}>Email invite</button>
+          {mailConfigured && members.some((m) => !m.mailAddress && !m.disabled) && (
+            <button className="btn-secondary" disabled={provisionAllBusy}
+              onClick={() => void provisionAll()}>
+              {provisionAllBusy ? "Provisioning…" : "Provision all mailboxes"}
+            </button>
+          )}
           {invites.map((i) => (
             <span key={i.id} className="role-badge" title={`${i.uses}/${i.max_uses} uses`}>
               {PUBLIC_ORIGIN}/register?invite={i.token.slice(0, 8)}…
@@ -1323,10 +1452,11 @@ export function Admin() {
           </div>
         )}
         <div className="tbl-scroll"><table className="admin-table">
-          <thead><tr><th></th><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Name</th><th>Email</th><th>Role</th><th>Apps</th><th>Mailbox</th><th>Joined</th><th></th></tr></thead>
           <tbody>
             {members.map((m) => (
-              <tr key={m.id} style={m.disabled ? { opacity: 0.5 } : undefined}>
+              <Fragment key={m.id}>
+              <tr style={m.disabled ? { opacity: 0.5 } : undefined}>
                 <td><span className="member-av">{m.initials}</span></td>
                 <td>{m.displayName}{m.disabled && <span className="role-badge" style={{ marginLeft: 8 }}>disabled</span>}</td>
                 <td>{m.email}</td>
@@ -1341,6 +1471,30 @@ export function Admin() {
                     </select>
                   )}
                 </td>
+                <td>
+                  {m.role === "owner" ? (
+                    <span className="d-sub">All apps</span>
+                  ) : (
+                    <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                      onClick={() => setAppsFor(appsFor === m.id ? null : m.id)}>
+                      {m.disabledApps.length === 0 ? "All apps" : `${SUITE_APPS.length - m.disabledApps.length}/${SUITE_APPS.length} apps`}
+                      {appsFor === m.id ? " ▴" : " ▾"}
+                    </button>
+                  )}
+                </td>
+                <td>
+                  {m.mailAddress ? (
+                    <span title={m.mailAddress}>{m.mailAddress}</span>
+                  ) : mailConfigured ? (
+                    <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                      disabled={m.disabled || mailBusy === m.id}
+                      onClick={() => void provisionMailbox(m)}>
+                      {mailBusy === m.id ? "Provisioning…" : "Provision"}
+                    </button>
+                  ) : (
+                    <span className="d-sub">—</span>
+                  )}
+                </td>
                 <td>{timeAgo(m.createdAt)}</td>
                 <td>
                   {m.role !== "owner" && (
@@ -1351,12 +1505,78 @@ export function Admin() {
                   )}
                 </td>
               </tr>
+              {appsFor === m.id && (
+                <tr><td colSpan={8} style={{ paddingTop: 0 }}>
+                  <div className="app-grants">
+                    {SUITE_APPS.map((a) => {
+                      const on = !m.disabledApps.includes(a.slug);
+                      return (
+                        <label key={a.slug} className={`app-grant ${on ? "on" : "off"}`}>
+                          <input type="checkbox" checked={on}
+                            onChange={() => void toggleApp(m, a.slug)} />
+                          {a.name}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </td></tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table></div>
       </section>
 
-      <section className="admin-card">
+      {mailConfigured && (
+        <section className="admin-card" id="mailboxes">
+          <h2>Mailboxes</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Every mailbox on this workspace's domains — member mailboxes are linked to their account;
+            addresses with no member are role/shared mailboxes.
+          </p>
+          <div className="audit-bar" style={{ marginBottom: 10 }}>
+            <input style={{ width: 140 }} placeholder="sales" value={mboxForm.localPart}
+              onChange={(e) => setMboxForm({ ...mboxForm, localPart: e.target.value })} />
+            <span style={{ alignSelf: "center" }}>@</span>
+            <select value={mboxForm.domain} onChange={(e) => setMboxForm({ ...mboxForm, domain: e.target.value })}
+              style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "7px 10px", fontSize: 12, background: "var(--surface)" }}>
+              <option value="">domain…</option>
+              {mailDomains.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <input style={{ width: 160 }} placeholder="Display name (optional)" value={mboxForm.displayName}
+              onChange={(e) => setMboxForm({ ...mboxForm, displayName: e.target.value })} />
+            <button className="btn-primary" disabled={!mboxForm.localPart.trim() || !mboxForm.domain}
+              onClick={() => void createSharedMailbox()}>+ Shared mailbox</button>
+          </div>
+          <div className="tbl-scroll"><table className="admin-table">
+            <thead><tr><th>Address</th><th>Member</th><th>Status</th><th>Storage</th><th>Last sign-in</th><th></th></tr></thead>
+            <tbody>
+              {mailAccounts.map((a) => (
+                <tr key={a.mailUserId}>
+                  <td>{a.displayName && a.displayName !== a.address.split("@")[0] ? `${a.displayName} · ` : ""}{a.address}</td>
+                  <td>{a.memberEmail ? (members.find((m) => m.id === a.memberId)?.displayName ?? a.memberEmail)
+                    : <span className="role-badge">shared / role</span>}</td>
+                  <td>{a.active ? <span className="role-badge owner">active</span> : <span className="role-badge">suspended</span>}</td>
+                  <td>{a.usedBytes != null ? `${(a.usedBytes / 1048576).toFixed(0)} MB${a.quotaBytes ? ` / ${(a.quotaBytes / 1073741824).toFixed(1)} GB` : ""}` : "—"}</td>
+                  <td>{a.lastLoginAt ? timeAgo(a.lastLoginAt) : "never"}</td>
+                  <td>
+                    <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                      disabled={mailBusy === `acct-${a.mailUserId}`}
+                      onClick={() => void patchMailbox(a, { active: !a.active })}>
+                      {a.active ? "Suspend" : "Restore"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {mailAccounts.length === 0 && (
+                <tr><td colSpan={6} className="d-sub">No mailboxes yet — members get one on their first Mail visit, or use Provision above.</td></tr>
+              )}
+            </tbody>
+          </table></div>
+        </section>
+      )}
+
+      <section className="admin-card" id="domains">
         <h2>Email domains</h2>
         <p className="d-sub" style={{ marginTop: 0 }}>
           Verify your company domain and new mailboxes are provisioned as <code>name@yourdomain.com</code>.
@@ -1440,7 +1660,7 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
-        <h2>SCIM provisioning</h2>
+        <h2 id="scim">SCIM provisioning</h2>
         <div className="pol-row" style={{ alignItems: "stretch", flexDirection: "column" }}>
           <span>
             <b>Endpoint</b> <code>{PUBLIC_ORIGIN}/scim/v2</code>
@@ -1471,13 +1691,13 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
-        <h2>Branding</h2>
+        <h2 id="branding">Branding</h2>
         <p className="d-sub" style={{ marginTop: -6 }}>Your workspace's name and logo in the app shell, invite pages and document titles.</p>
         <BrandingCard toast={toast} />
       </section>
 
       <section className="admin-card">
-        <h2>API &amp; webhooks</h2>
+        <h2 id="api">API &amp; webhooks</h2>
         <p className="d-sub" style={{ marginTop: -6 }}>
           Public API base: <code>{PUBLIC_ORIGIN}/api/v1</code> — authenticate with <code>Authorization: Bearer kx_…</code>.
           Keys are org-scoped service principals, not a user's ACL.
@@ -1598,7 +1818,7 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
-        <h2>Automations</h2>
+        <h2 id="automations">Automations</h2>
         <p className="d-sub" style={{ marginTop: -6 }}>When something happens in one app, do something in another. <code>{"{{name}}"}</code> and other context fields interpolate into titles and messages.</p>
         <div className="audit-bar" style={{ flexWrap: "wrap", marginBottom: 8 }}>
           <input placeholder="Rule name" value={ruleForm.name}
@@ -1712,7 +1932,7 @@ export function Admin() {
       </section>
 
       <section className="admin-card">
-        <h2>Audit log</h2>
+        <h2 id="audit">Audit log</h2>
         <div className="audit-bar" style={{ flexWrap: "wrap" }}>
           <select value={auditAction} onChange={(e) => setAuditAction(e.target.value)} title="Action">
             <option value="">All actions</option>

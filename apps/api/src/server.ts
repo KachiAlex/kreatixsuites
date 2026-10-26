@@ -48,6 +48,7 @@ import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from ".
 import { encryptionEnabled, encryptField } from "./crypto.js";
 import { blobS3Enabled } from "./blobs.js";
 import { randomUUID } from "node:crypto";
+import { appForApiPath, SUITE_APPS } from "@kreatix/shared";
 import { resolveSession } from "./auth.js";
 
 /** Auth/session tokens must never land in access logs — strip the query
@@ -238,6 +239,24 @@ async function main() {
         message: "This account is restricted to the platform portal.",
       });
     }
+  });
+
+  // ---- per-user app entitlements ----
+  // Tenant admins can switch suite apps off per member (users.disabled_apps,
+  // M365 "licenses → apps"). A disabled app's API prefix 403s for that user;
+  // editor apps are kind-gated inside drive/content instead. Runs on the
+  // shared resolveSession cache — no extra user lookup.
+  app.addHook("preHandler", async (req, reply) => {
+    if (!req.url.startsWith("/api/")) return;
+    const appSlug = appForApiPath(req.url);
+    if (!appSlug) return;
+    const { user } = await resolveSession(req);
+    if (!user || user.is_super || !user.disabled_apps?.includes(appSlug)) return;
+    const name = SUITE_APPS.find((a) => a.slug === appSlug)?.name ?? appSlug;
+    return reply.code(403).send({
+      error: "app_disabled",
+      message: `${name} isn't enabled for your account — ask your workspace admin.`,
+    });
   });
 
   app.get("/api/health", async () => ({ ok: true, service: "kreatix-api", ts: new Date().toISOString() }));
