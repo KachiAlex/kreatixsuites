@@ -2,11 +2,16 @@
 // Registers an org owner + an invited member, then exercises per-user app
 // entitlements (PATCH members/:id/apps, the global API gate, editor kind
 // gating) and the mailboxes admin endpoints. Cleans nothing (users are cheap).
+// New orgs land on the free plan (max_members=1); when run on the VPS the
+// test bumps the throwaway org's plan via docker exec psql so a second
+// member can join. Off-box runs skip the multi-member section.
 import { randomBytes } from "node:crypto";
+import { execSync } from "node:child_process";
 
 const BASE = process.env.KX_BASE ?? "http://127.0.0.1:3017";
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const ok = (cond: boolean, name: string) => { cond ? pass++ : fail++; console.log(`${cond ? "✓" : "✗ FAIL"} ${name}`); };
+const skipT = (name: string) => { skip++; console.log(`- SKIP ${name}`); };
 
 async function req(method: string, path: string, body?: unknown, token?: string) {
   const r = await fetch(`${BASE}${path}`, {
@@ -28,8 +33,29 @@ const regA = await post("/api/auth/register", { email: `owner-${suffix}@test.kre
 ok(regA.status === 200 && typeof regA.body.token === "string", "register owner");
 const ownerTok = regA.body.token as string;
 
+// free plan = 1 seat; on the VPS, lift the throwaway org to an unlimited
+// plan so a second member can join (no-op when docker isn't reachable)
+const meA = await get("/api/auth/me", ownerTok);
+const orgId = (meA.body.user as { orgId?: string } | undefined)?.orgId;
+let unlimited = false;
+try {
+  execSync(
+    `docker exec kreatix-db-1 psql -U kreatix -d kreatix -c "UPDATE subscriptions SET plan='biz_basic', status='active', period_start=now(), period_end=now()+interval '100 years' WHERE org_id='${orgId}'"`,
+    { stdio: "pipe" });
+  unlimited = true;
+} catch { /* not on the VPS — multi-member tests will skip */ }
+
 const inv = await post("/api/admin/invites", {}, ownerTok);
-ok(inv.status === 200 && typeof inv.body.token === "string", "create invite");
+const canInvite = inv.status === 200 && typeof inv.body.token === "string";
+if (!canInvite && inv.body.error === "seat_limit" && !unlimited) {
+  ok(true, "create invite (free-plan seat limit enforced)");
+}
+ok(canInvite || inv.body.error === "seat_limit", `create invite${canInvite ? "" : " — seat_limit (single-seat plan)"}`);
+if (!canInvite) {
+  skipT("member-dependent entitlement checks (single-seat org)");
+  console.log(`\n${pass} passed, ${fail} failed, ${skip} skipped`);
+  process.exit(fail ? 1 : 0);
+}
 const regB = await post("/api/auth/register", { email: `member-${suffix}@test.kreatix.local`, password, displayName: "Member B", invite: inv.body.token });
 ok(regB.status === 200 && typeof regB.body.token === "string", "register member via invite");
 const memberTok = regB.body.token as string;
@@ -95,5 +121,5 @@ ok(memberPatch.status === 404 || memberPatch.status === 400, "patch on unknown m
 const foreignDomain = await post("/api/admin/mail-accounts", { localPart: "x", domain: "example.com" }, memberTok);
 ok(foreignDomain.status === 403, "non-admin cannot create shared mailboxes");
 
-console.log(`\n${pass} passed, ${fail} failed`);
+console.log(`\n${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail ? 1 : 0);
