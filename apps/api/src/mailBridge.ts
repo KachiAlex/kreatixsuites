@@ -87,18 +87,28 @@ async function mailDomainForOrg(orgId: string): Promise<string> {
   return row?.domain ?? FALLBACK_DOMAIN();
 }
 
-/** DNS checks for the domain panel: verification TXT + inbound MX. */
+/** DNS checks for the domain panel + cutover wizard: verification TXT,
+ *  inbound MX (and where it currently points), SPF, and DMARC. DKIM/Brevo
+ *  records authenticate via brevoAuthenticateDomain, not raw DNS. */
 export async function checkDomainDns(domain: string, verifyToken: string) {
-  let txtOk = false, mxOk = false;
+  let txtOk = false, mxOk = false, spfOk = false, dmarcOk = false;
+  let mxTargets: string[] = [];
   try {
     const records = await resolveTxt(domain);
-    txtOk = records.some((chunks) => chunks.join("").trim() === `kreatix-verify=${verifyToken}`);
+    const flat = records.map((chunks) => chunks.join("").trim());
+    txtOk = flat.some((t) => t === `kreatix-verify=${verifyToken}`);
+    spfOk = flat.some((t) => t.startsWith("v=spf1"));
   } catch { /* NXDOMAIN / no TXT */ }
   try {
     const mx = await resolveMx(domain);
-    mxOk = mx.some((r) => /(^|\.)kreatixtech\.com$/i.test(r.exchange.replace(/\.$/, "")));
+    mxTargets = mx.sort((a, b) => a.priority - b.priority).map((r) => r.exchange.replace(/\.$/, ""));
+    mxOk = mxTargets.some((h) => /(^|\.)kreatixtech\.com$/i.test(h));
   } catch { /* no MX */ }
-  return { txtOk, mxOk };
+  try {
+    const records = await resolveTxt(`_dmarc.${domain}`);
+    dmarcOk = records.some((chunks) => chunks.join("").trim().startsWith("v=DMARC1"));
+  } catch { /* no DMARC */ }
+  return { txtOk, mxOk, mxTargets, spfOk, dmarcOk };
 }
 
 /** Lazily create the user's mailbox through the mail admin API and remember

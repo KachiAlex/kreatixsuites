@@ -695,6 +695,8 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   )`);
   await pool.query(`ALTER TABLE org_domains ADD COLUMN IF NOT EXISTS brevo_records JSONB`);
   await pool.query(`ALTER TABLE org_domains ADD COLUMN IF NOT EXISTS brevo_ok BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE org_domains ADD COLUMN IF NOT EXISTS spf_ok BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE org_domains ADD COLUMN IF NOT EXISTS dmarc_ok BOOLEAN NOT NULL DEFAULT false`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_org_domains_org ON org_domains(org_id)`);
   // at most one verified claimant per domain, one primary per org
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_domains_verified ON org_domains(domain) WHERE status = 'verified'`);

@@ -463,6 +463,15 @@ export function authRoutes(app: FastifyInstance) {
 
     const t = body.invite ? tpl.joinedWorkspace(body.displayName, orgName) : tpl.welcome(body.displayName, orgName, kind);
     sendMailSafe(app.log, { to: body.email, toName: body.displayName, ...t });
+    // M365-style join: an invited member's mailbox exists before their first
+    // Mail visit — name@verified-domain. Fire-and-forget; a failure retries
+    // lazily on their next Mail open anyway.
+    if (body.invite) {
+      void import("../mailBridge.js").then(({ mailEnabled, provisionMailbox }) => {
+        if (!mailEnabled()) return;
+        return provisionMailbox({ id: userId, email: body.email, displayName: body.displayName, orgId });
+      }).catch(() => {});
+    }
     // email verification — unverified logins still work for now; the flag
     // surfaces in /api/auth/me so the UI can nag
     const vtok = await issueAuthToken(userId, "email_verify", 24 * 60);

@@ -10,6 +10,7 @@ import { Modal } from "./Modal";
 
 interface AddedDomain {
   id: string; domain: string; status: string;
+  mxOk?: boolean; spfOk?: boolean; dmarcOk?: boolean; brevoOk?: boolean;
   dns: { type: string; host: string; value: string; purpose: string; required?: boolean; ok?: boolean | null }[];
 }
 
@@ -25,6 +26,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [invited, setInvited] = useState(0);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
+  const [mxTargets, setMxTargets] = useState<string[] | null>(null);
 
   const finish = async () => {
     await api.post("/api/admin/onboarding", {}).catch(() => {});
@@ -60,6 +62,22 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       }
     } catch (e) {
       setVerifyMsg(e instanceof Error ? e.message : "Verification failed — try again in a few minutes");
+    }
+    setBusy(false);
+  };
+
+  /** Live re-check of every record — powers the "check now" buttons and the
+   *  cutover detection (where mail currently flows). */
+  const checkRecords = async () => {
+    if (!added) return;
+    setBusy(true);
+    try {
+      const r = await api.post<{ domain: AddedDomain; mxTargets: string[]; verified: boolean }>(
+        `/api/admin/domains/${added.id}/check`, {});
+      setAdded(r.domain);
+      setMxTargets(r.mxTargets);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Check failed");
     }
     setBusy(false);
   };
@@ -146,6 +164,15 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                   ))}
                 </tbody>
               </table>
+              {mxTargets !== null && (
+                <p style={{ fontSize: 12.5, margin: "8px 0 0" }}>
+                  {mxTargets.length === 0
+                    ? "No MX record yet — mail won't arrive until you add it."
+                    : added.mxOk
+                      ? "✓ Mail already routes to Kreatix."
+                      : <>Mail currently flows to <b>{mxTargets[0]}</b> — it switches to Kreatix when you point MX at <code>mail.kreatixtech.com</code>.</>}
+                </p>
+              )}
               {verifyMsg && <p style={{ fontSize: 12.5, margin: "8px 0 0" }}>{verifyMsg}</p>}
             </>
           )}
@@ -158,6 +185,11 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 {busy ? "Checking DNS…" : "Verify domain"}
               </button>
             )}
+            {added && (
+              <button className="btn-ghost" disabled={busy} onClick={() => void checkRecords()}>
+                {busy ? "Checking…" : "Re-check records"}
+              </button>
+            )}
             {added?.status === "verified" && (
               <button className="btn-primary" onClick={() => setStep(2)}>Continue</button>
             )}
@@ -168,7 +200,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       {step === 2 && (
         <div className="ob-body">
           <h3>Bring your team in</h3>
-          <p className="d-sub">Email addresses, separated by commas or new lines — each person gets an invite.</p>
+          <p className="d-sub">
+            Email addresses, separated by commas or new lines — each person gets an invite.
+            {added?.status === "verified"
+              ? <> Their <code>name@{added.domain}</code> mailbox is created the moment they accept.</>
+              : " Their mailbox is created the moment they accept."}
+          </p>
           <textarea rows={4} placeholder="jane@acme.com, kwame@acme.com" value={emails}
             onChange={(e) => setEmails(e.target.value)} style={{ width: "100%" }} />
           <div className="dlg-actions">
@@ -183,6 +220,14 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       {step === 3 && (
         <div className="ob-body">
           <h3>You're all set</h3>
+          {added?.status === "verified" && (
+            <ul className="d-sub" style={{ lineHeight: 1.9 }}>
+              <li>{added.mxOk ? "✓ MX points at Kreatix — mail arrives here."
+                             : <>MX not pointed yet — publish <code>MX → mail.kreatixtech.com</code> to start receiving mail.</>}</li>
+              <li>{added.spfOk ? "✓ SPF published." : "SPF record not found yet — needed so your outbound mail isn't spam-foldered."}</li>
+              <li>{added.brevoOk ? "✓ DKIM signing authenticated." : "DKIM/DMARC records pending — see Admin → Email domains."}</li>
+            </ul>
+          )}
           <ul className="d-sub" style={{ lineHeight: 1.9 }}>
             <li>{added?.status === "verified"
                        ? <>Domain <b>{added.domain}</b> verified — member mailboxes will use it.</>
@@ -192,6 +237,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             <li>{invited > 0 ? <>{invited} invite{invited > 1 ? "s" : ""} sent — teammates join from their email.</>
                              : <>Invite teammates anytime from <b>Admin → Members</b>.</>}</li>
             <li>Mail is in the left rail — the first visit creates your mailbox automatically.</li>
+            <li>Migrating from Microsoft 365? <b>Admin → Microsoft 365 import</b> pulls every mailbox over.</li>
           </ul>
           <div className="dlg-actions">
             <button className="btn-primary" onClick={() => void finish()}>Done</button>
