@@ -300,13 +300,16 @@ function Rail({ toast }: { toast: (m: string) => void }) {
     ...(appEnabled(user?.disabledApps, "tasks") ? [{ to: "/tasks", icon: "✓", title: "Tasks" }] : []),
     ...(appEnabled(user?.disabledApps, "notes") ? [{ to: "/notes", icon: "📝", title: "Notes" }] : []),
     ...(appEnabled(user?.disabledApps, "forms") ? [{ to: "/forms", icon: "▤", title: "Forms" }] : []),
-    ...(mailOn && appEnabled(user?.disabledApps, "mail") ? [{ to: "/mail", icon: "✉", title: "Mail" }] : []),
+    ...(mailOn && appEnabled(user?.disabledApps, "mail") ? [{ to: "/mail", icon: "✉", title: "Mail", sso: true }] : []),
     ...(meetOn && appEnabled(user?.disabledApps, "meet") ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
   ];
   return (
     <aside className="rail">
       <div className="brand-mark"><AppIcon kind="suites" /></div>
-      {items.map((i) => (
+      {items.map((i) => i.sso ? (
+        <button key={i.to} title={i.title} className="rail-btn"
+          onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>{i.icon}</button>
+      ) : (
         <NavLink key={i.to} to={i.to} end={i.to === "/"} title={i.title}
           className={`rail-btn ${pathname === i.to ? "active" : ""}`}>{i.icon}</NavLink>
       ))}
@@ -477,7 +480,12 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       {appEnabled(user?.disabledApps, "tasks") && <NavLink to="/tasks" className={navCls}><AppIcon kind="tasks" size={18} />Tasks</NavLink>}
       {appEnabled(user?.disabledApps, "notes") && <NavLink to="/notes" className={navCls}><AppIcon kind="notes" size={18} />Notes</NavLink>}
       {appEnabled(user?.disabledApps, "forms") && <NavLink to="/forms" className={navCls}><AppIcon kind="forms" size={18} />Forms</NavLink>}
-      {mailOn && appEnabled(user?.disabledApps, "mail") && <NavLink to="/mail" className={navCls}><AppIcon kind="mail" size={18} />Kreatix Mail</NavLink>}
+      {mailOn && appEnabled(user?.disabledApps, "mail") && (
+        <button className="nav" style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
+          onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>
+          <AppIcon kind="mail" size={18} />Kreatix Mail
+        </button>
+      )}
       {meetOn && appEnabled(user?.disabledApps, "meet") && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
 
       {appEnabled(user?.disabledApps, "sites") && <>

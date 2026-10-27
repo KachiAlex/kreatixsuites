@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
-import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailFetchAs, mailStatus } from "../mailBridge.js";
+import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailFetchAs, mailSsoUrl, mailStatus } from "../mailBridge.js";
 import { q, one, run } from "../db.js";
 
 /** Paths the suite session may reach on the mail service — everything user-
@@ -60,6 +60,19 @@ export function mailRoutes(app: FastifyInstance) {
     if (!mailEnabled()) return { enabled: false };
     try {
       return await mailStatus(user);
+    } catch {
+      return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
+    }
+  });
+
+  /** One-click launch into the full mail app — redirects to mail.kreatixtech
+   *  with a short-lived exchange token (mailbox is ensured lazily first). */
+  app.get("/api/mail/sso", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    try {
+      const url = await mailSsoUrl(user);
+      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Mail service isn't configured" });
+      return reply.redirect(url);
     } catch {
       return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
     }

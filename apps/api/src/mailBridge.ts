@@ -234,6 +234,17 @@ export async function brevoAuthenticateDomain(domain: string): Promise<boolean |
   return !!(await res.json() as any)?.authenticated;
 }
 
+/** SSO handoff into the full mail app — mints the mail service's own access
+ *  JWT for an already-authenticated suite session and returns the exchange
+ *  URL (mail app swaps it for a real access+refresh session). */
+export async function mailSsoUrl(
+  user: { id: string; email: string; displayName: string; orgId: string },
+): Promise<string | null> {
+  if (!mailEnabled()) return null;
+  const acct = await ensureMailAccount(user);
+  return `${MAIL_BASE()}/sso?token=${encodeURIComponent(mintMailToken(acct.id, acct.email))}`;
+}
+
 export async function mailStatus(user: { id: string; email: string; displayName: string; orgId: string }) {
   if (!mailEnabled()) return { enabled: false as const };
   const acct = await ensureMailAccount(user);
