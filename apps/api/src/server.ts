@@ -23,6 +23,7 @@ import { samlRoutes } from "./routes/saml.js";
 import { orgSsoRoutes } from "./routes/orgsso.js";
 import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
+import { msMailRoutes, syncMsMailOrg } from "./routes/msmail.js";
 import { meetRoutes, meetIngestRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
 import { calendarRoutes, sweepCalendarReminders } from "./routes/calendar.js";
@@ -44,7 +45,7 @@ import { superadminRoutes } from "./routes/superadmin.js";
 import { ensureSubscription, effectiveState, ensureSuperAdmin, billingNotices, confirmPayment, paystackVerify, sweepPendingPaystack, sweepVersionRetention, getPlans } from "./billing.js";
 import { aiBudgetNotices } from "./aiQuota.js";
 import { onResponseMetric, metrics } from "./metrics.js";
-import { migrate, one, run, now, runSweep, pool } from "./db.js";
+import { migrate, one, q, run, now, runSweep, pool } from "./db.js";
 import { reindexAll } from "./indexer.js";
 import { sweepRetention, sweepLibraryRetention, getPolicies, ipAllowed } from "./policies.js";
 import { encryptionEnabled, encryptField } from "./crypto.js";
@@ -402,6 +403,7 @@ async function main() {
   app.register(superadminRoutes);
   app.register(collabRoutes);
   app.register(mailRoutes);
+  app.register(msMailRoutes);
   app.register(meetRoutes);
   app.register(meetIngestRoutes);
   app.register(chatRoutes);
@@ -541,6 +543,21 @@ async function main() {
       .catch((e) => app.log.warn(e, "webhook sweep failed"));
   setTimeout(hookSweep, 45_000).unref();
   setInterval(hookSweep, 2 * 60 * 1000).unref();
+
+  // Microsoft 365 mail import — delta-syncs every connected org every 15min
+  const msSweep = () =>
+    runSweep("msmail.sync", 717011, async () => {
+      const conns = await q<{ org_id: string }>("SELECT org_id FROM ms_mail_connections");
+      let total = 0;
+      for (const c of conns) {
+        const r = await syncMsMailOrg(c.org_id, app.log);
+        total += r.imported ?? 0;
+      }
+      return { imported: total, orgs: conns.length };
+    }).then((r) => { if (r && r.imported) app.log.info(r, "msmail sync"); })
+      .catch((e) => app.log.warn(e, "msmail sweep failed"));
+  setTimeout(msSweep, 75_000).unref();
+  setInterval(msSweep, 15 * 60 * 1000).unref();
 
   // calendar reminders — every 60s; fires bell notifications at reminder_mins
   const calSweep = () =>

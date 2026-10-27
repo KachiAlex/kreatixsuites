@@ -15,6 +15,14 @@ interface Member {
   disabledApps: string[]; mailAddress: string | null; mailUserId: number | null;
   appLicenses?: string[];
 }
+interface MsMap {
+  id: string; msUserId: string; upn: string | null; mail: string | null;
+  displayName: string | null; targetEmail: string | null; enabled: boolean;
+  state: string; importedCount: number; error: string | null; lastSyncAt: string | null;
+}
+interface MsConn { tenantId: string; tenantName: string | null; consentedBy: string | null; createdAt: string }
+interface MsMailbox { msUserId: string; upn: string | null; mail: string | null; displayName: string | null; active: boolean }
+
 interface MailAccount {
   mailUserId: number; address: string; displayName: string | null;
   active: boolean; usedBytes: number; quotaBytes: number; lastLoginAt: string | null;
@@ -123,6 +131,12 @@ export function Admin() {
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
   const [mailConfigured, setMailConfigured] = useState(false);
   const [mailBusy, setMailBusy] = useState<string | null>(null);
+  const [msEnabled, setMsEnabled] = useState(false);
+  const [msConn, setMsConn] = useState<MsConn | null>(null);
+  const [msMaps, setMsMaps] = useState<MsMap[]>([]);
+  const [msMailboxes, setMsMailboxes] = useState<MsMailbox[] | null>(null);
+  const [msTenant, setMsTenant] = useState("");
+  const [msBusy, setMsBusy] = useState<string | null>(null);
   const [mboxForm, setMboxForm] = useState({ localPart: "", domain: "", displayName: "" });
   const [provisionAllBusy, setProvisionAllBusy] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
@@ -244,8 +258,9 @@ export function Admin() {
         api.get<{ hooks: typeof webhooks }>("/api/admin/webhooks"),
         api.get<{ set: boolean }>("/api/admin/org-paystack"),
         api.get<{ mailConfigured: boolean; accounts: MailAccount[] }>("/api/admin/mail-accounts").catch(() => null),
+        api.get<{ enabled: boolean; connection: MsConn | null; maps: MsMap[] }>("/api/admin/msmail").catch(() => null),
       ];
-      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py, mc] = await Promise.all(reqs) as [
+      const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py, mc, ms] = await Promise.all(reqs) as [
         { members: Member[]; appSeats?: Record<string, number>; seatUsage?: Record<string, { cap: number; used: number }> },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
@@ -267,6 +282,7 @@ export function Admin() {
         { hooks: typeof webhooks },
         { set: boolean },
         { mailConfigured: boolean; accounts: MailAccount[] } | null,
+        { enabled: boolean; connection: MsConn | null; maps: MsMap[] } | null,
       ];
       setMembers(m.members);
       setAppSeats(m.appSeats ?? {});
@@ -296,10 +312,28 @@ export function Admin() {
       setPaystackSet(py.set);
       setMailConfigured(!!mc?.mailConfigured);
       setMailAccounts(mc?.accounts ?? []);
+      setMsEnabled(!!ms?.enabled);
+      setMsConn(ms?.connection ?? null);
+      setMsMaps(ms?.maps ?? []);
     }
   }, [isSuper]);
 
   useEffect(() => { load().catch((e) => toast(e instanceof Error ? e.message : "Load failed")); }, [load, toast]);
+
+  // Microsoft bounced the admin back here after tenant consent — finish the
+  // connection with their session (the public callback writes nothing).
+  useEffect(() => {
+    const qs = new URLSearchParams(window.location.search);
+    const tenantId = qs.get("msmail");
+    const err = qs.get("msmail_error");
+    if (!tenantId && !err) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (err) { toast(`Microsoft 365 consent failed: ${err}`); return; }
+    api.post<{ connection: MsConn }>("/api/admin/msmail/complete", { tenantId })
+      .then((r) => { setMsConn(r.connection); toast("Microsoft 365 connected"); void load(); })
+      .catch((e) => toast(e instanceof Error ? e.message : "Couldn't finish the connection"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const setRole = async (m: Member, role: string) => {
     try {
@@ -378,6 +412,74 @@ export function Admin() {
       void load();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Couldn't create mailbox");
+    }
+  };
+
+  const msConnect = async () => {
+    setMsBusy("connect");
+    try {
+      const r = await api.post<{ consentUrl: string }>("/api/admin/msmail/connect", { tenant: msTenant.trim() });
+      window.open(r.consentUrl, "_blank", "noopener");
+      toast("Consent page opened — sign in as the Microsoft 365 admin, then return here");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't start the connection");
+    }
+    setMsBusy(null);
+  };
+
+  const msLoadMailboxes = async () => {
+    setMsBusy("boxes");
+    try {
+      const r = await api.get<{ mailboxes: MsMailbox[] }>("/api/admin/msmail/mailboxes");
+      setMsMailboxes(r.mailboxes);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't list Microsoft mailboxes");
+    }
+    setMsBusy(null);
+  };
+
+  const msAutomap = async () => {
+    setMsBusy("automap");
+    try {
+      const r = await api.post<{ processed: number; maps: MsMap[] }>("/api/admin/msmail/automap", {});
+      setMsMaps(r.maps);
+      toast(`Mapped ${r.processed} Microsoft mailbox${r.processed === 1 ? "" : "es"}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Auto-map failed");
+    }
+    setMsBusy(null);
+  };
+
+  const msPatchMap = async (id: string, patch: { targetEmail?: string | null; enabled?: boolean }) => {
+    setMsBusy(id);
+    try {
+      const r = await api.patch<{ map: MsMap }>(`/api/admin/msmail/maps/${id}`, patch);
+      setMsMaps((ms) => ms.map((x) => (x.id === id ? r.map : x)));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't update the mapping");
+    }
+    setMsBusy(null);
+  };
+
+  const msSyncNow = async () => {
+    setMsBusy("sync");
+    try {
+      await api.post("/api/admin/msmail/sync", {});
+      toast("Import started — progress shows below and continues in the background");
+      setTimeout(() => void load(), 15_000);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't start the import");
+    }
+    setMsBusy(null);
+  };
+
+  const msDisconnect = async () => {
+    if (!confirm("Disconnect Microsoft 365? Import history is kept; mappings are removed.")) return;
+    try {
+      await api.del("/api/admin/msmail");
+      setMsConn(null); setMsMaps([]); setMsMailboxes(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Disconnect failed");
     }
   };
 
@@ -1605,6 +1707,93 @@ export function Admin() {
               )}
             </tbody>
           </table></div>
+        </section>
+      )}
+
+      {mailConfigured && msEnabled && (
+        <section className="admin-card" id="msmail">
+          <h2>Microsoft 365 import</h2>
+          {!msConn ? (
+            <>
+              <p className="d-sub" style={{ marginTop: 0 }}>
+                Migrate mail from a Microsoft 365 tenant — their admin grants consent once and every
+                mapped mailbox imports automatically. Enter the M365 tenant (e.g. <code>contoso.onmicrosoft.com</code>).
+              </p>
+              <div className="audit-bar">
+                <input placeholder="contoso.onmicrosoft.com" value={msTenant} style={{ minWidth: 240 }}
+                  onChange={(e) => setMsTenant(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void msConnect()} />
+                <button className="btn-primary" disabled={msBusy === "connect" || !msTenant.trim()}
+                  onClick={() => void msConnect()}>
+                  {msBusy === "connect" ? "Opening…" : "Connect Microsoft 365"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="d-sub" style={{ marginTop: 0 }}>
+                Connected to <b>{msConn.tenantName ?? msConn.tenantId}</b>
+                {msConn.consentedBy ? ` (consent by ${msConn.consentedBy})` : ""}. Map each Microsoft
+                mailbox to a Kreatix address, then sync — imports continue every 15 minutes.
+              </p>
+              <div className="audit-bar" style={{ marginBottom: 10 }}>
+                <button className="btn-secondary" disabled={msBusy === "boxes"} onClick={() => void msLoadMailboxes()}>
+                  {msBusy === "boxes" ? "Loading…" : "List Microsoft mailboxes"}
+                </button>
+                <button className="btn-primary" disabled={msBusy === "automap"} onClick={() => void msAutomap()}>
+                  {msBusy === "automap" ? "Mapping…" : "Auto-map mailboxes"}
+                </button>
+                <button className="btn-secondary" disabled={msBusy === "sync" || !msMaps.some((m) => m.enabled && m.targetEmail)}
+                  onClick={() => void msSyncNow()}>
+                  {msBusy === "sync" ? "Starting…" : "Import now"}
+                </button>
+                <button className="btn-ghost" onClick={() => void msDisconnect()}>Disconnect</button>
+              </div>
+              {msMailboxes && (
+                <p className="d-sub">
+                  {msMailboxes.length} mailbox{msMailboxes.length === 1 ? "" : "es"} in the tenant
+                  {msMailboxes.length > msMaps.length ? ` — ${msMailboxes.length - msMaps.length} unmapped (use Auto-map)` : ""}.
+                </p>
+              )}
+              {msMaps.length > 0 && (
+                <div className="tbl-scroll"><table className="admin-table">
+                  <thead><tr><th>Microsoft mailbox</th><th>Imports into</th><th>Status</th><th>Imported</th><th></th></tr></thead>
+                  <tbody>
+                    {msMaps.map((m) => (
+                      <tr key={m.id}>
+                        <td>{m.displayName ? `${m.displayName} · ` : ""}{m.upn ?? m.mail ?? m.msUserId}</td>
+                        <td>
+                          <input style={{ width: 220, fontSize: 12, padding: "4px 8px" }}
+                            defaultValue={m.targetEmail ?? ""} placeholder="user@yourdomain.com"
+                            disabled={msBusy === m.id}
+                            onBlur={(e) => {
+                              const v = e.target.value.trim().toLowerCase();
+                              if (v && v !== m.targetEmail) void msPatchMap(m.id, { targetEmail: v });
+                            }} />
+                        </td>
+                        <td>
+                          <span className={`role-badge ${m.state === "error" ? "warn" : m.state === "done" ? "owner" : ""}`}
+                            title={m.error ?? undefined}>
+                            {m.state === "error" ? "✕ error" : m.state === "syncing" ? "… syncing"
+                              : m.state === "done" ? "✓ synced" : m.enabled ? "pending" : "off"}
+                          </span>
+                        </td>
+                        <td>{m.importedCount > 0 ? `${m.importedCount} msgs` : "—"}
+                          {m.lastSyncAt ? <span className="d-sub"> · {timeAgo(m.lastSyncAt)}</span> : ""}</td>
+                        <td>
+                          <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                            disabled={msBusy === m.id}
+                            onClick={() => void msPatchMap(m.id, { enabled: !m.enabled })}>
+                            {m.enabled ? "Pause" : "Resume"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              )}
+            </>
+          )}
         </section>
       )}
 

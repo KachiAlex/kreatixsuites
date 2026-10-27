@@ -14,6 +14,27 @@ const FALLBACK_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.co
 export const mailEnabled = () =>
   !!(MAIL_BASE() && process.env.KREATIX_MAIL_JWT_SECRET && process.env.KREATIX_MAIL_ADMIN_SECRET);
 
+export const mailBase = MAIL_BASE;
+
+/** Push a raw RFC822 message through the mail service's inbound pipeline —
+ *  the same endpoint Postfix pipes into, so spam/blocked-sender/alias routing
+ *  all apply to imported mail identically. */
+export async function postInbound(targetEmail: string, mime: Buffer): Promise<void> {
+  const secret = process.env.KREATIX_MAIL_INBOUND_SECRET ?? "";
+  if (!MAIL_BASE() || !secret) throw new Error("inbound email endpoint not configured");
+  const res = await fetch(`${MAIL_BASE()}/api/inbound-email`, {
+    method: "POST",
+    headers: {
+      "content-type": "message/rfc822",
+      "x-inbound-secret": secret,
+      "x-envelope-to": targetEmail,
+    },
+    body: new Uint8Array(mime),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`inbound-email ${res.status}`);
+}
+
 // mail JWT: HS256 {sub:number, email, role:'user', type:'access', iat, exp}
 // — minted per request (15min), stateless; the suite session is the gate.
 const b64u = (b: Buffer | string) =>

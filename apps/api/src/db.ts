@@ -1136,6 +1136,41 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
     PRIMARY KEY (user_id, app_slug)
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_app_licenses_slug ON user_app_licenses(app_slug)`);
+  // Microsoft 365 tenant mail migration — one admin-consented Graph connection
+  // per org; ms_mail_maps routes an M365 mailbox to a Kreatix address with a
+  // stored delta link for incremental sync
+  await pool.query(`CREATE TABLE IF NOT EXISTS ms_mail_connections (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT,
+    consented_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ms_mail_maps (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    ms_user_id TEXT NOT NULL,
+    upn TEXT,
+    mail TEXT,
+    display_name TEXT,
+    target_email TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    state TEXT NOT NULL DEFAULT 'pending',
+    delta_link TEXT,
+    imported_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    last_sync_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, ms_user_id)
+  )`);
+  // dedupe — crash-resilient so a retried page never double-imports
+  await pool.query(`CREATE TABLE IF NOT EXISTS ms_mail_imported (
+    map_id TEXT NOT NULL REFERENCES ms_mail_maps(id) ON DELETE CASCADE,
+    ms_message_id TEXT NOT NULL,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (map_id, ms_message_id)
+  )`);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);
