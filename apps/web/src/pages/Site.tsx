@@ -760,7 +760,7 @@ function SiteCopilot({ site, onClose }: { site: Site; onClose: () => void }) {
     setAsking(true); setError(null);
     try {
       const r = await api.post<{ answer: string; sources: { id: string; name: string }[] }>(
-        `/api/sites/${site.id}/ai/ask`, { question });
+        `/api/sites/${site.id}/ask`, { question });
       setHistory((h) => [{ q: question, a: r.answer, sources: r.sources }, ...h]);
       setQ("");
     } catch (e) { setError(e instanceof Error ? e.message : "Couldn't answer right now"); }
