@@ -104,21 +104,21 @@ const lcol = await post(`/api/sites/${siteId}/libraries/${llibId}/columns`,
 ok(lcol.status === 200, "list library column");
 const lcolId = (lcol.body.column as { id: string }).id;
 const row = await post(`/api/sites/${siteId}/libraries/${llibId}/rows`,
-  { title: "First task", values: { [lcolId]: "todo" } }, tokA);
+  { title: "First task", data: { [lcolId]: "todo" } }, tokA);
 ok(row.status === 200, "create list row");
 const rowId = (row.body.row as { id: string }).id;
 const badRow = await post(`/api/sites/${siteId}/libraries/${llibId}/rows`,
-  { title: "Bad", values: { [lcolId]: "nope" } }, tokA);
+  { title: "Bad", data: { [lcolId]: "nope" } }, tokA);
 ok(badRow.status === 400, "invalid list choice value rejected");
 const rowsList = await get(`/api/sites/${siteId}/libraries/${llibId}/rows`, tokA);
 ok(rowsList.status === 200
   && (rowsList.body.rows as { id: string; data: Record<string, string> }[])
     .some((r) => r.id === rowId && r.data[lcolId] === "todo"), "list row round-trips values");
 const rowPatch = await patch(`/api/sites/${siteId}/libraries/${llibId}/rows/${rowId}`,
-  { values: { [lcolId]: "done" } }, tokA);
+  { data: { [lcolId]: "done" } }, tokA);
 ok(rowPatch.status === 200, "patch list row");
 const rowForeign = await patch(`/api/sites/${siteId}/libraries/${llibId}/rows/${rowId}`,
-  { values: { [lcolId]: "doing" } }, tokB);
+  { data: { [lcolId]: "doing" } }, tokB);
 ok(rowForeign.status === 403 || rowForeign.status === 404, "list row patch denied cross-tenant");
 
 // ── site pages (blocks + home flag) ──────────────────────────────────────
@@ -134,8 +134,11 @@ ok(pgList.status === 200 && (pgList.body.pages as { id: string }[]).some((p) => 
 const pgForeign = await get(`/api/sites/${siteId}/pages`, tokB);
 ok(pgForeign.status === 404, "pages hidden from other tenants");
 const badBlock = await patch(`/api/sites/${siteId}/pages/${pageId}`,
-  { blocks: [{ type: "library", libraryId: llibId }] }, tokA);
+  { blocks: [{ type: "library", libraryId: "not-a-real-library" }] }, tokA);
 ok(badBlock.status === 400, "library block must reference a library in this site");
+const goodBlock = await patch(`/api/sites/${siteId}/pages/${pageId}`,
+  { blocks: [{ type: "library", libraryId: llibId, limit: 5 }] }, tokA);
+ok(goodBlock.status === 200, "in-site library block accepted");
 
 // ── site copilot + auto-tag (503 when AI isn't configured) ───────────────
 const ask = await post(`/api/sites/${siteId}/ask`, { question: "What is in this site?" }, tokA);
