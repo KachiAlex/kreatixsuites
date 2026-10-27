@@ -47,7 +47,7 @@ SITE_ADDRESS=suite.example.com docker compose --profile tls up -d   # + Caddy ma
 - Fallback URL: https://kreatixsuite.67-211-210-8.sslip.io (sslip.io → box IP, cert via certbot)
 - App: `docker compose` in `/opt/kreatix` (git clone of this repo), bound to `127.0.0.1:3017`
 - nginx site: `/etc/nginx/sites-enabled/kreatixsuite` → `127.0.0.1:3017` (copy in `deploy/`)
-- Shared host: only 22/80/443 public (ufw); all apps route through host nginx — do NOT open extra ports
+- Shared host: 22/80/443 public + **25/tcp (SMTP)** — Postfix accepts inbound for `relay_domains` = verified `org_domains` (maps regenerated every minute by `/opt/kreatix-mail/sync-domains.sh`) and pipes each message to the mail service `/api/inbound-email`. All other apps still route through host nginx — do NOT open extra ports
 - Redeploy: `cd /opt/kreatix && git pull && docker compose up -d --build`
 
 ## Implemented (SRS refs)
