@@ -95,5 +95,56 @@ ok(activity.status === 200 && Array.isArray(activity.body.events), "site activit
 const activityForeign = await get(`/api/sites/${siteId}/activity`, tokB);
 ok(activityForeign.status === 404, "site activity hidden from other tenants");
 
+// ── list libraries (rows CRUD + schema-driven values) ───────────────────
+const llib = await post(`/api/sites/${siteId}/libraries`, { name: "Tracker", kind: "list" }, tokA);
+ok(llib.status === 200, "create list library");
+const llibId = (llib.body.library as { id: string }).id;
+const lcol = await post(`/api/sites/${siteId}/libraries/${llibId}/columns`,
+  { name: "Stage", type: "choice", choices: ["todo", "doing", "done"] }, tokA);
+ok(lcol.status === 200, "list library column");
+const lcolId = (lcol.body.column as { id: string }).id;
+const row = await post(`/api/sites/${siteId}/libraries/${llibId}/rows`,
+  { title: "First task", values: { [lcolId]: "todo" } }, tokA);
+ok(row.status === 200, "create list row");
+const rowId = (row.body.row as { id: string }).id;
+const badRow = await post(`/api/sites/${siteId}/libraries/${llibId}/rows`,
+  { title: "Bad", values: { [lcolId]: "nope" } }, tokA);
+ok(badRow.status === 400, "invalid list choice value rejected");
+const rowsList = await get(`/api/sites/${siteId}/libraries/${llibId}/rows`, tokA);
+ok(rowsList.status === 200
+  && (rowsList.body.rows as { id: string; data: Record<string, string> }[])
+    .some((r) => r.id === rowId && r.data[lcolId] === "todo"), "list row round-trips values");
+const rowPatch = await patch(`/api/sites/${siteId}/libraries/${llibId}/rows/${rowId}`,
+  { values: { [lcolId]: "done" } }, tokA);
+ok(rowPatch.status === 200, "patch list row");
+const rowForeign = await patch(`/api/sites/${siteId}/libraries/${llibId}/rows/${rowId}`,
+  { values: { [lcolId]: "doing" } }, tokB);
+ok(rowForeign.status === 403 || rowForeign.status === 404, "list row patch denied cross-tenant");
+
+// ── site pages (blocks + home flag) ──────────────────────────────────────
+const pg = await post(`/api/sites/${siteId}/pages`,
+  { title: "Home", blocks: [{ type: "heading", text: "Welcome" }, { type: "activity", limit: 5 }] }, tokA);
+ok(pg.status === 200, "create site page");
+const pageId = (pg.body.page as { id: string }).id;
+const pgHome = await patch(`/api/sites/${siteId}/pages/${pageId}`, { isHome: true }, tokA);
+ok(pgHome.status === 200 && (pgHome.body.page as { isHome?: boolean })?.isHome === true, "set page as home");
+const pgList = await get(`/api/sites/${siteId}/pages`, tokA);
+ok(pgList.status === 200 && (pgList.body.pages as { id: string }[]).some((p) => p.id === pageId),
+  "pages list includes new page");
+const pgForeign = await get(`/api/sites/${siteId}/pages`, tokB);
+ok(pgForeign.status === 404, "pages hidden from other tenants");
+const badBlock = await patch(`/api/sites/${siteId}/pages/${pageId}`,
+  { blocks: [{ type: "library", libraryId: llibId }] }, tokA);
+ok(badBlock.status === 400, "library block must reference a library in this site");
+
+// ── site copilot + auto-tag (503 when AI isn't configured) ───────────────
+const ask = await post(`/api/sites/${siteId}/ask`, { question: "What is in this site?" }, tokA);
+ok(ask.status === 200 || ask.status === 503, "site copilot answers or reports ai_disabled");
+if (ask.status === 200) {
+  ok(typeof (ask.body as { answer?: string }).answer === "string", "copilot answer shape");
+}
+const sugg = await post(`/api/sites/${siteId}/libraries/${libId}/items/${itemId}/suggest-metadata`, {}, tokA);
+ok(sugg.status === 200 || sugg.status === 503, "suggest-metadata runs or reports ai_disabled");
+
 console.log(`\n${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail ? 1 : 0);

@@ -1651,6 +1651,25 @@ export function siteRoutes(app: FastifyInstance) {
       return { user, site, role };
     };
 
+    /** Library/file blocks must reference objects inside this site — a page
+     *  can't embed a foreign library or items a viewer may not see. */
+    const validateBlockRefs = async (blocks: z.infer<typeof blockSchema>[], siteId: string): Promise<boolean> => {
+      const libIds = [...new Set(blocks.filter((b) => b.type === "library").map((b) => b.libraryId))];
+      const itemIds = [...new Set(blocks.filter((b) => b.type === "files").flatMap((b) => b.itemIds))];
+      if (libIds.length) {
+        const n = await one<{ n: number }>(
+          "SELECT COUNT(*)::int AS n FROM libraries WHERE site_id = $1 AND id = ANY($2)", [siteId, libIds]);
+        if (!n || n.n !== libIds.length) return false;
+      }
+      if (itemIds.length) {
+        const n = await one<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM items i JOIN libraries l ON l.id = i.library_id
+           WHERE l.site_id = $1 AND i.id = ANY($2)`, [siteId, itemIds]);
+        if (!n || n.n !== itemIds.length) return false;
+      }
+      return true;
+    };
+
     authed.get("/api/sites/:id/pages", async (req, reply) => {
       const ctx = await siteCtx(req, reply);
       if (!ctx) return;
@@ -1663,6 +1682,8 @@ export function siteRoutes(app: FastifyInstance) {
       if (!ctx) return;
       if (!atLeast(ctx.role, "member")) return reply.code(403).send({ error: "forbidden" });
       const body = pagesSchema.parse(req.body);
+      if (!(await validateBlockRefs(body.blocks, ctx.site.id)))
+        return reply.code(400).send({ error: "invalid_blocks", message: "Blocks must reference libraries and items in this site" });
       const id = randomUUID();
       await tx(async (c) => {
         if (body.isHome) await c.query("UPDATE site_pages SET is_home = false WHERE site_id = $1", [ctx.site.id]);
@@ -1682,6 +1703,8 @@ export function siteRoutes(app: FastifyInstance) {
       const row = await one<PageRow>("SELECT * FROM site_pages WHERE id = $1 AND site_id = $2", [pid, ctx.site.id]);
       if (!row) return reply.code(404).send({ error: "not_found" });
       const body = pagePatchSchema.parse(req.body);
+      if (body.blocks !== undefined && !(await validateBlockRefs(body.blocks, ctx.site.id)))
+        return reply.code(400).send({ error: "invalid_blocks", message: "Blocks must reference libraries and items in this site" });
       await tx(async (c) => {
         if (body.isHome) await c.query("UPDATE site_pages SET is_home = false WHERE site_id = $1", [ctx.site.id]);
         if (body.title !== undefined)
