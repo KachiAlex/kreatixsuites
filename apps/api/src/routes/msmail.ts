@@ -92,10 +92,11 @@ export async function syncMsMailOrg(orgId: string, log?: { info: (o: object, m: 
   return { imported, errors: errors.slice(0, 10) };
 }
 
-export function msMailRoutes(app: FastifyInstance) {
-  // ── PUBLIC: Microsoft's admin-consent redirect target. Writes nothing —
-  // it just bounces the admin back into the app with the tenant id; the
-  // authenticated /complete call is what actually stores the connection.
+/** PUBLIC: Microsoft's admin-consent redirect target. Writes nothing — it
+ *  just bounces the admin back into the app with the tenant id; the
+ *  authenticated /complete call is what actually stores the connection.
+ *  Registered in its own plugin scope so the requireAuth hook can't reach it. */
+export function msMailConsentRoute(app: FastifyInstance) {
   app.get("/api/admin/msmail/consent", async (req, reply) => {
     const qy = req.query as { tenant?: string; admin_consent?: string; error?: string };
     const dest = new URL(`${publicUrl()}/admin`);
@@ -103,7 +104,9 @@ export function msMailRoutes(app: FastifyInstance) {
     if (qy.error) dest.searchParams.set("msmail_error", qy.error);
     return reply.redirect(dest.toString());
   });
+}
 
+export function msMailRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireAuth);
 
   const orgAdmin = (req: AuthedRequest, reply: FastifyReply) => {

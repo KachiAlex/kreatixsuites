@@ -23,7 +23,7 @@ import { samlRoutes } from "./routes/saml.js";
 import { orgSsoRoutes } from "./routes/orgsso.js";
 import { collabRoutes } from "./collab.js";
 import { mailRoutes } from "./routes/mail.js";
-import { msMailRoutes, syncMsMailOrg } from "./routes/msmail.js";
+import { msMailRoutes, msMailConsentRoute, syncMsMailOrg } from "./routes/msmail.js";
 import { meetRoutes, meetIngestRoutes } from "./routes/meet.js";
 import { chatRoutes } from "./routes/chat.js";
 import { calendarRoutes, sweepCalendarReminders } from "./routes/calendar.js";
@@ -403,6 +403,7 @@ async function main() {
   app.register(superadminRoutes);
   app.register(collabRoutes);
   app.register(mailRoutes);
+  app.register(msMailConsentRoute);
   app.register(msMailRoutes);
   app.register(meetRoutes);
   app.register(meetIngestRoutes);
