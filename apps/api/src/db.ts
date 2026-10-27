@@ -1125,6 +1125,17 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mail_email TEXT`);
   // per-user app entitlements — slugs the admin switched off (empty = all apps)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_apps TEXT[] NOT NULL DEFAULT '{}'`);
+  // per-app seat licensing — subscriptions.app_seats holds purchased seat
+  // caps per app slug; a capped app needs a grant row in user_app_licenses
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS app_seats JSONB NOT NULL DEFAULT '{}'`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS user_app_licenses (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    app_slug TEXT NOT NULL,
+    granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, app_slug)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_app_licenses_slug ON user_app_licenses(app_slug)`);
   // email-notice bookkeeping — prevents the daily sweep from re-sending
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_warned_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS locked_notified_at TIMESTAMPTZ`);

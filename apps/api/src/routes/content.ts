@@ -11,6 +11,7 @@ import { encryptField } from "../crypto.js";
 import { requireAuth, permissionFor, hasPermission, type AuthedRequest } from "../auth.js";
 import type { Permission } from "@kreatix/shared";
 import { appForKind, SUITE_APPS, type FileKind } from "@kreatix/shared";
+import { appAccessAllowed } from "../appLicenses.js";
 import { storageQuota } from "../billing.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { derivativeBlob } from "../images.js";
@@ -18,12 +19,12 @@ import { indexFile } from "../indexer.js";
 import { getPolicies, dlpScanText, scanDlp, watermarkIfNeeded, WATERMARK_HEADER } from "../policies.js";
 
 /** Per-user app gate for editor kinds — returns the 403 message when the
- *  user's admin disabled the app that owns this file kind, else null. */
-const kindGateMsg = (kind: string, disabled?: string[]) => {
+ *  app that owns this file kind is disabled for the user or its seat pool
+ *  has no grant for them, else null. */
+const kindGateMsg = async (kind: string, user: { id: string; orgId: string; disabledApps?: string[]; isSuper?: boolean }) => {
   const slug = appForKind(kind as FileKind);
-  return slug && disabled?.includes(slug)
-    ? `${SUITE_APPS.find((a) => a.slug === slug)?.name ?? slug} isn't enabled for your account`
-    : null;
+  if (!slug || await appAccessAllowed(user, slug)) return null;
+  return `${SUITE_APPS.find((a) => a.slug === slug)?.name ?? slug} isn't enabled for your account`;
 };
 
 interface VersionRow {
@@ -243,7 +244,7 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const gated = kindGateMsg(item.kind, user.disabledApps);
+    const gated = await kindGateMsg(item.kind, user);
     if (gated) return reply.code(403).send({ error: "app_disabled", message: gated });
     // readers see the latest PUBLISHED version — drafts stay invisible to
     // viewer-level access (SharePoint draft-visibility semantics)
@@ -302,7 +303,7 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(perm, "viewer")) {
       return reply.code(404).send({ error: "not_found", message: "File not found" });
     }
-    const rawGated = kindGateMsg(item.kind, user.disabledApps);
+    const rawGated = await kindGateMsg(item.kind, user);
     if (rawGated) return reply.code(403).send({ error: "app_disabled", message: rawGated });
     if (await rawDownloadBlocked(item, perm)) {
       return reply.code(403).send({ error: "download_blocked",
@@ -332,7 +333,7 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "editor")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
-    const pdfGated = kindGateMsg(item.kind, user.disabledApps);
+    const pdfGated = await kindGateMsg(item.kind, user);
     if (pdfGated) return reply.code(403).send({ error: "app_disabled", message: pdfGated });
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else" });
@@ -408,7 +409,7 @@ export function contentRoutes(app: FastifyInstance) {
     if (!item || !hasPermission(await permissionFor(user.id, item), "reviewer")) {
       return reply.code(403).send({ error: "forbidden", message: "No edit access" });
     }
-    const putGated = kindGateMsg(item.kind, user.disabledApps);
+    const putGated = await kindGateMsg(item.kind, user);
     if (putGated) return reply.code(403).send({ error: "app_disabled", message: putGated });
     if (writeLocked(item, user.id)) {
       return reply.code(423).send({ error: "locked", message: "Checked out by someone else — changes are blocked until they check in" });

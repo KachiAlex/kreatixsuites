@@ -21,6 +21,9 @@ export interface User {
   /** Suite apps the workspace admin has turned off for this user
    *  (SuiteApp slugs; empty/absent = every app allowed) */
   disabledApps?: string[];
+  /** App slugs this user holds a seat grant for — only meaningful for apps
+   *  the org has a seat cap on (see appSeats on the /api/auth/me payload) */
+  appLicenses?: string[];
   createdAt: string;
 }
 
@@ -76,6 +79,13 @@ export function appForKind(kind: FileKind): SuiteApp | undefined {
 
 export const appEnabled = (disabled: string[] | undefined, slug: SuiteApp) =>
   !disabled?.includes(slug);
+
+/** Full entitlement check: not admin-disabled AND (app uncapped OR holds a
+ *  seat grant). `appSeats` is the org's per-app cap map ({} = uncapped). */
+export const appAccess = (
+  disabled: string[] | undefined, slug: SuiteApp,
+  appSeats?: Record<string, number> | null, licenses?: string[],
+) => !disabled?.includes(slug) && (appSeats?.[slug] == null || !!licenses?.includes(slug));
 
 export interface Org {
   id: string;

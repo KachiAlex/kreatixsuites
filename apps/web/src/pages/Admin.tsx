@@ -13,6 +13,7 @@ interface Member {
   id: string; email: string; displayName: string; initials: string;
   role: string; disabled: boolean; createdAt: string;
   disabledApps: string[]; mailAddress: string | null; mailUserId: number | null;
+  appLicenses?: string[];
 }
 interface MailAccount {
   mailUserId: number; address: string; displayName: string | null;
@@ -117,6 +118,8 @@ export function Admin() {
   const isFamily = org?.kind === "family";
   const [members, setMembers] = useState<Member[]>([]);
   const [appsFor, setAppsFor] = useState<string | null>(null);
+  const [appSeats, setAppSeats] = useState<Record<string, number>>({});
+  const [seatUsage, setSeatUsage] = useState<Record<string, { cap: number; used: number }>>({});
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
   const [mailConfigured, setMailConfigured] = useState(false);
   const [mailBusy, setMailBusy] = useState<string | null>(null);
@@ -220,7 +223,7 @@ export function Admin() {
     // workspace-admin endpoints 403 for them, so don't even ask.
     if (!isSuper) {
       const reqs: Promise<unknown>[] = [
-        api.get<{ members: Member[] }>("/api/admin/members"),
+        api.get<{ members: Member[]; appSeats?: Record<string, number>; seatUsage?: Record<string, { cap: number; used: number }> }>("/api/admin/members"),
         api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
         api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
         api.get<{ actions: string[] }>("/api/admin/audit/actions"),
@@ -243,7 +246,7 @@ export function Admin() {
         api.get<{ mailConfigured: boolean; accounts: MailAccount[] }>("/api/admin/mail-accounts").catch(() => null),
       ];
       const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py, mc] = await Promise.all(reqs) as [
-        { members: Member[] },
+        { members: Member[]; appSeats?: Record<string, number>; seatUsage?: Record<string, { cap: number; used: number }> },
         { policies: Policies; encryptionAtRest: boolean },
         { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
         { actions: string[] },
@@ -266,6 +269,8 @@ export function Admin() {
         { mailConfigured: boolean; accounts: MailAccount[] } | null,
       ];
       setMembers(m.members);
+      setAppSeats(m.appSeats ?? {});
+      setSeatUsage(m.seatUsage ?? {});
       setPolicies(p.policies);
       setEncryption(p.encryptionAtRest);
       setAudit(a.entries);
@@ -307,6 +312,22 @@ export function Admin() {
   };
 
   const toggleApp = async (m: Member, slug: string) => {
+    const capped = slug in appSeats;
+    if (capped) {
+      // seat-licensed app: the checkbox drives the seat grant directly
+      const grants = (m.appLicenses ?? []).includes(slug)
+        ? (m.appLicenses ?? []).filter((s) => s !== slug)
+        : [...(m.appLicenses ?? []), slug];
+      try {
+        await api.patch(`/api/admin/members/${m.id}/licenses`, { grants });
+        const delta = grants.includes(slug) ? 1 : -1;
+        setMembers((ms) => ms.map((x) => (x.id === m.id ? { ...x, appLicenses: grants } : x)));
+        setSeatUsage((u) => ({ ...u, [slug]: { cap: u[slug]?.cap ?? appSeats[slug], used: (u[slug]?.used ?? 0) + delta } }));
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "Couldn't update license");
+      }
+      return;
+    }
     const disabledApps = m.disabledApps.includes(slug)
       ? m.disabledApps.filter((s) => s !== slug)
       : [...m.disabledApps, slug];
@@ -1509,16 +1530,27 @@ export function Admin() {
                 <tr><td colSpan={8} style={{ paddingTop: 0 }}>
                   <div className="app-grants">
                     {SUITE_APPS.map((a) => {
-                      const on = !m.disabledApps.includes(a.slug);
+                      const capped = a.slug in appSeats;
+                      const on = capped
+                        ? !!m.appLicenses?.includes(a.slug) && !m.disabledApps.includes(a.slug)
+                        : !m.disabledApps.includes(a.slug);
+                      const usage = seatUsage[a.slug];
                       return (
-                        <label key={a.slug} className={`app-grant ${on ? "on" : "off"}`}>
+                        <label key={a.slug} className={`app-grant ${on ? "on" : "off"}`}
+                          title={capped ? `Seat license — ${usage?.used ?? 0}/${usage?.cap ?? appSeats[a.slug]} assigned` : undefined}>
                           <input type="checkbox" checked={on}
                             onChange={() => void toggleApp(m, a.slug)} />
                           {a.name}
+                          {capped && <span className="app-seat-badge">{usage?.used ?? 0}/{usage?.cap ?? appSeats[a.slug]}</span>}
                         </label>
                       );
                     })}
                   </div>
+                  {Object.keys(appSeats).length > 0 && (
+                    <p className="d-sub" style={{ margin: "4px 0 8px", fontSize: 11 }}>
+                      Seat-licensed apps show used/cap. Uncapped apps are org-wide; ticking a capped app assigns a seat.
+                    </p>
+                  )}
                 </td></tr>
               )}
               </Fragment>

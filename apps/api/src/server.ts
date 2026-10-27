@@ -30,6 +30,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { rulesRoutes } from "./routes/rules.js";
 import { runScheduleSweep } from "./rules.js";
 import { sweepSiteDigests } from "./siteDigest.js";
+import { appAccessAllowed } from "./appLicenses.js";
 import { sweepWebhookDeliveries } from "./integrations.js";
 import { formRoutes, formPublicRoutes, sweepFormRetention } from "./routes/forms.js";
 import { noteRoutes } from "./routes/notes.js";
@@ -256,7 +257,10 @@ async function main() {
     const appSlug = appForApiPath(req.url);
     if (!appSlug) return;
     const { user } = await resolveSession(req);
-    if (!user || user.is_super || !user.disabled_apps?.includes(appSlug)) return;
+    if (!user || user.is_super) return;
+    const allowed = await appAccessAllowed(
+      { id: user.id, orgId: user.org_id, disabledApps: user.disabled_apps }, appSlug);
+    if (allowed) return;
     const name = SUITE_APPS.find((a) => a.slug === appSlug)?.name ?? appSlug;
     return reply.code(403).send({
       error: "app_disabled",

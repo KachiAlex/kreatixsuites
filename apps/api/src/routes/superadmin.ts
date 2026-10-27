@@ -13,6 +13,8 @@ import {
 } from "../billing.js";
 import { mailEnabled, sendMail, tpl } from "../email.js";
 import { limits } from "../aiQuota.js";
+import { SUITE_APPS } from "@kreatix/shared";
+import { invalidateLicenseCache } from "../appLicenses.js";
 
 async function requireSuper(req: FastifyRequest, reply: FastifyReply) {
   const { user } = req as AuthedRequest;
@@ -229,6 +231,7 @@ export function superadminRoutes(app: FastifyInstance) {
       status: z.enum(["canceled"]).optional(),
       aiTokenBudget: z.number().int().min(0).nullable().optional(), // AI quota override (null = computed)
       plan: z.string().min(1).max(40).optional(),                   // plan slug from the catalog
+      appSeats: z.record(z.string(), z.number().int().min(0)).optional(), // per-app seat caps ({} = uncapped)
     }).parse(req.body);
     await ensureSubscription(orgId);
     const applied: Record<string, unknown> = {};
@@ -259,6 +262,14 @@ export function superadminRoutes(app: FastifyInstance) {
       await run("UPDATE subscriptions SET plan = $2, updated_at = $3 WHERE org_id = $1",
         [orgId, pl.slug, now()]);
       applied.plan = pl.slug;
+    }
+    if (body.appSeats !== undefined) {
+      const bad = Object.keys(body.appSeats).filter((s) => !SUITE_APPS.some((a) => a.slug === s));
+      if (bad.length) return reply.code(400).send({ error: "bad_app", message: `Unknown app slugs: ${bad.join(", ")}` });
+      await run("UPDATE subscriptions SET app_seats = $2, updated_at = $3 WHERE org_id = $1",
+        [orgId, JSON.stringify(body.appSeats), now()]);
+      invalidateLicenseCache(undefined, orgId);
+      applied.appSeats = body.appSeats;
     }
     if (Object.keys(applied).length) await logSa(user, "org.subscription", orgRow.name, applied);
     return { subscription: await ensureSubscription(orgId) };

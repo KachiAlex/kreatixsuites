@@ -9,8 +9,8 @@ import { Modal } from "./Modal";
 // done. Every step is skippable; "Set up later" only dismisses for the session.
 
 interface AddedDomain {
-  id: string; domain: string;
-  dns: { type: string; host: string; value: string; purpose: string }[];
+  id: string; domain: string; status: string;
+  dns: { type: string; host: string; value: string; purpose: string; required?: boolean; ok?: boolean | null }[];
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -24,6 +24,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [emails, setEmails] = useState("");
   const [busy, setBusy] = useState(false);
   const [invited, setInvited] = useState(0);
+  const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
 
   const finish = async () => {
     await api.post("/api/admin/onboarding", {}).catch(() => {});
@@ -35,11 +36,30 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     const domain = domainInput.trim().toLowerCase();
     if (!domain) return;
     setBusy(true);
+    setVerifyMsg(null);
     try {
       const r = await api.post<{ domain: AddedDomain }>("/api/admin/domains", { domain });
       setAdded(r.domain);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not add domain");
+    }
+    setBusy(false);
+  };
+
+  const verifyDomain = async () => {
+    if (!added) return;
+    setBusy(true);
+    setVerifyMsg(null);
+    try {
+      const r = await api.post<{ domain: AddedDomain }>(`/api/admin/domains/${added.id}/verify`, {});
+      setAdded(r.domain);
+      if (r.domain.status === "verified") {
+        setVerifyMsg(`✓ ${r.domain.domain} verified — team mailboxes will use it.`);
+        // make it primary so member mailboxes land on it from day one
+        await api.post(`/api/admin/domains/${added.id}/primary`, {}).catch(() => {});
+      }
+    } catch (e) {
+      setVerifyMsg(e instanceof Error ? e.message : "Verification failed — try again in a few minutes");
     }
     setBusy(false);
   };
@@ -107,27 +127,40 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
           ) : (
             <>
               <p className="d-sub">
-                <b>{added.domain}</b> added. Publish this record at your DNS provider, then verify
-                it from <b>Admin → Email domains</b> — mailboxes will use this domain once verified.
+                <b>{added.domain}</b> added{added.status === "verified" ? " and verified" : ""}.
+                Publish these records at your DNS provider, then verify below — team mailboxes
+                will use this domain once verified.
               </p>
               <table className="admin-table" style={{ marginTop: 6 }}>
                 <tbody>
-                  {added.dns.slice(0, 2).map((r, i) => (
+                  {added.dns.map((r, i) => (
                     <tr key={i}>
                       <td><code>{r.type}</code></td>
                       <td><code>{r.host}</code></td>
                       <td><code style={{ wordBreak: "break-all" }}>{r.value}</code></td>
+                      <td style={{ whiteSpace: "nowrap", fontSize: 11 }}>
+                        {r.ok === true ? "✓" : r.ok === false ? "⏳" : ""}
+                        {r.required ? " required" : ""}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {verifyMsg && <p style={{ fontSize: 12.5, margin: "8px 0 0" }}>{verifyMsg}</p>}
             </>
           )}
           <div className="dlg-actions">
             <button className="btn-ghost" onClick={() => setStep(2)}>
-              {added ? "Continue" : "Skip — use @kreatixtech.com"}
+              {added ? (added.status === "verified" ? "Continue" : "Verify later — continue") : "Skip — use @kreatixtech.com"}
             </button>
-            {added && <button className="btn-primary" onClick={() => setStep(2)}>Continue</button>}
+            {added && added.status !== "verified" && (
+              <button className="btn-primary" disabled={busy} onClick={() => void verifyDomain()}>
+                {busy ? "Checking DNS…" : "Verify domain"}
+              </button>
+            )}
+            {added?.status === "verified" && (
+              <button className="btn-primary" onClick={() => setStep(2)}>Continue</button>
+            )}
           </div>
         </div>
       )}
@@ -151,7 +184,10 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         <div className="ob-body">
           <h3>You're all set</h3>
           <ul className="d-sub" style={{ lineHeight: 1.9 }}>
-            <li>{added ? <>Domain <b>{added.domain}</b> — finish DNS verification in <b>Admin → Email domains</b>.</>
+            <li>{added?.status === "verified"
+                       ? <>Domain <b>{added.domain}</b> verified — member mailboxes will use it.</>
+                       : added
+                       ? <>Domain <b>{added.domain}</b> — finish DNS verification in <b>Admin → Email domains</b>.</>
                        : <>Mailboxes will use <code>@kreatixtech.com</code> — add a custom domain anytime in <b>Admin → Email domains</b>.</>}</li>
             <li>{invited > 0 ? <>{invited} invite{invited > 1 ? "s" : ""} sent — teammates join from their email.</>
                              : <>Invite teammates anytime from <b>Admin → Members</b>.</>}</li>

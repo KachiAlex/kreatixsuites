@@ -10,6 +10,7 @@ import { publishHead, submitForApproval, notifySubmitter } from "./content.js";
 import { normalizeChain, coveredEntries, notifyApprovalStep, requestApproval } from "../approvals.js";
 import { putBlob, getBlob } from "../blobs.js";
 import { FILE_KINDS, appForKind, SUITE_APPS, type AccessEntry, type Permission, type SiteRole } from "@kreatix/shared";
+import { appAccessAllowed } from "../appLicenses.js";
 import { purgeItem, isHeld, scanDlp } from "../policies.js";
 import { fireTrigger } from "../rules.js";
 import { indexFile, indexBody } from "../indexer.js";
@@ -497,7 +498,7 @@ export function driveRoutes(app: FastifyInstance) {
     // editor apps are per-user entitlements — a disabled app can't create
     // items of its kind (open/save are gated in routes/content.ts)
     const appSlug = appForKind(body.kind);
-    if (appSlug && user.disabledApps?.includes(appSlug)) {
+    if (appSlug && !(await appAccessAllowed(user, appSlug))) {
       return reply.code(403).send({ error: "app_disabled",
         message: `${SUITE_APPS.find((a) => a.slug === appSlug)?.name ?? appSlug} isn't enabled for your account` });
     }
@@ -659,7 +660,7 @@ export function driveRoutes(app: FastifyInstance) {
         ? "pdf"
         : "file";
     const upApp = appForKind(fileKind);
-    if (upApp && user.disabledApps?.includes(upApp)) {
+    if (upApp && !(await appAccessAllowed(user, upApp))) {
       return reply.code(403).send({ error: "app_disabled",
         message: `${SUITE_APPS.find((a) => a.slug === upApp)?.name ?? upApp} isn't enabled for your account` });
     }

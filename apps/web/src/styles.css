@@ -3801,3 +3801,9 @@ button.site-home-row:hover{background:var(--subtle)}
 .copilot-q { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
 .copilot-a { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .copilot-src { margin-top: 8px; font-size: 11px; color: var(--muted); }
+
+/* ── Seat licensing badges ──────────────────────────────────────── */
+.app-seat-badge {
+  margin-left: 6px; font-size: 10px; font-weight: 600; color: var(--k-orange);
+  background: var(--k-orange-soft); border-radius: 6px; padding: 1px 5px;
+}

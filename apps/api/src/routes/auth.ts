@@ -670,8 +670,12 @@ export function authRoutes(app: FastifyInstance) {
     const row = await one<{ totp_secret: string | null }>("SELECT totp_secret FROM users WHERE id = $1", [user.id]);
     const mfaSetupRequired = !row?.totp_secret
       && (await getPolicies(user.orgId)).mfaRequired;
+    // seat-licensing context for client-side app gating — the user's granted
+    // seat slugs plus the org's per-app caps ({} = everything uncapped)
+    const licenses = await dbq<{ app_slug: string }>(
+      "SELECT app_slug FROM user_app_licenses WHERE user_id = $1", [user.id]);
     return {
-      user,
+      user: { ...user, appLicenses: licenses.map((l) => l.app_slug) },
       mfaSetupRequired,
       org: {
         name: org?.name ?? "", onboardedAt: org?.onboarded_at ?? null, kind: org?.kind ?? "business",
@@ -679,6 +683,7 @@ export function authRoutes(app: FastifyInstance) {
         logoUrl: org?.brand_logo ? `/api/org/brand/${user.orgId}/logo` : null,
       },
       plan: { slug: plan.slug, name: plan.name, features: plan.features ?? {}, limits: plan.limits ?? {}, state: effectiveState(sub).state },
+      appSeats: sub.app_seats ?? {},
     };
   });
 }

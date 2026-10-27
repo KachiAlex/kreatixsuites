@@ -30,6 +30,7 @@ export interface Subscription {
   ai_token_budget?: number | null;      // superadmin AI quota override
   ai_budget_warned_at?: string | null;  // 80%-of-budget notice bookkeeping
   plan?: string;                        // plan slug — resolved via plans table
+  app_seats?: Record<string, number>;   // per-app seat caps ({} = uncapped)
 }
 
 /** Plan catalog row — superadmin-editable pricing + entitlement matrix. */

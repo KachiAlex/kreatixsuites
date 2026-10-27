@@ -29,6 +29,9 @@ interface AuthState {
   user: User | null;
   org: SessionOrg | null;
   plan: SessionPlan | null;
+  /** Org's per-app seat caps ({} = uncapped) — folded into user.disabledApps
+   *  on load, so appEnabled() call sites stay unchanged. */
+  appSeats: Record<string, number> | null;
   /** Stamp the org onboarded locally (server is told by the wizard). */
   markOnboarded: () => void;
   /** Feature gate — signed-in users resolve via their plan; anonymous/local
@@ -61,8 +64,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<SessionOrg | null>(null);
   const [plan, setPlan] = useState<SessionPlan | null>(null);
+  const [appSeats, setAppSeats] = useState<Record<string, number> | null>(null);
   const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
   const [loading, setLoading] = useState(!!getToken() || isAnonymous());
+
+  /** Merge seat-capped apps the user holds no grant for into disabledApps,
+   *  so every appEnabled(disabledApps, slug) call site stays correct. */
+  const withSeatGating = (u: User, seats: Record<string, number> | null): User => {
+    const capped = Object.keys(seats ?? {}).filter((s) => !(u.appLicenses ?? []).includes(s));
+    return capped.length ? { ...u, disabledApps: [...new Set([...(u.disabledApps ?? []), ...capped])] } : u;
+  };
 
   useEffect(() => {
     // anonymous tier: a local pseudo-user — everything runs off the mirror,
@@ -73,8 +84,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (!getToken()) return;
-    api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me")
-      .then((r) => { setUser(r.user); setOrg(r.org ?? null); setPlan(r.plan ?? null); setMfaSetupRequired(!!r.mfaSetupRequired); })
+    api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean; appSeats?: Record<string, number> }>("/api/auth/me")
+      .then((r) => { setAppSeats(r.appSeats ?? null); setUser(withSeatGating(r.user, r.appSeats ?? null)); setOrg(r.org ?? null); setPlan(r.plan ?? null); setMfaSetupRequired(!!r.mfaSetupRequired); })
       .catch(() => setToken(null))
       .finally(() => setLoading(false));
   }, []);
@@ -143,8 +154,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = async (token: string) => {
     const wasAnon = localStorage.getItem("kx.anon") === "1";
     setToken(token);
-    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me");
-    setUser(r.user);
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean; appSeats?: Record<string, number> }>("/api/auth/me");
+    setAppSeats(r.appSeats ?? null);
+    setUser(withSeatGating(r.user, r.appSeats ?? null));
     setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
     setMfaSetupRequired(!!r.mfaSetupRequired);
@@ -159,8 +171,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshUser = async () => {
-    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean }>("/api/auth/me");
-    setUser(r.user);
+    const r = await api.get<{ user: User; org?: SessionOrg; plan?: SessionPlan; mfaSetupRequired?: boolean; appSeats?: Record<string, number> }>("/api/auth/me");
+    setAppSeats(r.appSeats ?? null);
+    setUser(withSeatGating(r.user, r.appSeats ?? null));
     setOrg(r.org ?? null);
     setPlan(r.plan ?? null);
     setMfaSetupRequired(!!r.mfaSetupRequired);
@@ -179,7 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasFeature = (key: string) => (plan ? plan.features?.[key] === true : true);
   const markOnboarded = () => setOrg((o) => (o ? { ...o, onboardedAt: new Date().toISOString() } : o));
-  return <Ctx.Provider value={{ user, org, plan, hasFeature, loading, login, completeMfaLogin, register, loginWithGoogle, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout, mfaSetupRequired }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, org, plan, appSeats, hasFeature, loading, login, completeMfaLogin, register, loginWithGoogle, loginWithToken, refreshUser, markOnboarded, enterAnonymous, logout, mfaSetupRequired }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

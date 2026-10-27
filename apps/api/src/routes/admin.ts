@@ -15,6 +15,7 @@ import { sendMailSafe, tpl } from "../email.js";
 import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../billing.js";
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
+import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
 import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox } from "../mailBridge.js";
 
 const policiesSchema = z.object({
@@ -87,15 +88,27 @@ export function adminRoutes(app: FastifyInstance) {
       "SELECT id, email, display_name, initials, role, disabled, disabled_apps, mail_user_id, mail_email, created_at FROM users WHERE org_id = $1 ORDER BY created_at",
       [user.orgId],
     );
+    const grants = await dbq<{ user_id: string; app_slug: string }>(
+      `SELECT l.user_id, l.app_slug FROM user_app_licenses l
+       JOIN users u ON u.id = l.user_id WHERE u.org_id = $1`, [user.orgId]);
+    const grantsByUser = new Map<string, string[]>();
+    for (const g of grants) {
+      const arr = grantsByUser.get(g.user_id) ?? [];
+      arr.push(g.app_slug);
+      grantsByUser.set(g.user_id, arr);
+    }
     return {
       members: rows.map((u) => ({
         id: u.id, email: u.email, displayName: u.display_name,
         initials: u.initials, role: u.role, disabled: u.disabled,
         disabledApps: u.disabled_apps ?? [],
+        appLicenses: grantsByUser.get(u.id) ?? [],
         mailAddress: u.mail_email, mailUserId: u.mail_user_id,
         createdAt: u.created_at,
       })),
       apps: SUITE_APPS,
+      appSeats: await appSeatsFor(user.orgId),
+      seatUsage: await seatUsage(user.orgId),
     };
   });
 
@@ -119,8 +132,58 @@ export function adminRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden", message: "Cannot restrict the owner's apps" });
     }
     const { disabledApps } = appsSchema.parse(req.body);
+    // Seat-capped apps: enabling consumes a seat, disabling releases it.
+    const seats = await appSeatsFor(user.orgId);
+    const enabling = (target.disabled_apps ?? []).filter((s) => !disabledApps.includes(s));
+    const disabling = disabledApps.filter((s) => !(target.disabled_apps ?? []).includes(s));
+    try {
+      for (const slug of enabling) {
+        if (seats[slug] != null) await grantSeatWithinCap(user.orgId, target.id, slug, user.id);
+      }
+    } catch (e) {
+      const err = e as { status?: number; message?: string };
+      return reply.code(err.status ?? 409).send({ error: "no_seats", message: err.message });
+    }
     await run("UPDATE users SET disabled_apps = $1 WHERE id = $2", [disabledApps, target.id]);
+    for (const slug of disabling) {
+      if (seats[slug] != null) await releaseSeat(target.id, slug);
+    }
     return { ok: true, disabledApps };
+  });
+
+  /** Per-member seat grants — explicit license assignment for capped apps
+   *  (M365 "assign licenses"). Replaces the member's grant set; 409 when a
+   *  seat pool is already full. */
+  const licensesSchema = z.object({
+    grants: z.array(z.string()).max(50)
+      .refine((v) => v.every((s) => SUITE_APPS.some((a) => a.slug === s)), "Unknown app slug"),
+  });
+  app.patch("/api/admin/members/:id/licenses", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const target = await one<UserRow>(
+      "SELECT id, role FROM users WHERE id = $1 AND org_id = $2",
+      [(req.params as { id: string }).id, user.orgId],
+    );
+    if (!target) return reply.code(404).send({ error: "not_found" });
+    if (target.id === user.id) {
+      return reply.code(400).send({ error: "bad_request", message: "Cannot change your own licenses" });
+    }
+    const { grants } = licensesSchema.parse(req.body);
+    const current = new Set((await dbq<{ app_slug: string }>(
+      "SELECT app_slug FROM user_app_licenses WHERE user_id = $1", [target.id])).map((r) => r.app_slug));
+    const wanted = new Set(grants);
+    try {
+      for (const slug of wanted) {
+        if (!current.has(slug)) await grantSeatWithinCap(user.orgId, target.id, slug, user.id);
+      }
+    } catch (e) {
+      const err = e as { status?: number; message?: string };
+      return reply.code(err.status ?? 409).send({ error: "no_seats", message: err.message });
+    }
+    for (const slug of current) {
+      if (!wanted.has(slug)) await releaseSeat(target.id, slug);
+    }
+    return { ok: true, grants };
   });
 
   /** Force-provision a member's mailbox (admin doesn't wait for their first
