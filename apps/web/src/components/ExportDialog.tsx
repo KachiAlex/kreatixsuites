@@ -60,7 +60,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
   return (
     <Modal onClose={onClose} label={`Export ${docName}`} className="export-dlg">
       <h2>Export "{base(docName)}"</h2>
-      <p className="d-sub">Download a copy or save it straight into Kreatix Drive.</p>
+      <p className="d-sub">Download a copy or save it straight into Drive.</p>
       <div className="export-list">
         {formats.map((f) => (
           <div className="export-row" key={f.id}>

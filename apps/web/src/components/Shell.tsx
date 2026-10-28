@@ -345,15 +345,12 @@ function Rail({ toast }: { toast: (m: string) => void }) {
 /** Sidebar brand lockup — org logo/name when white-labeled, Kreatix otherwise. */
 function OrgBrand() {
   const { org } = useAuth();
-  useEffect(() => {
-    if (org?.brandName) document.title = org.brandName;
-  }, [org?.brandName]);
   if (org?.logoUrl) {
     return <img src={org.logoUrl} alt={org.brandName ?? org.name} draggable={false}
       style={{ height: 34, width: "auto", maxWidth: 200, objectFit: "contain", display: "block" }} />;
   }
-  if (org?.brandName) {
-    return <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.4, padding: "4px 6px" }}>{org.brandName}</span>;
+  if (org?.brandName || org?.name) {
+    return <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.4, padding: "4px 6px" }}>{org.brandName || org.name}</span>;
   }
   return <BrandLockup size={34} />;
 }
@@ -483,10 +480,10 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       {mailOn && appEnabled(user?.disabledApps, "mail") && (
         <button className="nav" style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
           onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>
-          <AppIcon kind="mail" size={18} />Kreatix Mail
+          <AppIcon kind="mail" size={18} />Mail
         </button>
       )}
-      {meetOn && appEnabled(user?.disabledApps, "meet") && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Kreatix Meet</NavLink>}
+      {meetOn && appEnabled(user?.disabledApps, "meet") && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Meet</NavLink>}
 
       {appEnabled(user?.disabledApps, "sites") && <>
         <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -507,7 +504,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       )}
 
       <div className="ai-card">
-        <div className="tag">Kreatix AI</div>
+        <div className="tag">AI</div>
         <h4>{t("nav.aiTagline")}</h4>
         <button onClick={() => void openAi()}>{t("nav.openAi")}</button>
       </div>

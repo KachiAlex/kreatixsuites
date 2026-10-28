@@ -18,6 +18,8 @@ export const publicUrl = () =>
 interface Mail {
   to: string;
   toName?: string;
+  /** Workspace name when the mail is about a workspace — replaces the Kreatix sender label. */
+  senderName?: string;
   subject: string;
   html: string;
   text?: string;
@@ -32,7 +34,7 @@ export async function sendMail(m: Mail): Promise<{ ok: boolean; messageId?: stri
       "api-key": process.env.KREATIX_BREVO_API_KEY!,
     },
     body: JSON.stringify({
-      sender: sender(),
+      sender: { ...sender(), ...(m.senderName ? { name: m.senderName } : {}) },
       to: [{ email: m.to, ...(m.toName ? { name: m.toName } : {}) }],
       subject: m.subject,
       htmlContent: m.html,
@@ -60,20 +62,20 @@ export async function orgAdminRecipients(orgId: string): Promise<{ email: string
 
 // ---- templates — minimal branded wrapper, Kreatix orange ----
 
-function shell(title: string, body: string): string {
+function shell(title: string, body: string, brand = "Kreatix Suites"): string {
   return `<!doctype html><html><body style="margin:0;padding:0;background:#f6f6f7;font-family:Inter,Segoe UI,Arial,sans-serif">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f6f7;padding:32px 16px"><tr><td align="center">
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e8e8ea">
 <tr><td style="background:#1c1c1e;padding:20px 28px">
-  <span style="display:inline-block;background:#F2782E;color:#fff;font-weight:700;font-size:13px;border-radius:6px;padding:4px 8px;margin-right:8px">K</span>
-  <span style="color:#fff;font-weight:600;font-size:15px;letter-spacing:.2px">Kreatix Suites</span>
+  <span style="display:inline-block;background:#F2782E;color:#fff;font-weight:700;font-size:13px;border-radius:6px;padding:4px 8px;margin-right:8px">${esc(brand.charAt(0).toUpperCase())}</span>
+  <span style="color:#fff;font-weight:600;font-size:15px;letter-spacing:.2px">${esc(brand)}</span>
 </td></tr>
 <tr><td style="padding:28px;color:#1c1c1e;font-size:14px;line-height:1.6">
 <h1 style="margin:0 0 14px;font-size:18px;font-weight:700">${title}</h1>
 ${body}
 </td></tr>
 <tr><td style="padding:16px 28px;border-top:1px solid #eee;color:#8a8a90;font-size:12px">
-Kreatix Suites · <a href="${publicUrl()}" style="color:#F2782E;text-decoration:none">${publicUrl().replace(/^https?:\/\//, "")}</a>
+${esc(brand)} · <a href="${publicUrl()}" style="color:#F2782E;text-decoration:none">${publicUrl().replace(/^https?:\/\//, "")}</a>
 </td></tr>
 </table></td></tr></table></body></html>`;
 }
@@ -84,7 +86,7 @@ const btn = (href: string, label: string) =>
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export const tpl = {
-  systemAlert(lines: string[]): Pick<Mail, "subject" | "html"> {
+  systemAlert(lines: string[]): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
       subject: `[Kreatix] Health alert — ${lines.length} check${lines.length > 1 ? "s" : ""} degraded`,
       html: shell("System health alert", `
@@ -95,100 +97,110 @@ ${btn(`${publicUrl()}/admin`, "Open Admin → Health")}
     };
   },
 
-  welcome(name: string, workspace: string, kind = "business"): Pick<Mail, "subject" | "html"> {
+  welcome(name: string, workspace: string, kind = "business"): Pick<Mail, "subject" | "html" | "senderName"> {
     const space = kind === "family" ? "family space" : kind === "personal" ? "account" : "workspace";
+    const brand = kind === "business" ? workspace : undefined;
     return {
-      subject: "Welcome to Kreatix Suites",
+      ...(brand ? { senderName: brand } : {}),
+      subject: brand ? `Welcome to ${brand}` : "Welcome to Kreatix Suites",
       html: shell("Welcome aboard", `
 <p>Hi ${esc(name)},</p>
 <p>Your ${space} <b>${esc(workspace)}</b> is ready — Writer, Sheets, Present, PDF, Drive and Kreatix AI, all in one place. Your <b>3-month free trial</b> starts now.</p>
-${btn(publicUrl(), "Open Kreatix Suites")}
-<p style="color:#8a8a90;font-size:12px;margin-top:22px">${kind === "family" ? "Invite your family anytime from Admin → Members." : "Invite your team anytime from Admin → Members."}</p>`),
+${btn(publicUrl(), brand ? `Open ${esc(brand)}` : "Open Kreatix Suites")}
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">${kind === "family" ? "Invite your family anytime from Admin → Members." : "Invite your team anytime from Admin → Members."}</p>`, brand),
     };
   },
 
-  joinedWorkspace(name: string, workspace: string): Pick<Mail, "subject" | "html"> {
+  joinedWorkspace(name: string, workspace: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
-      subject: `You've joined ${workspace} on Kreatix Suites`,
+      senderName: workspace,
+      subject: `You've joined ${workspace}`,
       html: shell(`Welcome to ${esc(workspace)}`, `
 <p>Hi ${esc(name)},</p>
-<p>You've joined <b>${esc(workspace)}</b> — open Kreatix Suites to start working with your team.</p>
-${btn(publicUrl(), "Open Kreatix Suites")}`),
+<p>You've joined <b>${esc(workspace)}</b> — open it to start working with your team.</p>
+${btn(publicUrl(), `Open ${esc(workspace)}`)}`, workspace),
     };
   },
 
-  invite(workspace: string, inviter: string, token: string): Pick<Mail, "subject" | "html"> {
+  invite(workspace: string, inviter: string, token: string): Pick<Mail, "subject" | "html" | "senderName"> {
     const link = `${publicUrl()}/register?invite=${encodeURIComponent(token)}`;
     return {
-      subject: `${inviter} invited you to ${workspace} on Kreatix Suites`,
+      senderName: workspace,
+      subject: `${inviter} invited you to ${workspace}`,
       html: shell(`Join ${esc(workspace)}`, `
-<p><b>${esc(inviter)}</b> invited you to collaborate in <b>${esc(workspace)}</b> on Kreatix Suites.</p>
+<p><b>${esc(inviter)}</b> invited you to collaborate in <b>${esc(workspace)}</b>.</p>
 ${btn(link, "Accept invitation")}
-<p style="color:#8a8a90;font-size:12px;margin-top:22px">Or paste this link: ${link}<br>This invite expires — contact your workspace admin if it lapses.</p>`),
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Or paste this link: ${link}<br>This invite expires — contact your workspace admin if it lapses.</p>`, workspace),
     };
   },
 
   /** Ownership proof before a join request is queued — the requester has
    *  no account, so a 6-digit code stands in for password verification. */
-  joinRequestCode(requesterName: string, workspace: string, code: string): Pick<Mail, "subject" | "html"> {
+  joinRequestCode(requesterName: string, workspace: string, code: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
+      senderName: workspace,
       subject: `${code} — your code to request joining ${workspace}`,
       html: shell("Your join-request code", `
 <p>Hi ${esc(requesterName)},</p>
-<p>You asked to join <b>${esc(workspace)}</b> on Kreatix Suites. Enter this code to send the request:</p>
+<p>You asked to join <b>${esc(workspace)}</b>. Enter this code to send the request:</p>
 <p style="font-size:30px;font-weight:700;letter-spacing:8px;margin:18px 0">${esc(code)}</p>
-<p style="color:#8a8a90;font-size:12px">It expires in 15 minutes. If you didn't request this, ignore it — no request was sent.</p>`),
+<p style="color:#8a8a90;font-size:12px">It expires in 15 minutes. If you didn't request this, ignore it — no request was sent.</p>`, workspace),
     };
   },
 
   /** A public "request to join" landed — sent to the org's owners/admins. */
-  joinRequestAdmin(workspace: string, requesterName: string, requesterEmail: string): Pick<Mail, "subject" | "html"> {
+  joinRequestAdmin(workspace: string, requesterName: string, requesterEmail: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
+      senderName: workspace,
       subject: `Join request — ${requesterName} wants to join ${workspace}`,
       html: shell("Join request", `
-<p><b>${esc(requesterName)}</b> (${esc(requesterEmail)}) asked to join <b>${esc(workspace)}</b> on Kreatix Suites.</p>
+<p><b>${esc(requesterName)}</b> (${esc(requesterEmail)}) asked to join <b>${esc(workspace)}</b>.</p>
 ${btn(`${publicUrl()}/admin`, "Review in Admin → Members")}
-<p style="color:#8a8a90;font-size:12px;margin-top:22px">Approve to send them an invite link, or decline to dismiss the request.</p>`),
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Approve to send them an invite link, or decline to dismiss the request.</p>`, workspace),
     };
   },
 
   /** Join request approved — fresh accounts get a one-time invite link. */
-  joinApprovedInvite(workspace: string, token: string): Pick<Mail, "subject" | "html"> {
+  joinApprovedInvite(workspace: string, token: string): Pick<Mail, "subject" | "html" | "senderName"> {
     const link = `${publicUrl()}/register?invite=${encodeURIComponent(token)}`;
     return {
+      senderName: workspace,
       subject: `You're in — create your ${workspace} account`,
       html: shell(`Welcome to ${esc(workspace)}`, `
 <p>Your request to join <b>${esc(workspace)}</b> was approved.</p>
 ${btn(link, "Create your account")}
-<p style="color:#8a8a90;font-size:12px;margin-top:22px">Or paste this link: ${link}<br>This is a one-time link — create your account to join ${esc(workspace)}.</p>`),
+<p style="color:#8a8a90;font-size:12px;margin-top:22px">Or paste this link: ${link}<br>This is a one-time link — create your account to join ${esc(workspace)}.</p>`, workspace),
     };
   },
 
   /** Approved, but the requester's existing account has files — a silent org
    *  move would strand them, so we ask the admin to coordinate. */
-  joinRequestNeedsTransfer(workspace: string): Pick<Mail, "subject" | "html"> {
+  joinRequestNeedsTransfer(workspace: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
+      senderName: workspace,
       subject: `Your request to join ${workspace} was approved`,
       html: shell(`Welcome to ${esc(workspace)}`, `
 <p>Your request to join <b>${esc(workspace)}</b> was approved.</p>
-<p>You already have a Kreatix account with files in another space, so your admin will arrange the transfer — keep an eye out for their invite.</p>
-${btn(publicUrl(), "Open Kreatix Suites")}`),
+<p>You already have an account with files in another space, so your admin will arrange the transfer — keep an eye out for their invite.</p>
+${btn(publicUrl(), `Open ${esc(workspace)}`)}`, workspace),
     };
   },
 
   /** Join request approved and the existing account was moved in directly. */
-  joinApprovedMember(workspace: string): Pick<Mail, "subject" | "html"> {
+  joinApprovedMember(workspace: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
+      senderName: workspace,
       subject: `You're now a member of ${workspace}`,
       html: shell(`Welcome to ${esc(workspace)}`, `
 <p>Your request to join <b>${esc(workspace)}</b> was approved and your account is now part of the workspace.</p>
-${btn(publicUrl(), "Open Kreatix Suites")}`),
+${btn(publicUrl(), `Open ${esc(workspace)}`)}`, workspace),
     };
   },
 
-  paymentReceipt(workspace: string, amountNgn: number, seats: number, months: number, periodEnd: string): Pick<Mail, "subject" | "html"> {
+  paymentReceipt(workspace: string, amountNgn: number, seats: number, months: number, periodEnd: string): Pick<Mail, "subject" | "html" | "senderName"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {
+      senderName: workspace,
       subject: `Payment confirmed — ${workspace}`,
       html: shell("Payment confirmed", `
 <p>Your subscription payment for <b>${esc(workspace)}</b> is confirmed.</p>
@@ -197,32 +209,34 @@ ${btn(publicUrl(), "Open Kreatix Suites")}`),
 <tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Seats</td><td>${seats}</td></tr>
 <tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Period</td><td>${months} month${months > 1 ? "s" : ""} — until ${new Date(periodEnd).toDateString()}</td></tr>
 </table>
-${btn(`${publicUrl()}/admin`, "View billing")}`),
+${btn(`${publicUrl()}/admin`, "View billing")}`, workspace),
     };
   },
 
-  trialEnding(workspace: string, daysLeft: number, amountNgn: number): Pick<Mail, "subject" | "html"> {
+  trialEnding(workspace: string, daysLeft: number, amountNgn: number): Pick<Mail, "subject" | "html" | "senderName"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {
+      senderName: workspace,
       subject: `Your ${workspace} trial ends in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`,
       html: shell("Trial ending soon", `
 <p>The free trial for <b>${esc(workspace)}</b> ends in <b>${daysLeft} day${daysLeft === 1 ? "" : "s"}</b>.</p>
 <p>To keep full access, subscribe at <b>${ngn(amountNgn)}/month</b> — after a 7-day grace period the workspace becomes read-only.</p>
-${btn(`${publicUrl()}/admin`, "Subscribe now")}`),
+${btn(`${publicUrl()}/admin`, "Subscribe now")}`, workspace),
     };
   },
 
-  aiBudgetWarning(workspace: string, pct: number): Pick<Mail, "subject" | "html"> {
+  aiBudgetWarning(workspace: string, pct: number): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
+      senderName: workspace,
       subject: `${workspace} is nearing its AI usage budget`,
       html: shell("AI budget almost reached", `
 <p><b>${esc(workspace)}</b> has used <b>${pct}%</b> of its monthly AI credit budget.</p>
-<p>Kreatix AI pauses at 100% and resets on the 1st of next month — files are never affected.</p>
-${btn(`${publicUrl()}/admin`, "View usage")}`),
+<p>AI features pause at 100% and reset on the 1st of next month — files are never affected.</p>
+${btn(`${publicUrl()}/admin`, "View usage")}`, workspace),
     };
   },
 
-  feedbackReply(name: string, message: string, reply: string): Pick<Mail, "subject" | "html"> {
+  feedbackReply(name: string, message: string, reply: string): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
       subject: "Re: your feedback — Kreatix Suites",
       html: shell("We replied to your feedback", `
@@ -238,7 +252,7 @@ ${btn(publicUrl(), "Open Kreatix Suites")}
   /** Calendar invite/cancel — accompanies a text/calendar .ics attachment.
    *  `rsvp` adds one-click Accept/Maybe/Decline links (signed per-recipient). */
   meetingInvite(organizer: string, title: string, when: string, location: string | null, meet: boolean, cancelled: boolean,
-    rsvp?: { accept: string; maybe: string; decline: string }): Pick<Mail, "subject" | "html"> {
+    rsvp?: { accept: string; maybe: string; decline: string }): Pick<Mail, "subject" | "html" | "senderName"> {
     return {
       subject: `${cancelled ? "Cancelled: " : "Invitation: "}${title}`,
       html: shell(cancelled ? "Meeting cancelled" : "You're invited", `
@@ -257,7 +271,7 @@ ${btn(`${publicUrl()}/calendar`, "Open Calendar")}`),
     };
   },
 
-  passwordReset(name: string, token: string): Pick<Mail, "subject" | "html"> {
+  passwordReset(name: string, token: string): Pick<Mail, "subject" | "html" | "senderName"> {
     const link = `${publicUrl()}/reset-password?token=${encodeURIComponent(token)}`;
     return {
       subject: "Reset your Kreatix Suites password",
@@ -269,7 +283,7 @@ ${btn(link, "Reset password")}
     };
   },
 
-  verifyEmail(name: string, token: string): Pick<Mail, "subject" | "html"> {
+  verifyEmail(name: string, token: string): Pick<Mail, "subject" | "html" | "senderName"> {
     const link = `${publicUrl()}/verify-email?token=${encodeURIComponent(token)}`;
     return {
       subject: "Verify your email — Kreatix Suites",
@@ -281,7 +295,7 @@ ${btn(link, "Verify email")}
     };
   },
 
-  workspaceLocked(workspace: string, amountNgn: number): Pick<Mail, "subject" | "html"> {
+  workspaceLocked(workspace: string, amountNgn: number): Pick<Mail, "subject" | "html" | "senderName"> {
     const ngn = (n: number) => `₦${n.toLocaleString("en-NG")}`;
     return {
       subject: `${workspace} is now read-only`,

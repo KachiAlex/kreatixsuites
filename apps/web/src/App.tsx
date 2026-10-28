@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { AuthProvider, useAuth } from "./lib/auth";
+import { AuthProvider, cachedBrand, useAuth } from "./lib/auth";
 import { I18nProvider, useT } from "./lib/i18n";
 import { Login } from "./pages/Login";
 import { ResetPassword, VerifyEmail } from "./pages/AccountRecovery";
@@ -78,6 +78,8 @@ function RequireApp({ slug, children }: { slug: SuiteApp; children: ReactNode })
  *  the file name once loaded). */
 function TitleSync() {
   const { pathname } = useLocation();
+  const { org } = useAuth();
+  const brand = org?.brandName || org?.name || "Kreatix Suites";
   useEffect(() => {
     const name = pathname === "/login" ? "Sign in"
       : pathname === "/register" ? "Create account"
@@ -91,8 +93,8 @@ function TitleSync() {
       : pathname.startsWith("/shared") ? "Shared file"
       : pathname.startsWith("/edit") ? null   // editor sets its own title
       : null;
-    if (name) document.title = `${name} · Kreatix Suites`;
-  }, [pathname]);
+    if (name) document.title = `${name} · ${brand}`;
+  }, [pathname, brand]);
   return null;
 }
 
@@ -116,10 +118,14 @@ function Splash() {
     return () => clearTimeout(t);
   }, []);
   if (gone) return null;
+  // the workspace brand cached at last sign-in; the Kreatix mark only on a fresh install
+  const brand = cachedBrand();
   return (
     <div className="kx-splash" aria-hidden="true">
-      <img className="kx-splash-logo" src="/brand/kreatix-suites-dark.png" alt="" />
-      <div className="kx-splash-tag">Make room for your best work</div>
+      {brand?.logoUrl ? <img className="kx-splash-logo" src={brand.logoUrl} alt="" />
+        : brand ? <div className="kx-splash-logo" style={{ fontSize: 30, fontWeight: 800 }}>{brand.name}</div>
+        : <img className="kx-splash-logo" src="/brand/kreatix-suites-dark.png" alt="" />}
+      {!brand && <div className="kx-splash-tag">Make room for your best work</div>}
       <div className="kx-splash-track"><span /></div>
     </div>
   );

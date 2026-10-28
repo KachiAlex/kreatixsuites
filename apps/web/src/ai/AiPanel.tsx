@@ -1,4 +1,4 @@
-// Kreatix AI — cross-suite assistant panel: Ask / Explain / Edit / Plan modes,
+// AI — cross-suite assistant panel: Ask / Explain / Edit / Plan modes,
 // tool-constrained ops with plan + diff preview before apply, provenance log.
 // Streams replies over SSE; optional auto-apply (still undoable via Ctrl+Z).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -190,7 +190,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
   return (
     <div className="side-panel ai-side">
       <div className="sp-head">
-        <h3>✨ Kreatix AI</h3>
+        <h3>✨ AI</h3>
         <button className="sp-close" onClick={onClose}>✕</button>
       </div>
       <div className="ai-modes">
@@ -204,7 +204,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
 
       {quota && (
         <div className="ai-quota" title={quota.plan === "trial"
-          ? "Trial workspaces include a free taste of Kreatix AI"
+          ? "Trial workspaces include a free taste of AI"
           : quota.plan === "free"
             ? "Free plan — daily AI requests, resets at midnight"
             : `Workspace monthly AI credit budget — ${quota.tier ?? "paid"} plan`}>
@@ -240,7 +240,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
         <div className="ai-denied">
           {denied.kind === "upgrade" ? (
             <>
-              <b>Kreatix AI is part of the paid plan</b>
+              <b>AI is part of the paid plan</b>
               <p>{denied.message}</p>
               {user?.role === "owner" || user?.role === "admin"
                 ? <button className="btn-primary btn-sm" onClick={() => navigate("/admin")}>Upgrade workspace</button>
@@ -257,7 +257,7 @@ export function AiPanel({ fileId, kind, canEdit, serialize, selection, applyOps,
 
       {enabled === false && !getToken() && (
         <div className="ai-setup">
-          Kreatix AI needs a signed-in workspace —{" "}
+          AI needs a signed-in workspace —{" "}
           <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => navigate("/login")}>sign in</a>{" "}
           to use it.
         </div>

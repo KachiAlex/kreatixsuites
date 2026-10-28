@@ -60,9 +60,18 @@ interface AuthState {
 
 const Ctx = createContext<AuthState>(null as never);
 
+/** Workspace brand from the last sign-in on this device — lets the native
+ *  splash show the customer's brand before the session is restored. */
+export function cachedBrand(): { name: string; logoUrl: string | null } | null {
+  try { return JSON.parse(localStorage.getItem("kx_brand") ?? "null"); } catch { return null; }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<SessionOrg | null>(null);
+  useEffect(() => {
+    if (org) localStorage.setItem("kx_brand", JSON.stringify({ name: org.brandName || org.name, logoUrl: org.logoUrl ?? null }));
+  }, [org]);
   const [plan, setPlan] = useState<SessionPlan | null>(null);
   const [appSeats, setAppSeats] = useState<Record<string, number> | null>(null);
   const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
