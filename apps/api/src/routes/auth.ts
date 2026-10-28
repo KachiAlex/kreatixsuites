@@ -60,6 +60,18 @@ function defaultOrgName(kind: OrgKind, displayName: string): string {
   return `${displayName}'s workspace`;
 }
 
+/** Name of the workspace that has verified this email's domain, if any. A
+ *  business signup on that domain must join it (invite or join request)
+ *  instead of creating a parallel tenant. */
+async function domainClaimedBy(email: string): Promise<string | null> {
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (!domain) return null;
+  const row = await one<{ name: string }>(
+    "SELECT o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id WHERE d.domain = $1 AND d.status = 'verified'",
+    [domain]);
+  return row?.name ?? null;
+}
+
 /** Invite token → org join. Shared by password + Google registration paths. */
 async function resolveInviteJoin(token: string):
   Promise<{ ok: true; orgId: string; orgName: string } | { ok: false; code: number; error: string; message: string }> {
@@ -149,6 +161,8 @@ async function googleSignInComplete(
     orgName = j.orgName;
     role = "member";
   } else {
+    const claimed = kind === "business" ? await domainClaimedBy(email) : null;
+    if (claimed) return reply.code(409).send({ error: "domain_claimed", message: `${claimed} already uses this email domain — ask its admin for an invite, or request to join from the sign-up page` });
     orgId = randomUUID();
     await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)",
       [orgId, orgName, kind, now()]);
@@ -444,6 +458,8 @@ export function authRoutes(app: FastifyInstance) {
       const pwErr = passwordPolicyMessage(await getPolicies(orgId), body.password);
       if (pwErr) return reply.code(400).send({ error: "bad_request", message: pwErr });
     } else {
+      const claimed = kind === "business" ? await domainClaimedBy(body.email) : null;
+      if (claimed) return reply.code(409).send({ error: "domain_claimed", message: `${claimed} already uses this email domain — ask its admin for an invite, or request to join from the sign-up page` });
       orgId = randomUUID();
       await run("INSERT INTO orgs (id, name, kind, created_at) VALUES ($1,$2,$3,$4)", [orgId, orgName, kind, now()]);
     }
