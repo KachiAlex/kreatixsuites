@@ -12,8 +12,6 @@ const CORE_WORDS = new Set((
   "a about above across act action add after again against age ago agree air all allow almost alone along already also although always am among an and angle animal answer any appear apple are area arm around art as ask at atom away baby back bad ball band bank bar base basic be bear beat beauty became because become bed been before began begin behind believe bell belong below best better between big bird bit black block blood blow blue board boat body bone book born both bottom bought box boy branch bread break bright bring broad broke broken brother brought brown build burn bus busy but buy by call came can capital car care carry case cat catch caught cause cell cent center century certain chair chance change character charge check child children choose circle city claim class clean clear climb clock close clothes cloud coast coat cold collect colony color come common company compare complete condition connect consider contain continent continue control cook cool copy corn corner correct cost cotton could count country course cover cow create crop cross crowd cry current cut dad dance dark day dead deal dear death decide decimal deep describe desert design determine develop dictionary die differ direct discuss distance divide do doctor dog dollar done door double down draw dream dress drive drop dry during each early earth ease east eat edge effect eight either electric else end energy engine enjoy enough enter equal even evening event ever every exact example except exercise expect experience explain eye face fact fair fall family famous far farm fast father favor fear feel feet fell felt few field fig fight figure fill final find fine finger finish fire first fish five flat floor flow flower fly follow food foot for force forest form forward found four free fresh friend from front fruit full fun game garden gas gave general get girl give glad glass go gold gone good got govern grass great green grew ground group grow guess guide had hair half hand happen happy hard has hat have he head hear heard heart heat heavy held help her here high hill him his history hit hold hole home hope horse hot hour house how huge human hundred hunt idea if imagine important in inch include indicate industry insect instead instrument interest into invent iron is island it job join joy jump just keep kept key kill kind king knew know lady land language large last late laugh law lay lead learn least leave left leg length less let letter level lie life lift light like line list listen little live log long look lost lot loud love low machine made main major make man many map mark market master match matter may me mean meant measure meat meet melody men metal method middle might mile milk million mind mine minute miss modern molecule moment money month moon more morning most mother mountain mouth move much music must my name nation natural nature near necessary neck need neighbor never new next night nine no noise none noon nor north nose not note nothing notice noun now number object observe ocean of off office often oh old on once one only open operate opposite or order other our out over own page pair paper paragraph parent part party pass past pattern pay people perhaps period person phrase pick picture piece place plain plane planet plant play please plural poem point poor position possible pound power practice prepare present press pretty print problem produce product promise proper prove provide pull push put quarter question quick quiet quite race radio raise ran range rather reach read ready real reason receive record red region remember reply report represent rest result rich ride right ring rise river road rock roll room root round row rule run safe said salt same sat save saw say scale school science sea seat second section seed seem seen segment self sell send sense sentence separate serve set settle seven several shape share sharp she sheet ship shoe shop short should shoulder show side sight sign similar simple since sing single sister sit six size skill skin sky sleep slow small smell smile snow so soft soil soldier solve some son song soon sound south space speak special speed spell spend spring square stand start state stay steel step still stone stood stop store story straight strange stream street strong student study subject substance such sudden sugar suggest suit summer sun supply support suppose sure surface syllable system table tail take talk tall teach team tell ten term test than thank that the their them then there these they thick thing think third this those though thought thousand three through thus time tiny tire to together told tone took tool top total touch toward town track trade train travel tree triangle trip trouble truck true try turn twenty two type under unit until up us use usual valley value various very view village visit voice vowel wait walk wall want war warm was watch water wave way we wear weather week weight well went were west wet what wheel when where whether which while white who whole whose why wide wife wild will win wind window wing winter wire wish with within woman women wonder wood word work world would write written wrong wrote yard year yellow yes yet you young your"
 ).split(/\s+/));
 
-// morphological forms — expand a stem into inflections
-const MORPH_SUFFIXES = ["s", "es", "ed", "d", "ing", "ly", "er", "ers", "est", "n't", "'s", "ies", "ied", "ier", "iest", "ness", "ment", "ments", "ful", "less", "nesses", "ally", "tion", "tions", "y", "e"];
 
 const DICT_KEY = "kreatix.customDict";
 let customDict: Set<string> | null = null;
@@ -119,46 +117,51 @@ export function ensureDictionary(): Promise<void> {
   if (dictState === "idle") {
     dictState = "loading";
     dictPromise = loadDictionaryFor(proofingLanguage())
-      .catch(() => { dictState = "failed"; });
+      .catch((e) => { console.warn("Spell dictionary failed to load — spellcheck is off", e); dictState = "failed"; });
   }
   return dictPromise ?? Promise.resolve();
 }
 
-const VOWELISH = /[aeiou]/;
 const isWord = (w: string) => /^[\p{L}\p{M}][\p{L}\p{M}'’-]*$/u.test(w);
 
 /** Is this word acceptable? Checks the core vocabulary, morphology-derived
  *  forms, and the user's custom dictionary. Capitalized words pass (proper
  *  nouns); all-caps acronyms pass; everything else must be a real word. */
+const SPECIAL_CONTRACTIONS = new Set(["can't", "won't", "shan't", "ain't", "let's"]);
+
+/** One dictionary part (no hyphen/apostrophe): real word, acronym, or proper noun. */
+function partOk(p: string): boolean {
+  if (p.length <= 1) return true;
+  const lower = p.toLowerCase();
+  if (getCustomDict().has(lower)) return true;
+  if (spell!.correct(p) || spell!.correct(lower)) return true;
+  if (p === p.toUpperCase()) return true;            // acronyms: NASA, FAQ
+  return /^[A-Z]/.test(p);                           // proper nouns pass
+}
+
+/** don't / isn't / it's / we'll / Diva's — the stem must be a real word. */
+function contractionOk(word: string): boolean {
+  const norm = word.toLowerCase().replace(/’/g, "'");
+  if (SPECIAL_CONTRACTIONS.has(norm)) return true;
+  const m = /^(.+)['’]([a-z]+)$/i.exec(word);
+  if (!m) return false;
+  const [, base, suffix] = m;
+  if (suffix.toLowerCase() === "t") return /n$/i.test(base) && (partOk(base.slice(0, -1)) || partOk(base));
+  return ["s", "re", "ve", "ll", "d", "m"].includes(suffix.toLowerCase()) && partOk(base);
+}
+
+/** Is this word acceptable? With the real dictionary loaded, a word passes when
+ *  it is a dictionary word (with affixes), a custom-dictionary word, an acronym,
+ *  a proper noun, a contraction of a known word, or a hyphenated compound whose
+ *  parts are all acceptable. While the dictionary is loading or unavailable,
+ *  nothing is flagged — a guess from a small built-in list is not accurate. */
 export function checkWord(word: string): boolean {
   if (!isWord(word)) return true;                     // numbers/symbols
   if (word.length <= 2) return true;                  // I, an, TV…
-  const lower = word.toLowerCase();
-  if (getCustomDict().has(lower)) return true;
-  if (spell) {
-    // hunspell: checks the word + affix expansions (~150k forms)
-    if (spell.correct(word) || spell.correct(lower)) return true;
-    if (word === word.toUpperCase()) return true;      // acronyms: NASA, FAQ
-    if (/^[A-Z]/.test(word)) return true;              // proper nouns pass
-    return false;
-  }
-  if (CORE_WORDS.has(lower)) return true;
-  // morphology: strip a suffix and re-check
-  for (const suf of MORPH_SUFFIXES) {
-    if (lower.endsWith(suf) && lower.length - suf.length >= 3) {
-      const stem = lower.slice(0, -suf.length);
-      if (CORE_WORDS.has(stem) || getCustomDict().has(stem)) return true;
-      // handle e-drop: "make"+"ing" → "mak" → try stem+"e"
-      if ((suf === "ing" || suf === "ed" || suf === "er" || suf === "est") && CORE_WORDS.has(stem + "e")) return true;
-      // doubling: "run"+"ning" → "runn" → strip last char
-      if ((suf === "ing" || suf === "ed" || suf === "er" || suf === "est") && stem.length > 3 && stem[stem.length - 1] === stem[stem.length - 2] && CORE_WORDS.has(stem.slice(0, -1))) return true;
-      // y→i: "happy"+"ness" → "happi" → stem→y
-      if ((suf === "ness" || suf === "ly" || suf === "ies" || suf === "ied" || suf === "ier" || suf === "iest") && CORE_WORDS.has(stem.slice(0, -1) + "y")) return true;
-    }
-  }
-  if (word === word.toUpperCase() && !/[a-z]/.test(word)) return true; // acronyms: NASA, FAQ
-  if (/^[A-Z]/.test(word) && !VOWELISH.test(lower)) return true;         // consonant-heavy capitals: Mrs., Dr., Ltd
-  if (/^[A-Z]/.test(word)) return true;                                 // proper nouns pass
+  if (getCustomDict().has(word.toLowerCase())) return true;
+  if (!spell) return true;
+  if (partOk(word) || contractionOk(word)) return true;
+  if (word.includes("-")) return word.split("-").every(partOk);
   return false;
 }
 
