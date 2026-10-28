@@ -1308,6 +1308,33 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     ];
   };
 
+  /** Suggestions + dictionary actions for a flagged word (click or right-click). */
+  const openSpellMenu = (at: { clientX: number; clientY: number }, miss: HTMLElement) => {
+    if (!editor) return;
+    const pos = editor.view.posAtCoords({ left: at.clientX, top: at.clientY });
+    const word = miss.dataset.word ?? "";
+    const hit = pos && (SPELL_KEY.getState(editor.state) ?? []).find((x) => pos.pos >= x.from && pos.pos <= x.to);
+    const vocab = docVocabulary(editor.state.doc.textContent);
+    const sugg = suggest(word, vocab, 5);
+    const items: MenuItem[] = [
+      ...sugg.map((s) => ({
+        label: s, onClick: () => {
+          if (!hit) return;
+          // match the flagged word's casing so a sentence-initial fix
+          // doesn't come back lowercase
+          const fix = word === word.toUpperCase() ? s.toUpperCase()
+            : /^[A-Z]/.test(word) ? s[0].toUpperCase() + s.slice(1) : s;
+          editor.chain().focus().insertContentAt({ from: hit.from, to: hit.to }, fix).run();
+        },
+      })),
+      ...(sugg.length ? [] : [{ label: "(no suggestions)", onClick: () => {} }]),
+      { divider: true },
+      { label: `Add "${word}" to dictionary`, onClick: () => editor.chain().learnWord(word).run() },
+      { label: "Ignore all", onClick: () => editor.chain().ignoreWord(word).run() },
+    ];
+    setCtxMenu({ x: at.clientX, y: at.clientY, items });
+  };
+
   const print = () => { void exportPdfAction(); };
 
   /** Word "Create a style…" — snapshot the selection's look into a named style. */
@@ -2486,7 +2513,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         )}
         <div className="doc-zoom" style={{ zoom: zoom / 100 }}>
           {editor && showRuler && <Ruler editor={editor} canMutate={canMutate} />}
-          <div className="doc-page" onDoubleClick={(e) => {
+          <div className="doc-page" onClick={(e) => {
+            // plain click on a flagged word → suggestions; the caret still moves
+            // there, and a drag-selection never opens the menu
+            if (!editor || !canMutate || !window.getSelection()?.isCollapsed) return;
+            const miss = (e.target as HTMLElement).closest<HTMLElement>(".kx-spell");
+            if (miss) openSpellMenu(e, miss);
+          }} onDoubleClick={(e) => {
             // double-click a chart/shape/wordart/citation → open its editor
             if (!editor || !canMutate) return;
             const t = (e.target as HTMLElement).closest<HTMLElement>(".kx-chart,.kx-shape,.kx-wordart,.kx-cite,.doc-toc");
@@ -2535,28 +2568,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
             const miss = target.closest<HTMLElement>(".kx-spell");
             if (miss) {
               e.preventDefault();
-              const pos = editor.view.posAtCoords(coords);
-              const word = miss.dataset.word ?? "";
-              const hit = pos && (SPELL_KEY.getState(editor.state) ?? []).find((x) => pos.pos >= x.from && pos.pos <= x.to);
-              const vocab = docVocabulary(editor.state.doc.textContent);
-              const sugg = suggest(word, vocab, 5);
-              const items: MenuItem[] = [
-                ...sugg.map((s) => ({
-                  label: s, onClick: () => {
-                    if (!hit) return;
-                    // match the flagged word's casing so a sentence-initial fix
-                    // doesn't come back lowercase
-                    const fix = word === word.toUpperCase() ? s.toUpperCase()
-                      : /^[A-Z]/.test(word) ? s[0].toUpperCase() + s.slice(1) : s;
-                    editor.chain().focus().insertContentAt({ from: hit.from, to: hit.to }, fix).run();
-                  },
-                })),
-                ...(sugg.length ? [] : [{ label: "(no suggestions)", onClick: () => {} }]),
-                { divider: true },
-                { label: `Add "${word}" to dictionary`, onClick: () => editor.chain().learnWord(word).run() },
-                { label: "Ignore all", onClick: () => editor.chain().ignoreWord(word).run() },
-              ];
-              setCtxMenu({ x: e.clientX, y: e.clientY, items });
+              openSpellMenu(e, miss);
               return;
             }
             const anchor = target.closest<HTMLAnchorElement>(".ProseMirror a");
