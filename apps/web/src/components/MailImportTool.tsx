@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { importMailArchive, type ImportProgress, type ImportStats } from "../lib/mailImport";
+import { importMailArchive, MAX_IMPORT_BYTES, type ImportProgress, type ImportStats } from "../lib/mailImport";
 import { useToast } from "../lib/hooks";
 
 interface Member { id: string; displayName: string; email: string }
@@ -47,11 +47,18 @@ export function MailImportTool({ members }: { members?: Member[] }) {
         <input style={{ width: 130 }} placeholder="Folder" value={folder} disabled={busy}
           onChange={(e) => setFolder(e.target.value)} />
         <input type="file" multiple accept=".mbox,.eml,message/rfc822,application/mbox" style={{ fontSize: 12 }} disabled={busy}
-          onChange={(e) => { setFiles(Array.from(e.target.files ?? [])); setResult(null); }} />
+          onChange={(e) => {
+            const picked = Array.from(e.target.files ?? []);
+            const tooBig = picked.filter((f) => f.size > MAX_IMPORT_BYTES);
+            if (tooBig.length) toast(`${tooBig.map((f) => f.name).join(", ")} ${tooBig.length === 1 ? "is" : "are"} over the 4 GB limit — split the export and import the parts`);
+            setFiles(picked.filter((f) => f.size <= MAX_IMPORT_BYTES));
+            setResult(null);
+          }} />
         <button className="btn-primary" disabled={!files.length || busy} onClick={() => void run()}>
           {busy ? "Importing…" : files.length ? `Import ${files.length} file${files.length === 1 ? "" : "s"}` : "Import"}
         </button>
       </div>
+      <p className="d-sub" style={{ margin: "0 0 6px" }}>Up to 4 GB per file. Several files can be selected at once.</p>
       {files.length > 0 && !busy && (
         <p className="d-sub" style={{ margin: "0 0 6px" }}>
           {files.map((f) => `${f.name} (${(f.size / 1048576).toFixed(1)} MB)`).join(" · ")}

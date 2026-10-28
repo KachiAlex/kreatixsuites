@@ -3,6 +3,7 @@ import { api, ApiError } from "./api";
 export interface ImportStats { imported: number; skipped: number; failed: number; folder: string }
 export interface ImportProgress { file: number; files: number; name: string; sent: number; total: number; stage: "upload" | "processing" }
 
+export const MAX_IMPORT_BYTES = 4 * 1024 * 1024 * 1024;
 const CHUNK_BYTES = 8 * 1024 * 1024;
 const MAX_RETRIES = 4;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -23,7 +24,7 @@ export async function importMailArchive(
       onProgress({ file: i + 1, files: files.length, name: file.name, sent, total: file.size, stage });
 
     const session = await api.post<{ id: string; maxBytes: number }>(`${base}/import-sessions`, { folder: opts.folder });
-    if (file.size > session.maxBytes) throw new Error(`${file.name} is larger than the 4 GB import limit`);
+    if (file.size > Math.min(session.maxBytes, MAX_IMPORT_BYTES)) throw new Error(`${file.name} is larger than the 4 GB import limit`);
 
     let offset = 0;
     let retries = 0;
