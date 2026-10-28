@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { appInNewTab } from "../lib/openApp";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useI18n, LOCALES } from "../lib/i18n";
@@ -343,6 +344,15 @@ function Rail({ toast }: { toast: (m: string) => void }) {
   );
 }
 
+/** App entry in the sidebar: its own tab on the web, in place on desktop/mobile. */
+function AppLink({ to, end, children }: { to: string; end?: boolean; children: ReactNode }) {
+  const { pathname } = useLocation();
+  const active = end ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
+  const cls = `nav ${active ? "active" : ""}`;
+  if (appInNewTab) return <a className={cls} href={to} target="_blank" rel="noopener">{children}</a>;
+  return <NavLink to={to} end={end} className={cls}>{children}</NavLink>;
+}
+
 /** Sidebar brand lockup — org logo/name when white-labeled, Kreatix otherwise. */
 function OrgBrand() {
   const { org } = useAuth();
@@ -473,25 +483,25 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       {appEnabled(user?.disabledApps, "sheets") && <button type="button" className="nav" onClick={() => createFile("sheets")}><AppIcon kind="sheets" size={18} />{t("nav.sheets")}</button>}
       {appEnabled(user?.disabledApps, "present") && <button type="button" className="nav" onClick={() => createFile("present")}><AppIcon kind="present" size={18} />{t("nav.present")}</button>}
       {appEnabled(user?.disabledApps, "pdf") && <button type="button" className="nav" onClick={() => fileInput.current?.click()}><AppIcon kind="pdf" size={18} />PDF</button>}
-      {appEnabled(user?.disabledApps, "chat") && <NavLink to="/chat" className={navCls}><AppIcon kind="chat" size={18} />Chat</NavLink>}
-      {appEnabled(user?.disabledApps, "calendar") && <NavLink to="/calendar" className={navCls}><AppIcon kind="calendar" size={18} />Calendar</NavLink>}
-      {appEnabled(user?.disabledApps, "tasks") && <NavLink to="/tasks" className={navCls}><AppIcon kind="tasks" size={18} />Tasks</NavLink>}
-      {appEnabled(user?.disabledApps, "notes") && <NavLink to="/notes" className={navCls}><AppIcon kind="notes" size={18} />Notes</NavLink>}
-      {appEnabled(user?.disabledApps, "forms") && <NavLink to="/forms" className={navCls}><AppIcon kind="forms" size={18} />Forms</NavLink>}
+      {appEnabled(user?.disabledApps, "chat") && <AppLink to="/chat"><AppIcon kind="chat" size={18} />Chat</AppLink>}
+      {appEnabled(user?.disabledApps, "calendar") && <AppLink to="/calendar"><AppIcon kind="calendar" size={18} />Calendar</AppLink>}
+      {appEnabled(user?.disabledApps, "tasks") && <AppLink to="/tasks"><AppIcon kind="tasks" size={18} />Tasks</AppLink>}
+      {appEnabled(user?.disabledApps, "notes") && <AppLink to="/notes"><AppIcon kind="notes" size={18} />Notes</AppLink>}
+      {appEnabled(user?.disabledApps, "forms") && <AppLink to="/forms"><AppIcon kind="forms" size={18} />Forms</AppLink>}
       {mailOn && appEnabled(user?.disabledApps, "mail") && (
         <button className="nav" style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
           onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>
           <AppIcon kind="mail" size={18} />Mail
         </button>
       )}
-      {meetOn && appEnabled(user?.disabledApps, "meet") && <NavLink to="/meet" className={navCls}><AppIcon kind="meet" size={18} />Meet</NavLink>}
+      {meetOn && appEnabled(user?.disabledApps, "meet") && <AppLink to="/meet"><AppIcon kind="meet" size={18} />Meet</AppLink>}
 
       {appEnabled(user?.disabledApps, "sites") && <>
         <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           {t("nav.sites")}
           <button className="site-add" title={t("nav.newSite")} aria-label={t("nav.newSite")} onClick={() => setSiteDlg(true)}>＋</button>
         </div>
-        <NavLink to="/sites" end className={navCls}><span className="dot" />{t("nav.allSites")}</NavLink>
+        <AppLink to="/sites" end><span className="dot" />{t("nav.allSites")}</AppLink>
         {sites.map((s) => (
           <NavLink key={s.id} to={`/sites/${s.id}`} className={navCls}><span className="dot" />{s.name}</NavLink>
         ))}
@@ -499,7 +509,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
 
       <div className="section-label">{t(org?.kind === "family" ? "nav.familyTools" : "nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
-      {appEnabled(user?.disabledApps, "pdf") && <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>}
+      {appEnabled(user?.disabledApps, "pdf") && <AppLink to="/pdf-tools"><span className="dot" />{t("nav.pdfTools")}</AppLink>}
       {(user?.role === "owner" || user?.role === "admin") && (isDesktop
         ? <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
         : <a className="nav" href="/admin" target="_blank" rel="noopener"><span className="dot" />{t("nav.admin")}</a>)}

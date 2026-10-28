@@ -8,6 +8,7 @@ import { useAuth } from "../lib/auth";
 import { useFiles, useItemActions } from "../lib/hooks";
 import { FileList } from "../components/FileList";
 import { AppIcon } from "../components/AppIcon";
+import { openAppPath } from "../lib/openApp";
 import { openLocalFile } from "../lib/offline/openLocal";
 import { ShareDialog } from "../components/ShareDialog";
 import { VersionsPanel } from "../components/VersionsPanel";
@@ -234,8 +235,8 @@ export function Home() {
       <section className="apps">
         {workApps.map((a) => (
           <div className="app-card" key={a.cls} role="button" tabIndex={0}
-            onClick={() => navigate(a.to)}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(a.to); } }}>
+            onClick={() => openAppPath(a.to, navigate)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAppPath(a.to, navigate); } }}>
             <div className="app-ico"><AppIcon kind={a.cls} size={44} /></div>
             <div className="app-card-txt"><h4>{a.name}</h4><p>{a.desc}</p></div>
             <div className="launch">›</div>

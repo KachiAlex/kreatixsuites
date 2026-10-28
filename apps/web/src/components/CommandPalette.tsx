@@ -1,6 +1,7 @@
 // ⌘K command palette — fuzzy action/file launcher with content snippets.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { openAppPath } from "../lib/openApp";
 import type { DriveItem, FileKind } from "@kreatix/shared";
 import { api } from "../lib/api";
 import { createDoc } from "../lib/create";
@@ -73,7 +74,7 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       try { const it = await createDoc(kind); navigate(`/edit/${it.id}`); }
       catch { toast("Could not create file"); }
     };
-    const nav = (to: string, icon: string, label: string): Row => ({ id: `nav:${to}`, group: "Go to", icon, label, run: () => { navigate(to); } });
+    const nav = (to: string, icon: string, label: string): Row => ({ id: `nav:${to}`, group: "Go to", icon, label, run: () => { openAppPath(to, navigate); } });
     return [
       { id: "a:writer", group: "Create", icon: "W", iconCls: "writer", label: "New Writer document", run: mk("writer") },
       { id: "a:sheets", group: "Create", icon: "S", iconCls: "sheets", label: "New Sheets workbook", run: mk("sheets") },
