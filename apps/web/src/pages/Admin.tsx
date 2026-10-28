@@ -138,6 +138,10 @@ export function Admin() {
   const [msTenant, setMsTenant] = useState("");
   const [msBusy, setMsBusy] = useState<string | null>(null);
   const [mboxForm, setMboxForm] = useState({ localPart: "", domain: "", displayName: "" });
+  const [impFile, setImpFile] = useState<File | null>(null);
+  const [impFolder, setImpFolder] = useState("Imported");
+  const [impTarget, setImpTarget] = useState("");
+  const [impResult, setImpResult] = useState<{ imported: number; skipped: number; failed: number; folder: string } | null>(null);
   const [provisionAllBusy, setProvisionAllBusy] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [joinReqs, setJoinReqs] = useState<JoinRequest[]>([]);
@@ -480,6 +484,23 @@ export function Admin() {
       setMsConn(null); setMsMaps([]); setMsMailboxes(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Disconnect failed");
+    }
+  };
+
+  const importArchive = async () => {
+    if (!impFile) return;
+    setMailBusy("import");
+    setImpResult(null);
+    try {
+      const qs = `folder=${encodeURIComponent(impFolder.trim() || "Imported")}`;
+      const path = impTarget ? `/api/mail/import-mbox/as/${impTarget}?${qs}` : `/api/mail/import-mbox?${qs}`;
+      const r = await api.upload<{ imported: number; skipped: number; failed: number; folder: string }>(path, impFile);
+      setImpResult(r);
+      toast(`Imported ${r.imported} message${r.imported === 1 ? "" : "s"}${r.skipped ? ` (${r.skipped} already there)` : ""}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setMailBusy(null);
     }
   };
 
@@ -1707,6 +1728,39 @@ export function Admin() {
               )}
             </tbody>
           </table></div>
+        </section>
+      )}
+
+      {mailConfigured && (
+        <section className="admin-card" id="mail-import">
+          <h2>Import mail archive</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Bring existing mail over from any provider — export a <b>.mbox</b> archive (Google Takeout,
+            Outlook, Thunderbird, most webmail) or a single <b>.eml</b> file and import it here.
+            Messages keep their original dates, mail the member sent lands in Sent, and already-imported
+            messages are skipped — re-running an import is safe.
+          </p>
+          <div className="audit-bar" style={{ marginBottom: impResult ? 8 : 0 }}>
+            <select value={impTarget} onChange={(e) => setImpTarget(e.target.value)}
+              style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "7px 10px", fontSize: 12, background: "var(--surface)", maxWidth: 240 }}>
+              <option value="">My mailbox</option>
+              {members.map((m) => <option key={m.id} value={m.id}>{m.displayName} — {m.email}</option>)}
+            </select>
+            <input style={{ width: 110 }} placeholder="Folder" value={impFolder}
+              onChange={(e) => setImpFolder(e.target.value)} />
+            <input type="file" accept=".mbox,.eml,.txt" style={{ fontSize: 12 }}
+              onChange={(e) => { setImpFile(e.target.files?.[0] ?? null); setImpResult(null); }} />
+            <button className="btn-primary" disabled={!impFile || mailBusy === "import"}
+              onClick={() => void importArchive()}>
+              {mailBusy === "import" ? "Importing…" : "Import archive"}
+            </button>
+          </div>
+          {impResult && (
+            <p className="d-sub" style={{ marginBottom: 0 }}>
+              {impResult.imported} imported into “{impResult.folder}” · {impResult.skipped} already there
+              {impResult.failed ? ` · ${impResult.failed} failed` : ""}
+            </p>
+          )}
         </section>
       )}
 
