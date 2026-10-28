@@ -27,6 +27,7 @@ const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default:
 const SitePageView = lazy(() => import("./pages/SitePageView").then((m) => ({ default: m.SitePageView })));
 const Download = lazy(() => import("./pages/Download").then((m) => ({ default: m.Download })));
 const Mail = lazy(() => import("./pages/Mail").then((m) => ({ default: m.Mail })));
+const MigrateMail = lazy(() => import("./pages/MigrateMail").then((m) => ({ default: m.MigrateMail })));
 const Meet = lazy(() => import("./pages/Meet").then((m) => ({ default: m.Meet })));
 const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
 const Calendar = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.Calendar })));
@@ -152,6 +153,7 @@ export default function App() {
             <Route path="/drive/folder/:folderId" element={<Drive />} />
             <Route path="/pdf-tools" element={<RequireApp slug="pdf"><PdfTools /></RequireApp>} />
             <Route path="/mail" element={<RequireApp slug="mail"><Mail /></RequireApp>} />
+            <Route path="/mail/migrate" element={<RequireApp slug="mail"><MigrateMail /></RequireApp>} />
             <Route path="/meet" element={<RequireApp slug="meet"><Meet /></RequireApp>} />
             <Route path="/chat" element={<RequireApp slug="chat"><Chat /></RequireApp>} />
             <Route path="/calendar" element={<RequireApp slug="calendar"><Calendar /></RequireApp>} />

@@ -265,45 +265,47 @@ export function mailRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Org-admin mail import: an admin pushes an mbox/.eml archive into a
+  /** Org-admin mail import: drives the chunked import protocol against a
    *  member's mailbox (write-only — no read access to the mailbox). */
-  app.post("/api/mail/import-mbox/as/:memberId", async (req, reply) => {
-    const { user } = req as AuthedRequest;
-    if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured" });
-    const { memberId } = req.params as { memberId: string };
-    const member = await one<{ id: string; email: string; display_name: string; org_id: string }>(
-      "SELECT id, email, display_name, org_id FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
-    if (!member) return reply.code(404).send({ error: "not_found" });
+  app.route({
+    method: ["GET", "POST", "PUT", "DELETE"],
+    url: "/api/mail/import-as/:memberId/*",
+    handler: async (req, reply) => {
+      const { user } = req as AuthedRequest;
+      if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
+      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured" });
+      const { memberId } = req.params as { memberId: string };
+      const rest = (req.params as { "*": string })["*"] ?? "";
+      if (!rest.startsWith("import-sessions")) return reply.code(404).send({ error: "not_found" });
+      const member = await one<{ id: string; email: string; display_name: string; org_id: string }>(
+        "SELECT id, email, display_name, org_id FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+      if (!member) return reply.code(404).send({ error: "not_found" });
 
-    const qs = (req.raw.url ?? "").split("?")[1] ?? "";
-    let body: Buffer | undefined;
-    if (req.body !== undefined && req.body !== null) {
-      body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
-    } else if (req.headers["content-length"] || req.headers["transfer-encoding"]) {
-      const chunks: Buffer[] = [];
-      for await (const c of req.raw) chunks.push(c as Buffer);
-      if (chunks.length) body = Buffer.concat(chunks);
-    }
-
-    let upstream: Response;
-    try {
-      upstream = await mailFetchAs(
-        { id: member.id, email: member.email, displayName: member.display_name, orgId: member.org_id },
-        `/import-mbox${qs ? `?${qs}` : ""}`,
-        { method: "POST", body, contentType: (req.headers["content-type"] as string) ?? "application/mbox" });
-    } catch {
-      return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
-    }
-    void run(
-      `INSERT INTO activity (id, org_id, actor_id, action, detail, created_at)
-       VALUES ($1,$2,$3,'mail.import',$4,now())`,
-      [randomUUID(), user.orgId, user.id, `import → ${member.email}`.slice(0, 300)])
-      .catch(() => {});
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    const ct = upstream.headers.get("content-type");
-    if (ct) reply.header("content-type", ct);
-    return reply.code(upstream.status).send(buf);
+      const qs = (req.raw.url ?? "").split("?")[1] ?? "";
+      let body: Buffer | undefined;
+      if (req.body !== undefined && req.body !== null) {
+        body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+      }
+      let upstream: Response;
+      try {
+        upstream = await mailFetchAs(
+          { id: member.id, email: member.email, displayName: member.display_name, orgId: member.org_id },
+          `/${rest}${qs ? `?${qs}` : ""}`,
+          { method: req.method, body, contentType: (req.headers["content-type"] as string) ?? "application/json" });
+      } catch {
+        return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
+      }
+      if (req.method === "POST" && upstream.ok && rest.endsWith("complete"))
+        void run(
+          `INSERT INTO activity (id, org_id, actor_id, action, detail, created_at)
+           VALUES ($1,$2,$3,'mail.import',$4,now())`,
+          [randomUUID(), user.orgId, user.id, `import → ${member.email}`.slice(0, 300)])
+          .catch(() => {});
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const ct = upstream.headers.get("content-type");
+      if (ct) reply.header("content-type", ct);
+      return reply.code(upstream.status).send(buf);
+    },
   });
 
   /** Delegate proxy: /api/mail/as/<ownerUserId>/<path> — same surface as

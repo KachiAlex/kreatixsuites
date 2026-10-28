@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 
 // Kreatix Mail now launches the full mail app (mail.kreatixtech.com) in its
@@ -47,6 +48,10 @@ export function Mail() {
         {state === "unavailable" && (
           <p className="d-sub">Mail isn't configured for this workspace yet — ask your admin.</p>
         )}
+        <p className="d-sub" style={{ marginTop: 18 }}>
+          Moving from Gmail, Outlook or another provider?{" "}
+          <Link to="/mail/migrate">Import your mail</Link>
+        </p>
       </div>
     </div>
   );

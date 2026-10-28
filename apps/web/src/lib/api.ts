@@ -142,6 +142,8 @@ export const api = {
       body: file,
       headers: { "content-type": file.type || "application/octet-stream" },
     }),
+  putBlob: <T>(path: string, blob: Blob) =>
+    request<T>(path, { method: "PUT", body: blob, headers: { "content-type": "application/octet-stream" } }),
 };
 
 /** URL usable in <img>/<iframe> src. Same-origin in the browser; in the
