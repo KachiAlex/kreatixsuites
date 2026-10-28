@@ -141,11 +141,12 @@ async function main() {
     catch { return ""; }
   })();
   const CSP =
-    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
+    // accounts.google.com: Google Identity Services (sign-in button script, its iframe, its fetches)
+    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com https://accounts.google.com${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
-    "font-src 'self' data:; connect-src 'self' wss: https://cloudflareinsights.com; worker-src 'self' blob:; " +
+    "font-src 'self' data:; connect-src 'self' wss: https://cloudflareinsights.com https://accounts.google.com; worker-src 'self' blob:; " +
     "media-src 'self' blob: data:; object-src 'none'; " +
-    `frame-src 'self'${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
+    `frame-src 'self' https://accounts.google.com${meetOrigin ? ` ${meetOrigin}` : ""}; ` +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; manifest-src 'self'";
   // the Sheets script sandbox needs eval — scoped to that page only, which is
   // additionally isolated by sandbox="allow-scripts" (opaque origin)
