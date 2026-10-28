@@ -86,6 +86,8 @@ interface Hold {
   id: string; name: string; description: string | null; active: boolean;
   createdBy: string; createdAt: string; itemCount: number;
 }
+const AUDIT_PAGE = 50;
+interface AuditCursor { before: string; beforeId: string }
 interface AuditEntry {
   id: string; action: string; detail: string | null; created_at: string;
   actor_name: string | null; actor_email: string | null;
@@ -241,7 +243,7 @@ export function Admin() {
       const reqs: Promise<unknown>[] = [
         api.get<{ members: Member[]; appSeats?: Record<string, number>; seatUsage?: Record<string, { cap: number; used: number }> }>("/api/admin/members"),
         api.get<{ policies: Policies; encryptionAtRest: boolean }>("/api/admin/policies"),
-        api.get<{ entries: AuditEntry[] }>("/api/admin/audit?limit=200"),
+        api.get<{ entries: AuditEntry[]; nextCursor: AuditCursor | null }>(`/api/admin/audit?limit=${AUDIT_PAGE}`),
         api.get<{ actions: string[] }>("/api/admin/audit/actions"),
         api.get<Metrics>("/api/admin/metrics"),
         api.get<{ invites: Invite[] }>("/api/admin/invites"),
@@ -265,7 +267,7 @@ export function Admin() {
       const [m, p, a, acts, mx, inv, jreq, bill, scim, ai, dom, rl, fm, st, hl, dr, de, ak, wh, py, mc, ms] = await Promise.all(reqs) as [
         { members: Member[]; appSeats?: Record<string, number>; seatUsage?: Record<string, { cap: number; used: number }> },
         { policies: Policies; encryptionAtRest: boolean },
-        { entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null },
+        { entries: AuditEntry[]; nextCursor: AuditCursor | null },
         { actions: string[] },
         Metrics,
         { invites: Invite[] },
@@ -292,7 +294,8 @@ export function Admin() {
       setPolicies(p.policies);
       setEncryption(p.encryptionAtRest);
       setAudit(a.entries);
-      setAuditCursor(a.nextCursor);
+      setAuditPage(0);
+      setAuditCursors([null, a.nextCursor]);
       setAuditActions(acts.actions);
       setMetrics(mx);
       setInvites(inv.invites);
@@ -650,23 +653,31 @@ export function Admin() {
     if (auditTo) p.set("to", new Date(new Date(auditTo).getTime() + 86400000 - 1).toISOString());
     return p.toString();
   };
-  const [auditCursor, setAuditCursor] = useState<{ before: string; beforeId: string } | null>(null);
-  const reloadAudit = async () => {
+  // auditCursors[p] = keyset cursor that starts page p (null = newest page); the
+  // server returns the next cursor with every page, so pages are fetched on demand
+  const [auditCursors, setAuditCursors] = useState<(AuditCursor | null | undefined)[]>([null]);
+  const [auditPage, setAuditPage] = useState(0);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const auditCursorQuery = (c: AuditCursor | null) =>
+    c ? `&before=${encodeURIComponent(c.before)}&beforeId=${encodeURIComponent(c.beforeId)}` : "";
+  const loadAuditPage = async (page: number) => {
+    const cursor = auditCursors[page];
+    if (cursor === undefined) return;
+    setAuditBusy(true);
     try {
-      const r = await api.get<{ entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null }>(`/api/admin/audit?${auditQuery()}`);
+      const r = await api.get<{ entries: AuditEntry[]; nextCursor: AuditCursor | null }>(
+        `/api/admin/audit?${auditQuery()}&limit=${AUDIT_PAGE}${auditCursorQuery(cursor)}`);
       setAudit(r.entries);
-      setAuditCursor(r.nextCursor);
+      setAuditPage(page);
+      setAuditCursors((cs) => {
+        const next = cs.slice(0, page + 1);
+        if (r.nextCursor) next[page + 1] = r.nextCursor;
+        return next;
+      });
     } catch (e) { toast((e as Error).message); }
+    finally { setAuditBusy(false); }
   };
-  const loadMoreAudit = async () => {
-    if (!auditCursor) return;
-    try {
-      const r = await api.get<{ entries: AuditEntry[]; nextCursor: { before: string; beforeId: string } | null }>(
-        `/api/admin/audit?${auditQuery()}&before=${encodeURIComponent(auditCursor.before)}&beforeId=${encodeURIComponent(auditCursor.beforeId)}`);
-      setAudit((prev) => [...prev, ...r.entries]);
-      setAuditCursor(r.nextCursor);
-    } catch (e) { toast((e as Error).message); }
-  };
+  const reloadAudit = () => loadAuditPage(0).then(() => undefined);
   const exportAudit = async () => {
     try {
       const blob = await api.get<Blob>(`/api/admin/audit.csv?${auditQuery()}`);
@@ -2182,12 +2193,13 @@ export function Admin() {
           <button className="btn-secondary" onClick={() => void reloadAudit()}>Apply</button>
           <button className="btn-ghost" onClick={() => void exportAudit()}>Export CSV</button>
           <input
-            placeholder="Search results…"
+            placeholder="Search this page…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
-        <div className="tbl-scroll"><table className="admin-table">
+        <div className="tbl-scroll"><table className="admin-table audit-table">
+          <colgroup><col style={{ width: "13%" }} /><col style={{ width: "15%" }} /><col style={{ width: "15%" }} /><col style={{ width: "24%" }} /><col style={{ width: "33%" }} /></colgroup>
           <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>File</th><th>Detail</th></tr></thead>
           <tbody>
             {filtered.map((e) => (
@@ -2204,11 +2216,14 @@ export function Admin() {
             )}
           </tbody>
         </table></div>
-        {auditCursor && (
-          <button className="btn-ghost" style={{ marginTop: 8 }} onClick={() => void loadMoreAudit()}>
-            Load older entries
-          </button>
-        )}
+        <div className="audit-pager">
+          <button className="btn-ghost" disabled={auditBusy || auditPage === 0}
+            onClick={() => void loadAuditPage(auditPage - 1)}>‹ Newer</button>
+          <span>Page {auditPage + 1}{auditCursors[auditPage + 1] === undefined ? "" : " of more"} · {AUDIT_PAGE} per page</span>
+          <button className="btn-ghost" disabled={auditBusy || auditCursors[auditPage + 1] === undefined}
+            onClick={() => void loadAuditPage(auditPage + 1)}>Older ›</button>
+          {auditBusy && <span>Loading…</span>}
+        </div>
       </section>
       </>
       )}

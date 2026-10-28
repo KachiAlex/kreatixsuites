@@ -1420,6 +1420,10 @@ textarea.inp{padding:8px 10px;height:auto}
 .audit-bar input{flex:1;border:1px solid var(--line);border-radius:9px;padding:7px 12px;font-size:12px}
 .audit-bar .btn-secondary{padding:7px 14px}
 .admin-table code{background:var(--subtle);border-radius:5px;padding:1px 6px;font-size:11px}
+.audit-table{table-layout:fixed}
+.audit-table th,.audit-table td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.audit-pager{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12px;color:var(--muted)}
+.audit-pager button:disabled{opacity:.45;cursor:default}
 .menu-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:6px 10px 2px}
 .label-badge{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;border-radius:5px;padding:1px 6px;margin-left:6px;vertical-align:middle}
 .label-badge.public{background:#E8F2FF;color:#2B6CB0}

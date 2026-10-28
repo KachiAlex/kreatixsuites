@@ -16,6 +16,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner, SyncChip, UpdateBanner, MobileUpdateBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
+import { isDesktop } from "../lib/platform";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
 export function Shell() {
@@ -499,9 +500,9 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       <div className="section-label">{t(org?.kind === "family" ? "nav.familyTools" : "nav.workspaceTools")}</div>
       <button type="button" className="nav" onClick={onTemplates}><span className="dot" />{t("nav.templates")}</button>
       {appEnabled(user?.disabledApps, "pdf") && <NavLink to="/pdf-tools" className={navCls}><span className="dot" />{t("nav.pdfTools")}</NavLink>}
-      {(user?.role === "owner" || user?.role === "admin") && (
-        <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
-      )}
+      {(user?.role === "owner" || user?.role === "admin") && (isDesktop
+        ? <NavLink to="/admin" className={navCls}><span className="dot" />{t("nav.admin")}</NavLink>
+        : <a className="nav" href="/admin" target="_blank" rel="noopener"><span className="dot" />{t("nav.admin")}</a>)}
 
       <div className="ai-card">
         <div className="tag">AI</div>
