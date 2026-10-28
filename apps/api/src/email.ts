@@ -105,7 +105,7 @@ ${btn(`${publicUrl()}/admin`, "Open Admin → Health")}
       subject: brand ? `Welcome to ${brand}` : "Welcome to Kreatix Suites",
       html: shell("Welcome aboard", `
 <p>Hi ${esc(name)},</p>
-<p>Your ${space} <b>${esc(workspace)}</b> is ready — Writer, Sheets, Present, PDF, Drive and Kreatix AI, all in one place. Your <b>3-month free trial</b> starts now.</p>
+<p>Your ${space} <b>${esc(workspace)}</b> is ready — documents, spreadsheets, presentations, files, mail and AI, all in one place. Your <b>3-month free trial</b> starts now.</p>
 ${btn(publicUrl(), brand ? `Open ${esc(brand)}` : "Open Kreatix Suites")}
 <p style="color:#8a8a90;font-size:12px;margin-top:22px">${kind === "family" ? "Invite your family anytime from Admin → Members." : "Invite your team anytime from Admin → Members."}</p>`, brand),
     };
