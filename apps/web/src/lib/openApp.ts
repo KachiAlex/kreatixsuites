@@ -5,6 +5,8 @@ import { isDesktop, isNativeMobile } from "./platform";
 export const appInNewTab = !(isDesktop || isNativeMobile);
 
 export function openAppPath(to: string, navigate: (to: string) => void) {
-  if (appInNewTab) window.open(to, "_blank", "noopener");
+  // Mail's /mail page would open its own tab; open the SSO handoff directly so a
+  // click produces one tab, not a launcher tab plus the real one
+  if (appInNewTab) window.open(to === "/mail" ? "/api/mail/sso" : to, "_blank", "noopener");
   else navigate(to);
 }
