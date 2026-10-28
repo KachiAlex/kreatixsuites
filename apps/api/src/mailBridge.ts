@@ -242,7 +242,14 @@ export async function mailSsoUrl(
 ): Promise<string | null> {
   if (!mailEnabled()) return null;
   const acct = await ensureMailAccount(user);
-  return `${MAIL_BASE()}/sso?token=${encodeURIComponent(mintMailToken(acct.id, acct.email))}`;
+  const org = await one<{ name: string; brand_name: string | null; brand_logo: string | null }>(
+    "SELECT name, brand_name, brand_logo FROM orgs WHERE id = $1", [user.orgId]);
+  const params = new URLSearchParams({ token: mintMailToken(acct.id, acct.email) });
+  if (org) {
+    params.set("brand", org.brand_name || org.name);
+    if (org.brand_logo) params.set("logo", `${(process.env.KREATIX_PUBLIC_URL || "https://suites.kreatixtech.com").replace(/\/+$/, "")}/api/org/brand/${user.orgId}/logo`);
+  }
+  return `${MAIL_BASE()}/sso?${params.toString()}`;
 }
 
 export async function mailStatus(user: { id: string; email: string; displayName: string; orgId: string }) {

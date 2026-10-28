@@ -75,7 +75,7 @@ function shell(title: string, body: string, brand = "Kreatix Suites"): string {
 ${body}
 </td></tr>
 <tr><td style="padding:16px 28px;border-top:1px solid #eee;color:#8a8a90;font-size:12px">
-${esc(brand)} · <a href="${publicUrl()}" style="color:#F2782E;text-decoration:none">${publicUrl().replace(/^https?:\/\//, "")}</a>
+${brand === "Kreatix Suites" ? `${esc(brand)} · <a href="${publicUrl()}" style="color:#F2782E;text-decoration:none">${publicUrl().replace(/^https?:\/\//, "")}</a>` : esc(brand)}
 </td></tr>
 </table></td></tr></table></body></html>`;
 }

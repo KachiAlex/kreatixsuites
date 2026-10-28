@@ -78,6 +78,20 @@ export function Login({ mode }: { mode: "login" | "register" | "forgot" }) {
     return () => clearTimeout(id);
   }, [org, email, kind, mode, invite]);
 
+  // Sign-in: once the email's domain belongs to a verified workspace, show that
+  // workspace's brand in place of Kreatix's.
+  useEffect(() => {
+    if (mode !== "login" || invite) return;
+    const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+    if (!domain.includes(".")) { setInviteBrand(null); return; }
+    const id = setTimeout(() => {
+      api.post<{ domainBrand: { name: string; logoUrl: string | null } | null }>("/api/auth/workspace-lookup", { domain })
+        .then((r) => setInviteBrand(r.domainBrand))
+        .catch(() => setInviteBrand(null));
+    }, 400);
+    return () => clearTimeout(id);
+  }, [email, mode, invite]);
+
   // Join-request flow: step 1 emails a 6-digit ownership code to the
   // requester; step 2 submits it. Once queued (or already pending) the
   // server answers idempotently — no repeat requests.

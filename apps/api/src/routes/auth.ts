@@ -321,12 +321,15 @@ export function authRoutes(app: FastifyInstance) {
     const [hit, dOrg] = await Promise.all([
       name ? one("SELECT 1 AS x FROM orgs WHERE lower(btrim(name)) = lower($1) LIMIT 1", [name]) : null,
       domain.includes(".")
-        ? one<{ name: string }>(
-            `SELECT o.name FROM org_domains d JOIN orgs o ON o.id = d.org_id
+        ? one<{ id: string; name: string; brand_name: string | null; brand_logo: string | null }>(
+            `SELECT o.id, o.name, o.brand_name, o.brand_logo FROM org_domains d JOIN orgs o ON o.id = d.org_id
              WHERE d.domain = $1 AND d.status = 'verified' LIMIT 1`, [domain])
         : null,
     ]);
-    return { nameTaken: !!hit, domainOrg: dOrg?.name ?? null };
+    const domainBrand = dOrg
+      ? { name: dOrg.brand_name || dOrg.name, logoUrl: dOrg.brand_logo ? `/api/org/brand/${dOrg.id}/logo` : null }
+      : null;
+    return { nameTaken: !!hit, domainOrg: dOrg?.name ?? null, domainBrand };
   });
 
   /** "Request to join" — the join-vs-create flow's other half, in two steps:
