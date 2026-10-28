@@ -8,9 +8,9 @@ export interface KxDesktop {
    *  verifier + loopback redirectUri for POST /api/auth/google/code. */
   googleSignIn: () => Promise<{ code: string; codeVerifier: string; redirectUri: string }>;
   readFile: (path: string) => Promise<{ ok: boolean; name?: string; data?: string; size?: number; error?: string }>;
-  writeFile: (path: string, dataBase64: string) => Promise<{ ok: boolean; error?: string }>;
+  saveFile: (defaultName: string, dataBase64: string) =>
+    Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
   openDialog: () => Promise<string | null>;
-  saveDialog: (defaultName: string) => Promise<string | null>;
   showInFolder: (path: string) => Promise<void>;
   pendingFiles: () => Promise<string[]>;
   onOpenFile: (cb: (path: string) => void) => () => void;

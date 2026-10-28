@@ -15,9 +15,9 @@ contextBridge.exposeInMainWorld("kxDesktop", {
 
   // filesystem (used by file-association opens + save-write-back)
   readFile: (path: string) => invoke<{ ok: boolean; name?: string; data?: string; size?: number; error?: string }>("kx:readFile", path),
-  writeFile: (path: string, dataBase64: string) => invoke<{ ok: boolean; error?: string }>("kx:writeFile", path, dataBase64),
+  saveFile: (defaultName: string, dataBase64: string) =>
+    invoke<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>("kx:saveFile", defaultName, dataBase64),
   openDialog: () => invoke<string | null>("kx:openDialog"),
-  saveDialog: (defaultName: string) => invoke<string | null>("kx:saveDialog", defaultName),
   showInFolder: (path: string) => invoke<void>("kx:showInFolder", path),
 
   // files passed on argv (double-click) — queued in main until the renderer

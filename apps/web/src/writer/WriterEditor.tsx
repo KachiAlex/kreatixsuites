@@ -1247,10 +1247,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   /** PDF via the print pipeline — clone the rendered (paginated) DOM so
    *  headers/footers/page numbers and KaTeX carry over. */
-  const exportPdfAction = async () => {
-    if (!editor) return;
-    const mod = await import("./export/index");
-    const clone = editor.view.dom.cloneNode(true) as HTMLElement;
+  /** The paginated editor DOM as a print-ready copy — redactions baked in. */
+  const printableHtml = () => {
+    const clone = editor!.view.dom.cloneNode(true) as HTMLElement;
     clone.removeAttribute("contenteditable");
     clone.removeAttribute("spellcheck");
     clone.querySelectorAll("[data-redact]").forEach((el) => {
@@ -1259,7 +1258,24 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     clone.querySelectorAll(".img-resize-handle").forEach((el) => el.remove());
     clone.querySelectorAll("[contenteditable],[data-drag-handle]")
       .forEach((el) => { el.removeAttribute("contenteditable"); el.removeAttribute("data-drag-handle"); });
-    mod.exportPdf(clone.outerHTML, title, readPageSetup(editor));
+    return clone.outerHTML;
+  };
+
+  const exportPdfAction = async () => {
+    if (!editor) return;
+    const mod = await import("./export/index");
+    mod.exportPdf(printableHtml(), title, readPageSetup(editor));
+  };
+
+  const exportPdfFile = async (progress: (m: string) => void) => {
+    const setup = readPageSetup(editor!);
+    const [mod, raster] = await Promise.all([import("./export/index"), import("../lib/pdfRaster")]);
+    const pdf = await raster.rasterPdf(mod.pagedHtmlDoc(title, printableHtml(), setup), {
+      widthPx: setup.width,
+      sheetPt: { w: setup.width * raster.PX_TO_PT, h: setup.height * raster.PX_TO_PT },
+      pagesOf: mod.pageBandsOf,
+    }, progress);
+    return new Blob([pdf.buffer as ArrayBuffer], { type: "application/pdf" });
   };
 
   const exportFormats = (): ExportFormat[] => {
@@ -1276,8 +1292,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           });
           return { name: `${base}.docx`, blob };
         } },
-      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — opens the system print dialog",
-        action: { label: "Print / Save as PDF", run: exportPdfAction } },
+      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — pages are saved as images",
+        produce: async (progress) => ({ name: `${base}.pdf`, blob: await exportPdfFile(progress) }),
+        action: { label: "Print…", run: exportPdfAction } },
       { id: "odt", label: "OpenDocument (.odt)", hint: "LibreOffice / OpenOffice",
         produce: async () => ({ name: `${base}.odt`, blob: await (await import("./export/odt")).odtBlob(scrubbedJson(), name) }) },
       { id: "rtf", label: "Rich Text (.rtf)", hint: "Legacy editors and WordPad",

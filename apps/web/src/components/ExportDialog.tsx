@@ -42,8 +42,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
       }
       const out = await f.produce!((m) => setProg(m));
       if (target === "download") {
-        await saveFile(out.blob, out.name);
-        toast(`Downloaded ${out.name}`);
+        if (await saveFile(out.blob, out.name)) toast(`Downloaded ${out.name}`);
       } else {
         const kind = /\.pdf$/i.test(out.name) ? "pdf" : "file";
         await api.upload(`/api/drive/upload?name=${encodeURIComponent(out.name)}&kind=${kind}`, out.blob);

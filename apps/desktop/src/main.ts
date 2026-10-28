@@ -233,11 +233,15 @@ ipcMain.handle("kx:readFile", (_e, filePath: string) => {
   }
 });
 
-ipcMain.handle("kx:writeFile", (_e, filePath: string, dataBase64: string) => {
+// Save-as: the user picks the destination in a native dialog and the main
+// process writes the bytes — the renderer never chooses a path.
+ipcMain.handle("kx:saveFile", async (_e, defaultName: string, dataBase64: string) => {
+  if (!mainWindow) return { ok: false, error: "no window" };
+  const r = await dialog.showSaveDialog(mainWindow, { defaultPath: path.basename(defaultName) });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, Buffer.from(dataBase64, "base64"));
-    return { ok: true };
+    fs.writeFileSync(r.filePath, Buffer.from(dataBase64, "base64"));
+    return { ok: true, path: r.filePath };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -258,11 +262,6 @@ ipcMain.handle("kx:openDialog", async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle("kx:saveDialog", async (_e, defaultName: string) => {
-  if (!mainWindow) return null;
-  const r = await dialog.showSaveDialog(mainWindow, { defaultPath: defaultName });
-  return r.canceled ? null : r.filePath;
-});
 
 ipcMain.handle("kx:showInFolder", (_e, p: string) => shell.showItemInFolder(p));
 ipcMain.handle("kx:pendingFiles", () => pendingFiles.splice(0));

@@ -107,6 +107,27 @@ export async function downloadOdt(doc: Json, name: string) {
  *  rendered pages map 1:1 onto sheets with headers/footers/page numbers.
  *  Native WebView can't open print windows — save the print-ready HTML
  *  (auto-prints when opened) as a file instead. */
+/** Print-ready document (paged styles) for the raster PDF export. */
+export function pagedHtmlDoc(name: string, pagedHtml: string, setup?: PageSetup): string {
+  return pageShell(name, absolutize(pagedHtml), setup, true);
+}
+
+/** One PDF sheet per editor page: the spans between `.rm-page-break` walls. */
+export function pageBandsOf(doc: Document): { top: number; height: number }[] {
+  const bodyTop = doc.body.getBoundingClientRect().top;
+  const y = (el: Element, edge: "top" | "bottom") => el.getBoundingClientRect()[edge] - bodyTop;
+  const out: { top: number; height: number }[] = [];
+  let top = 0;
+  for (const wall of doc.querySelectorAll(".rm-page-break")) {
+    const end = y(wall, "top");
+    if (end - top > 1) out.push({ top, height: end - top });
+    top = y(wall, "bottom");
+  }
+  const total = doc.body.getBoundingClientRect().height;
+  if (total - top > 1) out.push({ top, height: total - top });
+  return out;
+}
+
 export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
   const html = pageShell(name, absolutize(pagedHtml), setup, true)
     .replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`);

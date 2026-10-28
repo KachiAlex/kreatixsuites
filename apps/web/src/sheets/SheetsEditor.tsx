@@ -1385,7 +1385,15 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
         produce: async () => ({ name: `${sheetBase}.csv`, blob: new Blob([sheetToCSV(sheet, wb)], { type: "text/csv" }) }) },
       { id: "tsv", label: `TSV — ${sheet.name} (.tsv)`, hint: "Tab-separated, values only",
         produce: async () => ({ name: `${sheetBase}.tsv`, blob: new Blob([sheetToTSV(sheet, wb)], { type: "text/tab-separated-values" }) }) },
-      { id: "pdf", label: "PDF / Print", hint: "Print layout with titles, areas, scale",
+      { id: "pdf", label: "PDF / Print", hint: "Current sheet on letter pages — breaks between rows. Print options set areas and titles.",
+        produce: async (progress) => {
+          const [{ sheetToPrintHTML }, raster] = await Promise.all([import("./io"), import("../lib/pdfRaster")]);
+          const pdf = await raster.rasterPdf(sheetToPrintHTML(sheet, wb), {
+            widthPx: 700.8, sheetPt: { w: 612, h: 792 }, marginPx: { x: 57.6, y: 57.6 },
+            pagesOf: raster.rowPages(940.8),
+          }, progress);
+          return { name: `${sheetBase}.pdf`, blob: new Blob([pdf.buffer as ArrayBuffer], { type: "application/pdf" }) };
+        },
         action: { label: "Print options…", run: () => setPrintDlg(true) } },
     ];
   };

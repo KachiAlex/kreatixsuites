@@ -71,6 +71,7 @@
     "docx": "^9.7.2",
     "dompurify": "3.2.4",
     "hot-formula-parser": "^4.0.0",
+    "html2canvas": "1.4.1",
     "jszip": "3.10.1",
     "katex": "^0.18.9",
     "lowlight": "^3.3.0",

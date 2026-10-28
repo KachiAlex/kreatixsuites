@@ -1,10 +1,11 @@
-// Unified file save. Browser/desktop: classic <a download> blob anchor.
+// Unified file save. Desktop: native Save-As dialog (main process writes the
+// file). Browser: classic <a download> blob anchor.
 // Native mobile (Capacitor WebView): a.download is a no-op there — no
 // DownloadListener is wired — so blobs are written to the public Documents
 // dir via @capacitor/filesystem; if that fails (old device, scoped storage
 // edge) the file is written to the app cache and handed to the share sheet.
 // Either way a "kreatix:toast" event lets the shell confirm the save.
-import { isNativeMobile } from "./platform";
+import { desktop, isDesktop, isNativeMobile } from "./platform";
 
 export const toast = (m: string) =>
   window.dispatchEvent(new CustomEvent("kreatix:toast", { detail: m }));
@@ -38,17 +39,26 @@ async function saveNative(blob: Blob, filename: string): Promise<void> {
 }
 
 /**
- * Save `blob` to the user's device as `filename`. Fire-and-forget safe:
- * resolves after the native write, never throws for the anchor path.
+ * Save `blob` to the user's device as `filename`. Resolves true once the file
+ * is written; false when the user cancels the save dialog. Failures toast.
+ * Desktop shows a native Save-As dialog (the shell writes the bytes); native
+ * mobile writes to Documents/Kreatix; the browser triggers a download.
  */
-export async function saveFile(blob: Blob, filename: string): Promise<void> {
+export async function saveFile(blob: Blob, filename: string): Promise<boolean> {
+  if (isDesktop && desktop) {
+    const name = safeName(filename);
+    const r = await desktop.saveFile(name, await blobToBase64(blob));
+    if (!r.ok && !r.canceled) toast(`Couldn't save ${name}`);
+    return !!r.ok;
+  }
   if (isNativeMobile) {
     try {
       await saveNative(blob, filename);
+      return true;
     } catch {
       toast(`Couldn't save ${safeName(filename)}`);
+      return false;
     }
-    return;
   }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -60,4 +70,5 @@ export async function saveFile(blob: Blob, filename: string): Promise<void> {
   a.remove();
   // revoking immediately after click can cancel the download in some engines
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return true;
 }
