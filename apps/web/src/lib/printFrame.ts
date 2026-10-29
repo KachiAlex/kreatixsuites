@@ -3,6 +3,11 @@
 // it, so popup blockers silently kill the print window (the "PDF export does
 // nothing" bug). An iframe's document needs no gesture: its own auto-print
 // script fires on load, and the frame is reaped after printing or a timeout.
+/** The app's stylesheets, including the live page-number counter rules, as markup
+ *  for a standalone print document (it doesn't inherit the app's styles). */
+export const appStyleTags = (): string =>
+  [...document.querySelectorAll('link[rel="stylesheet"], style')].map((el) => el.outerHTML).join("");
+
 export function printHtmlFrame(html: string): void {
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");

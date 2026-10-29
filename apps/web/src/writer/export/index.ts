@@ -2,7 +2,7 @@ import type { Editor } from "@tiptap/react";
 import katexCssUrl from "katex/dist/katex.min.css?url";
 import { downloadBlob, baseName, type Json } from "./common";
 import { saveFile, toast } from "../../lib/saveFile";
-import { printHtmlFrame } from "../../lib/printFrame";
+import { printHtmlFrame, appStyleTags } from "../../lib/printFrame";
 import { desktop, isDesktop, isNativeMobile, PUBLIC_ORIGIN } from "../../lib/platform";
 import { jsonToMarkdown } from "./markdown";
 import { rtfBlob } from "./rtf";
@@ -129,7 +129,10 @@ export function pageBandsOf(doc: Document): { top: number; height: number }[] {
 }
 
 export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
-  const doc = pageShell(name, absolutize(pagedHtml), setup, true);
+  // the print document needs the app's fonts and page-number counter rules, or
+  // the footer shows "Page of N" with an empty number and text falls back to serif
+  const doc = pageShell(name, absolutize(pagedHtml), setup, true)
+    .replace("</head>", () => `${appStyleTags()}</head>`);
   if (isNativeMobile) {
     void saveFile(new Blob([doc], { type: "text/html" }), `${baseName(name)}.html`);
     return;
