@@ -74,9 +74,9 @@ function textStyle(n: Inline | Block, inherited: Mark[]): { font?: string; color
   const hl = marks.find((m) => m.type === "highlight")?.attrs;
   return {
     font: (ts?.fontFamily as string | undefined)?.replace(/['"]/g, "").split(",")[0],
-    color: (ts?.color as string | undefined)?.replace("#", ""),
+    color: hex(ts?.color as string | undefined),
     size: ts?.fontSize ? Math.round(parseInt(ts.fontSize as string) * 2) : undefined,
-    highlight: (hl?.color as string | undefined)?.replace("#", ""),
+    highlight: hex(hl?.color as string | undefined),
   };
 }
 
@@ -487,7 +487,18 @@ const TEXT_DIR: Record<string, (typeof TextDirection)[keyof typeof TextDirection
 interface BorderSpec { style: string; width: number; color: string }
 interface CellBorders { top?: BorderSpec; right?: BorderSpec; bottom?: BorderSpec; left?: BorderSpec }
 
-const hex = (c: string) => c.replace(/^#/, "").toUpperCase();
+/** CSS color → six-digit hex for DOCX. Accepts #rgb, #rrggbb, rgb()/rgba();
+ *  anything else (transparent, named, oklch…) returns undefined so the property
+ *  is simply omitted instead of failing the whole export. */
+const hex = (c: string | undefined): string | undefined => {
+  if (!c) return undefined;
+  const s = c.trim().toLowerCase();
+  if (/^#?[0-9a-f]{6}$/.test(s)) return s.replace("#", "").toUpperCase();
+  if (/^#?[0-9a-f]{3}$/.test(s)) return s.replace("#", "").split("").map((x) => x + x).join("").toUpperCase();
+  const m = s.match(/^rgba?\(\s*(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)/);
+  if (m) return [m[1], m[2], m[3]].map((v) => Math.max(0, Math.min(255, Math.round(+v))).toString(16).padStart(2, "0")).join("").toUpperCase();
+  return undefined;
+};
 
 function docxBorder(side?: BorderSpec) {
   if (!side) return undefined;
