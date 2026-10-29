@@ -43,7 +43,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
       // a stuck producer used to leave the dialog greyed out with no message
       const out = await Promise.race([
         f.produce!((m) => setProg(m)),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out — try again")), 150_000)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out — try again")), 300_000)),
       ]);
       if (target === "download") {
         if (await saveFile(out.blob, out.name)) toast(`Downloaded ${out.name}`);

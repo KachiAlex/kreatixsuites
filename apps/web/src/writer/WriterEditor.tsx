@@ -1283,13 +1283,26 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           return { name: `${base}.docx`, blob };
         } },
       { id: "pdf", label: "PDF document (.pdf)", hint: "Same layout as Word — converted on the server, text stays selectable",
-        produce: async () => {
+        produce: async (progress) => {
+          const t0 = performance.now();
+          const stage = (label: string, since: number) => {
+            const s = Math.round((performance.now() - since) / 100) / 10;
+            console.info(`[pdf export] ${label}: ${s}s`);
+          };
+          progress("Preparing document…");
           const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
             .then((r) => r.comments).catch(() => [] as Comment[]);
+          const tBuild = performance.now();
+          progress("Building Word file…");
           const docx = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
             comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
           });
+          stage("build docx", tBuild);
+          progress("Converting to PDF on the server…");
+          const tConvert = performance.now();
           const pdf = await api.upload<Blob>("/api/convert/pdf", docx);
+          stage("convert on server", tConvert);
+          stage("total", t0);
           return { name: `${base}.pdf`, blob: pdf };
         },
         action: { label: "Print…", run: exportPdfAction } },
