@@ -77,7 +77,14 @@ export const splitBands = (bands: RasterPage[], pageHeightPx: number, selector: 
 /** Page ranges that break only between table rows — a row is never split. */
 export const rowPages = (pageHeightPx: number) => blockPages(pageHeightPx, "tr");
 
+/** The app's own stylesheets (fonts, page-number counters, editor rules) must
+ *  reach the export frame, or fonts fall back and page numbers render empty. */
+const appStyles = () => [...document.querySelectorAll('link[rel="stylesheet"], style')]
+  .map((el) => el.outerHTML).join("");
+
 export async function rasterPdf(html: string, opts: RasterOptions, progress?: (m: string) => void): Promise<Uint8Array> {
+  const styles = appStyles();
+  html = html.includes("<head>") ? html.replace("<head>", () => `<head>${styles}`) : styles + html;
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
   Object.assign(frame.style, {
