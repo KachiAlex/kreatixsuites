@@ -78,6 +78,19 @@ export function mailRoutes(app: FastifyInstance) {
     }
   });
 
+  // Desktop/mobile shells can't rely on the cookie redirect above — they fetch the
+  // handoff URL with their bearer token and open it in the system browser.
+  app.get("/api/mail/sso-url", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    try {
+      const url = await mailSsoUrl(user);
+      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Mail service isn't configured" });
+      return { url };
+    } catch {
+      return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
+    }
+  });
+
   // ── Org email domains (owner/admin only) ─────────────────────────────
   const requireOrgAdmin = (req: AuthedRequest, reply: FastifyReply) => {
     if (req.user.role !== "owner" && req.user.role !== "admin") {

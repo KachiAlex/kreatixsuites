@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { openMail } from "../lib/openApp";
 
-// Kreatix Mail now launches the full mail app (mail.kreatixtech.com) in its
-// own tab — the suite mints a short-lived exchange JWT server-side at
-// /api/mail/sso, the mail service swaps it for a real session. This page is
-// the deep-link fallback: it auto-launches on mount and shows a manual
-// button when the popup was blocked.
+// Kreatix Mail launches the full mail app (mail.kreatixtech.com) in its own
+// window via openMail(). This page is the deep-link fallback: it launches on
+// mount and shows a manual button when the browser blocked the window.
 
 export function Mail() {
   const [state, setState] = useState<"opening" | "blocked" | "unavailable">("opening");
@@ -15,12 +14,9 @@ export function Mail() {
   useEffect(() => {
     if (fired.current) return;
     fired.current = true;
-    const win = window.open("/api/mail/sso", "_blank", "noopener");
-    if (!win) {
-      // popup blocked — surface the manual launch
-      setState("blocked");
-      return;
-    }
+    void openMail().then((ok) => {
+      if (!ok) setState("blocked");
+    }).catch(() => setState("unavailable"));
     // the SSO endpoint can still 503 server-side — cheap probe so the card
     // can say so instead of silently landing on an error page
     api.get<{ enabled?: boolean }>("/api/mail/status").then((s) => {
@@ -39,10 +35,10 @@ export function Mail() {
         {state === "blocked" && (
           <>
             <p className="d-sub">Your browser blocked the new tab. Open the full mail app directly:</p>
-            <a className="btn-primary" style={{ display: "inline-block", marginTop: 10, textDecoration: "none", padding: "9px 22px" }}
-              href="/api/mail/sso" target="_blank" rel="noopener noreferrer">
+            <button className="btn-primary" style={{ marginTop: 10, padding: "9px 22px" }}
+              onClick={() => void openMail()}>
               Open Kreatix Mail
-            </a>
+            </button>
           </>
         )}
         {state === "unavailable" && (

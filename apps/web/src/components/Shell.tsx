@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { appInNewTab } from "../lib/openApp";
+import { appInNewTab, openMail } from "../lib/openApp";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useI18n, LOCALES } from "../lib/i18n";
@@ -310,7 +310,7 @@ function Rail({ toast }: { toast: (m: string) => void }) {
       <div className="brand-mark"><AppIcon kind="suites" /></div>
       {items.map((i) => i.sso ? (
         <button key={i.to} title={i.title} className="rail-btn"
-          onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>{i.icon}</button>
+          onClick={() => void openMail()}>{i.icon}</button>
       ) : (
         <NavLink key={i.to} to={i.to} end={i.to === "/"} title={i.title}
           className={`rail-btn ${pathname === i.to ? "active" : ""}`}>{i.icon}</NavLink>
@@ -490,7 +490,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       {appEnabled(user?.disabledApps, "forms") && <AppLink to="/forms"><AppIcon kind="forms" size={18} />Forms</AppLink>}
       {mailOn && appEnabled(user?.disabledApps, "mail") && (
         <button className="nav" style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
-          onClick={() => window.open("/api/mail/sso", "_blank", "noopener")}>
+          onClick={() => void openMail()}>
           <AppIcon kind="mail" size={18} />Mail
         </button>
       )}
