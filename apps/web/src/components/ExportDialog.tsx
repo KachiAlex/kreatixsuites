@@ -14,7 +14,7 @@ export interface ExportFormat {
   label: string;
   hint?: string;
   /** Produces file bytes — enables Download + Save to Drive. */
-  produce?: (progress: (m: string) => void) => Promise<ExportResult>;
+  produce?: (progress: (m: string, pct?: number) => void) => Promise<ExportResult>;
   /** Interactive path (print dialog, layout picker…). */
   action?: { label: string; run: () => void | Promise<void> };
 }
@@ -28,12 +28,13 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
   toast: (m: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
-  const [prog, setProg] = useState("");
+  // pct undefined = work the browser can't measure (server step) → animated bar
+  const [prog, setProg] = useState<{ label: string; pct?: number } | null>(null);
 
   const go = async (f: ExportFormat, target: "download" | "drive" | "action") => {
     if (busy) return;
     setBusy(`${f.id}:${target}`);
-    setProg("");
+    setProg(null);
     try {
       if (target === "action") {
         await f.action!.run();
@@ -42,7 +43,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
       }
       // a stuck producer used to leave the dialog greyed out with no message
       const out = await Promise.race([
-        f.produce!((m) => setProg(m)),
+        f.produce!((label, pct) => setProg({ label, pct })),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out — try again")), 300_000)),
       ]);
       if (target === "download") {
@@ -56,7 +57,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
       toast(e instanceof Error && e.message ? `Export failed: ${e.message.slice(0, 80)}` : "Export failed");
     } finally {
       setBusy(null);
-      setProg("");
+      setProg(null);
     }
   };
 
@@ -70,7 +71,15 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
             <div className="export-info">
               <b>{f.label}</b>
               {f.hint && <small>{f.hint}</small>}
-              {busy?.startsWith(`${f.id}:`) && prog && <small className="export-prog">{prog}</small>}
+              {busy?.startsWith(`${f.id}:`) && prog && (
+                <div className="export-progress" role="progressbar" aria-label={prog.label}
+                  aria-valuemin={0} aria-valuemax={100} aria-valuenow={prog.pct !== undefined ? Math.round(prog.pct * 100) : undefined}>
+                  <small className="export-prog">{prog.label}</small>
+                  <div className={`export-bar${prog.pct === undefined ? " indet" : ""}`}>
+                    <span style={prog.pct !== undefined ? { width: `${Math.round(prog.pct * 100)}%` } : undefined} />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="export-actions">
               {f.produce && <>

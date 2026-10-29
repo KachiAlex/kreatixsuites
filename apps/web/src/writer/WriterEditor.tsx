@@ -1289,16 +1289,16 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
             const s = Math.round((performance.now() - since) / 100) / 10;
             console.info(`[pdf export] ${label}: ${s}s`);
           };
-          progress("Preparing document…");
+          progress("Preparing document…", 0.1);
           const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
             .then((r) => r.comments).catch(() => [] as Comment[]);
           const tBuild = performance.now();
-          progress("Building Word file…");
+          progress("Building Word file…", 0.35);
           const docx = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
             comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
           });
           stage("build docx", tBuild);
-          progress("Converting to PDF on the server…");
+          progress("Converting to PDF on the server — this step can take a minute…");
           const tConvert = performance.now();
           const pdf = await api.upload<Blob>("/api/convert/pdf", docx);
           stage("convert on server", tConvert);
