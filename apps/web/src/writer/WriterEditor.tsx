@@ -1267,25 +1267,6 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     mod.exportPdf(printableHtml(), title, readPageSetup(editor));
   };
 
-  const exportPdfFile = async (progress: (m: string) => void) => {
-    const setup = readPageSetup(editor!);
-    const [mod, raster] = await Promise.all([import("./export/index"), import("../lib/pdfRaster")]);
-    const html = printableHtml();
-    // paginated documents carry their margins and page walls in the DOM; a plain
-    // document is laid out at the text width and paged between block elements
-    const paged = html.includes("rm-page-break");
-    const pdf = await raster.rasterPdf(mod.pagedHtmlDoc(title, html, setup), {
-      widthPx: paged ? setup.width : setup.width - setup.marginLeft - setup.marginRight,
-      sheetPt: { w: setup.width * raster.PX_TO_PT, h: setup.height * raster.PX_TO_PT },
-      marginPx: paged ? undefined : { x: setup.marginLeft, y: setup.marginTop },
-      pagesOf: paged
-        ? (doc) => raster.splitBands(mod.pageBandsOf(doc), setup.height,
-          "p, h1, h2, h3, h4, h5, h6, li, tr, img, blockquote, pre, hr")(doc)
-        : raster.blockPages(setup.height - setup.marginTop - setup.marginBottom,
-          "p, h1, h2, h3, h4, h5, h6, li, tr, img, blockquote, pre, hr"),
-    }, progress);
-    return new Blob([pdf.buffer as ArrayBuffer], { type: "application/pdf" });
-  };
 
   const exportFormats = (): ExportFormat[] => {
     if (!editor) return [];
@@ -1301,9 +1282,8 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           });
           return { name: `${base}.docx`, blob };
         } },
-      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — pages are saved as images",
-        produce: async (progress) => ({ name: `${base}.pdf`, blob: await exportPdfFile(progress) }),
-        action: { label: "Print…", run: exportPdfAction } },
+      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — opens the system print dialog",
+        action: { label: "Print / Save as PDF", run: exportPdfAction } },
       { id: "odt", label: "OpenDocument (.odt)", hint: "LibreOffice / OpenOffice",
         produce: async () => ({ name: `${base}.odt`, blob: await (await import("./export/odt")).odtBlob(scrubbedJson(), name) }) },
       { id: "rtf", label: "Rich Text (.rtf)", hint: "Legacy editors and WordPad",
