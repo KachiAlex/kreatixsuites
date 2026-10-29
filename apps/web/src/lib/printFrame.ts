@@ -7,10 +7,15 @@
  *  Only these are copied: the app's own print rules hide the document body. */
 export const appStyleTags = (): string => {
   const fonts: string[] = [];
+  // pagination counters (page-break increments, footer page numbers) are plain
+  // style rules keyed on these classes; media rules are skipped so the app's
+  // print rules that hide the body never reach the frame
+  const PAGINATION = /counter|page-number|rm-page|rm-with-pagination|rm-first-page/;
   for (const sheet of Array.from(document.styleSheets)) {
     try {
       for (const rule of Array.from(sheet.cssRules)) {
         if (rule.type === CSSRule.FONT_FACE_RULE) fonts.push(rule.cssText);
+        else if (rule.type === CSSRule.STYLE_RULE && PAGINATION.test(rule.cssText)) fonts.push(rule.cssText);
       }
     } catch { /* cross-origin sheet — no rules to read */ }
   }

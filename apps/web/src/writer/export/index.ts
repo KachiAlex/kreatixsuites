@@ -132,7 +132,9 @@ export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
   // the print document needs the app's fonts and page-number counter rules, or
   // the footer shows "Page of N" with an empty number and text falls back to serif
   const doc = pageShell(name, absolutize(pagedHtml), setup, true)
-    .replace("</head>", () => `${appStyleTags()}</head>`);
+    .replace("</head>", () => `${appStyleTags()}</head>`)
+    // the counter rules are scoped to .rm-with-pagination — the print body must carry it
+    .replace("<body>", '<body class="rm-with-pagination">');
   if (isNativeMobile) {
     void saveFile(new Blob([doc], { type: "text/html" }), `${baseName(name)}.html`);
     return;
