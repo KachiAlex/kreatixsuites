@@ -2800,7 +2800,7 @@ ${scaleCss}
 </style></head><body>
 <h1>${esc(opts.title ?? sheet.name)}</h1>
 <table><colgroup>${colgroup}</colgroup>${headRows.length ? `<thead>${headRows.join("\n")}</thead>` : ""}${rows.join("\n")}</table>
-<script>window.onload = () => { window.print(); }</script>
+
 </body></html>`;
 }
 

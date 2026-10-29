@@ -143,7 +143,7 @@ export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
     });
     return;
   }
-  printHtmlFrame(doc.replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`));
+  printHtmlFrame(doc);
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");

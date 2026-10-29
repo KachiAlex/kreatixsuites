@@ -10,9 +10,16 @@ export function printHtmlFrame(html: string): void {
     "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none";
   document.body.appendChild(iframe);
   const cleanup = () => iframe.remove();
-  iframe.onload = () => iframe.contentWindow?.addEventListener("afterprint", cleanup);
-  // the doc's own onload script calls print(); if an engine never fires it
-  // (or skips afterprint), still reap the frame rather than leak it
+  // print from the app, not from an inline script in the frame: the app's CSP
+  // blocks inline scripts, so a script inside the document never runs and the
+  // dialog silently never opens
+  iframe.onload = () => {
+    const w = iframe.contentWindow;
+    if (!w) return cleanup();
+    w.addEventListener("afterprint", cleanup);
+    setTimeout(() => { w.focus(); w.print(); }, 300);
+  };
+  // if an engine never fires afterprint, still reap the frame rather than leak it
   setTimeout(cleanup, 120_000);
   iframe.srcdoc = html;
 }
