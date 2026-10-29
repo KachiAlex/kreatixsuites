@@ -1278,7 +1278,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       widthPx: paged ? setup.width : setup.width - setup.marginLeft - setup.marginRight,
       sheetPt: { w: setup.width * raster.PX_TO_PT, h: setup.height * raster.PX_TO_PT },
       marginPx: paged ? undefined : { x: setup.marginLeft, y: setup.marginTop },
-      pagesOf: paged ? mod.pageBandsOf
+      pagesOf: paged
+        ? (doc) => raster.splitBands(mod.pageBandsOf(doc), setup.height,
+          "p, h1, h2, h3, h4, h5, h6, li, tr, img, blockquote, pre, hr")(doc)
         : raster.blockPages(setup.height - setup.marginTop - setup.marginBottom,
           "p, h1, h2, h3, h4, h5, h6, li, tr, img, blockquote, pre, hr"),
     }, progress);

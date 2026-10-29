@@ -54,6 +54,26 @@ export const blockPages = (pageHeightPx: number, selector: string) => (doc: Docu
   return out;
 };
 
+/** Split each band into sheets no taller than `pageHeightPx`, breaking only at
+ *  block boundaries matching `selector`. Bands are the document's own page
+ *  spans; one may cover several sheets when page markers are sparse. */
+export const splitBands = (bands: RasterPage[], pageHeightPx: number, selector: string) => (doc: Document): RasterPage[] => {
+  const edges = [...doc.querySelectorAll(selector)].map((el) => bodyY(doc, el, "bottom")).sort((a, b) => a - b);
+  const out: RasterPage[] = [];
+  for (const band of bands) {
+    const end = band.top + band.height;
+    let top = band.top;
+    while (end - top > 1) {
+      if (end - top <= pageHeightPx) { out.push({ top, height: end - top }); break; }
+      const limit = top + pageHeightPx;
+      const cut = edges.filter((b) => b > top + 1 && b <= limit).pop() ?? limit;
+      out.push({ top, height: cut - top });
+      top = cut;
+    }
+  }
+  return out;
+};
+
 /** Page ranges that break only between table rows — a row is never split. */
 export const rowPages = (pageHeightPx: number) => blockPages(pageHeightPx, "tr");
 
