@@ -33,6 +33,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:?set in .env}
       - KREATIX_DATABASE_URL=postgres://kreatix:${POSTGRES_PASSWORD}@db:5432/kreatix
       - KREATIX_DATA_DIR=/data
+      - KREATIX_CONVERTER_URL=http://converter:3100
       - PORT=3001
       # optional config — empty values are ignored by the app
       - KREATIX_DATA_KEY=${KREATIX_DATA_KEY:-}
@@ -125,6 +126,19 @@ services:
     volumes:
       - kreatix-data:/data
       - ${MEET_RECORDINGS_HOST_DIR:-./.empty-recordings}:/recordings:ro
+
+  # Word → PDF (LibreOffice, headless). Internal only — the app calls it over the
+  # compose network; nothing is published to the host. Capped so it can't starve
+  # the other services on the box.
+  converter:
+    build: ./apps/converter
+    restart: unless-stopped
+    mem_limit: 1200m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
 
   caddy:
     profiles: ["tls"]

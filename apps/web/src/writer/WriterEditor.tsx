@@ -1282,8 +1282,17 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
           });
           return { name: `${base}.docx`, blob };
         } },
-      { id: "pdf", label: "PDF document (.pdf)", hint: "Exact page layout — opens the system print dialog",
-        action: { label: "Print / Save as PDF", run: exportPdfAction } },
+      { id: "pdf", label: "PDF document (.pdf)", hint: "Same layout as Word — converted on the server, text stays selectable",
+        produce: async () => {
+          const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
+            .then((r) => r.comments).catch(() => [] as Comment[]);
+          const docx = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
+            comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
+          });
+          const pdf = await api.upload<Blob>("/api/convert/pdf", docx);
+          return { name: `${base}.pdf`, blob: pdf };
+        },
+        action: { label: "Print…", run: exportPdfAction } },
       { id: "odt", label: "OpenDocument (.odt)", hint: "LibreOffice / OpenOffice",
         produce: async () => ({ name: `${base}.odt`, blob: await (await import("./export/odt")).odtBlob(scrubbedJson(), name) }) },
       { id: "rtf", label: "Rich Text (.rtf)", hint: "Legacy editors and WordPad",
