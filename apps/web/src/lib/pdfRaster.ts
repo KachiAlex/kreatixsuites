@@ -20,6 +20,10 @@ export interface RasterOptions {
   marginPx?: { x: number; y: number };
   /** Page ranges (CSS px within the rendered body) — one PDF sheet each. */
   pagesOf: (doc: Document) => RasterPage[];
+  /** Page margins (CSS px), applied to the body when the document isn't
+   *  already paginated (no `skipPaddingIf` element present). */
+  padding?: { top: number; right: number; bottom: number; left: number };
+  skipPaddingIf?: string;
 }
 
 const b64ToBytes = (dataUrl: string): Uint8Array => {
@@ -33,10 +37,11 @@ const b64ToBytes = (dataUrl: string): Uint8Array => {
 export const bodyY = (doc: Document, el: Element, edge: "top" | "bottom"): number =>
   el.getBoundingClientRect()[edge] - doc.body.getBoundingClientRect().top;
 
-/** Page ranges that break only between table rows — a row is never split. */
-export const rowPages = (pageHeightPx: number) => (doc: Document): RasterPage[] => {
+/** Page ranges that break only between block elements matching `selector`, never
+ *  inside one. Each page is at most `pageHeightPx` tall. */
+export const blockPages = (pageHeightPx: number, selector: string) => (doc: Document): RasterPage[] => {
   const total = doc.body.getBoundingClientRect().height;
-  const rowBottoms = [...doc.querySelectorAll("tr")].map((tr) => bodyY(doc, tr, "bottom")).sort((a, b) => a - b);
+  const rowBottoms = [...doc.querySelectorAll(selector)].map((el) => bodyY(doc, el, "bottom")).sort((a, b) => a - b);
   const out: RasterPage[] = [];
   let top = 0;
   while (total - top > 1) {
@@ -48,6 +53,9 @@ export const rowPages = (pageHeightPx: number) => (doc: Document): RasterPage[] 
   }
   return out;
 };
+
+/** Page ranges that break only between table rows — a row is never split. */
+export const rowPages = (pageHeightPx: number) => blockPages(pageHeightPx, "tr");
 
 export async function rasterPdf(html: string, opts: RasterOptions, progress?: (m: string) => void): Promise<Uint8Array> {
   const frame = document.createElement("iframe");
@@ -65,6 +73,11 @@ export async function rasterPdf(html: string, opts: RasterOptions, progress?: (m
     const doc = frame.contentDocument!;
     doc.body.style.margin = "0";
     doc.body.style.padding = "0";
+    const p = opts.padding;
+    if (p && !(opts.skipPaddingIf && doc.querySelector(opts.skipPaddingIf))) {
+      doc.body.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
+      doc.body.style.boxSizing = "border-box";
+    }
     await doc.fonts?.ready;
     // wide content (a sheet wider than the page) is widened, then scaled to fit
     const widthPx = Math.max(opts.widthPx, doc.body.scrollWidth);

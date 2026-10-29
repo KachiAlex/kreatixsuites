@@ -1270,10 +1270,17 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const exportPdfFile = async (progress: (m: string) => void) => {
     const setup = readPageSetup(editor!);
     const [mod, raster] = await Promise.all([import("./export/index"), import("../lib/pdfRaster")]);
-    const pdf = await raster.rasterPdf(mod.pagedHtmlDoc(title, printableHtml(), setup), {
-      widthPx: setup.width,
+    const html = printableHtml();
+    // paginated documents carry their margins and page walls in the DOM; a plain
+    // document is laid out at the text width and paged between block elements
+    const paged = html.includes("rm-page-break");
+    const pdf = await raster.rasterPdf(mod.pagedHtmlDoc(title, html, setup), {
+      widthPx: paged ? setup.width : setup.width - setup.marginLeft - setup.marginRight,
       sheetPt: { w: setup.width * raster.PX_TO_PT, h: setup.height * raster.PX_TO_PT },
-      pagesOf: mod.pageBandsOf,
+      marginPx: paged ? undefined : { x: setup.marginLeft, y: setup.marginTop },
+      pagesOf: paged ? mod.pageBandsOf
+        : raster.blockPages(setup.height - setup.marginTop - setup.marginBottom,
+          "p, h1, h2, h3, h4, h5, h6, li, tr, img, blockquote, pre, hr"),
     }, progress);
     return new Blob([pdf.buffer as ArrayBuffer], { type: "application/pdf" });
   };
