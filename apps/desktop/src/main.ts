@@ -247,6 +247,30 @@ ipcMain.handle("kx:saveFile", async (_e, defaultName: string, dataBase64: string
   }
 });
 
+// Render a standalone print document to PDF with Electron's own engine, then
+// save-as. The print dialog isn't reliable inside the app, so this path skips it.
+ipcMain.handle("kx:printToPdf", async (_e, html: string, defaultName: string) => {
+  if (!mainWindow) return { ok: false, error: "no window" };
+  const tmp = path.join(app.getPath("temp"), `kx-print-${randomBytes(6).toString("hex")}.html`);
+  const win = new BrowserWindow({ show: false, webPreferences: { javascript: false, sandbox: true } });
+  try {
+    fs.writeFileSync(tmp, html, "utf8");
+    await win.loadFile(tmp);
+    const pdf = await win.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true, pageSize: "Letter" });
+    const r = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.basename(defaultName), filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(r.filePath, pdf);
+    return { ok: true, path: r.filePath };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  } finally {
+    win.destroy();
+    fs.promises.rm(tmp, { force: true }).catch(() => {});
+  }
+});
+
 ipcMain.handle("kx:openDialog", async () => {
   if (!mainWindow) return null;
   const r = await dialog.showOpenDialog(mainWindow, {

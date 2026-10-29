@@ -1,9 +1,9 @@
 import type { Editor } from "@tiptap/react";
 import katexCssUrl from "katex/dist/katex.min.css?url";
 import { downloadBlob, baseName, type Json } from "./common";
-import { saveFile } from "../../lib/saveFile";
+import { saveFile, toast } from "../../lib/saveFile";
 import { printHtmlFrame } from "../../lib/printFrame";
-import { isNativeMobile, PUBLIC_ORIGIN } from "../../lib/platform";
+import { desktop, isDesktop, isNativeMobile, PUBLIC_ORIGIN } from "../../lib/platform";
 import { jsonToMarkdown } from "./markdown";
 import { rtfBlob } from "./rtf";
 import { odtBlob } from "./odt";
@@ -129,13 +129,21 @@ export function pageBandsOf(doc: Document): { top: number; height: number }[] {
 }
 
 export function exportPdf(pagedHtml: string, name: string, setup?: PageSetup) {
-  const html = pageShell(name, absolutize(pagedHtml), setup, true)
-    .replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`);
+  const doc = pageShell(name, absolutize(pagedHtml), setup, true);
   if (isNativeMobile) {
-    void saveFile(new Blob([html], { type: "text/html" }), `${baseName(name)}.html`);
+    void saveFile(new Blob([doc], { type: "text/html" }), `${baseName(name)}.html`);
     return;
   }
-  printHtmlFrame(html);
+  // desktop: Electron renders the PDF itself and shows a save dialog — the print
+  // dialog doesn't reliably appear inside the app
+  if (isDesktop && desktop) {
+    void desktop.printToPdf(doc, `${baseName(name)}.pdf`).then((r) => {
+      if (r.ok) toast(`Saved ${baseName(name)}.pdf`);
+      else if (!r.canceled) toast(`Couldn't save PDF${r.error ? `: ${r.error.slice(0, 80)}` : ""}`);
+    });
+    return;
+  }
+  printHtmlFrame(doc.replace("</body>", `<scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),300)}</scr` + `ipt></body>`));
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
