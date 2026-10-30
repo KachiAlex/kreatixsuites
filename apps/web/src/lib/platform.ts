@@ -18,6 +18,10 @@ export interface KxDesktop {
   showInFolder: (path: string) => Promise<void>;
   pendingFiles: () => Promise<string[]>;
   onOpenFile: (cb: (path: string) => void) => () => void;
+  apps: {
+    status: () => Promise<{ configured: boolean; apps: string[] }>;
+    configure: (slugs: string[]) => Promise<{ ok: boolean; error?: string }>;
+  };
   entitlement: {
     get: () => Promise<{ ok: boolean; token?: string }>;
     set: (token: string) => Promise<{ ok: boolean; error?: string }>;
