@@ -124,6 +124,48 @@ const ROLE_LABELS: Record<string, string> = {
 const fmtNgn = (n: number, cur = "₦") =>
   `${cur}${n.toLocaleString("en-NG", { maximumFractionDigits: 0 })}`;
 
+const ADMIN_NAV: { group: string; items: { id: string; label: string; show?: "mail" | "metrics" }[] }[] = [
+  { group: "People", items: [
+    { id: "members", label: "Members" },
+    { id: "mailboxes", label: "Mailboxes", show: "mail" },
+    { id: "domains", label: "Email domains" },
+    { id: "scim", label: "SCIM provisioning" },
+  ] },
+  { group: "Billing", items: [
+    { id: "billing", label: "Subscription" },
+    { id: "payments", label: "Payments" },
+    { id: "ai", label: "AI usage" },
+  ] },
+  { group: "Security", items: [
+    { id: "posture", label: "Security posture" },
+    { id: "policies", label: "Data policies" },
+    { id: "sso", label: "Single sign-on" },
+    { id: "holds", label: "Legal holds & eDiscovery" },
+    { id: "dlp", label: "DLP" },
+    { id: "audit", label: "Audit log" },
+  ] },
+  { group: "Workspace", items: [
+    { id: "health", label: "Health & metrics", show: "metrics" },
+    { id: "branding", label: "Branding" },
+    { id: "api", label: "API & webhooks" },
+    { id: "automations", label: "Automations" },
+  ] },
+];
+
+function useActiveAdminSection(ids: string[], deps: unknown[]) {
+  const [active, setActive] = useState(ids[0]);
+  useEffect(() => {
+    const els = ids.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => !!el);
+    const io = new IntersectionObserver((entries) => {
+      const top = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (top) setActive(top.target.id);
+    }, { rootMargin: "-15% 0px -70% 0px" });
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, deps);
+  return active;
+}
+
 export function Admin() {
   const { msg, toast } = useToast();
   const { user, org } = useAuth();
@@ -204,6 +246,8 @@ export function Admin() {
 
   const isSuper = !!user?.isSuper;
   const isOwnerOrAdmin = user?.role === "owner" || user?.role === "admin";
+  const [navQuery, setNavQuery] = useState("");
+  const activeSection = useActiveAdminSection(ADMIN_NAV.flatMap((g) => g.items.map((i) => i.id)), [metrics, billing, mailConfigured, members.length]);
 
   // per-org enterprise IdP configs (SAML/OIDC) — separate lazy load so the
   // big Promise.all tuple above stays untouched
@@ -782,35 +826,79 @@ export function Admin() {
           .toLowerCase().includes(filter.toLowerCase()))
     : audit;
 
+  const navGroups = ADMIN_NAV
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((i) =>
+        (i.show === "mail" ? mailConfigured : i.show === "metrics" ? !!metrics : true) &&
+        i.label.toLowerCase().includes(navQuery.trim().toLowerCase())),
+    }))
+    .filter((g) => g.items.length);
+  const verifiedDomains = domains.filter((d) => d.status === "verified");
+  const primaryDomain = verifiedDomains.find((d) => d.isPrimary)?.domain ?? null;
+  const roleLabel = ROLE_LABELS[user?.role ?? ""] ?? user?.role;
+  const orgName = org?.brandName || org?.name;
+  const activeMembers = members.filter((m) => !m.disabled).length;
+
   return (
     <div className="admin-page">
       {!isSuper && (
       <>
-      <h1>Administration</h1>
+      <div className="admin-layout">
+        <aside className="admin-side" aria-label="Administration sections">
+          <input
+            className="admin-side-search"
+            type="search"
+            placeholder="Find a setting…"
+            aria-label="Find a setting"
+            value={navQuery}
+            onChange={(e) => setNavQuery(e.target.value)}
+          />
+          {navGroups.map((g) => (
+            <div className="admin-side-group" key={g.group}>
+              <span className="an-group">{g.group}</span>
+              {g.items.map((i) => (
+                <a key={i.id} href={`#${i.id}`} aria-current={activeSection === i.id ? "true" : undefined}>{i.label}</a>
+              ))}
+            </div>
+          ))}
+          {!navGroups.length && <span className="an-empty">No matching settings</span>}
+        </aside>
 
-      <nav className="admin-nav">
-        <span className="an-group">Users</span>
-        <a href="#members">Members</a>
-        {mailConfigured && <a href="#mailboxes">Mailboxes</a>}
-        <a href="#domains">Domains</a>
-        <a href="#scim">SCIM</a>
-        <span className="an-group">Licensing</span>
-        <a href="#billing">Subscription</a>
-        <a href="#payments">Payments</a>
-        <a href="#ai">AI usage</a>
-        <span className="an-group">Security</span>
-        <a href="#posture">Posture</a>
-        <a href="#policies">Policies</a>
-        <a href="#sso">SSO</a>
-        <a href="#holds">Holds &amp; eDiscovery</a>
-        <a href="#dlp">DLP</a>
-        <a href="#audit">Audit</a>
-        <span className="an-group">Org</span>
-        <a href="#health">Health</a>
-        <a href="#branding">Branding</a>
-        <a href="#api">API &amp; webhooks</a>
-        <a href="#automations">Automations</a>
-      </nav>
+        <main className="admin-main">
+          <header className="admin-head">
+            <div>
+              <h1>Administration</h1>
+              <p>Manage people, billing, security and settings{orgName ? ` for ${orgName}` : ""}.</p>
+            </div>
+            <div className="admin-chips">
+              {roleLabel && <span className="admin-chip">{roleLabel}</span>}
+              {billing && <span className="admin-chip accent">{billing.subscription.planName}</span>}
+            </div>
+          </header>
+
+          <div className="admin-kpis">
+            <div className="admin-kpi">
+              <span>Members</span>
+              <b>{members.length}</b>
+              <small>{activeMembers} active</small>
+            </div>
+            <div className="admin-kpi">
+              <span>Mailboxes</span>
+              <b>{mailConfigured ? mailAccounts.length : "—"}</b>
+              <small>{mailConfigured ? "Mail service connected" : "Mail not configured"}</small>
+            </div>
+            <div className="admin-kpi">
+              <span>Verified domains</span>
+              <b>{verifiedDomains.length}</b>
+              <small>{primaryDomain ?? "No primary domain yet"}</small>
+            </div>
+            <div className="admin-kpi">
+              <span>Subscription</span>
+              <b>{billing?.subscription.planName ?? "—"}</b>
+              <small>{billing ? billing.subscription.status : "Loading…"}</small>
+            </div>
+          </div>
 
       <section className="admin-card" id="posture">
         <h2>Security posture</h2>
@@ -2286,6 +2374,8 @@ export function Admin() {
           {auditBusy && <span>Loading…</span>}
         </div>
       </section>
+        </main>
+      </div>
       </>
       )}
 
