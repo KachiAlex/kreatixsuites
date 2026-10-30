@@ -169,8 +169,8 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                   {mxTargets.length === 0
                     ? "No MX record yet — mail won't arrive until you add it."
                     : added.mxOk
-                      ? "✓ Mail already routes to Kreatix."
-                      : <>Mail currently flows to <b>{mxTargets[0]}</b> — it switches to Kreatix when you point MX at <code>mail.kreatixtech.com</code>.</>}
+                      ? "✓ Envora already routes to Kreatix."
+                      : <>Envora currently flows to <b>{mxTargets[0]}</b> — it switches to Kreatix when you point MX at <code>mail.kreatixtech.com</code>.</>}
                 </p>
               )}
               {verifyMsg && <p style={{ fontSize: 12.5, margin: "8px 0 0" }}>{verifyMsg}</p>}
@@ -236,7 +236,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                        : <>Mailboxes will use <code>@kreatixtech.com</code> — add a custom domain anytime in <b>Admin → Email domains</b>.</>}</li>
             <li>{invited > 0 ? <>{invited} invite{invited > 1 ? "s" : ""} sent — teammates join from their email.</>
                              : <>Invite teammates anytime from <b>Admin → Members</b>.</>}</li>
-            <li>Mail is in the left rail — the first visit creates your mailbox automatically.</li>
+            <li>Envora is in the left rail — the first visit creates your mailbox automatically.</li>
             <li>Migrating from Microsoft 365? <b>Admin → Microsoft 365 import</b> pulls every mailbox over.</li>
           </ul>
           <div className="dlg-actions">

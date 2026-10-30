@@ -190,7 +190,7 @@ export function adminRoutes(app: FastifyInstance) {
    *  Mail visit). Returns the address assigned. */
   app.post("/api/admin/members/:id/mailbox", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const target = await one<UserRow>(
       "SELECT id, email, display_name, org_id, disabled FROM users WHERE id = $1 AND org_id = $2",
       [(req.params as { id: string }).id, user.orgId],
@@ -215,7 +215,7 @@ export function adminRoutes(app: FastifyInstance) {
    *  domain. Dry-run unless dry_run is explicitly false. */
   app.post("/api/admin/mail/migrate-domain", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const dryRun = (req.body as { dry_run?: boolean } | undefined)?.dry_run !== false;
     try {
       const plan = await planMailboxMigration(user.orgId);
@@ -232,7 +232,7 @@ export function adminRoutes(app: FastifyInstance) {
   /** Mailboxes on the org's verified domain that no workspace member is linked to. */
   app.get("/api/admin/mailboxes/unassigned", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const domain = await verifiedPrimaryDomain(user.orgId);
     if (!domain) return reply.code(409).send({ error: "domain_required", message: "Verify the company domain first" });
     const all = (await mailAdminUsers()) ?? [];
@@ -246,7 +246,7 @@ export function adminRoutes(app: FastifyInstance) {
   /** Assign an unlinked mailbox to a workspace member. Takes one Mail seat. */
   app.post("/api/admin/mailboxes/:mailUserId/assign", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const mailUserId = Number((req.params as { mailUserId: string }).mailUserId);
     const memberId = String((req.body as { memberId?: string } | undefined)?.memberId ?? "");
     if (!Number.isFinite(mailUserId) || !memberId) return reply.code(400).send({ error: "bad_request", message: "memberId is required" });
@@ -281,7 +281,7 @@ export function adminRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     if (!mailEnabled()) return { mailConfigured: false, accounts: [] };
     const mailUsers = await mailAdminUsers();
-    if (!mailUsers) return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unreachable" });
+    if (!mailUsers) return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unreachable" });
     const members = await dbq<UserRow>(
       "SELECT id, email, display_name, mail_user_id, mail_email FROM users WHERE org_id = $1", [user.orgId]);
     // Tenancy scope: only accounts linked to an org member, or on one of the
@@ -321,7 +321,7 @@ export function adminRoutes(app: FastifyInstance) {
    *  to a suite user; delegation happens on the mail service. */
   app.post("/api/admin/mail-accounts", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const { localPart, domain, displayName } = z.object({
       localPart: z.string().min(1).max(64).regex(/^[a-z0-9._+-]+$/i, "Invalid mailbox name"),
       domain: z.string().min(3).max(200),
@@ -337,7 +337,7 @@ export function adminRoutes(app: FastifyInstance) {
       void logActivity(user.orgId, user.id, null, "admin.mailbox", `Mailbox created: ${address}`);
       return { ok: true, mailUserId: acct.id, address: acct.email };
     } catch (e) {
-      const msg = (e as Error).message === "address_taken" ? "That address is already taken" : "Mail service rejected the mailbox";
+      const msg = (e as Error).message === "address_taken" ? "That address is already taken" : "Envora service rejected the mailbox";
       return reply.code(409).send({ error: "conflict", message: msg });
     }
   });
@@ -346,7 +346,7 @@ export function adminRoutes(app: FastifyInstance) {
    *  mailbox must be linked to an org member or sit on an org domain. */
   app.patch("/api/admin/mail-accounts/:mailUserId", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const mailUserId = Number((req.params as { mailUserId: string }).mailUserId);
     if (!Number.isInteger(mailUserId)) return reply.code(400).send({ error: "bad_request" });
     const { active, quotaBytes } = z.object({
@@ -368,7 +368,7 @@ export function adminRoutes(app: FastifyInstance) {
     if (quotaBytes !== undefined) patch.storage_quota = quotaBytes;
     if (!Object.keys(patch).length) return reply.code(400).send({ error: "bad_request", message: "Nothing to update" });
     const ok = await updateMailbox(mailUserId, patch);
-    if (!ok) return reply.code(502).send({ error: "mail_unavailable", message: "Mail service rejected the change" });
+    if (!ok) return reply.code(502).send({ error: "mail_unavailable", message: "Envora service rejected the change" });
     void logActivity(user.orgId, user.id, null, "admin.mailbox",
       `Mailbox ${mailUserId}: ${active !== undefined ? (active ? "restored" : "suspended") : `quota ${quotaBytes}`}`);
     return { ok: true };
@@ -377,7 +377,7 @@ export function adminRoutes(app: FastifyInstance) {
   /** Bulk-provision mailboxes for every active org member who lacks one. */
   app.post("/api/admin/mail-accounts/provision-all", async (req, reply) => {
     const { user } = req as AuthedRequest;
-    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured on this server" });
     const missing = await dbq<UserRow>(
       "SELECT id, email, display_name, org_id FROM users WHERE org_id = $1 AND mail_user_id IS NULL AND disabled = false",
       [user.orgId]);
@@ -1225,7 +1225,7 @@ async function custodianBundle(orgId: string, custodian: { id: string; email: st
       tasks: tasks.map((t: any) => ({
         title: dec(t.title), status: t.status, dueAt: t.due_at, createdAt: t.created_at,
       })),
-      note: "Binary file content is not inlined — fetch items via /api/files/:id/content with an admin session. Mail lives in the mail service; export mailboxes there separately.",
+      note: "Binary file content is not inlined — fetch items via /api/files/:id/content with an admin session. Envora lives in the mail service; export mailboxes there separately.",
     };
 }
 

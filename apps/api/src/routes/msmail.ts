@@ -253,7 +253,7 @@ export function msMailRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     if (!orgAdmin(req as AuthedRequest, reply)) return;
     if (!inboundSecret()) {
-      return reply.code(503).send({ error: "disabled", message: "Mail inbound endpoint isn't configured" });
+      return reply.code(503).send({ error: "disabled", message: "Envora inbound endpoint isn't configured" });
     }
     void syncMsMailOrg(user.orgId).catch(() => {});
     return { started: true };

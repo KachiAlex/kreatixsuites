@@ -165,7 +165,7 @@ export function Home() {
   const workApps = [
     { cls: "meet", name: "Meet", desc: t("apps.meet.desc"), to: "/meet" },
     { cls: "chat", name: "Chat", desc: t("apps.chat.desc"), to: "/chat" },
-    { cls: "mail", name: "Mail", desc: t("apps.mail.desc"), to: "/mail" },
+    { cls: "mail", name: "Envora", desc: t("apps.mail.desc"), to: "/mail" },
     { cls: "calendar", name: "Calendar", desc: t("apps.calendar.desc"), to: "/calendar" },
     { cls: "tasks", name: "Tasks", desc: t("apps.tasks.desc"), to: "/tasks" },
     { cls: "notes", name: "Notes", desc: t("apps.notes.desc"), to: "/notes" },

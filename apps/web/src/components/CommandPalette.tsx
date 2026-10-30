@@ -96,7 +96,7 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       nav("/notes", "📝", "Notes"),
       nav("/forms", "▤", "Forms"),
       nav("/meet", "▶", "Meet"),
-      nav("/mail", "✉", "Mail"),
+      nav("/mail", "✉", "Envora"),
       nav("/sites", "◈", "Sites"),
       nav("/admin", "⚙", "Admin"),
     ];
@@ -146,7 +146,7 @@ export function CommandPalette({ open, onClose, onTemplates, onUpload, toast }: 
       label: n.title ?? "Page", hint: n.snippet ?? "note",
       run: () => { navigate("/notes"); },
     })), (all?.mails ?? []).map((m) => ({
-      id: `ml:${m.id}`, group: "Mail", iconCls: "mail", icon: "✉",
+      id: `ml:${m.id}`, group: "Envora", iconCls: "mail", icon: "✉",
       label: m.subject, hint: m.from,
       run: () => { navigate("/mail"); },
     })));
