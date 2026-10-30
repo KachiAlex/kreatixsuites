@@ -250,7 +250,7 @@ export function Home() {
           <FileList items={items} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions} toast={toast} />
         </section>
         <section>
-          <div className="section-head"><h2>AI</h2><a onClick={() => void askAi(prompt)} style={{ cursor: "pointer" }}>{t("home.aiExpand")}</a></div>
+          <div className="section-head"><h2>Suite AI</h2><a onClick={() => void askAi(prompt)} style={{ cursor: "pointer" }}>{t("home.aiExpand")}</a></div>
           <div className="ai-panel">
             <div className="ai-head">
               <div className="ai-symbol">✦</div>

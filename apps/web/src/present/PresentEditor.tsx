@@ -967,7 +967,7 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
           end={<>
             <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
               onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
-            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="AI"
+            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Suite AI"
               onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
             <select className="rb-sel" style={{ width: 76 }} value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
               {[0.4, 0.5, 0.6, 0.75, 1, 1.25].map((z) => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}

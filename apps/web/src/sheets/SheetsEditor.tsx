@@ -1601,7 +1601,7 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
             )}
             <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
               onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
-            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="AI"
+            <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Suite AI"
               onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
             <span style={{ fontSize: 10, color: "var(--muted)", whiteSpace: "nowrap" }}>{usedRangeA1(sheet.cells)}</span>
           </>}

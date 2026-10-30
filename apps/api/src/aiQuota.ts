@@ -137,16 +137,16 @@ export async function checkAiQuota(orgId: string, userId: string): Promise<AiChe
   }
   if (!plan.features?.ai) {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
-      message: "AI is not included in this workspace's plan" };
+      message: "Suite AI is not included in this workspace's plan" };
   }
   // org policy kill-switch — admin can disable AI workspace-wide
   if ((await getPolicies(orgId)).aiDisabled) {
     return { allowed: false, http: 403, error: "ai_disabled", quota,
-      message: "AI is disabled by this workspace's admin policy" };
+      message: "Suite AI is disabled by this workspace's admin policy" };
   }
   if (state === "trialing" && (quota.trialRequestsUsed ?? 0) >= limits.trialRequests()) {
     return { allowed: false, http: 402, error: "ai_not_in_plan", quota,
-      message: "Trial AI quota used up — subscribe to keep using AI" };
+      message: "Trial AI quota used up — subscribe to keep using Suite AI" };
   }
   if (!quota.trialRequestsLimit && quota.orgTokensUsed >= quota.orgTokensLimit) {
     return { allowed: false, http: 429, error: "quota_exceeded", quota,

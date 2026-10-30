@@ -945,7 +945,7 @@ export function Admin() {
                 onChange={(e) => patchPolicy({ aiDisabled: e.target.checked })}
               />
               <span>
-                <b>Disable AI for this workspace</b>
+                <b>Disable Suite AI for this workspace</b>
                 <em>All AI requests (chat, workspace ask, completions) are refused immediately — nothing leaves for the provider.</em>
               </span>
             </label>
@@ -1571,7 +1571,7 @@ export function Admin() {
 
       {aiUsage && (
         <section className="admin-card" id="ai-usage">
-          <h2 id="ai">AI usage</h2>
+          <h2 id="ai">Suite AI usage</h2>
           <div className="admin-flags">
             <div className="flag on">
               <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : aiUsage.quota.plan === "free" ? "Free tier AI" : "This month"}</b>
