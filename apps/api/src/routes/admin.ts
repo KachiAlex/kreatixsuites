@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -197,10 +197,16 @@ export function adminRoutes(app: FastifyInstance) {
     );
     if (!target) return reply.code(404).send({ error: "not_found" });
     if (target.disabled) return reply.code(400).send({ error: "bad_request", message: "Member is disabled" });
-    const acct = await provisionMailbox({
-      id: target.id, email: target.email, displayName: target.display_name, orgId: target.org_id,
-    });
-    return { ok: true, address: acct.email };
+    try {
+      const acct = await provisionMailbox({
+        id: target.id, email: target.email, displayName: target.display_name, orgId: target.org_id,
+      });
+      return { ok: true, address: acct.email };
+    } catch (e) {
+      if (e instanceof MailDomainRequiredError)
+        return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before provisioning mailboxes" });
+      throw e;
+    }
   });
 
   /** Mail admin view — every mailbox on the mail service joined to org

@@ -8,7 +8,7 @@ import { openMail } from "../lib/openApp";
 // mount and shows a manual button when the browser blocked the window.
 
 export function Mail() {
-  const [state, setState] = useState<"opening" | "blocked" | "unavailable">("opening");
+  const [state, setState] = useState<"opening" | "blocked" | "unavailable" | "domain">("opening");
   const fired = useRef(false);
 
   useEffect(() => {
@@ -19,8 +19,8 @@ export function Mail() {
     }).catch(() => setState("unavailable"));
     // the SSO endpoint can still 503 server-side — cheap probe so the card
     // can say so instead of silently landing on an error page
-    api.get<{ enabled?: boolean }>("/api/mail/status").then((s) => {
-      if (!s?.enabled) setState("unavailable");
+    api.get<{ enabled?: boolean; reason?: string }>("/api/mail/status").then((s) => {
+      if (!s?.enabled) setState(s?.reason === "domain_required" ? "domain" : "unavailable");
     }).catch(() => {});
   }, []);
 
@@ -40,6 +40,9 @@ export function Mail() {
               Open Kreatix Mail
             </button>
           </>
+        )}
+        {state === "domain" && (
+          <p className="d-sub">Mail needs your company domain. Ask your workspace admin to verify it under Admin → Domains.</p>
         )}
         {state === "unavailable" && (
           <p className="d-sub">Mail isn't configured for this workspace yet — ask your admin.</p>

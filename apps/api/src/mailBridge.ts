@@ -80,11 +80,22 @@ async function claimOwnMailbox(
   return { id: match.id, email: match.email };
 }
 
-/** The org's verified primary domain, or the platform default. */
+/** Thrown when a business workspace has no verified primary domain yet — its
+ *  mailbox must be on the company's own domain, never the platform's. */
+export class MailDomainRequiredError extends Error {
+  constructor() { super("A verified company domain is required before Mail can be used"); }
+}
+
+/** The org's verified primary domain. Personal workspaces use the platform
+ *  domain; business workspaces must verify a domain first. */
 async function mailDomainForOrg(orgId: string): Promise<string> {
-  const row = await one<{ domain: string }>(
-    "SELECT domain FROM org_domains WHERE org_id = $1 AND is_primary AND status = 'verified'", [orgId]);
-  return row?.domain ?? FALLBACK_DOMAIN();
+  const row = await one<{ domain: string | null; kind: string }>(
+    `SELECT d.domain, o.kind FROM orgs o
+       LEFT JOIN org_domains d ON d.org_id = o.id AND d.is_primary AND d.status = 'verified'
+      WHERE o.id = $1`, [orgId]);
+  if (row?.domain) return row.domain;
+  if (row?.kind === "personal") return FALLBACK_DOMAIN();
+  throw new MailDomainRequiredError();
 }
 
 /** DNS checks for the domain panel + cutover wizard: verification TXT,
@@ -254,8 +265,13 @@ export async function mailSsoUrl(
 
 export async function mailStatus(user: { id: string; email: string; displayName: string; orgId: string }) {
   if (!mailEnabled()) return { enabled: false as const };
-  const acct = await ensureMailAccount(user);
-  return { enabled: true as const, address: acct.email };
+  try {
+    const acct = await ensureMailAccount(user);
+    return { enabled: true as const, address: acct.email };
+  } catch (e) {
+    if (e instanceof MailDomainRequiredError) return { enabled: false as const, reason: "domain_required" as const };
+    throw e;
+  }
 }
 
 /** Admin-forced provisioning — same lazy path a member's first Mail visit
