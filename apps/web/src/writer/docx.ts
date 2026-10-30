@@ -116,11 +116,17 @@ function runsFor(n: Inline, inherited: Mark[]): Run[] {
     const src = (n.attrs?.src as string) ?? "";
     const data = imgCache.get(src);
     if (!data) return [new TextRun({ text: "[image]" })];
+    const nat = imgNatural.get(src);
+    const setW = Number(n.attrs?.width) || 0;
+    const setH = Number(n.attrs?.height) || 0;
+    let w = setW || (nat ? Math.min(nat.w, 600) : 400);
+    let h = setH || (nat ? Math.round(w * (nat.h / nat.w)) : 300);
+    if (w > 600) { h = Math.round(h * (600 / w)); w = 600; }
     try {
       return [new ImageRun({
         type: src.startsWith("data:image/png") ? "png" : src.startsWith("data:image/jpeg") || src.startsWith("data:image/jpg") ? "jpg" : src.startsWith("data:image/gif") ? "gif" : "png",
         data,
-        transformation: { width: Math.min(600, Number(n.attrs?.width) || 400), height: 300 },
+        transformation: { width: w, height: h },
         altText: { name: (n.attrs?.alt as string) ?? "image", title: (n.attrs?.alt as string) ?? "image", description: (n.attrs?.alt as string) ?? "" },
       })];
     } catch {
@@ -219,23 +225,33 @@ function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Paragr
 }
 
 const imgCache = new Map<string, Uint8Array>();
+const imgNatural = new Map<string, { w: number; h: number }>();
 
-/** Pre-fetch image bytes so they can be embedded in the docx. */
+/** Pre-fetch image bytes so they can be embedded in the docx, and record each
+ *  picture's natural size so the exported frame keeps its proportions. */
 async function prefetchImages(doc: Block): Promise<void> {
   imgCache.clear();
+  imgNatural.clear();
   const jobs: Promise<void>[] = [];
   const collect = (n: Block | Inline) => {
     if (n.type === "image" && n.attrs?.src) {
       const src = n.attrs.src as string;
       jobs.push((async () => {
         try {
+          let bytes: Uint8Array | null = null;
           if (src.startsWith("data:")) {
             const b64 = src.split(",")[1] ?? "";
-            imgCache.set(src, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+            bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
           } else {
             const res = await fetch(src);
-            if (res.ok) imgCache.set(src, new Uint8Array(await res.arrayBuffer()));
+            if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
           }
+          if (!bytes) return;
+          imgCache.set(src, bytes);
+          const mime = src.startsWith("data:") ? src.slice(5, src.indexOf(";")) : "image/png";
+          const bmp = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
+          imgNatural.set(src, { w: bmp.width, h: bmp.height });
+          bmp.close();
         } catch { /* placeholder */ }
       })());
     }
