@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { isDesktop, isNativeMobile } from "./platform";
+import { desktop, desktopApp, isDesktop, isNativeMobile } from "./platform";
 
 /** Web opens each app in its own tab; the desktop and mobile shells have no
  *  tabs, so they navigate in place. */
@@ -12,6 +12,12 @@ export const appInNewTab = !(isDesktop || isNativeMobile);
 export async function openMail(): Promise<boolean> {
   if (appInNewTab) return !!window.open("/api/mail/sso", "_blank", "noopener");
   const { url } = await api.get<{ url: string }>("/api/mail/sso-url");
+  if (isDesktop) {
+    const r = await desktop!.mail.open(url);
+    if (!r.ok) return false;
+    if (desktopApp === "mail") await desktop!.closeWindow();
+    return true;
+  }
   window.open(url, "_blank", "noopener");
   return true;
 }

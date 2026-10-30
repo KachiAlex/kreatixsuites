@@ -37,6 +37,12 @@ contextBridge.exposeInMainWorld("kxDesktop", {
     return () => ipcRenderer.off("kx:open-file", l);
   },
 
+  // Kreatavi — opens the signed Mail hand-off in its own window
+  mail: {
+    open: (url: string) => invoke<{ ok: boolean; error?: string }>("kx:mail:open", url),
+  },
+  closeWindow: () => invoke<void>("kx:window:close"),
+
   // subscription entitlement (DPAPI-encrypted store in userData)
   entitlement: {
     get: () => invoke<{ ok: boolean; token?: string }>("kx:entitlement:get"),

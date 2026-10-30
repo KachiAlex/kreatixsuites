@@ -204,6 +204,54 @@ const openAppWindow = (key: string): AppWindow => {
 
 ipcMain.handle("kx:apiBase", () => API_BASE);
 
+// Kreatavi (Mail) is its own window with its own sign-in storage, like Outlook.
+// The suite fetches the signed hand-off URL; the main process only opens URLs
+// on the Mail origin and sends everything else to the system browser.
+const MAIL_ORIGIN = "https://mail.kreatixtech.com";
+let mailWindow: BrowserWindow | null = null;
+ipcMain.handle("kx:mail:open", (_e, url: string) => {
+  if (typeof url !== "string" || !url.startsWith(`${MAIL_ORIGIN}/`)) return { ok: false, error: "untrusted address" };
+  if (mailWindow && !mailWindow.isDestroyed()) {
+    if (mailWindow.isMinimized()) mailWindow.restore();
+    mailWindow.focus();
+    void mailWindow.loadURL(url);
+    return { ok: true };
+  }
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 900,
+    minHeight: 600,
+    title: "Kreatavi",
+    autoHideMenuBar: true,
+    icon: path.join(webDist, "icon-512.png"),
+    webPreferences: { partition: "persist:kreatavi", contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true },
+  });
+  mailWindow = win;
+  win.setMenuBarVisibility(false);
+  if (process.platform === "win32") {
+    win.setAppDetails({
+      appId: "com.kreatixtech.suites.mail",
+      relaunchCommand: `"${process.execPath}" ${APP_FLAG}mail`,
+      relaunchDisplayName: "Kreatavi",
+    });
+  }
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (target.startsWith(MAIL_ORIGIN)) return { action: "allow" };
+    if (target.startsWith("https:") || target.startsWith("http:")) void shell.openExternal(target);
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (e, target) => {
+    if (target.startsWith(MAIL_ORIGIN)) return;
+    e.preventDefault();
+    if (target.startsWith("https:") || target.startsWith("http:")) void shell.openExternal(target);
+  });
+  win.on("closed", () => { if (mailWindow === win) mailWindow = null; });
+  void win.loadURL(url);
+  return { ok: true };
+});
+ipcMain.handle("kx:window:close", (e) => { BrowserWindow.fromWebContents(e.sender)?.close(); });
+
 // ---------- Google sign-in (system browser + PKCE + loopback) ----------
 // The app can't host Google's consent in the embedded window, so we open the
 // user's default browser, catch the redirect on a throwaway 127.0.0.1
