@@ -105,6 +105,7 @@ const slugFromArgv = (argv: string[]) => {
 const fileArgs = (argv: string[]) =>
   argv.filter((a) => {
     if (a.startsWith("-") || a.startsWith(`${SCHEME}:`)) return false;
+    if (a.toLowerCase().endsWith(".exe") || a === process.execPath) return false;
     try { return fs.statSync(a).isFile(); } catch { return false; }
   });
 
@@ -403,7 +404,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", (_e, argv) => {
-    const files = fileArgs(argv);
+    const files = fileArgs(argv.slice(1));
     if (files.length) { for (const f of files) deliverFile(f); return; }
     const entry = appWindows.get(slugFromArgv(argv)) ?? openAppWindow(slugFromArgv(argv));
     if (entry.win.isMinimized()) entry.win.restore();
