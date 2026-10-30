@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, MailSeatLimitError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -203,6 +203,8 @@ export function adminRoutes(app: FastifyInstance) {
       });
       return { ok: true, address: acct.email };
     } catch (e) {
+      if (e instanceof MailSeatLimitError)
+        return reply.code(409).send({ error: "seat_limit", message: "No Mail seats left — add a seat first" });
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before provisioning mailboxes" });
       throw e;
@@ -225,6 +227,50 @@ export function adminRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before moving mailboxes" });
       throw e;
     }
+  });
+
+  /** Mailboxes on the org's verified domain that no workspace member is linked to. */
+  app.get("/api/admin/mailboxes/unassigned", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const domain = await verifiedPrimaryDomain(user.orgId);
+    if (!domain) return reply.code(409).send({ error: "domain_required", message: "Verify the company domain first" });
+    const all = (await mailAdminUsers()) ?? [];
+    const linked = new Set((await dbq<{ mail_user_id: number }>("SELECT mail_user_id FROM users WHERE mail_user_id IS NOT NULL")).map((r) => Number(r.mail_user_id)));
+    const mailboxes = all
+      .filter((m) => m.email.toLowerCase().endsWith(`@${domain.toLowerCase()}`) && !linked.has(m.id))
+      .map((m) => ({ id: m.id, email: m.email, displayName: m.display_name, isActive: !!m.is_active }));
+    return { domain, mailboxes };
+  });
+
+  /** Assign an unlinked mailbox to a workspace member. Takes one Mail seat. */
+  app.post("/api/admin/mailboxes/:mailUserId/assign", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const mailUserId = Number((req.params as { mailUserId: string }).mailUserId);
+    const memberId = String((req.body as { memberId?: string } | undefined)?.memberId ?? "");
+    if (!Number.isFinite(mailUserId) || !memberId) return reply.code(400).send({ error: "bad_request", message: "memberId is required" });
+    const domain = await verifiedPrimaryDomain(user.orgId);
+    if (!domain) return reply.code(409).send({ error: "domain_required", message: "Verify the company domain first" });
+    const mailbox = ((await mailAdminUsers()) ?? []).find((m) => m.id === mailUserId);
+    if (!mailbox || !mailbox.email.toLowerCase().endsWith(`@${domain.toLowerCase()}`))
+      return reply.code(404).send({ error: "not_found", message: "Mailbox not found on this domain" });
+    if (await one<{ id: string }>("SELECT id FROM users WHERE mail_user_id = $1", [mailUserId]))
+      return reply.code(409).send({ error: "mailbox_taken", message: "This mailbox is already assigned" });
+    const member = await one<{ id: string; mail_user_id: number | null; disabled: boolean }>(
+      "SELECT id, mail_user_id, disabled FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+    if (!member) return reply.code(404).send({ error: "not_found", message: "Member not found" });
+    if (member.disabled) return reply.code(400).send({ error: "bad_request", message: "Member is disabled" });
+    if (member.mail_user_id) return reply.code(409).send({ error: "member_has_mailbox", message: "Member already has a mailbox" });
+    try {
+      await grantSeatWithinCap(user.orgId, memberId, "mail", user.id);
+    } catch (e) {
+      if ((e as { status?: number })?.status === 409)
+        return reply.code(409).send({ error: "seat_limit", message: (e as { message: string }).message });
+      throw e;
+    }
+    await run("UPDATE users SET mail_user_id = $2, mail_email = $3 WHERE id = $1", [memberId, mailUserId, mailbox.email]);
+    return { ok: true, address: mailbox.email };
   });
 
   /** Mail admin view — every mailbox on the mail service joined to org

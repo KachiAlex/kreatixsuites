@@ -7,6 +7,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { resolveTxt, resolveMx } from "node:dns/promises";
 import { one, q, run } from "./db.js";
+import { grantSeatWithinCap, hasSeatGrant, releaseSeat } from "./appLicenses.js";
 
 const MAIL_BASE = () => (process.env.KREATIX_MAIL_BASE ?? "").replace(/\/+$/, "");
 const FALLBACK_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.com";
@@ -84,6 +85,16 @@ async function claimOwnMailbox(
  *  mailbox must be on the company's own domain, never the platform's. */
 export class MailDomainRequiredError extends Error {
   constructor() { super("A verified company domain is required before Mail can be used"); }
+}
+
+/** Thrown when creating a mailbox would exceed the org's purchased Mail seats. */
+export class MailSeatLimitError extends Error {}
+
+/** The org's verified primary domain, or null when none is verified. */
+export async function verifiedPrimaryDomain(orgId: string): Promise<string | null> {
+  const row = await one<{ domain: string }>(
+    "SELECT domain FROM org_domains WHERE org_id = $1 AND is_primary AND status = 'verified'", [orgId]);
+  return row?.domain ?? null;
 }
 
 /** The org's verified primary domain. Personal workspaces use the platform
@@ -176,6 +187,25 @@ async function ensureMailAccount(user: { id: string; email: string; displayName:
     return { id: row.mail_user_id, email: row.mail_email };
 
   const domain = await mailDomainForOrg(user.orgId);
+  // a new mailbox consumes one Mail seat, like a license assignment; the seat is
+  // returned if the mailbox can't be created
+  const hadSeat = await hasSeatGrant(user.id, "mail");
+  await grantSeatWithinCap(user.orgId, user.id, "mail", user.id).catch((e: { status?: number; message?: string }) => {
+    if (e?.status === 409) throw new MailSeatLimitError(e.message);
+    throw e;
+  });
+  try {
+    return await createMailboxFor(user, domain);
+  } catch (e) {
+    if (!hadSeat) await releaseSeat(user.id, "mail").catch(() => {});
+    throw e;
+  }
+}
+
+async function createMailboxFor(
+  user: { id: string; email: string; displayName: string; orgId: string },
+  domain: string,
+): Promise<MailAccount> {
   const base = localpart(user.email, user.id);
   const password = randomBytes(24).toString("hex"); // SSO bridge — never used for login
   for (let i = 0; i < 8; i++) {
@@ -315,6 +345,7 @@ export async function mailStatus(user: { id: string; email: string; displayName:
     return { enabled: true as const, address: acct.email };
   } catch (e) {
     if (e instanceof MailDomainRequiredError) return { enabled: false as const, reason: "domain_required" as const };
+    if (e instanceof MailSeatLimitError) return { enabled: false as const, reason: "seat_limit" as const };
     throw e;
   }
 }
