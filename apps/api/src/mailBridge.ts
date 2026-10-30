@@ -6,7 +6,7 @@
 // to enable; otherwise every route reports {enabled:false}.
 import { createHmac, randomBytes } from "node:crypto";
 import { resolveTxt, resolveMx } from "node:dns/promises";
-import { one, run } from "./db.js";
+import { one, q, run } from "./db.js";
 
 const MAIL_BASE = () => (process.env.KREATIX_MAIL_BASE ?? "").replace(/\/+$/, "");
 const FALLBACK_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.com";
@@ -120,6 +120,51 @@ export async function checkDomainDns(domain: string, verifyToken: string) {
     dmarcOk = records.some((chunks) => chunks.join("").trim().startsWith("v=DMARC1"));
   } catch { /* no DMARC */ }
   return { txtOk, mxOk, mxTargets, spfOk, dmarcOk };
+}
+
+export interface MailboxMove { userId: string; mailUserId: number; from: string; to: string }
+
+/** Plan moving existing platform-domain mailboxes onto the org's verified domain.
+ *  Read-only — nothing changes until applyMailboxMigration runs. */
+export async function planMailboxMigration(orgId: string): Promise<{ domain: string; moves: MailboxMove[] }> {
+  const dom = await one<{ domain: string }>(
+    "SELECT domain FROM org_domains WHERE org_id = $1 AND is_primary AND status = 'verified'", [orgId]);
+  if (!dom) throw new MailDomainRequiredError();
+  const rows = await q<{ id: string; mail_user_id: number; mail_email: string }>(
+    `SELECT id, mail_user_id, mail_email FROM users
+      WHERE org_id = $1 AND NOT disabled AND mail_user_id IS NOT NULL AND mail_email IS NOT NULL`, [orgId]);
+  const moves: MailboxMove[] = [];
+  for (const r of rows) {
+    if (r.mail_email.toLowerCase().endsWith(`@${dom.domain.toLowerCase()}`)) continue;
+    const local = r.mail_email.split("@")[0].replace(/\+[0-9a-f]{4}$/, "");
+    moves.push({ userId: r.id, mailUserId: r.mail_user_id, from: r.mail_email, to: `${local}@${dom.domain}` });
+  }
+  return { domain: dom.domain, moves };
+}
+
+/** Switch each planned mailbox to its new address on the mail service (the old
+ *  address keeps receiving mail there) and record it on the suite user. */
+export async function applyMailboxMigration(orgId: string, moves: MailboxMove[]) {
+  const results: { userId: string; from: string; to?: string; error?: string }[] = [];
+  for (const m of moves) {
+    let done: string | null = null;
+    let lastError = "";
+    for (const candidate of [m.to, ...[0, 1, 2].map((i) => `${m.to.split("@")[0]}+${randomBytes(2).toString("hex")}@${m.to.split("@")[1]}`)]) {
+      const res = await fetch(`${MAIL_BASE()}/api/admin/users/${m.mailUserId}/primary-address`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+        body: JSON.stringify({ new_email: candidate }),
+      });
+      if (res.ok) { done = candidate; break; }
+      lastError = `mail service ${res.status}`;
+      if (res.status !== 409) break;
+    }
+    if (done) {
+      await run("UPDATE users SET mail_email = $2 WHERE id = $1", [m.userId, done]);
+      results.push({ userId: m.userId, from: m.from, to: done });
+    } else results.push({ userId: m.userId, from: m.from, error: lastError });
+  }
+  return results;
 }
 
 /** Lazily create the user's mailbox through the mail admin API and remember

@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -205,6 +205,24 @@ export function adminRoutes(app: FastifyInstance) {
     } catch (e) {
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before provisioning mailboxes" });
+      throw e;
+    }
+  });
+
+  /** Move the org's existing platform-domain mailboxes onto its verified company
+   *  domain. Dry-run unless dry_run is explicitly false. */
+  app.post("/api/admin/mail/migrate-domain", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Mail is not configured on this server" });
+    const dryRun = (req.body as { dry_run?: boolean } | undefined)?.dry_run !== false;
+    try {
+      const plan = await planMailboxMigration(user.orgId);
+      if (dryRun) return { dryRun: true, domain: plan.domain, moves: plan.moves };
+      const results = await applyMailboxMigration(user.orgId, plan.moves);
+      return { dryRun: false, domain: plan.domain, results };
+    } catch (e) {
+      if (e instanceof MailDomainRequiredError)
+        return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before moving mailboxes" });
       throw e;
     }
   });
