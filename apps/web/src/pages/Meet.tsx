@@ -144,8 +144,8 @@ export function Meet() {
             !["recording", "security", "mute-everyone", "mute-video-everyone"].includes(b)),
         },
         interfaceConfigOverwrite: {
-          APP_NAME: "Kreatix Meet",
-          PROVIDER_NAME: "Kreatix Meet",
+          APP_NAME: "Meet",
+          PROVIDER_NAME: "Meet",
           SHOW_JITSI_WATERMARK: false,
           SHOW_WATERMARK_FOR_GUESTS: false,
           SHOW_BRAND_WATERMARK: false,
@@ -354,7 +354,7 @@ export function Meet() {
   if (!enabled) return (
     <>
       <div className="crumbs"><b>Meet</b></div>
-      <div className="panel"><div className="empty">Kreatix Meet isn't configured on this server.</div></div>
+      <div className="panel"><div className="empty">Meet isn't configured on this server.</div></div>
     </>
   );
 

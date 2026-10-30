@@ -75,12 +75,12 @@ export function mailRoutes(app: FastifyInstance) {
       return reply.redirect(url);
     } catch (e) {
       if (e instanceof MailDomainRequiredError) {
-        return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatix Mail</title>
+        return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Mail</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
 <div><h2>Mail needs a company domain</h2><p>Your workspace hasn't verified its company domain yet, so Mail can't create a mailbox on it. Ask your workspace admin to verify the domain under Admin → Domains, then open Mail again.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
       }
       if (e instanceof MailPersonalWorkspaceError) {
-        return reply.code(403).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatix Mail</title>
+        return reply.code(403).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Mail</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
 <div><h2>Mail is for business workspaces</h2><p>Personal accounts keep using their own email address. Mail is available when your workspace is a business workspace.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
       }
@@ -100,7 +100,7 @@ export function mailRoutes(app: FastifyInstance) {
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Ask your workspace admin to verify your company domain before using Mail" });
       if (e instanceof MailPersonalWorkspaceError)
-        return reply.code(403).send({ error: "personal_workspace", message: "Kreatix Mail is available for business workspaces" });
+        return reply.code(403).send({ error: "personal_workspace", message: "Mail is available for business workspaces" });
       return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
     }
   });

@@ -154,18 +154,18 @@ export function Home() {
   };
 
   const apps = [
-    { cls: "writer", name: "Kreatix Writer", desc: t("apps.writer.desc"), kind: "writer" },
-    { cls: "sheets", name: "Kreatix Sheets", desc: t("apps.sheets.desc"), kind: "sheets" },
-    { cls: "present", name: "Kreatix Present", desc: t("apps.present.desc"), kind: "present" },
-    { cls: "pdf", name: "Kreatix PDF", desc: t("apps.pdf.desc"), kind: "pdf" },
-    { cls: "board", name: "Kreatix Board", desc: t("apps.board.desc"), kind: "board" },
+    { cls: "writer", name: "Writer", desc: t("apps.writer.desc"), kind: "writer" },
+    { cls: "sheets", name: "Sheets", desc: t("apps.sheets.desc"), kind: "sheets" },
+    { cls: "present", name: "Present", desc: t("apps.present.desc"), kind: "present" },
+    { cls: "pdf", name: "PDF", desc: t("apps.pdf.desc"), kind: "pdf" },
+    { cls: "board", name: "Board", desc: t("apps.board.desc"), kind: "board" },
   ];
 
   // Workspace surfaces — navigation tiles (open the app, don't create a file)
   const workApps = [
-    { cls: "meet", name: "Kreatix Meet", desc: t("apps.meet.desc"), to: "/meet" },
-    { cls: "chat", name: "Kreatix Chat", desc: t("apps.chat.desc"), to: "/chat" },
-    { cls: "mail", name: "Kreatix Mail", desc: t("apps.mail.desc"), to: "/mail" },
+    { cls: "meet", name: "Meet", desc: t("apps.meet.desc"), to: "/meet" },
+    { cls: "chat", name: "Chat", desc: t("apps.chat.desc"), to: "/chat" },
+    { cls: "mail", name: "Mail", desc: t("apps.mail.desc"), to: "/mail" },
     { cls: "calendar", name: "Calendar", desc: t("apps.calendar.desc"), to: "/calendar" },
     { cls: "tasks", name: "Tasks", desc: t("apps.tasks.desc"), to: "/tasks" },
     { cls: "notes", name: "Notes", desc: t("apps.notes.desc"), to: "/notes" },
@@ -250,7 +250,7 @@ export function Home() {
           <FileList items={items} onOpen={open} onRefresh={refresh} onShare={setSharing} onVersions={setVersions} toast={toast} />
         </section>
         <section>
-          <div className="section-head"><h2>Kreatix AI</h2><a onClick={() => void askAi(prompt)} style={{ cursor: "pointer" }}>{t("home.aiExpand")}</a></div>
+          <div className="section-head"><h2>AI</h2><a onClick={() => void askAi(prompt)} style={{ cursor: "pointer" }}>{t("home.aiExpand")}</a></div>
           <div className="ai-panel">
             <div className="ai-head">
               <div className="ai-symbol">✦</div>

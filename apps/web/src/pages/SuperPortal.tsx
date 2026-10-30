@@ -1410,7 +1410,7 @@ function CfgField({ label, hint, unit, unitAfter, full, children }: {
 
 /** Workspace management drawer — plan tier, AI budget override, trial extension, cancel. */
 const FEATURE_KEYS: [string, string][] = [
-  ["ai", "Kreatix AI"],
+  ["ai", "AI"],
   ["export", "All export formats"],
   ["pdf_sign", "PDF signature"],
   ["pdf_edit", "PDF text/object editing"],

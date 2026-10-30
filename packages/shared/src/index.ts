@@ -483,11 +483,11 @@ export const FILE_KINDS: FileKind[] = ["writer", "sheets", "present", "pdf", "bo
 
 export const KIND_LABELS: Record<FileKind, string> = {
   folder: "Folder",
-  writer: "Kreatix Writer",
-  sheets: "Kreatix Sheets",
-  present: "Kreatix Present",
-  pdf: "Kreatix PDF",
-  board: "Kreatix Board",
+  writer: "Writer",
+  sheets: "Sheets",
+  present: "Present",
+  pdf: "PDF",
+  board: "Board",
   file: "File",
 };
 

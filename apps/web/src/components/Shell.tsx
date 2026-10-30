@@ -471,10 +471,10 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
         </button>
         {menuOpen && (
           <div className="create-menu">
-            {appEnabled(user?.disabledApps, "writer") && <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Kreatix Writer</button>}
-            {appEnabled(user?.disabledApps, "sheets") && <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Kreatix Sheets</button>}
-            {appEnabled(user?.disabledApps, "present") && <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Kreatix Present</button>}
-            {appEnabled(user?.disabledApps, "board") && <button onClick={() => createFile("board")}><span className="cm-ico board"><AppIcon kind="board" /></span>Kreatix Board</button>}
+            {appEnabled(user?.disabledApps, "writer") && <button onClick={() => createFile("writer")}><span className="cm-ico writer"><AppIcon kind="writer" /></span>Writer</button>}
+            {appEnabled(user?.disabledApps, "sheets") && <button onClick={() => createFile("sheets")}><span className="cm-ico sheets"><AppIcon kind="sheets" /></span>Sheets</button>}
+            {appEnabled(user?.disabledApps, "present") && <button onClick={() => createFile("present")}><span className="cm-ico present"><AppIcon kind="present" /></span>Present</button>}
+            {appEnabled(user?.disabledApps, "board") && <button onClick={() => createFile("board")}><span className="cm-ico board"><AppIcon kind="board" /></span>Board</button>}
             <hr />
             <button onClick={() => createFile("folder")}><span className="cm-ico folder-ico"><AppIcon kind="folder" /></span>{t("nav.newFolder")}</button>
             <button onClick={openFromComputer}><span className="cm-ico file-ico"><AppIcon kind="file" /></span>{t("nav.openFile")}</button>

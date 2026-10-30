@@ -114,7 +114,7 @@ export function jsonToRtf(doc: Block, title: string): string {
   };
 
   const body = (doc.content ?? []).map((n) => blockRtf(n as Block)).join("\n");
-  return `{\\rtf1\\ansi\\deff0{\\fonttbl${fontTable}}{\\colortbl;${colorTable}}{\\info{\\title ${escRtf(title)}}{\\author Kreatix Writer}}\\fs28\n${body}\n}`;
+  return `{\\rtf1\\ansi\\deff0{\\fonttbl${fontTable}}{\\colortbl;${colorTable}}{\\info{\\title ${escRtf(title)}}{\\author Writer}}\\fs28\n${body}\n}`;
 }
 
 export function rtfBlob(doc: Json, title: string): Blob {

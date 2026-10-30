@@ -86,7 +86,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
                 <button className="rb" disabled={!!busy} onClick={() => void go(f, "download")}
                   title={`Download ${f.label}`}>⤓ Download</button>
                 <button className="rb" disabled={!!busy} onClick={() => void go(f, "drive")}
-                  title="Upload a copy into Kreatix Drive">⤴ Drive</button>
+                  title="Upload a copy into Drive">⤴ Drive</button>
               </>}
               {f.action &&
                 <button className="rb" disabled={!!busy} onClick={() => void go(f, "action")}>{f.action.label}</button>}

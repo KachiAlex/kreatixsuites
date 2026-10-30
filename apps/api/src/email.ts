@@ -260,7 +260,7 @@ ${btn(publicUrl(), "Open Kreatix Suites")}
 <table style="font-size:14px;border-collapse:collapse;margin:8px 0">
 <tr><td style="padding:4px 16px 4px 0;color:#8a8a90">When</td><td><b>${esc(when)}</b></td></tr>
 ${location ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Where</td><td><b>${esc(location)}</b></td></tr>` : ""}
-${meet ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Call</td><td><b>Kreatix Meet</b> — join from the event</td></tr>` : ""}
+${meet ? `<tr><td style="padding:4px 16px 4px 0;color:#8a8a90">Call</td><td><b>Meet</b> — join from the event</td></tr>` : ""}
 </table>
 ${cancelled ? `<p>This event has been removed from your calendar. Open the attached file to clear it in external calendars.</p>` : `<p>The attached <code>.ics</code> file adds this to Outlook/Apple/Google calendars — your Kreatix calendar already has it.</p>`}
 ${!cancelled && rsvp ? `<p style="margin:18px 0 4px">Respond:

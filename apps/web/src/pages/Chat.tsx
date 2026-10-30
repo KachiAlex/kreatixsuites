@@ -566,7 +566,7 @@ export function Chat() {
               <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
                 title="Pinned messages" onClick={() => void openPins()}>📌</button>
               <button className="btn-ghost btn-sm" disabled={sumBusy || !messages.length}
-                title="Summarize the loaded conversation with Kreatix AI"
+                title="Summarize the loaded conversation with AI"
                 onClick={() => void summarize()}>{sumBusy ? "Summarizing…" : "✨ Summary"}</button>
             </div>
             {pinsOpen && (

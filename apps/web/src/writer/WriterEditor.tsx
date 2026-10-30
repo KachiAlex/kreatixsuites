@@ -1946,7 +1946,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       { divider: true },
       { label: "Comments", checked: panel === "comments", onClick: () => setPanel(panel === "comments" || gate("writer_comments", "Comments") ? "none" : "comments") },
       ...(canMutate ? [
-        { label: "Kreatix AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
+        { label: "AI", checked: panel === "ai", onClick: () => setPanel(panel === "ai" ? "none" : "ai") },
         { divider: true } as MenuItem,
         { label: "Review suggestions", checked: panel === "suggest", onClick: () => setPanel(panel === "suggest" ? "none" : "suggest") },
       ] : []),

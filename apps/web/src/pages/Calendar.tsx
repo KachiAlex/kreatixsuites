@@ -523,7 +523,7 @@ export function Calendar() {
               </label>
             </div>
             {meetOn && !editing?.meetingId && (
-              <label className="cal-check"><input type="checkbox" checked={fMeet} onChange={(e) => setFMeet(e.target.checked)} /> Add a Kreatix Meet call</label>
+              <label className="cal-check"><input type="checkbox" checked={fMeet} onChange={(e) => setFMeet(e.target.checked)} /> Add a Meet call</label>
             )}
             {people.length > 0 && (
               <div className="chat-people" style={{ marginTop: 8 }}>

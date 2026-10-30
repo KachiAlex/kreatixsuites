@@ -14,7 +14,7 @@ import { listConflicts, resolveConflict, type ConflictEntry } from "../lib/offli
 const TITLES: Record<string, string> = {
   recent: "Recent",
   starred: "Starred",
-  all: "Kreatix Drive",
+  all: "Drive",
   shared: "Shared with me",
   approvals: "Pending approvals",
   trash: "Recycle bin",
@@ -36,7 +36,7 @@ export function Drive() {
     <>
       <div className="crumbs">
         <Link to="/home">Home</Link> <span>/</span>
-        {folderId ? <><Link to="/drive/all">Kreatix Drive</Link> <span>/</span> <b>Folder</b></> : <b>{TITLES[view] ?? view}</b>}
+        {folderId ? <><Link to="/drive/all">Drive</Link> <span>/</span> <b>Folder</b></> : <b>{TITLES[view] ?? view}</b>}
       </div>
       <div className="section-head" style={{ marginTop: 0 }}>
         <h2>{folderId ? "Folder" : TITLES[view] ?? view}</h2>

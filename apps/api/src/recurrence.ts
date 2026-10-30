@@ -255,7 +255,7 @@ export function buildIcs(ev: IcsEvent, organizer?: string, method?: "REQUEST" | 
 /** Multi-event calendar feed (webcal subscription). Cancelled occurrences go
  *  out as EXDATE; moved exceptions fall back to series time (fidelity gap —
  *  RECURRENCE-ID instances are a future refinement). */
-export function buildIcsFeed(events: IcsEvent[], organizer?: string, calName = "Kreatix Calendar"): string {
+export function buildIcsFeed(events: IcsEvent[], organizer?: string, calName = "Calendar"): string {
   return [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kreatix//Calendar//EN", "CALSCALE:GREGORIAN",
     `X-WR-CALNAME:${escIcs(calName)}`,

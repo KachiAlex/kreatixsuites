@@ -87,7 +87,7 @@ export class MailDomainRequiredError extends Error {
 
 /** Personal workspaces never get a platform-domain mailbox — members use their own email. */
 export class MailPersonalWorkspaceError extends Error {
-  constructor() { super("Kreatix Mail is available for business workspaces"); }
+  constructor() { super("Mail is available for business workspaces"); }
 }
 
 /** The org's verified primary domain, or null when none is verified. */

@@ -30,7 +30,7 @@ export function Mail() {
     <div className="page" style={{ display: "grid", placeItems: "center", minHeight: "70vh" }}>
       <div className="admin-card" style={{ maxWidth: 420, textAlign: "center", padding: "36px 32px" }}>
         <div style={{ fontSize: 34, marginBottom: 10 }}>✉</div>
-        <h2 style={{ marginTop: 0 }}>Kreatix Mail</h2>
+        <h2 style={{ marginTop: 0 }}>Mail</h2>
         {state === "opening" && (
           <p className="d-sub">Opening your mailbox in a new tab…</p>
         )}
@@ -39,7 +39,7 @@ export function Mail() {
             <p className="d-sub">Your browser blocked the new tab. Open the full mail app directly:</p>
             <button className="btn-primary" style={{ marginTop: 10, padding: "9px 22px" }}
               onClick={() => void openMail()}>
-              Open Kreatix Mail
+              Open Mail
             </button>
           </>
         )}
@@ -47,7 +47,7 @@ export function Mail() {
           <p className="d-sub">Mail needs your company domain. Ask your workspace admin to verify it under Admin → Domains.</p>
         )}
         {state === "personal" && (
-          <p className="d-sub">Kreatix Mail is available for business workspaces. Your personal account keeps using your own email address.</p>
+          <p className="d-sub">Mail is available for business workspaces. Your personal account keeps using your own email address.</p>
         )}
         {state === "unavailable" && (
           <p className="d-sub">Mail isn't configured for this workspace yet — ask your admin.</p>

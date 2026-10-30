@@ -1192,7 +1192,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
           if (!hits.length) { toast(`AI redact: no matches for "${query.slice(0, 40)}"`); return; }
           mutate((d) => {
             for (const h of hits) d.annotations.push({ id: crypto.randomUUID().slice(0, 8), type: "redact",
-              page: h.page, rects: h.rects, author: "Kreatix AI", createdAt: new Date().toISOString() });
+              page: h.page, rects: h.rects, author: "AI", createdAt: new Date().toISOString() });
           });
           toast(`AI marked ${hits.length} redaction${hits.length === 1 ? "" : "s"} — Save applies them permanently`);
         }).catch(() => toast("AI redact scan failed"));
@@ -1666,7 +1666,7 @@ export function PdfEditor({ item, initialDoc, permission, aiPrompt }: {
             onBlur={(e) => { e.target.value = pageLabels?.[curPage - 1] ?? String(curPage); }} /> / {numPages}</span>
           <button className={`rb ${panel === "comments" ? "on" : ""}`} title="Comments"
             onClick={() => setPanel(panel === "comments" ? "none" : "comments")}>💬</button>
-          <button className={`rb ${panel === "ai" ? "on" : ""}`} title="Kreatix AI"
+          <button className={`rb ${panel === "ai" ? "on" : ""}`} title="AI"
             onClick={() => setPanel(panel === "ai" ? "none" : "ai")}>✨</button>
         </>}
         tabs={[

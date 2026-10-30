@@ -945,7 +945,7 @@ export function Admin() {
                 onChange={(e) => patchPolicy({ aiDisabled: e.target.checked })}
               />
               <span>
-                <b>Disable Kreatix AI for this workspace</b>
+                <b>Disable AI for this workspace</b>
                 <em>All AI requests (chat, workspace ask, completions) are refused immediately — nothing leaves for the provider.</em>
               </span>
             </label>
@@ -1571,7 +1571,7 @@ export function Admin() {
 
       {aiUsage && (
         <section className="admin-card" id="ai-usage">
-          <h2 id="ai">Kreatix AI usage</h2>
+          <h2 id="ai">AI usage</h2>
           <div className="admin-flags">
             <div className="flag on">
               <b>{aiUsage.quota.plan === "trial" ? "Trial AI" : aiUsage.quota.plan === "free" ? "Free tier AI" : "This month"}</b>
@@ -2001,7 +2001,7 @@ export function Admin() {
                       <span className={`role-badge ${d.status === "verified" ? "" : "warn"}`}>
                         {d.status === "verified" ? "✓ verified" : d.status === "failed" ? "✕ failed" : "… pending"}
                       </span>
-                      {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Kreatix Mail">MX ✓</span>}
+                      {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Mail">MX ✓</span>}
                       {d.brevoOk && <span className="d-sub" style={{ marginLeft: 6 }} title="DKIM/DMARC authenticated for outbound">signed ✓</span>}
                     </td>
                     <td>{d.isPrimary ? <b>primary</b> : <span className="d-sub">—</span>}</td>

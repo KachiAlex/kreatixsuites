@@ -49,7 +49,7 @@ export function MigrateMail() {
     <div className="page" style={{ maxWidth: 880 }}>
       <h1 style={{ marginBottom: 4 }}>Move your mail to Kreatix</h1>
       <p className="d-sub" style={{ marginTop: 0 }}>
-        Bring your existing mail, with its original dates and folders, into Kreatix Mail. Import while your old
+        Bring your existing mail, with its original dates and folders, into Mail. Import while your old
         account still works — you can run the import again later to pick up anything new, and messages that are already here are skipped.
       </p>
 
@@ -68,7 +68,7 @@ export function MigrateMail() {
       </section>
 
       <section className="admin-card">
-        <h2 style={{ marginTop: 0 }}>2 · Import into Kreatix Mail</h2>
+        <h2 style={{ marginTop: 0 }}>2 · Import into Mail</h2>
         <p className="d-sub" style={{ marginTop: 0 }}>
           Files up to 4 GB each. Large files upload in chunks and resume automatically if the connection drops.
           Imported mail lands in its own folder; mail you sent is placed in Sent.

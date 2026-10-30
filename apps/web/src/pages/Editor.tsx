@@ -151,7 +151,7 @@ export function Editor() {
             <AppIcon kind={item.kind} size={48} />
           </div>
           <h1>{item.name}</h1>
-          <p>{meta.label} editor is on the roadmap — file is safely stored in Kreatix Drive.</p>
+          <p>{meta.label} editor is on the roadmap — file is safely stored in Drive.</p>
           <button className="btn-ghost" onClick={() => navigate(-1)}>Back</button>
         </div>
       </div>

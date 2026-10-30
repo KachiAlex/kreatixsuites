@@ -181,7 +181,7 @@ export function meetRoutes(app: FastifyInstance) {
       `&interfaceConfig.SHOW_JITSI_WATERMARK=false&interfaceConfig.SHOW_WATERMARK_FOR_GUESTS=false` +
       `&interfaceConfig.APP_NAME=%22Kreatix%20Meet%22&interfaceConfig.MOBILE_APP_PROMO=false`;
     const lines = [
-      `${m.creator_name ?? "A teammate"} invited you to a Kreatix Meet`,
+      `${m.creator_name ?? "A teammate"} invited you to a Meet`,
       ``,
       `Join: ${url}`,
       `Meeting code: ${m.code}`,

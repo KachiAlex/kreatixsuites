@@ -448,7 +448,7 @@ export function Landing() {
           </div>
         </section>
 
-        {/* ===== Kreatix AI ===== */}
+        {/* ===== AI ===== */}
         <section className="lp-section lp-dark">
           <div className="lp-wrap lp-ai-layout">
             <div className="lp-reveal">
@@ -458,7 +458,7 @@ export function Landing() {
               <Link to="/register" className="lp-btn lp-btn-orange" style={{ marginTop: 15 }}>{t("lp.ai.cta")} <span aria-hidden="true">↗</span></Link>
             </div>
             <div className="lp-chat lp-reveal">
-              <div className="lp-chat-title"><span>✦ &nbsp; Kreatix AI</span><span>{t("lp.ai.badge").toUpperCase()}</span></div>
+              <div className="lp-chat-title"><span>✦ &nbsp; AI</span><span>{t("lp.ai.badge").toUpperCase()}</span></div>
               <div className="lp-chat-prompt">{t("lp.ai.prompt")}</div>
               <div className="lp-chat-response">
                 <b>{t("lp.ai.resp1")}</b><br />
