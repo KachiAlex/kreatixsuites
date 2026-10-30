@@ -70,6 +70,7 @@ export function Shell() {
   // platform operators get a minimal chrome — no workspace nav, search,
   // upload, mentions or feedback; just brand, settings and the portal.
   if (user?.isSuper) return <SuperShell />;
+  if (pathname === "/admin") return <AdminFrame />;
 
   return (
     <div className="shell">
@@ -96,6 +97,24 @@ export function Shell() {
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
+    </div>
+  );
+}
+
+/** Workspace administration runs as its own page: a slim bar, no app rail or sidebar. */
+function AdminFrame() {
+  const { user, org } = useAuth();
+  const navigate = useNavigate();
+  const name = org?.brandName || org?.name || "Kreatix Suites";
+  const initials = (user?.displayName ?? "?").split(" ").filter(Boolean).slice(0, 2).map((p) => p[0]).join("").toUpperCase();
+  return (
+    <div className="admin-frame">
+      <header className="admin-frame-top">
+        <button className="btn-ghost admin-frame-back" onClick={() => navigate("/home")}>← Suites</button>
+        <span className="admin-frame-name">{name}</span>
+        <span className="admin-frame-user" title={user?.displayName}>{initials}</span>
+      </header>
+      <div className="admin-frame-body"><Outlet /></div>
     </div>
   );
 }
