@@ -261,6 +261,13 @@ async function main() {
     if (!appSlug) return;
     const { user } = await resolveSession(req);
     if (!user || user.is_super) return;
+    // Mail's entry points take a seat inside mailbox setup (with its own limit
+    // message), so they only honor the admin's disabled-app list here
+    if (appSlug === "mail" && /^\/api\/mail\/(sso|sso-url|status)(\?|$)/.test(req.url)) {
+      if (user.disabled_apps?.includes("mail"))
+        return reply.code(403).send({ error: "app_disabled", message: "Mail isn't enabled for your account — ask your workspace admin." });
+      return;
+    }
     const allowed = await appAccessAllowed(
       { id: user.id, orgId: user.org_id, disabledApps: user.disabled_apps }, appSlug);
     if (allowed) return;

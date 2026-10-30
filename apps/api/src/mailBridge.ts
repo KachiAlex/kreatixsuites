@@ -183,19 +183,19 @@ export async function applyMailboxMigration(orgId: string, moves: MailboxMove[])
 async function ensureMailAccount(user: { id: string; email: string; displayName: string; orgId: string }): Promise<MailAccount> {
   const row = await one<{ mail_user_id: number | null; mail_email: string | null }>(
     "SELECT mail_user_id, mail_email FROM users WHERE id = $1", [user.id]);
-  if (row?.mail_user_id && row.mail_email)
-    return { id: row.mail_user_id, email: row.mail_email };
-
-  const domain = await mailDomainForOrg(user.orgId);
-  // a new mailbox consumes one Mail seat, like a license assignment; the seat is
-  // returned if the mailbox can't be created
+  const mapped = !!(row?.mail_user_id && row.mail_email);
+  // a new mailbox needs a verified domain before anything is granted
+  const domain = mapped ? null : await mailDomainForOrg(user.orgId);
+  // opening Mail takes a Mail seat in capped orgs (a no-op when uncapped or already
+  // granted); a new mailbox returns the seat if it can't be created
   const hadSeat = await hasSeatGrant(user.id, "mail");
   await grantSeatWithinCap(user.orgId, user.id, "mail", user.id).catch((e: { status?: number; message?: string }) => {
     if (e?.status === 409) throw new MailSeatLimitError(e.message);
     throw e;
   });
+  if (mapped) return { id: row!.mail_user_id!, email: row!.mail_email! };
   try {
-    return await createMailboxFor(user, domain);
+    return await createMailboxFor(user, domain!);
   } catch (e) {
     if (!hadSeat) await releaseSeat(user.id, "mail").catch(() => {});
     throw e;
