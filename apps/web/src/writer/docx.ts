@@ -227,6 +227,27 @@ function inlineRuns(nodes: Inline[] | undefined, inherited: Mark[] = []): Paragr
 const imgCache = new Map<string, Uint8Array>();
 const imgNatural = new Map<string, { w: number; h: number }>();
 
+/** Pixel size read from the PNG or JPEG header, without the browser's image decoder. */
+function pictureSize(b: Uint8Array): { w: number; h: number } | null {
+  const u32 = (o: number) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+  const u16 = (o: number) => (b[o] << 8) | b[o + 1];
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    return { w: u32(16), h: u32(20) };
+  }
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let o = 2;
+    while (o + 9 < b.length) {
+      if (b[o] !== 0xff) { o++; continue; }
+      const m = b[o + 1];
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { w: u16(o + 7), h: u16(o + 5) };
+      }
+      o += 2 + u16(o + 2);
+    }
+  }
+  return null;
+}
+
 /** Pre-fetch image bytes so they can be embedded in the docx, and record each
  *  picture's natural size so the exported frame keeps its proportions. */
 async function prefetchImages(doc: Block): Promise<void> {
@@ -248,10 +269,8 @@ async function prefetchImages(doc: Block): Promise<void> {
           }
           if (!bytes) return;
           imgCache.set(src, bytes);
-          const mime = src.startsWith("data:") ? src.slice(5, src.indexOf(";")) : "image/png";
-          const bmp = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
-          imgNatural.set(src, { w: bmp.width, h: bmp.height });
-          bmp.close();
+          const size = pictureSize(bytes);
+          if (size) imgNatural.set(src, size);
         } catch { /* placeholder */ }
       })());
     }
