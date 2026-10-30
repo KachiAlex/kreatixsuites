@@ -17,7 +17,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner, SyncChip, UpdateBanner, MobileUpdateBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
-import { isDesktop } from "../lib/platform";
+import { desktopApp, isDesktop } from "../lib/platform";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
 export function Shell() {
@@ -73,7 +73,7 @@ export function Shell() {
   if (pathname === "/admin") return <AdminFrame />;
 
   return (
-    <div className="shell">
+    <div className={`shell${desktopApp ? " kx-single" : ""}`}>
       <Rail toast={toast} />
       <Sidebar onTemplates={() => setTemplates(true)} open={navOpen} onClose={() => setNavOpen(false)} toast={toast} />
       {isMobile && navOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}

@@ -101,6 +101,8 @@ button:disabled{opacity:.55;cursor:not-allowed}
 @keyframes menu-pop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
 .shell{display:grid;grid-template-columns:76px 252px minmax(0,1fr);min-height:100vh;min-height:100dvh}
+.shell.kx-single{grid-template-columns:minmax(0,1fr)}
+.shell.kx-single>.rail,.shell.kx-single>.sidebar{display:none}
 .rail{
   background:var(--rail);color:var(--ink);padding:14px 12px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;
   align-items:center;gap:9px;position:sticky;top:0;height:100vh;height:100dvh;z-index:10;

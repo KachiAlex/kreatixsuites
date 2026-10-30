@@ -3,7 +3,7 @@
 // The web app bundle (apps/web/dist) is served over a custom kx:// scheme so
 // it works fully offline, keeps fetch/IDB/cookie semantics, and stays versioned
 // with the app. REST/WS traffic goes to the production API origin.
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -64,11 +64,41 @@ protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true, codeCache: true } },
 ]);
 
-let mainWindow: BrowserWindow | null = null;
-// Renderer sets this once it has subscribed to "kx:open-file" (React mount is
-// later than did-finish-load) — IPC sent before the listener attaches is lost.
-let rendererReady = false;
-const pendingFiles: string[] = [];
+const APP_FLAG = "--kx-app=";
+// One window per installed app. "" is the full suite hub (Start menu entry).
+const DESKTOP_APPS: Record<string, { name: string; route: string }> = {
+  writer: { name: "Writer", route: "/app/writer" },
+  sheets: { name: "Sheets", route: "/app/sheets" },
+  present: { name: "Present", route: "/app/present" },
+  board: { name: "Board", route: "/app/board" },
+  pdf: { name: "PDF", route: "/app/pdf" },
+  mail: { name: "Kreatavi", route: "/mail" },
+  meet: { name: "Meet", route: "/meet" },
+  chat: { name: "Chat", route: "/chat" },
+  calendar: { name: "Calendar", route: "/calendar" },
+  tasks: { name: "Tasks", route: "/tasks" },
+  notes: { name: "Notes", route: "/notes" },
+  forms: { name: "Forms", route: "/forms" },
+  sites: { name: "Sites", route: "/sites" },
+};
+const HUB = "";
+const FILE_APP: Record<string, string> = {
+  docx: "writer", docm: "writer", doc: "writer", odt: "writer", rtf: "writer", txt: "writer", md: "writer",
+  xlsx: "sheets", xlsm: "sheets", xlsb: "sheets", xls: "sheets", csv: "sheets", tsv: "sheets", ods: "sheets",
+  pptx: "present", pptm: "present", ppt: "present", odp: "present", pdf: "pdf",
+};
+
+interface AppWindow { win: BrowserWindow; ready: boolean; pending: string[] }
+// The renderer flips `ready` once it has subscribed to "kx:open-file" (React
+// mounts after did-finish-load); files sent before that wait in `pending`.
+const appWindows = new Map<string, AppWindow>();
+const hubWindow = () => appWindows.get(HUB)?.win ?? null;
+const entryOf = (wc: WebContents) => [...appWindows.values()].find((w) => w.win.webContents === wc);
+
+const slugFromArgv = (argv: string[]) => {
+  const s = argv.find((a) => a.startsWith(APP_FLAG))?.slice(APP_FLAG.length) ?? HUB;
+  return DESKTOP_APPS[s] ? s : HUB;
+};
 
 /** argv file paths the OS handed us (double-click / "Open with"). */
 const fileArgs = (argv: string[]) =>
@@ -78,15 +108,12 @@ const fileArgs = (argv: string[]) =>
   });
 
 const deliverFile = (p: string) => {
-  if (mainWindow && rendererReady) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-    mainWindow.webContents.send("kx:open-file", p);
-  } else pendingFiles.push(p);
-};
-
-const flushPendingFiles = () => {
-  for (const p of pendingFiles.splice(0)) deliverFile(p);
+  const key = FILE_APP[path.extname(p).slice(1).toLowerCase()] ?? HUB;
+  const entry = appWindows.get(key) ?? openAppWindow(key);
+  if (!entry.ready) { entry.pending.push(p); return; }
+  if (entry.win.isMinimized()) entry.win.restore();
+  entry.win.focus();
+  entry.win.webContents.send("kx:open-file", p);
 };
 
 const handleProtocol = async (req: Request): Promise<Response> => {
@@ -106,8 +133,9 @@ const handleProtocol = async (req: Request): Promise<Response> => {
   return new Response(res.body, { status: res.status, headers });
 };
 
-const createWindow = () => {
-  mainWindow = new BrowserWindow({
+const openAppWindow = (key: string): AppWindow => {
+  const info = DESKTOP_APPS[key];
+  const mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 960,
@@ -121,6 +149,7 @@ const createWindow = () => {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      additionalArguments: key ? [`${APP_FLAG}${key}`] : [],
     },
   });
   mainWindow.setMenuBarVisibility(false);
@@ -145,17 +174,28 @@ const createWindow = () => {
     }
   });
 
-  void mainWindow.loadURL(APP_URL);
+  const entry: AppWindow = { win: mainWindow, ready: false, pending: [] };
+  appWindows.set(key, entry);
+  // Windows groups taskbar buttons by AppUserModelID — give each app its own
+  if (key && process.platform === "win32") {
+    mainWindow.setAppDetails({
+      appId: `com.kreatixtech.suites.${key}`,
+      relaunchCommand: `"${process.execPath}" ${APP_FLAG}${key}`,
+      relaunchDisplayName: `Kreatix ${info.name}`,
+    });
+  }
+  void mainWindow.loadURL(key ? `${SCHEME}://${HOST}${info.route}` : APP_URL);
   mainWindow.webContents.once("did-finish-load", () => {
     // KX_SMOKE=1 → headless smoke test: report the loaded doc and quit (CI)
     if (process.env.KX_SMOKE) {
-      mainWindow?.webContents
-        .executeJavaScript("document.title + '|' + location.origin")
+      mainWindow.webContents
+        .executeJavaScript("document.title + '|' + location.origin + location.pathname + '|' + (window.kxDesktop?.app ?? '')")
         .then((r) => { console.log("SMOKE-OK:", r); app.quit(); })
         .catch((e) => { console.error("SMOKE-FAIL:", e); app.exit(1); });
     }
   });
-  mainWindow.on("closed", () => { mainWindow = null; rendererReady = false; });
+  mainWindow.on("closed", () => { if (appWindows.get(key)?.win === mainWindow) appWindows.delete(key); });
+  return entry;
 };
 
 // ---------- IPC ----------
@@ -235,9 +275,10 @@ ipcMain.handle("kx:readFile", (_e, filePath: string) => {
 
 // Save-as: the user picks the destination in a native dialog and the main
 // process writes the bytes — the renderer never chooses a path.
-ipcMain.handle("kx:saveFile", async (_e, defaultName: string, dataBase64: string) => {
-  if (!mainWindow) return { ok: false, error: "no window" };
-  const r = await dialog.showSaveDialog(mainWindow, { defaultPath: path.basename(defaultName) });
+ipcMain.handle("kx:saveFile", async (e, defaultName: string, dataBase64: string) => {
+  const owner = BrowserWindow.fromWebContents(e.sender) ?? hubWindow();
+  if (!owner) return { ok: false, error: "no window" };
+  const r = await dialog.showSaveDialog(owner, { defaultPath: path.basename(defaultName) });
   if (r.canceled || !r.filePath) return { ok: false, canceled: true };
   try {
     fs.writeFileSync(r.filePath, Buffer.from(dataBase64, "base64"));
@@ -249,15 +290,16 @@ ipcMain.handle("kx:saveFile", async (_e, defaultName: string, dataBase64: string
 
 // Render a standalone print document to PDF with Electron's own engine, then
 // save-as. The print dialog isn't reliable inside the app, so this path skips it.
-ipcMain.handle("kx:printToPdf", async (_e, html: string, defaultName: string) => {
-  if (!mainWindow) return { ok: false, error: "no window" };
+ipcMain.handle("kx:printToPdf", async (e, html: string, defaultName: string) => {
+  const owner = BrowserWindow.fromWebContents(e.sender) ?? hubWindow();
+  if (!owner) return { ok: false, error: "no window" };
   const tmp = path.join(app.getPath("temp"), `kx-print-${randomBytes(6).toString("hex")}.html`);
   const win = new BrowserWindow({ show: false, webPreferences: { javascript: false, sandbox: true } });
   try {
     fs.writeFileSync(tmp, html, "utf8");
     await win.loadFile(tmp);
     const pdf = await win.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true, pageSize: "Letter" });
-    const r = await dialog.showSaveDialog(mainWindow, {
+    const r = await dialog.showSaveDialog(owner, {
       defaultPath: path.basename(defaultName), filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
     if (r.canceled || !r.filePath) return { ok: false, canceled: true };
@@ -271,9 +313,10 @@ ipcMain.handle("kx:printToPdf", async (_e, html: string, defaultName: string) =>
   }
 });
 
-ipcMain.handle("kx:openDialog", async () => {
-  if (!mainWindow) return null;
-  const r = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle("kx:openDialog", async (e) => {
+  const owner = BrowserWindow.fromWebContents(e.sender) ?? hubWindow();
+  if (!owner) return null;
+  const r = await dialog.showOpenDialog(owner, {
     properties: ["openFile"],
     filters: [
       { name: "All supported", extensions: ["docx", "doc", "xlsx", "xls", "csv", "pptx", "pdf", "txt", "odt", "ods", "odp"] },
@@ -288,10 +331,15 @@ ipcMain.handle("kx:openDialog", async () => {
 
 
 ipcMain.handle("kx:showInFolder", (_e, p: string) => shell.showItemInFolder(p));
-ipcMain.handle("kx:pendingFiles", () => pendingFiles.splice(0));
+ipcMain.handle("kx:pendingFiles", (e) => entryOf(e.sender)?.pending.splice(0) ?? []);
 // Renderer signals it has subscribed to "kx:open-file" — only now is a sent
-// event guaranteed to land. Flush anything queued from argv / protocol.
-ipcMain.on("kx:renderer-ready", () => { rendererReady = true; flushPendingFiles(); });
+// event guaranteed to land. Flush anything queued for this window.
+ipcMain.on("kx:renderer-ready", (e) => {
+  const entry = entryOf(e.sender);
+  if (!entry) return;
+  entry.ready = true;
+  for (const p of entry.pending.splice(0)) entry.win.webContents.send("kx:open-file", p);
+});
 
 // ---------- auto-update ----------
 // electron-updater checks the GitHub releases feed (build.publish in
@@ -305,7 +353,7 @@ type UpdateStatus =
 let lastUpdate: UpdateStatus = { state: "none" };
 const sendUpdate = (s: UpdateStatus) => {
   lastUpdate = s;
-  mainWindow?.webContents.send("kx:update", s);
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send("kx:update", s);
 };
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
@@ -354,25 +402,26 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", (_e, argv) => {
-    for (const f of fileArgs(argv)) deliverFile(f);
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    const files = fileArgs(argv);
+    if (files.length) { for (const f of files) deliverFile(f); return; }
+    const entry = appWindows.get(slugFromArgv(argv)) ?? openAppWindow(slugFromArgv(argv));
+    if (entry.win.isMinimized()) entry.win.restore();
+    entry.win.focus();
   });
 
   void app.whenReady().then(() => {
     protocol.handle(SCHEME, handleProtocol);
     app.setAsDefaultProtocolClient(SCHEME);
-    for (const f of fileArgs(process.argv.slice(1))) pendingFiles.push(f);
-    createWindow();
+    const files = fileArgs(process.argv.slice(1));
+    if (files.length) for (const f of files) deliverFile(f);
+    else openAppWindow(slugFromArgv(process.argv));
     if (app.isPackaged) {
       // launch check + hourly re-check; failures are silent in the renderer
       // (state:"error") so an absent feed never interrupts the user
       setTimeout(() => void autoUpdater.checkForUpdates().catch(() => {}), 8000);
       setInterval(() => void autoUpdater.checkForUpdates().catch(() => {}), 3600_000);
     }
-    app.on("activate", () => { if (!mainWindow) createWindow(); });
+    app.on("activate", () => { if (appWindows.size === 0) openAppWindow(HUB); });
   });
 
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

@@ -3,6 +3,8 @@
 export interface KxDesktop {
   isDesktop: true;
   platform: string;
+  /** App-only window (installed per-app shortcut): the suite app slug. */
+  app?: string | null;
   apiBase: () => Promise<string>;
   /** System-browser Google sign-in — resolves with the auth code + PKCE
    *  verifier + loopback redirectUri for POST /api/auth/google/code. */
@@ -39,6 +41,8 @@ export const desktop: KxDesktop | undefined =
   typeof window !== "undefined" ? (window as unknown as { kxDesktop?: KxDesktop }).kxDesktop : undefined;
 
 export const isDesktop = !!desktop?.isDesktop;
+
+export const desktopApp: string | null = desktop?.app ?? null;
 
 /** Capacitor WebView (Android/iOS shells) — no kxDesktop bridge, but the app is
  *  still served from a local origin so API traffic needs the absolute host. */

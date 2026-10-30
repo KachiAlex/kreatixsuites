@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, cachedBrand, useAuth } from "./lib/auth";
 import { I18nProvider, useT } from "./lib/i18n";
 import { Login } from "./pages/Login";
 import { ResetPassword, VerifyEmail } from "./pages/AccountRecovery";
 import { Landing } from "./pages/Landing";
 import { DesktopBootstrap, EntitlementGate } from "./components/Desktop";
-import { appEnabled, type SuiteApp } from "@kreatix/shared";
+import { appEnabled, SUITE_APPS, type SuiteApp } from "@kreatix/shared";
 import MfaEnrollScreen from "./components/MfaEnrollScreen";
 import { useGlobalModalA11y } from "./lib/a11y";
 import { isNativeMobile } from "./lib/platform";
@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 // auth (warmed by the prefetch in Login).
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const Drive = lazy(() => import("./pages/Drive").then((m) => ({ default: m.Drive })));
+const AppHome = lazy(() => import("./pages/AppHome").then((m) => ({ default: m.AppHome })));
 const Editor = lazy(() => import("./pages/Editor").then((m) => ({ default: m.Editor })));
 const SharedLink = lazy(() => import("./pages/SharedLink").then((m) => ({ default: m.SharedLink })));
 const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
@@ -55,6 +56,15 @@ function Protected({ children }: { children: ReactNode }) {
   // session to the portal; the API enforces the same boundary with 403s.
   if (user.isSuper && pathname !== "/admin") return <Navigate to="/admin" replace />;
   return <EntitlementGate>{children}</EntitlementGate>;
+}
+
+/** Single-app desktop windows: /app/<writer|sheets|present|board|pdf>. Other
+ *  apps (Mail, Meet, …) already have their own routes and are opened directly. */
+function AppRoute() {
+  const { kind = "" } = useParams();
+  const app = SUITE_APPS.find((a) => a.slug === kind);
+  if (!app?.itemKind) return <Navigate to={app?.path ?? "/home"} replace />;
+  return <RequireApp slug={app.slug}><AppHome slug={app.slug} /></RequireApp>;
 }
 
 /** Tenant admins can disable apps per user (users.disabled_apps, enforced on
@@ -154,6 +164,7 @@ export default function App() {
           <Route path="/edit/:id" element={<Protected><Editor /></Protected>} />
           <Route element={<Protected><Shell /></Protected>}>
             <Route path="/home" element={<Home />} />
+            <Route path="/app/:kind" element={<AppRoute />} />
             <Route path="/drive" element={<Drive />} />
             <Route path="/drive/:view" element={<Drive />} />
             <Route path="/drive/folder/:folderId" element={<Drive />} />

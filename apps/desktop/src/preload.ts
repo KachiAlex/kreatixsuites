@@ -4,9 +4,13 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const invoke = <T>(ch: string, ...args: unknown[]) => ipcRenderer.invoke(ch, ...args) as Promise<T>;
 
+const appFlag = "--kx-app=";
+const appSlug = process.argv.find((a) => a.startsWith(appFlag))?.slice(appFlag.length) || null;
+
 contextBridge.exposeInMainWorld("kxDesktop", {
   isDesktop: true,
   platform: process.platform,
+  app: appSlug,
   apiBase: () => invoke<string>("kx:apiBase"),
 
   // Google sign-in — opens the system browser, returns the auth code + PKCE
