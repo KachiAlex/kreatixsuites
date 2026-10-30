@@ -17,7 +17,7 @@ function db(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const r = indexedDB.open(DB, 1);
     r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: "fileId" });
-    r.onsuccess = () => resolve(r.result);
+    r.onsuccess = () => { r.result.onversionchange = () => r.result.close(); resolve(r.result); };
     r.onerror = () => reject(r.error);
   });
 }

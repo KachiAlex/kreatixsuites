@@ -3,6 +3,7 @@ import type { User } from "@kreatix/shared";
 import { api, getToken, setToken } from "./api";
 import { isDesktop } from "./platform";
 import { clearEntitlement, refreshEntitlement } from "./offline/license";
+import { claimLocalData, releaseLocalData } from "./localData";
 import { ANON_USER, endAnonymousSession, isAnonymous, startAnonymousSession } from "./offline/trial";
 
 /** Effective plan snapshot from /api/auth/me — the UI entitlement map. */
@@ -76,6 +77,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [appSeats, setAppSeats] = useState<Record<string, number> | null>(null);
   const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
   const [loading, setLoading] = useState(!!getToken() || isAnonymous());
+  useEffect(() => {
+    if (user?.id && !isAnonymous()) void claimLocalData(user.id);
+  }, [user?.id]);
 
   /** Merge seat-capped apps the user holds no grant for into disabledApps,
    *  so every appEnabled(disabledApps, slug) call site stays correct. */
@@ -193,6 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setOrg(null);
     setPlan(null);
+    void releaseLocalData();
     // clear the anonymous-tier flag too — otherwise the next load resurrects
     // the local pseudo-user and the user appears signed in again
     if (isAnonymous()) endAnonymousSession();

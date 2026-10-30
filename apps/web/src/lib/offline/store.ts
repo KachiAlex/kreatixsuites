@@ -52,7 +52,7 @@ export function openStore(): Promise<IDBDatabase> {
       if (!d.objectStoreNames.contains("outbox")) d.createObjectStore("outbox", { keyPath: "id", autoIncrement: true });
       if (!d.objectStoreNames.contains("meta")) d.createObjectStore("meta");
     };
-    r.onsuccess = () => resolve(r.result);
+    r.onsuccess = () => { r.result.onversionchange = () => r.result.close(); resolve(r.result); };
     r.onerror = () => reject(r.error);
   });
 }
