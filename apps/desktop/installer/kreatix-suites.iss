@@ -96,3 +96,191 @@ Root: HKCU; Subkey: "Software\Classes\.pdf\OpenWithProgids"; ValueType: none; Va
 
 [Run]
 Filename: "{app}\{#MyExe}"; Description: "Launch Kreatix Suites"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  AppTotal = 15;
+
+function AppKey(I: Integer): String;
+begin
+  case I of
+    0: Result := 'suite';
+    1: Result := 'writer';
+    2: Result := 'sheets';
+    3: Result := 'present';
+    4: Result := 'board';
+    5: Result := 'pdf';
+    6: Result := 'drive';
+    7: Result := 'mail';
+    8: Result := 'meet';
+    9: Result := 'chat';
+    10: Result := 'calendar';
+    11: Result := 'tasks';
+    12: Result := 'notes';
+    13: Result := 'forms';
+    14: Result := 'sites';
+  end;
+end;
+
+function AppName(I: Integer): String;
+begin
+  case I of
+    0: Result := 'Kreatix Suites';
+    1: Result := 'Kreatix Writer';
+    2: Result := 'Kreatix Sheets';
+    3: Result := 'Kreatix Present';
+    4: Result := 'Kreatix Board';
+    5: Result := 'Kreatix PDF';
+    6: Result := 'Kreatix Drive';
+    7: Result := 'Kreatavi';
+    8: Result := 'Kreatix Meet';
+    9: Result := 'Kreatix Chat';
+    10: Result := 'Calendar';
+    11: Result := 'Tasks';
+    12: Result := 'Notes';
+    13: Result := 'Forms';
+    14: Result := 'Sites';
+  end;
+end;
+
+function AppExts(Key: String): String;
+begin
+  Result := '';
+  if Key = 'writer' then Result := 'docx docm doc odt rtf txt'
+  else if Key = 'sheets' then Result := 'xlsx xls csv ods'
+  else if Key = 'present' then Result := 'pptx odp'
+  else if Key = 'pdf' then Result := 'pdf';
+end;
+
+function ShortcutPath(I: Integer): String;
+begin
+  Result := ExpandConstant('{userprograms}\') + AppName(I) + '.lnk';
+end;
+
+procedure RemoveApp(I: Integer);
+var
+  Key, Exts, Ext: String;
+  P: Integer;
+begin
+  DeleteFile(ShortcutPath(I));
+  Key := AppKey(I);
+  if Key = 'suite' then Exit;
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\KreatixSuites.' + Key);
+  Exts := AppExts(Key) + ' ';
+  while Exts <> '' do
+  begin
+    P := Pos(' ', Exts);
+    Ext := Copy(Exts, 1, P - 1);
+    Exts := Copy(Exts, P + 1, Length(Exts));
+    RegDeleteValue(HKCU, 'Software\Classes\.' + Ext + '\OpenWithProgids', 'KreatixSuites.' + Key);
+  end;
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  F: TForm;
+  Checks: array[0..14] of TCheckBox;
+  Info: TLabel;
+  Ok, Cancel: TButton;
+  I, Y, Installed, Selected: Integer;
+  Wanted: String;
+begin
+  Result := True;
+  Installed := 0;
+  if UninstallSilent then
+  begin
+    Wanted := ',' + ExpandConstant('{param:KXAPPS|}') + ',';
+    if Wanted = ',,' then Exit;
+    Selected := 0;
+    for I := 0 to AppTotal - 1 do
+      if (Pos(',' + AppKey(I) + ',', Wanted) > 0) and FileExists(ShortcutPath(I)) then
+        Selected := Selected + 1;
+    for I := 0 to AppTotal - 1 do
+      if FileExists(ShortcutPath(I)) then Installed := Installed + 1;
+    if Selected >= Installed then Exit;
+    for I := 0 to AppTotal - 1 do
+      if Pos(',' + AppKey(I) + ',', Wanted) > 0 then RemoveApp(I);
+    Result := False;
+    Exit;
+  end;
+
+  F := TForm.Create(nil);
+  try
+    F.Caption := 'Uninstall Kreatix Suites';
+    F.ClientWidth := ScaleX(440);
+    F.ClientHeight := ScaleY(476);
+    F.Position := poScreenCenter;
+    F.BorderStyle := bsDialog;
+
+    Info := TLabel.Create(F);
+    Info.Parent := F;
+    Info.Left := ScaleX(16);
+    Info.Top := ScaleY(14);
+    Info.Width := ScaleX(408);
+    Info.WordWrap := True;
+    Info.Caption := 'Choose the apps to uninstall. Apps you leave ticked are removed. Apps you leave unticked stay installed. If every installed app is ticked, Kreatix Suites is removed completely.';
+
+    Y := ScaleY(70);
+    for I := 0 to AppTotal - 1 do
+    begin
+      Checks[I] := TCheckBox.Create(F);
+      Checks[I].Parent := F;
+      Checks[I].Left := ScaleX(24);
+      Checks[I].Top := Y;
+      Checks[I].Width := ScaleX(390);
+      Checks[I].Caption := AppName(I);
+      if FileExists(ShortcutPath(I)) then
+      begin
+        Checks[I].Checked := True;
+        Installed := Installed + 1;
+      end
+      else
+      begin
+        Checks[I].Checked := False;
+        Checks[I].Enabled := False;
+      end;
+      Y := Y + ScaleY(24);
+    end;
+
+    Ok := TButton.Create(F);
+    Ok.Parent := F;
+    Ok.Caption := 'Uninstall';
+    Ok.ModalResult := mrOk;
+    Ok.Default := True;
+    Ok.Left := ScaleX(228);
+    Ok.Top := ScaleY(432);
+    Ok.Width := ScaleX(92);
+
+    Cancel := TButton.Create(F);
+    Cancel.Parent := F;
+    Cancel.Caption := 'Cancel';
+    Cancel.ModalResult := mrCancel;
+    Cancel.Cancel := True;
+    Cancel.Left := ScaleX(328);
+    Cancel.Top := ScaleY(432);
+    Cancel.Width := ScaleX(92);
+
+    if F.ShowModal <> mrOk then
+    begin
+      Result := False;
+      Exit;
+    end;
+
+    Selected := 0;
+    for I := 0 to AppTotal - 1 do
+      if Checks[I].Checked then Selected := Selected + 1;
+    if Selected = 0 then
+    begin
+      Result := False;
+      Exit;
+    end;
+    if Selected >= Installed then Exit;
+
+    for I := 0 to AppTotal - 1 do
+      if Checks[I].Checked then RemoveApp(I);
+    MsgBox('The selected apps were removed. Kreatix Suites stays installed for the apps you kept. Run this uninstaller again to remove them.', mbInformation, MB_OK);
+    Result := False;
+  finally
+    F.Free;
+  end;
+end;
