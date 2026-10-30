@@ -27,9 +27,12 @@ export function invalidateLicenseCache(userId?: string, orgId?: string) {
 export async function appSeatsFor(orgId: string): Promise<Record<string, number>> {
   const hit = seatsCache.get(orgId);
   if (hit && Date.now() - hit.at < TTL) return hit.seats;
-  const row = await one<{ app_seats: Record<string, number> | null }>(
-    "SELECT app_seats FROM subscriptions WHERE org_id = $1", [orgId]);
-  const seats = row?.app_seats ?? {};
+  // the plan supplies default caps (limits.mail_seats); an explicit per-org value
+  // in subscriptions.app_seats overrides it
+  const row = await one<{ app_seats: Record<string, number> | null; plan_limits: Record<string, number> | null }>(
+    "SELECT s.app_seats, p.limits AS plan_limits FROM subscriptions s LEFT JOIN plans p ON p.slug = s.plan WHERE s.org_id = $1", [orgId]);
+  const planMail = row?.plan_limits?.mail_seats;
+  const seats: Record<string, number> = { ...(planMail != null ? { mail: planMail } : {}), ...(row?.app_seats ?? {}) };
   seatsCache.set(orgId, { seats, at: Date.now() });
   return seats;
 }
