@@ -74,3 +74,7 @@ Sheets engine → Present canvas → PDF renderer → Yjs CRDT collab (WS) → A
 - **Sheets scripts** run in `script-sandbox.html`, an opaque-origin iframe (`sandbox="allow-scripts"`, own CSP with `unsafe-eval`) — never `new Function` in the main context.
 - **Ops**: backups (`backup.ts`), health monitor (`monitor.ts`), all sweeps run under `runSweep` advisory locks (`sweep_state`); surfaces live in SuperPortal.
 - `better-sqlite3` is a dev-only dep (SQLite→PG migration script); CI runs typecheck/build + roundtrip/encryption/perf harnesses + API e2e against service Postgres.
+
+## Desktop release
+
+Bump `version` in `apps/desktop/package.json`, then run `bash apps/desktop/scripts/publish.sh`. It builds the web app and the Windows installer, uploads it to the VPS downloads folder, and checks that `/api/downloads` now advertises the new version. The `/download` page uses that endpoint, so no page change is needed.
