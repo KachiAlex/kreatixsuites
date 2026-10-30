@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain, syncDirectory } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -268,6 +268,7 @@ export function adminRoutes(app: FastifyInstance) {
       throw e;
     }
     await run("UPDATE users SET mail_user_id = $2, mail_email = $3 WHERE id = $1", [memberId, mailUserId, mailbox.email]);
+    void syncDirectory(user.orgId);
     return { ok: true, address: mailbox.email };
   });
 

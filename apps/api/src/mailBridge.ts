@@ -131,6 +131,23 @@ export async function checkDomainDns(domain: string, verifyToken: string) {
 
 export interface MailboxMove { userId: string; mailUserId: number; from: string; to: string }
 
+/** Push the org's linked members into the mail service's workspace directory, so
+ *  the compose picker only ever shows people from the same workspace. Best-effort. */
+export async function syncDirectory(orgId: string): Promise<void> {
+  if (!mailEnabled()) return;
+  const members = await q<{ mail_user_id: number; email: string; display_name: string }>(
+    `SELECT mail_user_id, COALESCE(mail_email, email) AS email, display_name FROM users
+      WHERE org_id = $1 AND NOT disabled AND mail_user_id IS NOT NULL`, [orgId]);
+  await fetch(`${MAIL_BASE()}/api/admin/directory/sync`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-admin-secret": process.env.KREATIX_MAIL_ADMIN_SECRET! },
+    body: JSON.stringify({
+      orgId,
+      members: members.map((m) => ({ mailUserId: m.mail_user_id, email: m.email, displayName: m.display_name })),
+    }),
+  }).catch(() => null);
+}
+
 /** Plan moving existing platform-domain mailboxes onto the org's verified domain.
  *  Read-only — nothing changes until applyMailboxMigration runs. */
 export async function planMailboxMigration(orgId: string): Promise<{ domain: string; moves: MailboxMove[] }> {
@@ -168,6 +185,7 @@ export async function applyMailboxMigration(orgId: string, moves: MailboxMove[])
     }
     if (done) {
       await run("UPDATE users SET mail_email = $2 WHERE id = $1", [m.userId, done]);
+      void syncDirectory(orgId);
       results.push({ userId: m.userId, from: m.from, to: done });
     } else results.push({ userId: m.userId, from: m.from, error: lastError });
   }
@@ -209,6 +227,7 @@ async function createMailboxFor(
     if (!created.id) throw new Error("mail admin create returned no id");
     await run("UPDATE users SET mail_user_id = $2, mail_email = $3 WHERE id = $1",
       [user.id, created.id, created.email ?? address]);
+    void syncDirectory(user.orgId);
     return { id: created.id, email: created.email ?? address };
   }
   throw new Error("could not allocate a mailbox address");
