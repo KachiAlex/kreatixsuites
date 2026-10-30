@@ -18,7 +18,6 @@ import { NewSiteDialog } from "./NewSiteDialog";
 import { AnonBanner, SyncChip, UpdateBanner, MobileUpdateBanner } from "./Desktop";
 import { useIsMobile } from "../lib/mobile";
 import { desktopApp, isDesktop } from "../lib/platform";
-import { DesktopAppsSetup } from "./DesktopAppsSetup";
 import { kindForPath, openLocalFile } from "../lib/offline/openLocal";
 
 export function Shell() {
@@ -95,7 +94,6 @@ export function Shell() {
       {templates && <TemplatesDialog onClose={() => setTemplates(false)} toast={toast} />}
       {showOnboarding && <OnboardingWizard onClose={() => setObDismissed(true)} />}
       <FeedbackWidget />
-      <DesktopAppsSetup />
       <input ref={fileInput} type="file" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
       {msg && <div className="toast" role="status" aria-live="polite">{msg}</div>}
@@ -712,7 +710,6 @@ function Topbar({ onPalette, onNav }: { onPalette: () => void; onNav: () => void
         {userMenu && (
           <div className="user-menu">
             <div className="um-head"><b>{user?.displayName}</b><span>{user?.email}</span></div>
-            {isDesktop && !desktopApp && <button onClick={() => { setUserMenu(false); window.dispatchEvent(new Event("kx:desktop-apps")); }}>Desktop apps…</button>}
             <button onClick={() => { setUserMenu(false); navigate("/account"); }}>{t("shell.account")}</button>
             <button onClick={() => { logout(); navigate("/login"); }}>{t("shell.signOut")}</button>
           </div>

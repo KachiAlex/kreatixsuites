@@ -5,7 +5,6 @@
 // with the app. REST/WS traffic goes to the production API origin.
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -72,6 +71,7 @@ const DESKTOP_APPS: Record<string, { name: string; route: string }> = {
   sheets: { name: "Sheets", route: "/app/sheets" },
   present: { name: "Present", route: "/app/present" },
   board: { name: "Board", route: "/app/board" },
+  drive: { name: "Drive", route: "/drive/all" },
   pdf: { name: "PDF", route: "/app/pdf" },
   mail: { name: "Kreatavi", route: "/mail" },
   meet: { name: "Meet", route: "/meet" },
@@ -394,80 +394,6 @@ ipcMain.handle("kx:entitlement:set", (_e, token: string) => {
 ipcMain.handle("kx:entitlement:clear", () => {
   try { fs.unlinkSync(entitlementPath()); } catch { /* absent */ }
   return { ok: true };
-});
-
-// ---------- per-app shortcuts & file links (first-run choice) ----------
-// Installed builds only: each ticked app gets a Start menu and desktop shortcut
-// that opens it in its own window, and its file types are offered under
-// "Open with". Stored in userData so the prompt appears once per install.
-const appsConfigPath = () => path.join(app.getPath("userData"), "apps.json");
-const readAppsConfig = (): { configured: boolean; apps: string[] } => {
-  try { return JSON.parse(fs.readFileSync(appsConfigPath(), "utf8")); } catch { return { configured: false, apps: [] }; }
-};
-
-const regRun = (args: string[]) => execFileSync("reg", args, { stdio: "pipe" }).toString();
-const regSetDefault = (ext: string, progId: string) => {
-  // only claim the extension when nothing else already owns it
-  try {
-    if (/REG_SZ\s+\S/.test(regRun(["query", `HKCR\\.${ext}`, "/ve"]))) return;
-  } catch { /* no key at all — claim it */ }
-  regRun(["add", `HKCU\\Software\\Classes\\.${ext}`, "/ve", "/d", progId, "/f"]);
-};
-const regClearDefault = (ext: string, progId: string) => {
-  try {
-    if (regRun(["query", `HKCU\\Software\\Classes\\.${ext}`, "/ve"]).includes(progId)) {
-      regRun(["delete", `HKCU\\Software\\Classes\\.${ext}`, "/ve", "/f"]);
-    }
-  } catch { /* not ours */ }
-};
-
-const startMenuDir = () => path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs");
-
-const linkApp = (slug: string) => {
-  const info = DESKTOP_APPS[slug];
-  const progId = `KreatixSuites.${slug}`;
-  const shortcut = { target: process.execPath, args: `${APP_FLAG}${slug}`, description: `Kreatix ${info.name}`,
-    icon: process.execPath, iconIndex: 0, appUserModelId: `com.kreatixtech.suites.${slug}` };
-  for (const dir of [startMenuDir(), app.getPath("desktop")]) {
-    shell.writeShortcutLink(path.join(dir, `${info.name}.lnk`), "replace", shortcut);
-  }
-  regRun(["add", `HKCU\\Software\\Classes\\${progId}`, "/ve", "/d", `Kreatix ${info.name}`, "/f"]);
-  regRun(["add", `HKCU\\Software\\Classes\\${progId}\\shell\\open\\command`, "/ve", "/d",
-    `"${process.execPath}" ${APP_FLAG}${slug} "%1"`, "/f"]);
-  for (const [ext, owner] of Object.entries(FILE_APP)) {
-    if (owner !== slug) continue;
-    regRun(["add", `HKCU\\Software\\Classes\\.${ext}\\OpenWithProgids`, "/v", progId, "/d", "", "/f"]);
-    regSetDefault(ext, progId);
-  }
-};
-
-const unlinkApp = (slug: string) => {
-  const info = DESKTOP_APPS[slug];
-  const progId = `KreatixSuites.${slug}`;
-  for (const dir of [startMenuDir(), app.getPath("desktop")]) {
-    fs.rmSync(path.join(dir, `${info.name}.lnk`), { force: true });
-  }
-  for (const [ext, owner] of Object.entries(FILE_APP)) {
-    if (owner !== slug) continue;
-    try { regRun(["delete", `HKCU\\Software\\Classes\\.${ext}\\OpenWithProgids`, "/v", progId, "/f"]); } catch { /* absent */ }
-    regClearDefault(ext, progId);
-  }
-  try { regRun(["delete", `HKCU\\Software\\Classes\\${progId}`, "/f"]); } catch { /* absent */ }
-};
-
-const configureApps = (slugs: string[]) => {
-  if (!app.isPackaged) throw new Error("Desktop apps are created by the installed app");
-  const wanted = new Set(slugs.filter((s) => DESKTOP_APPS[s]));
-  for (const slug of Object.keys(DESKTOP_APPS)) {
-    if (wanted.has(slug)) linkApp(slug); else unlinkApp(slug);
-  }
-  fs.mkdirSync(path.dirname(appsConfigPath()), { recursive: true });
-  fs.writeFileSync(appsConfigPath(), JSON.stringify({ configured: true, apps: [...wanted] }));
-};
-
-ipcMain.handle("kx:apps:status", () => readAppsConfig());
-ipcMain.handle("kx:apps:configure", (_e, slugs: string[]) => {
-  try { configureApps(slugs); return { ok: true }; } catch (err) { return { ok: false, error: String(err) }; }
 });
 
 // ---------- lifecycle ----------

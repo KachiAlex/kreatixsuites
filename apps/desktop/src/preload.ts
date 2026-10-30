@@ -37,12 +37,6 @@ contextBridge.exposeInMainWorld("kxDesktop", {
     return () => ipcRenderer.off("kx:open-file", l);
   },
 
-  // per-app shortcuts and file links — chosen once at first sign-in
-  apps: {
-    status: () => invoke<{ configured: boolean; apps: string[] }>("kx:apps:status"),
-    configure: (slugs: string[]) => invoke<{ ok: boolean; error?: string }>("kx:apps:configure", slugs),
-  },
-
   // subscription entitlement (DPAPI-encrypted store in userData)
   entitlement: {
     get: () => invoke<{ ok: boolean; token?: string }>("kx:entitlement:get"),
