@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, MailSeatLimitError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -203,8 +203,6 @@ export function adminRoutes(app: FastifyInstance) {
       });
       return { ok: true, address: acct.email };
     } catch (e) {
-      if (e instanceof MailSeatLimitError)
-        return reply.code(409).send({ error: "seat_limit", message: "No Mail seats left — add a seat first" });
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before provisioning mailboxes" });
       throw e;

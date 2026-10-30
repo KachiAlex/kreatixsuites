@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireAuth, type AuthedRequest } from "../auth.js";
-import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailFetchAs, mailSsoUrl, mailStatus, MailDomainRequiredError, MailSeatLimitError } from "../mailBridge.js";
+import { brevoAuthenticateDomain, brevoRegisterDomain, checkDomainDns, mailEnabled, mailFetch, mailFetchAs, mailSsoUrl, mailStatus, MailDomainRequiredError } from "../mailBridge.js";
 import { q, one, run } from "../db.js";
 
 /** Paths the suite session may reach on the mail service — everything user-
@@ -74,11 +74,6 @@ export function mailRoutes(app: FastifyInstance) {
       if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Mail service isn't configured" });
       return reply.redirect(url);
     } catch (e) {
-      if (e instanceof MailSeatLimitError) {
-        return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatix Mail</title>
-<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
-<div><h2>No Mail seat available</h2><p>Your workspace has used all of its Mail seats. Ask your workspace admin to add a seat, then open Mail again.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
-      }
       if (e instanceof MailDomainRequiredError) {
         return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatix Mail</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
@@ -97,8 +92,6 @@ export function mailRoutes(app: FastifyInstance) {
       if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Mail service isn't configured" });
       return { url };
     } catch (e) {
-      if (e instanceof MailSeatLimitError)
-        return reply.code(409).send({ error: "seat_limit", message: "No Mail seats left — ask your workspace admin to add one" });
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Ask your workspace admin to verify your company domain before using Mail" });
       return reply.code(502).send({ error: "mail_unavailable", message: "Mail service is unavailable" });
