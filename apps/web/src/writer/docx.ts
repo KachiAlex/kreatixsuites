@@ -717,6 +717,12 @@ export async function exportDocxBytes(doc: Block, name: string, opts: DocxExport
   numRefs.clear();
   usedStyleKeys.clear();
   await prefetchImages(doc);
+  if (typeof localStorage !== "undefined" && localStorage.getItem("kx_debug_docx")) {
+    const top = ((doc.content ?? []) as Block[]).map((n, i) => ({
+      i, type: n.type, text: textOf(n).slice(0, 40), children: (n.content ?? []).length,
+    }));
+    console.info("[docx-debug] top-level blocks:", top.length, top);
+  }
 
   // Split top-level blocks into OOXML sections: sectionBreak closes the
   // current section (its attrs describe the section that follows, mirroring
