@@ -9,7 +9,6 @@ import { resolveTxt, resolveMx } from "node:dns/promises";
 import { one, q, run } from "./db.js";
 
 const MAIL_BASE = () => (process.env.KREATIX_MAIL_BASE ?? "").replace(/\/+$/, "");
-const FALLBACK_DOMAIN = () => process.env.KREATIX_MAIL_DOMAIN || "kreatixtech.com";
 
 export const mailEnabled = () =>
   !!(MAIL_BASE() && process.env.KREATIX_MAIL_JWT_SECRET && process.env.KREATIX_MAIL_ADMIN_SECRET);
@@ -86,6 +85,11 @@ export class MailDomainRequiredError extends Error {
   constructor() { super("A verified company domain is required before Mail can be used"); }
 }
 
+/** Personal workspaces never get a platform-domain mailbox — members use their own email. */
+export class MailPersonalWorkspaceError extends Error {
+  constructor() { super("Kreatix Mail is available for business workspaces"); }
+}
+
 /** The org's verified primary domain, or null when none is verified. */
 export async function verifiedPrimaryDomain(orgId: string): Promise<string | null> {
   const row = await one<{ domain: string }>(
@@ -101,7 +105,7 @@ async function mailDomainForOrg(orgId: string): Promise<string> {
        LEFT JOIN org_domains d ON d.org_id = o.id AND d.is_primary AND d.status = 'verified'
       WHERE o.id = $1`, [orgId]);
   if (row?.domain) return row.domain;
-  if (row?.kind === "personal") return FALLBACK_DOMAIN();
+  if (row?.kind === "personal") throw new MailPersonalWorkspaceError();
   throw new MailDomainRequiredError();
 }
 
@@ -346,6 +350,7 @@ export async function mailStatus(user: { id: string; email: string; displayName:
     return { enabled: true as const, address: acct.email };
   } catch (e) {
     if (e instanceof MailDomainRequiredError) return { enabled: false as const, reason: "domain_required" as const };
+    if (e instanceof MailPersonalWorkspaceError) return { enabled: false as const, reason: "personal" as const };
     throw e;
   }
 }

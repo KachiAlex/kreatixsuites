@@ -8,20 +8,22 @@ import { openMail } from "../lib/openApp";
 // mount and shows a manual button when the browser blocked the window.
 
 export function Mail() {
-  const [state, setState] = useState<"opening" | "blocked" | "unavailable" | "domain">("opening");
+  const [state, setState] = useState<"opening" | "blocked" | "unavailable" | "domain" | "personal">("opening");
   const fired = useRef(false);
 
   useEffect(() => {
     if (fired.current) return;
     fired.current = true;
-    void openMail().then((ok) => {
-      if (!ok) setState("blocked");
-    }).catch(() => setState("unavailable"));
-    // the SSO endpoint can still 503 server-side — cheap probe so the card
-    // can say so instead of silently landing on an error page
+    // check availability first so a workspace without Mail gets the explanation, not a blank tab
     api.get<{ enabled?: boolean; reason?: string }>("/api/mail/status").then((s) => {
-      if (!s?.enabled) setState(s?.reason === "domain_required" ? "domain" : "unavailable");
-    }).catch(() => {});
+      if (!s?.enabled) {
+        setState(s?.reason === "domain_required" ? "domain" : s?.reason === "personal" ? "personal" : "unavailable");
+        return;
+      }
+      return openMail().then((ok) => {
+        if (!ok) setState("blocked");
+      });
+    }).catch(() => setState("unavailable"));
   }, []);
 
   return (
@@ -43,6 +45,9 @@ export function Mail() {
         )}
         {state === "domain" && (
           <p className="d-sub">Mail needs your company domain. Ask your workspace admin to verify it under Admin → Domains.</p>
+        )}
+        {state === "personal" && (
+          <p className="d-sub">Kreatix Mail is available for business workspaces. Your personal account keeps using your own email address.</p>
         )}
         {state === "unavailable" && (
           <p className="d-sub">Mail isn't configured for this workspace yet — ask your admin.</p>

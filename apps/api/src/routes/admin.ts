@@ -16,7 +16,7 @@ import { ensureSubscription, effectivePlan, planLimit, seatCount } from "../bill
 import { logActivity } from "../items.js";
 import { SUITE_APPS } from "@kreatix/shared";
 import { appSeatsFor, seatUsage, grantSeatWithinCap, releaseSeat } from "../appLicenses.js";
-import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain, syncDirectory } from "../mailBridge.js";
+import { mailAdminUsers, mailEnabled, provisionMailbox, createMailbox, updateMailbox, MailDomainRequiredError, MailPersonalWorkspaceError, planMailboxMigration, applyMailboxMigration, verifiedPrimaryDomain, syncDirectory } from "../mailBridge.js";
 
 const policiesSchema = z.object({
   aiDisabled: z.boolean().optional(),
@@ -205,6 +205,8 @@ export function adminRoutes(app: FastifyInstance) {
     } catch (e) {
       if (e instanceof MailDomainRequiredError)
         return reply.code(409).send({ error: "domain_required", message: "Verify the company domain before provisioning mailboxes" });
+      if (e instanceof MailPersonalWorkspaceError)
+        return reply.code(409).send({ error: "personal_workspace", message: "Mailboxes are only available for business workspaces" });
       throw e;
     }
   });
