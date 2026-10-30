@@ -133,6 +133,9 @@ export function Admin() {
   const [appSeats, setAppSeats] = useState<Record<string, number>>({});
   const [seatUsage, setSeatUsage] = useState<Record<string, { cap: number; used: number }>>({});
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>([]);
+  const [unassigned, setUnassigned] = useState<{ domain: string; mailboxes: { id: number; email: string; displayName: string; isActive: boolean }[] } | null>(null);
+  const [assignTo, setAssignTo] = useState<Record<number, string>>({});
+  const [unassignedBusy, setUnassignedBusy] = useState<number | null>(null);
   const [mailConfigured, setMailConfigured] = useState(false);
   const [mailBusy, setMailBusy] = useState<string | null>(null);
   const [msEnabled, setMsEnabled] = useState(false);
@@ -486,6 +489,24 @@ export function Admin() {
     } catch (e) {
       toast(e instanceof Error ? e.message : "Disconnect failed");
     }
+  };
+
+  const loadUnassigned = async () => {
+    try {
+      setUnassigned(await api.get("/api/admin/mailboxes/unassigned"));
+    } catch (e) { toast((e as Error).message); }
+  };
+  const assignMailbox = async (mailUserId: number) => {
+    const memberId = assignTo[mailUserId];
+    if (!memberId) return;
+    setUnassignedBusy(mailUserId);
+    try {
+      await api.post(`/api/admin/mailboxes/${mailUserId}/assign`, { memberId });
+      toast("Mailbox assigned");
+      setAssignTo((s) => { const { [mailUserId]: _, ...rest } = s; return rest; });
+      await Promise.all([loadUnassigned(), load()]);
+    } catch (e) { toast((e as Error).message); }
+    finally { setUnassignedBusy(null); }
   };
 
   const patchMailbox = async (a: MailAccount, patch: { active?: boolean; quotaBytes?: number }) => {
@@ -1720,6 +1741,46 @@ export function Admin() {
               )}
             </tbody>
           </table></div>
+        </section>
+      )}
+
+      {mailConfigured && (
+        <section className="admin-card" id="mail-unassigned">
+          <h2>Unassigned mailboxes</h2>
+          <p className="d-sub" style={{ marginTop: 0 }}>
+            Mailboxes on your verified domain that no member uses yet. Assigning one takes a Mail seat.
+          </p>
+          <button className="btn-secondary" style={{ marginBottom: 10 }}
+            onClick={() => void loadUnassigned()}>{unassigned ? "Refresh" : "Load unassigned mailboxes"}</button>
+          {unassigned && (
+            <div className="tbl-scroll"><table className="admin-table">
+              <thead><tr><th>Address</th><th>Name</th><th>Assign to</th><th></th></tr></thead>
+              <tbody>
+                {unassigned.mailboxes.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.email}</td>
+                    <td>{m.displayName || "—"}</td>
+                    <td>
+                      <select value={assignTo[m.id] ?? ""} onChange={(e) => setAssignTo({ ...assignTo, [m.id]: e.target.value })}>
+                        <option value="">choose a member…</option>
+                        {members.filter((x) => !x.disabled && !x.mailUserId).map((x) => (
+                          <option key={x.id} value={x.id}>{x.displayName || x.email}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <button className="btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }}
+                        disabled={!assignTo[m.id] || unassignedBusy === m.id}
+                        onClick={() => void assignMailbox(m.id)}>Assign</button>
+                    </td>
+                  </tr>
+                ))}
+                {unassigned.mailboxes.length === 0 && (
+                  <tr><td colSpan={4} className="d-sub">No unassigned mailboxes on {unassigned.domain}.</td></tr>
+                )}
+              </tbody>
+            </table></div>
+          )}
         </section>
       )}
 
