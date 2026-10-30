@@ -19,6 +19,9 @@ export interface KxDesktop {
   pendingFiles: () => Promise<string[]>;
   onOpenFile: (cb: (path: string) => void) => () => void;
   mail: { open: (url: string) => Promise<{ ok: boolean; error?: string }> };
+  saveAs: (defaultPath: string, dataBase64: string) =>
+    Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
+  overwrite: (filePath: string, dataBase64: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   closeWindow: () => Promise<void>;
   entitlement: {
     get: () => Promise<{ ok: boolean; token?: string }>;

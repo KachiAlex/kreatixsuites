@@ -10,7 +10,7 @@ import { desktop, isDesktop, isNativeMobile } from "./platform";
 export const toast = (m: string) =>
   window.dispatchEvent(new CustomEvent("kreatix:toast", { detail: m }));
 
-const blobToBase64 = (blob: Blob): Promise<string> =>
+export const blobToBase64 = (blob: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result).split(",")[1] ?? "");

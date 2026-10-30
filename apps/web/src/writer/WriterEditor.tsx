@@ -29,6 +29,9 @@ import { useAuth } from "../lib/auth";
 import { isCoarse } from "../lib/mobile";
 import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
+import { store } from "../lib/offline/store";
+import { blobToBase64 } from "../lib/saveFile";
+import { desktop, isDesktop } from "../lib/platform";
 import { OpenCancelledError } from "../lib/passwordPrompt";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
@@ -605,6 +608,32 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     }
   }, [item.id, session, toast]);
 
+  // Save = Drive sync, then (desktop) write the .docx to the file the document
+  // was opened from. First save of a document asks where to write it.
+  const saveToDisk = async () => {
+    await flushSave();
+    if (!isDesktop || !desktop || !editor) return;
+    const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
+      .then((r) => r.comments).catch(() => [] as Comment[]);
+    const blob = await (await docxMod()).exportDocxBytes(scrubbedJson(), title, {
+      comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
+    });
+    const b64 = await blobToBase64(blob);
+    const rec = await store.files.get(item.id);
+    let r: { ok: boolean; canceled?: boolean; path?: string; error?: string } = rec?.sourcePath
+      ? await desktop.overwrite(rec.sourcePath, b64) : { ok: false };
+    if (!r.ok) r = await desktop.saveAs(rec?.sourcePath ?? `${title.replace(/\.[^.]+$/, "")}.docx`, b64);
+    if (r.canceled) return;
+    if (!r.ok || !r.path) { toast(`Couldn't save: ${r.error ?? "unknown error"}`); return; }
+    await store.files.put({
+      ...(rec ?? { id: item.id, name: title, kind: "writer", updatedAt: new Date().toISOString() }),
+      sourcePath: r.path,
+    });
+    toast(`Saved ${r.path}`);
+  };
+  const saveToDiskRef = useRef<() => Promise<void>>(async () => {});
+  saveToDiskRef.current = saveToDisk;
+
   // replay pending saves when connectivity returns
   useEffect(() => {
     const on = () => { void flushSave(); };
@@ -725,7 +754,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       } else if (k === "s") {
         e.preventDefault();
         if (saveTimer.current) clearTimeout(saveTimer.current);
-        void flushSave();
+        void saveToDiskRef.current();
       } else if (k === "g") {
         e.preventDefault();
         setGoToOpen(true);
@@ -1833,7 +1862,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         { label: "Open…", shortcut: "Ctrl+O", onClick: () => navigate("/drive") },
         { label: "Open from this computer…", onClick: () => void openLocalFile().then((id) => id && navigate(`/edit/${id}`)).catch((e) => toast((e as Error).message)) },
         { divider: true } as MenuItem,
-        { label: "Save", shortcut: "Ctrl+S", onClick: () => void flushSave() },
+        { label: "Save", shortcut: "Ctrl+S", onClick: () => void saveToDiskRef.current() },
         { divider: true } as MenuItem,
         { label: "Import .docx…", onClick: () => importRef.current?.click() },
         { label: "Import text (.md / .txt / .html)…", onClick: () => textImportRef.current?.click() },

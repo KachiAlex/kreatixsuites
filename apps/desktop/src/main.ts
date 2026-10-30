@@ -317,6 +317,7 @@ ipcMain.handle("kx:googleSignIn", () => new Promise<{ code: string; codeVerifier
 ipcMain.handle("kx:readFile", (_e, filePath: string) => {
   try {
     const data = fs.readFileSync(filePath);
+    savedPaths.add(filePath);
     return { ok: true, name: path.basename(filePath), data: data.toString("base64"), size: data.length };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -336,6 +337,30 @@ ipcMain.handle("kx:saveFile", async (e, defaultName: string, dataBase64: string)
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// In-place save: the first save of a document asks where to write it (dialog
+// opens at the original location). Only paths picked in that dialog this session
+// can be written afterwards, so the renderer can't write arbitrary files.
+const savedPaths = new Set<string>();
+const writeFileSafely = (filePath: string, dataBase64: string) => {
+  const tmp = `${filePath}.kx-tmp`;
+  if (fs.existsSync(filePath)) fs.copyFileSync(filePath, `${filePath}.bak`);
+  fs.writeFileSync(tmp, Buffer.from(dataBase64, "base64"));
+  fs.renameSync(tmp, filePath);
+  savedPaths.add(filePath);
+  return { ok: true, path: filePath };
+};
+ipcMain.handle("kx:saveAs", async (e, defaultPath: string, dataBase64: string) => {
+  const owner = BrowserWindow.fromWebContents(e.sender) ?? hubWindow();
+  if (!owner) return { ok: false, error: "no window" };
+  const r = await dialog.showSaveDialog(owner, { defaultPath, filters: [{ name: "Word document", extensions: ["docx"] }] });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try { return writeFileSafely(r.filePath, dataBase64); } catch (err) { return { ok: false, error: String(err) }; }
+});
+ipcMain.handle("kx:overwrite", (_e, filePath: string, dataBase64: string) => {
+  if (!savedPaths.has(filePath)) return { ok: false, error: "This file wasn't chosen in this session" };
+  try { return writeFileSafely(filePath, dataBase64); } catch (err) { return { ok: false, error: String(err) }; }
 });
 
 // Render a standalone print document to PDF with Electron's own engine, then

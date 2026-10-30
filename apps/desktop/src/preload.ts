@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld("kxDesktop", {
   readFile: (path: string) => invoke<{ ok: boolean; name?: string; data?: string; size?: number; error?: string }>("kx:readFile", path),
   saveFile: (defaultName: string, dataBase64: string) =>
     invoke<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>("kx:saveFile", defaultName, dataBase64),
+  saveAs: (defaultPath: string, dataBase64: string) =>
+    invoke<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>("kx:saveAs", defaultPath, dataBase64),
+  overwrite: (filePath: string, dataBase64: string) =>
+    invoke<{ ok: boolean; path?: string; error?: string }>("kx:overwrite", filePath, dataBase64),
   printToPdf: (html: string, defaultName: string) =>
     invoke<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>("kx:printToPdf", html, defaultName),
   openDialog: () => invoke<string | null>("kx:openDialog"),
