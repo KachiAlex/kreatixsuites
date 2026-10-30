@@ -204,7 +204,7 @@ export const fr: Record<string, string> = {
   "lp.hero.h1a": "Faites de la place pour",
   "lp.hero.h1pre": "votre ",
   "lp.hero.h1em": "meilleur travail.",
-  "lp.hero.sub": "De votre premier brouillon à votre prochaine grande présentation. Documents, feuilles de calcul, diapositives et PDF — plus Meet, Envora, Calendrier et Chat — dans une suite magnifiquement connectée.",
+  "lp.hero.sub": "De votre premier brouillon à votre prochaine grande présentation. Documents, feuilles de calcul, diapositives et PDF — plus Meet, Kreatavi, Calendrier et Chat — dans une suite magnifiquement connectée.",
   "lp.hero.cta": "Découvrez votre nouvel espace",
   "lp.hero.explore": "Explorer la suite",
   "lp.hero.small": "Quatre apps puissantes. Une expérience familière.",
@@ -312,7 +312,7 @@ export const fr: Record<string, string> = {
 
   "lp.stats.1v": "5 + PDF", "lp.stats.1l": "éditeurs complets dans une suite",
   "lp.stats.2v": "AES-256", "lp.stats.2l": "chiffrement au repos",
-  "lp.stats.3v": "Meet · Envora · Calendrier", "lp.stats.3l": "intégrés, pas greffés",
+  "lp.stats.3v": "Meet · Kreatavi · Calendrier", "lp.stats.3l": "intégrés, pas greffés",
   "lp.stats.4v": "1 espace de travail", "lp.stats.4l": "une recherche, un ensemble d'autorisations",
 
   "lp.trust.eyebrow": "Confiance et contrôle",
@@ -327,7 +327,7 @@ export const fr: Record<string, string> = {
   "lp.trust.6t": "Autorisations granulaires", "lp.trust.6p": "Cinq rôles d'accès, liens de partage à expiration et autorisations par fichier — héritées, pas dispersées.",
 
   "auth.side.h1": "Votre travail mérite un bel espace.",
-  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Envora, Calendrier et Chat. Un espace de travail, une connexion.",
+  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Kreatavi, Calendrier et Chat. Un espace de travail, une connexion.",
   "auth.side.p1": "Cinq vrais éditeurs, pas des visionneuses — compatibles avec les fichiers Office",
   "auth.side.p2": "Chiffrement au repos et partage granulaire dans chaque offre",
   "auth.side.p3": "Assistance IA intégrée aux documents où vous êtes déjà",

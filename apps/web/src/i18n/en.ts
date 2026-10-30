@@ -254,7 +254,7 @@ export const en: Record<string, string> = {
   "lp.hero.h1a": "Make room for",
   "lp.hero.h1pre": "your ",
   "lp.hero.h1em": "best work.",
-  "lp.hero.sub": "From your first draft to your next big pitch. Documents, spreadsheets, slides and PDFs — plus Meet, Envora, Calendar and Chat — in one beautifully connected suite.",
+  "lp.hero.sub": "From your first draft to your next big pitch. Documents, spreadsheets, slides and PDFs — plus Meet, Kreatavi, Calendar and Chat — in one beautifully connected suite.",
   "lp.hero.cta": "Meet your new workspace",
   "lp.hero.explore": "Explore the suite",
   "lp.hero.small": "Four powerful apps. One familiar experience.",
@@ -393,7 +393,7 @@ export const en: Record<string, string> = {
 
   "lp.stats.1v": "5 + PDF", "lp.stats.1l": "full editors in one suite",
   "lp.stats.2v": "AES-256", "lp.stats.2l": "encryption at rest",
-  "lp.stats.3v": "Meet · Envora · Calendar", "lp.stats.3l": "built in, not bolted on",
+  "lp.stats.3v": "Meet · Kreatavi · Calendar", "lp.stats.3l": "built in, not bolted on",
   "lp.stats.4v": "1 workspace", "lp.stats.4l": "one search, one set of permissions",
 
   "lp.trust.eyebrow": "Trust & control",
@@ -408,7 +408,7 @@ export const en: Record<string, string> = {
   "lp.trust.6t": "Granular permissions", "lp.trust.6p": "Five access roles, expiry-dated share links and per-file permissions — inherited, not sprawling.",
 
   "auth.side.h1": "Your work deserves one beautiful home.",
-  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Envora, Calendar and Chat. One workspace, one sign-in.",
+  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Kreatavi, Calendar and Chat. One workspace, one sign-in.",
   "auth.side.p1": "Five real editors, not viewers — compatible with Office files",
   "auth.side.p2": "Encryption at rest and granular sharing on every plan",
   "auth.side.p3": "AI assistance built into the documents you're already in",

@@ -61,7 +61,7 @@ export function mailRoutes(app: FastifyInstance) {
     try {
       return await mailStatus(user);
     } catch {
-      return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+      return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
     }
   });
 
@@ -71,20 +71,20 @@ export function mailRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     try {
       const url = await mailSsoUrl(user);
-      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Envora service isn't configured" });
+      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Kreatavi service isn't configured" });
       return reply.redirect(url);
     } catch (e) {
       if (e instanceof MailDomainRequiredError) {
-        return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Envora</title>
+        return reply.code(409).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatavi</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
-<div><h2>Envora needs a company domain</h2><p>Your workspace hasn't verified its company domain yet, so Envora can't create a mailbox on it. Ask your workspace admin to verify the domain under Admin → Domains, then open Mail again.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
+<div><h2>Kreatavi needs a company domain</h2><p>Your workspace hasn't verified its company domain yet, so Kreatavi can't create a mailbox on it. Ask your workspace admin to verify the domain under Admin → Domains, then open Mail again.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
       }
       if (e instanceof MailPersonalWorkspaceError) {
-        return reply.code(403).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Envora</title>
+        return reply.code(403).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Kreatavi</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf7f3;color:#3a3a3f}div{max-width:420px;text-align:center}p{color:#8a8a90;line-height:1.5}a{color:#F2782E}</style>
-<div><h2>Envora is for business workspaces</h2><p>Personal accounts keep using their own email address. Envora is available when your workspace is a business workspace.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
+<div><h2>Kreatavi is for business workspaces</h2><p>Personal accounts keep using their own email address. Kreatavi is available when your workspace is a business workspace.</p><p><a href="/">Back to Kreatix Suites</a></p></div>`);
       }
-      return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+      return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
     }
   });
 
@@ -94,14 +94,14 @@ export function mailRoutes(app: FastifyInstance) {
     const { user } = req as AuthedRequest;
     try {
       const url = await mailSsoUrl(user);
-      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Envora service isn't configured" });
+      if (!url) return reply.code(503).send({ error: "mail_unavailable", message: "Kreatavi service isn't configured" });
       return { url };
     } catch (e) {
       if (e instanceof MailDomainRequiredError)
-        return reply.code(409).send({ error: "domain_required", message: "Ask your workspace admin to verify your company domain before using Envora" });
+        return reply.code(409).send({ error: "domain_required", message: "Ask your workspace admin to verify your company domain before using Kreatavi" });
       if (e instanceof MailPersonalWorkspaceError)
-        return reply.code(403).send({ error: "personal_workspace", message: "Envora is available for business workspaces" });
-      return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+        return reply.code(403).send({ error: "personal_workspace", message: "Kreatavi is available for business workspaces" });
+      return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
     }
   });
 
@@ -300,7 +300,7 @@ export function mailRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const { user } = req as AuthedRequest;
       if (!requireOrgAdmin(req as AuthedRequest, reply)) return;
-      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured" });
+      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Kreatavi is not configured" });
       const { memberId } = req.params as { memberId: string };
       const rest = (req.params as { "*": string })["*"] ?? "";
       if (!rest.startsWith("import-sessions")) return reply.code(404).send({ error: "not_found" });
@@ -320,7 +320,7 @@ export function mailRoutes(app: FastifyInstance) {
           `/${rest}${qs ? `?${qs}` : ""}`,
           { method: req.method, body, contentType: (req.headers["content-type"] as string) ?? "application/json" });
       } catch {
-        return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+        return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
       }
       if (req.method === "POST" && upstream.ok && rest.endsWith("complete"))
         void run(
@@ -347,7 +347,7 @@ export function mailRoutes(app: FastifyInstance) {
         "SELECT 1 AS x FROM mail_shares WHERE owner_user_id = $1 AND delegate_user_id = $2 AND org_id = $3",
         [ownerId, user.id, user.orgId]);
       if (!share) return reply.code(403).send({ error: "forbidden", message: "That mailbox is not shared with you" });
-      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured" });
+      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Kreatavi is not configured" });
       const owner = await one<{ id: string; email: string; display_name: string; org_id: string }>(
         "SELECT id, email, display_name, org_id FROM users WHERE id = $1 AND org_id = $2", [ownerId, user.orgId]);
       if (!owner) return reply.code(404).send({ error: "not_found" });
@@ -374,7 +374,7 @@ export function mailRoutes(app: FastifyInstance) {
           { id: owner.id, email: owner.email, displayName: owner.display_name, orgId: owner.org_id },
           path, { method: req.method, body, contentType });
       } catch {
-        return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+        return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
       }
       void run(
         `INSERT INTO activity (id, org_id, actor_id, action, detail, created_at)
@@ -394,7 +394,7 @@ export function mailRoutes(app: FastifyInstance) {
     url: "/api/mail/*",
     handler: async (req, reply) => {
       const { user } = req as AuthedRequest;
-      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Envora is not configured" });
+      if (!mailEnabled()) return reply.code(404).send({ error: "mail_disabled", message: "Kreatavi is not configured" });
 
       const rest = (req.params as { "*": string })["*"] ?? "";
       if (BLOCKED.test(rest)) return reply.code(403).send({ error: "forbidden", message: "Not proxied" });
@@ -417,7 +417,7 @@ export function mailRoutes(app: FastifyInstance) {
       try {
         upstream = await mailFetch(user, path, { method: req.method, body, contentType });
       } catch {
-        return reply.code(502).send({ error: "mail_unavailable", message: "Envora service is unavailable" });
+        return reply.code(502).send({ error: "mail_unavailable", message: "Kreatavi service is unavailable" });
       }
       const buf = Buffer.from(await upstream.arrayBuffer());
       const ct = upstream.headers.get("content-type");

@@ -321,7 +321,7 @@ function Rail({ toast }: { toast: (m: string) => void }) {
     ...(appEnabled(user?.disabledApps, "tasks") ? [{ to: "/tasks", icon: "✓", title: "Tasks" }] : []),
     ...(appEnabled(user?.disabledApps, "notes") ? [{ to: "/notes", icon: "📝", title: "Notes" }] : []),
     ...(appEnabled(user?.disabledApps, "forms") ? [{ to: "/forms", icon: "▤", title: "Forms" }] : []),
-    ...(mailOn && appEnabled(user?.disabledApps, "mail") ? [{ to: "/mail", icon: "✉", title: "Envora", sso: true }] : []),
+    ...(mailOn && appEnabled(user?.disabledApps, "mail") ? [{ to: "/mail", icon: "✉", title: "Kreatavi", sso: true }] : []),
     ...(meetOn && appEnabled(user?.disabledApps, "meet") ? [{ to: "/meet", icon: "▶", title: "Meet" }] : []),
   ];
   return (
@@ -510,7 +510,7 @@ function Sidebar({ onTemplates, open, onClose, toast }: { onTemplates: () => voi
       {mailOn && appEnabled(user?.disabledApps, "mail") && (
         <button className="nav" style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
           onClick={() => void openMail()}>
-          <AppIcon kind="mail" size={18} />Envora
+          <AppIcon kind="mail" size={18} />Kreatavi
         </button>
       )}
       {meetOn && appEnabled(user?.disabledApps, "meet") && <AppLink to="/meet"><AppIcon kind="meet" size={18} />Meet</AppLink>}

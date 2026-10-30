@@ -82,12 +82,12 @@ async function claimOwnMailbox(
 /** Thrown when a business workspace has no verified primary domain yet — its
  *  mailbox must be on the company's own domain, never the platform's. */
 export class MailDomainRequiredError extends Error {
-  constructor() { super("A verified company domain is required before Envora can be used"); }
+  constructor() { super("A verified company domain is required before Kreatavi can be used"); }
 }
 
 /** Personal workspaces never get a platform-domain mailbox — members use their own email. */
 export class MailPersonalWorkspaceError extends Error {
-  constructor() { super("Envora is available for business workspaces"); }
+  constructor() { super("Kreatavi is available for business workspaces"); }
 }
 
 /** The org's verified primary domain, or null when none is verified. */

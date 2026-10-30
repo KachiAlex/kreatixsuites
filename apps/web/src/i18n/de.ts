@@ -204,7 +204,7 @@ export const de: Record<string, string> = {
   "lp.hero.h1a": "Platz für",
   "lp.hero.h1pre": "deine ",
   "lp.hero.h1em": "beste Arbeit.",
-  "lp.hero.sub": "Vom ersten Entwurf bis zur nächsten großen Präsentation. Dokumente, Tabellen, Folien und PDFs — plus Meet, Envora, Kalender und Chat — in einer wunderbar verbundenen Suite.",
+  "lp.hero.sub": "Vom ersten Entwurf bis zur nächsten großen Präsentation. Dokumente, Tabellen, Folien und PDFs — plus Meet, Kreatavi, Kalender und Chat — in einer wunderbar verbundenen Suite.",
   "lp.hero.cta": "Lern deinen neuen Workspace kennen",
   "lp.hero.explore": "Suite entdecken",
   "lp.hero.small": "Vier starke Apps. Ein vertrautes Erlebnis.",
@@ -312,7 +312,7 @@ export const de: Record<string, string> = {
 
   "lp.stats.1v": "5 + PDF", "lp.stats.1l": "Vollwertige Editoren in einer Suite",
   "lp.stats.2v": "AES-256", "lp.stats.2l": "Verschlüsselung im Ruhezustand",
-  "lp.stats.3v": "Meet · Envora · Kalender", "lp.stats.3l": "eingebaut, nicht angedockt",
+  "lp.stats.3v": "Meet · Kreatavi · Kalender", "lp.stats.3l": "eingebaut, nicht angedockt",
   "lp.stats.4v": "1 Workspace", "lp.stats.4l": "eine Suche, ein Berechtigungssystem",
 
   "lp.trust.eyebrow": "Vertrauen & Kontrolle",
@@ -327,7 +327,7 @@ export const de: Record<string, string> = {
   "lp.trust.6t": "Granulare Berechtigungen", "lp.trust.6p": "Fünf Zugriffsrollen, Freigabelinks mit Ablaufdatum und dateibezogene Berechtigungen — vererbt, nicht verwildert.",
 
   "auth.side.h1": "Deine Arbeit verdient ein schönes Zuhause.",
-  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Envora, Kalender und Chat. Ein Workspace, eine Anmeldung.",
+  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — plus Meet, Kreatavi, Kalender und Chat. Ein Workspace, eine Anmeldung.",
   "auth.side.p1": "Fünf echte Editoren, keine Viewer — kompatibel mit Office-Dateien",
   "auth.side.p2": "Verschlüsselung im Ruhezustand und granulare Freigaben in jedem Plan",
   "auth.side.p3": "KI-Unterstützung direkt in den Dokumenten, in denen du arbeitest",

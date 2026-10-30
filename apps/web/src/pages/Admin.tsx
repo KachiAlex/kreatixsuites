@@ -886,7 +886,7 @@ export function Admin() {
             <div className="admin-kpi">
               <span>Mailboxes</span>
               <b>{mailConfigured ? mailAccounts.length : "—"}</b>
-              <small>{mailConfigured ? "Envora service connected" : "Envora not configured"}</small>
+              <small>{mailConfigured ? "Kreatavi service connected" : "Kreatavi not configured"}</small>
             </div>
             <div className="admin-kpi">
               <span>Verified domains</span>
@@ -1825,7 +1825,7 @@ export function Admin() {
                 </tr>
               ))}
               {mailAccounts.length === 0 && (
-                <tr><td colSpan={6} className="d-sub">No mailboxes yet — members get one on their first Envora visit, or use Provision above.</td></tr>
+                <tr><td colSpan={6} className="d-sub">No mailboxes yet — members get one on their first Kreatavi visit, or use Provision above.</td></tr>
               )}
             </tbody>
           </table></div>
@@ -1836,7 +1836,7 @@ export function Admin() {
         <section className="admin-card" id="mail-unassigned">
           <h2>Unassigned mailboxes</h2>
           <p className="d-sub" style={{ marginTop: 0 }}>
-            Mailboxes on your verified domain that no member uses yet. Assigning one takes an Envora seat.
+            Mailboxes on your verified domain that no member uses yet. Assigning one takes a Kreatavi seat.
           </p>
           <button className="btn-secondary" style={{ marginBottom: 10 }}
             onClick={() => void loadUnassigned()}>{unassigned ? "Refresh" : "Load unassigned mailboxes"}</button>
@@ -2001,7 +2001,7 @@ export function Admin() {
                       <span className={`role-badge ${d.status === "verified" ? "" : "warn"}`}>
                         {d.status === "verified" ? "✓ verified" : d.status === "failed" ? "✕ failed" : "… pending"}
                       </span>
-                      {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Envora">MX ✓</span>}
+                      {d.mxOk && <span className="d-sub" style={{ marginLeft: 6 }} title="MX record points at Kreatavi">MX ✓</span>}
                       {d.brevoOk && <span className="d-sub" style={{ marginLeft: 6 }} title="DKIM/DMARC authenticated for outbound">signed ✓</span>}
                     </td>
                     <td>{d.isPrimary ? <b>primary</b> : <span className="d-sub">—</span>}</td>

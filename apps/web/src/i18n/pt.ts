@@ -204,7 +204,7 @@ export const pt: Record<string, string> = {
   "lp.hero.h1a": "Abra espaço para",
   "lp.hero.h1pre": "seu ",
   "lp.hero.h1em": "melhor trabalho.",
-  "lp.hero.sub": "Do primeiro rascunho ao próximo grande pitch. Documentos, planilhas, slides e PDFs — além de Meet, Envora, Calendário e Chat — em uma suíte lindamente conectada.",
+  "lp.hero.sub": "Do primeiro rascunho ao próximo grande pitch. Documentos, planilhas, slides e PDFs — além de Meet, Kreatavi, Calendário e Chat — em uma suíte lindamente conectada.",
   "lp.hero.cta": "Conheça seu novo espaço",
   "lp.hero.explore": "Explorar a suíte",
   "lp.hero.small": "Quatro apps poderosos. Uma experiência familiar.",
@@ -312,7 +312,7 @@ export const pt: Record<string, string> = {
 
   "lp.stats.1v": "5 + PDF", "lp.stats.1l": "editores completos em uma suíte",
   "lp.stats.2v": "AES-256", "lp.stats.2l": "criptografia em repouso",
-  "lp.stats.3v": "Meet · Envora · Calendário", "lp.stats.3l": "integrados, não acoplados",
+  "lp.stats.3v": "Meet · Kreatavi · Calendário", "lp.stats.3l": "integrados, não acoplados",
   "lp.stats.4v": "1 workspace", "lp.stats.4l": "uma busca, um conjunto de permissões",
 
   "lp.trust.eyebrow": "Confiança e controle",
@@ -327,7 +327,7 @@ export const pt: Record<string, string> = {
   "lp.trust.6t": "Permissões granulares", "lp.trust.6p": "Cinco papéis de acesso, links de compartilhamento com expiração e permissões por arquivo — herdadas, não espalhadas.",
 
   "auth.side.h1": "Seu trabalho merece um lar bonito.",
-  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — além de Meet, Envora, Calendário e Chat. Um workspace, um login.",
+  "auth.side.sub": "Writer, Sheets, Present, PDF, Drive — além de Meet, Kreatavi, Calendário e Chat. Um workspace, um login.",
   "auth.side.p1": "Cinco editores de verdade, não visualizadores — compatíveis com arquivos do Office",
   "auth.side.p2": "Criptografia em repouso e compartilhamento granular em todos os planos",
   "auth.side.p3": "Assistência de IA embutida nos documentos em que você já está",

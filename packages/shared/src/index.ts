@@ -48,7 +48,7 @@ export const SUITE_APPS: SuiteAppDef[] = [
   { slug: "present", name: "Present", itemKind: "present" },
   { slug: "board", name: "Board", itemKind: "board" },
   { slug: "pdf", name: "PDF", itemKind: "pdf" },
-  { slug: "mail", name: "Envora", path: "/mail", apiPrefixes: ["/api/mail"] },
+  { slug: "mail", name: "Kreatavi", path: "/mail", apiPrefixes: ["/api/mail"] },
   { slug: "meet", name: "Meet", path: "/meet", apiPrefixes: ["/api/meet"] },
   { slug: "chat", name: "Chat", path: "/chat", apiPrefixes: ["/api/chat"] },
   { slug: "calendar", name: "Calendar", path: "/calendar", apiPrefixes: ["/api/calendar"] },
