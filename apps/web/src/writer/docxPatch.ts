@@ -7,6 +7,15 @@ import JSZip from "jszip";
 
 type Node = { type: string; attrs?: Record<string, unknown>; content?: Node[]; text?: string };
 
+/** Thrown when an edit can't be kept in the original Word file. The caller must
+ *  not rebuild silently: it asks the user, and only then exports a labelled copy. */
+export class UnpreservableEditError extends Error {
+  constructor() {
+    super("This edit can't be kept in the original Word file");
+    this.name = "UnpreservableEditError";
+  }
+}
+
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PATCHABLE = new Set(["paragraph", "heading"]);
 // constructs a regenerated run must not contain: they reference parts of the package we keep as-is

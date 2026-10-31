@@ -623,7 +623,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
 
   // Word export: unchanged → original bytes; edited → the original package with only
   // the changed paragraphs regenerated; anything the patch can't represent → full rebuild
-  const buildWord = async (docName: string, comments: Comment[]): Promise<Blob> => {
+  const buildWord = async (docName: string, comments: Comment[], opts: { allowConverted?: boolean } = {}): Promise<Blob> => {
     if (!editor) throw new Error("editor not ready");
     const current = scrubbedJson();
     const base = localStorage.getItem(`kx_docx_base:${item.id}`);
@@ -636,6 +636,12 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       const patched = await tryPatchExport(original, JSON.parse(base), current as never,
         async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
       if (patched) return patched;
+      // refused: never rebuild silently — the user's latest edits stay in Kreatix,
+      // and the caller decides whether to export a labelled converted copy
+      if (!opts.allowConverted) {
+        const { UnpreservableEditError } = await import("./docxPatch");
+        throw new UnpreservableEditError();
+      }
     }
     return (await docxMod()).exportDocxBytes(current, docName, {
       comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
@@ -649,7 +655,11 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!isDesktop || !desktop || !editor) return;
     const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
       .then((r) => r.comments).catch(() => [] as Comment[]);
-    const blob = await buildWord(title, comments);
+    const blob = await buildWord(title, comments).catch((e: unknown) => {
+      toast(e instanceof Error ? `${e.message}. Your edits are kept in Kreatix. Use Export → Word copy — converted to save a rebuilt copy.` : "Couldn't save");
+      return null;
+    });
+    if (!blob) return;
     const b64 = await blobToBase64(blob);
     const rec = await store.files.get(item.id);
     let r: { ok: boolean; canceled?: boolean; path?: string; error?: string } = rec?.sourcePath
@@ -1340,12 +1350,19 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const name = title;
     const base = name.replace(/\.[^.]+$/, "");
     return [
-      { id: "docx", label: "Microsoft Word (.docx)", hint: "Full fidelity — styles, comments, page setup",
+      { id: "docx", label: "Microsoft Word (.docx)", hint: "Keeps the original file where your edits allow; otherwise asks first",
         produce: async () => {
           const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
             .then((r) => r.comments).catch(() => [] as Comment[]);
           const blob = await buildWord(name, comments);
           return { name: `${base}.docx`, blob };
+        } },
+      { id: "docx-converted", label: "Word copy — converted (formatting may change)", hint: "Explicit rebuild from the editor. Use only when the original can't keep your edits",
+        produce: async () => {
+          const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
+            .then((r) => r.comments).catch(() => [] as Comment[]);
+          const blob = await buildWord(name, comments, { allowConverted: true });
+          return { name: `${base} (converted).docx`, blob };
         } },
       { id: "pdf", label: "PDF document (.pdf)", hint: "Same layout as Word — converted on the server, text stays selectable",
         produce: async (progress) => {
