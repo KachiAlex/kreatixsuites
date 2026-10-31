@@ -233,6 +233,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   // staged save payload — a thunk so per-keystroke updates don't pay the
   // full getJSON() serialization before the debounce window even elapses
   const pendingJson = useRef<unknown | (() => unknown)>(null);
+  // fingerprint of the content right after a Word file was imported; while it
+  // still matches, export returns the original upload byte-for-byte
+  const docxBaseline = useRef<{ itemId: string; hash: string } | null>(null);
   const editorRef = useRef<Editor | null>(null);
   // collab docs start empty until the Y.Doc syncs/seeds — staging a save before
   // that would overwrite the canonical head with an empty doc
@@ -613,6 +616,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     }
   }, [item.id, session, toast]);
 
+  const originalIfUnchanged = async (): Promise<Blob | null> => {
+    const base = docxBaseline.current;
+    if (!base || base.itemId !== item.id || !editor) return null;
+    if (JSON.stringify(scrubbedJson()) !== base.hash) return null;
+    return api.get<Blob>(`/api/files/${item.id}/versions/1/content`).catch(() => null);
+  };
+
   // Save = Drive sync, then (desktop) write the .docx to the file the document
   // was opened from. First save of a document asks where to write it.
   const saveToDisk = async () => {
@@ -620,7 +630,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!isDesktop || !desktop || !editor) return;
     const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
       .then((r) => r.comments).catch(() => [] as Comment[]);
-    const blob = await (await docxMod()).exportDocxBytes(scrubbedJson(), title, {
+    const blob = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), title, {
       comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
     });
     const b64 = await blobToBase64(blob);
@@ -1251,7 +1261,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!editor || !sourceFile || autoImported.current === editor) return;
     autoImported.current = editor;
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
-    void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));
+    if (ext === "docx") {
+      void applyImport(sourceFile).then(() => {
+        if (editor) docxBaseline.current = { itemId: item.id, hash: JSON.stringify(editor.getJSON()) };
+      });
+    } else {
+      void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, sourceFile]);
 
@@ -1311,7 +1327,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         produce: async () => {
           const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
             .then((r) => r.comments).catch(() => [] as Comment[]);
-          const blob = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
+          const blob = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
             comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
           });
           return { name: `${base}.docx`, blob };
@@ -1328,7 +1344,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
             .then((r) => r.comments).catch(() => [] as Comment[]);
           const tBuild = performance.now();
           progress("Building Word file…", 0.35);
-          const docx = await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
+          const docx = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
             comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
           });
           stage("build docx", tBuild);
