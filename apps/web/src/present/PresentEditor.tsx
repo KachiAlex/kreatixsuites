@@ -809,7 +809,13 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
           if (original && baseline) {
             if (JSON.stringify(deck) === JSON.stringify(baseline))
               return { name: `${base}.pptx`, blob: new Blob([original], { type: PPTX_MIME }) };
-            throw new Error("This edit can't be kept in the original PowerPoint file yet. Your work is saved in Kreatix — use PowerPoint copy — converted to export a rebuilt file");
+            let refusal = "";
+            try {
+              const { patchPptx } = await import("./pptxPatch");
+              const patched = await patchPptx(original, baseline as never, deck as never);
+              if (patched) return { name: `${base}.pptx`, blob: patched };
+            } catch (e) { refusal = e instanceof Error ? e.message : ""; }
+            throw new Error(`Can't keep this edit in the original PowerPoint file: ${refusal || "unsupported change"}. Your work is saved in Kreatix — use PowerPoint copy — converted to export a rebuilt file`);
           }
           if (original) throw new Error("This PowerPoint file was imported before its original could be tracked. Export a converted copy instead");
           return { name: `${base}.pptx`,
