@@ -339,6 +339,45 @@ for (const fx of FIXTURES) {
   const a11 = topIdx(mv, "11"), a12 = topIdx(mv, "12");
   [mv.content[a11], mv.content[a12]] = [mv.content[a12], mv.content[a11]];
   check("move: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mv, regenS)) === null);
+
+  // a brand-new table appended after the last paragraph grafts into the package
+  const tbl = (cell: string) => ({
+    type: "table", attrs: { srcIdx: null },
+    content: [{ type: "tableRow", content: [
+      { type: "tableCell", attrs: {}, content: [{ type: "paragraph", content: [{ type: "text", text: cell }] }] },
+      { type: "tableCell", attrs: {}, content: [{ type: "paragraph", content: [{ type: "text", text: "B" }] }] },
+    ] }],
+  });
+  const app = copyOf();
+  app.content.push(tbl("cell-A"), { type: "paragraph", attrs: { srcIdx: null }, content: [{ type: "text", text: "After the table" }] });
+  const outT = await tpS(bytesS.buffer as ArrayBuffer, baseS, app, regenS);
+  check("table append: patch produced", outT !== null);
+  if (outT) {
+    const tx = await (await JSZip.loadAsync(await outT.arrayBuffer())).file("word/document.xml")!.async("string");
+    const srcX = await (await JSZip.loadAsync(bytesS.buffer as ArrayBuffer)).file("word/document.xml")!.async("string");
+    const tblCount = (x: string) => (x.match(/<w:tbl(?=[ >])/g) ?? []).length;
+    check("table append: one table grafted", tblCount(tx) === tblCount(srcX) + 1, `${tblCount(srcX)} -> ${tblCount(tx)}`);
+    check("table append: cell text present", tx.includes("cell-A"));
+    check("table append: trailing paragraph present", tx.includes("After the table"));
+    check("table append: original paragraphs kept", [...tx.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)].length === baseCount + 3);
+  }
+
+  // a new table at the very start has no anchor paragraph: refused
+  const t0 = copyOf();
+  t0.content.unshift(tbl("X"));
+  check("table insert at start: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, t0, regenS)) === null);
+
+  // a new table right after a list block has no paragraph anchor: refused
+  const tl = copyOf();
+  const li = tl.content.findIndex((n: any) => n.type === "orderedList");
+  tl.content.splice(li + 1, 0, tbl("X"));
+  check("table insert after list: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, tl, regenS)) === null);
+
+  // moving the original list to the end is refused
+  const mvL = copyOf();
+  const li2 = mvL.content.findIndex((n: any) => n.type === "orderedList");
+  mvL.content.push(...mvL.content.splice(li2, 1));
+  check("list move to end: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mvL, regenS)) === null);
 }
 
 console.log(`${passed} passed, ${failed} failed`);

@@ -445,6 +445,21 @@ export async function tryPatchExport(source: ArrayBuffer, baseline: Node, curren
   try { return await patchOrRefuse(source, baseline, current, regen); } catch (e) { if (e instanceof UnpreservableEditError) return null; throw e; }
 }
 
+/** Render a new non-paragraph block (e.g. a table the user added) to OOXML by
+ *  rebuilding it alone, so it can be grafted into the original package. Refuses
+ *  when the result needs parts this path doesn't merge — pictures, links,
+ *  fields or list numbering. */
+async function regenerateBlock(n: Node, regen: (doc: Node) => Promise<Blob>): Promise<string | null> {
+  const blob = await regen({ type: "doc", content: [n] });
+  const docXml = await (await JSZip.loadAsync(await blob.arrayBuffer())).file("word/document.xml")?.async("string");
+  const body = docXml?.match(/<w:body>([\s\S]*)<\/w:body>/)?.[1];
+  if (!body) return null;
+  const inner = body.replace(/<w:sectPr[\s\S]*?<\/w:sectPr>\s*$/, "").trim();
+  if (!inner) return null;
+  if (/\br:(id|embed|link)=|<w:numId\b|<w:fldChar|<w:instrText/.test(inner)) return null;
+  return inner;
+}
+
 /** Patch the original package with the edits between `baseline` (the document
  *  as imported) and `current` (the document now). Edited text is rebuilt in place;
  *  paragraphs added after a paragraph are inserted; paragraphs removed are deleted.
@@ -465,9 +480,10 @@ export async function patchOrRefuse(
   const baseTop = (baseline.content ?? []) as Node[];
   const curTop = (current.content ?? []) as Node[];
   const isText = (n: Node) => TEXT_BLOCK.has(n.type);
-  // every block that isn't a top-level paragraph keeps its place, content and attributes
-  const others = (bs: Node[]) => bs.filter((b) => !isText(b)).map(skeleton);
-  if (!same(others(baseTop), others(curTop))) return refuse("a table, list or other block was added, removed or changed");
+  // original non-paragraph blocks must survive unchanged and in order; extras
+  // in the current document become insertions after a paragraph anchor
+  const baseOthers = baseTop.filter((b) => !isText(b));
+  const baseTopIndex = new Map<Node, number>(baseTop.map((b, i) => [b, i]));
   const baseTextBlocks = baseTop.filter(isText);
   if (baseTextBlocks.some((b) => srcOf(b) == null)) return refuse("a paragraph has no source link");
   const baseOrder = baseTextBlocks.map((b) => srcOf(b) as number);
@@ -479,18 +495,39 @@ export async function patchOrRefuse(
   for (const idx of curMap.keys()) if (!baseMap.has(idx)) return refuse("a paragraph from outside the original was found");
 
   type Edit = { start: number; end: number; xml: string; kind: number };
+  type Ins = { kind: "p"; runs: string } | { kind: "block"; xml: string };
   const edits: Edit[] = [];
   const matched = new Set<number>();
-  const insertsAfter = new Map<number, string[]>();
-  let anchor: number | null = null, blockSince = false, lastPos = -1;
+  const insertsAfter = new Map<number, Ins[]>();
+  let anchor: number | null = null, blockSince = false, lastPos = -1, lastTopKey = -1, otherCursor = 0;
   for (const c of curTop) {
-    if (!isText(c)) { blockSince = true; anchor = null; continue; }
+    if (!isText(c)) {
+      const expect = baseOthers[otherCursor];
+      if (expect && same(skeleton(expect), skeleton(c))) {
+        // the original block survives here — it must keep its place among the source blocks
+        otherCursor++;
+        const key = baseTopIndex.get(expect) ?? 0;
+        if (key <= lastTopKey) return refuse("a table or other block was moved");
+        lastTopKey = key;
+        blockSince = true; anchor = null;
+        continue;
+      }
+      // a new block: it grafts after the last paragraph that kept its identity
+      if (anchor == null || blockSince) return refuse("a new table or block was added where it can't be placed (before the first paragraph or after a table)");
+      const blockXml = await regenerateBlock(c, regen);
+      if (blockXml == null) return refuse("a new table or block contains content this path can't write (picture, link, list or field)");
+      insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), { kind: "block", xml: blockXml }]);
+      continue;
+    }
     const idx = srcOf(c);
     const pos = idx == null ? -1 : baseOrder.indexOf(idx);
     if (idx != null && pos >= 0 && curMap.get(idx) === c) {
       // the source paragraph keeps its identity: it must stay in order and keep its formatting
       if (pos < lastPos) return refuse("paragraphs were reordered");
       lastPos = pos;
+      const key = baseTopIndex.get(baseTextBlocks[pos]) ?? 0;
+      if (key <= lastTopKey) return refuse("a paragraph was moved across a table or other block");
+      lastTopKey = key;
       matched.add(idx);
       if (!same(baseMap.get(idx)?.attrs, c.attrs)) return refuse("a paragraph's formatting (alignment, spacing, indents) was changed");
       anchor = idx;
@@ -501,8 +538,9 @@ export async function patchOrRefuse(
     if (anchor == null || blockSince || c.type !== "paragraph") return refuse("a new paragraph has no paragraph before it to attach to, or follows a table or list");
     const runs = await regenerateRuns(c, regen);
     if (runs == null) return refuse("a new paragraph contains content this path can't write (drawing, field, link)");
-    insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), runs]);
+    insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), { kind: "p", runs }]);
   }
+  if (otherCursor !== baseOthers.length) return refuse("a table, list or other block was removed or changed");
 
   for (const idx of baseOrder) {
     if (matched.has(idx)) continue;
@@ -544,8 +582,10 @@ export async function patchOrRefuse(
     const open = original.match(/^<w:p[^>]*>/)?.[0] ?? "";
     const pPr = (original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "")
       .replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, "").replace(/<w:sectPr[\s\S]*?<\/w:sectPr>/, "");
-    inserted += chunks.length;
-    edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => `<w:p>${pPr}${r}</w:p>`).join(""), kind: 1 });
+    // paragraphs inside grafted blocks (e.g. table cells) count too — the final
+    // count check compares every <w:p> in the output
+    inserted += chunks.reduce((n, r) => n + (r.kind === "p" ? 1 : (r.xml.match(/<w:p(?=[ >])[^>]*?(?<!\/)>/g) ?? []).length), 0);
+    edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => r.kind === "p" ? `<w:p>${pPr}${r.runs}</w:p>` : r.xml).join(""), kind: 1 });
   }
   if (!edits.length) return refuse("no change could be applied");
 
