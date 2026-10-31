@@ -396,6 +396,23 @@ for (const fx of FIXTURES) {
     check("table append: original paragraphs kept", [...tx.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)].length === baseCount + 3);
   }
 
+  // a whole new list grafts with its numbering merged into numbering.xml
+  const nl = copyOf();
+  nl.content.push({
+    type: "orderedList", attrs: { srcIdx: null },
+    content: [{ type: "listItem", attrs: { srcIdx: null }, content: [{ type: "paragraph", content: [{ type: "text", text: "Brand new clause" }] }] }],
+  });
+  const outNL = await tpS(bytesS.buffer as ArrayBuffer, baseS, nl, regenS);
+  check("new list: patch produced", outNL !== null);
+  if (outNL) {
+    const nz = await JSZip.loadAsync(await outNL.arrayBuffer());
+    const nx = await nz.file("word/document.xml")!.async("string");
+    const nn = await nz.file("word/numbering.xml")!.async("string");
+    check("new list: item text present", nx.includes("Brand new clause"));
+    const ids = [...new Set([...nx.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]).filter((i) => i !== "0"))];
+    check("new list: every numId has a definition", ids.every((i) => nn.includes(`<w:num w:numId="${i}"`)));
+  }
+
   // a new table at the very start has no anchor paragraph: refused
   const t0 = copyOf();
   t0.content.unshift(tbl("X"));

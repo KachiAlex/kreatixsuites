@@ -485,17 +485,58 @@ async function mergePPr(node: Node, origPPr: string, regen: (doc: Node) => Promi
 }
 
 /** Render a new non-paragraph block (e.g. a table the user added) to OOXML by
- *  rebuilding it alone, so it can be grafted into the original package. Refuses
- *  when the result needs parts this path doesn't merge — pictures, links,
- *  fields or list numbering. */
-async function regenerateBlock(n: Node, regen: (doc: Node) => Promise<Blob>): Promise<string | null> {
+ *  rebuilding it alone, so it can be grafted into the original package. When the
+ *  block is a list, its numbering definitions merge into the package's
+ *  numbering.xml under fresh ids. Refuses when the result needs other parts
+ *  this path doesn't merge — pictures, links or fields. */
+async function regenerateBlock(n: Node, regen: (doc: Node) => Promise<Blob>, zip?: JSZip): Promise<string | null> {
   const blob = await regen({ type: "doc", content: [n] });
-  const docXml = await (await JSZip.loadAsync(await blob.arrayBuffer())).file("word/document.xml")?.async("string");
+  const z2 = await JSZip.loadAsync(await blob.arrayBuffer());
+  const docXml = await z2.file("word/document.xml")?.async("string");
   const body = docXml?.match(/<w:body>([\s\S]*)<\/w:body>/)?.[1];
   if (!body) return null;
-  const inner = body.replace(/<w:sectPr[\s\S]*?<\/w:sectPr>\s*$/, "").trim();
+  let inner = body.replace(/<w:sectPr[\s\S]*?<\/w:sectPr>\s*$/, "").trim();
   if (!inner) return null;
-  if (/\br:(id|embed|link)=|<w:numId\b|<w:fldChar|<w:instrText/.test(inner)) return null;
+  if (/\br:(id|embed|link)=|<w:fldChar|<w:instrText/.test(inner)) return null;
+  const numIds = [...new Set([...inner.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]).filter((i) => i !== "0"))];
+  if (!numIds.length) return inner;
+  // list graft: merge the regenerated numbering defs into the original part
+  if (!zip) return null;
+  const numXml2 = await z2.file("word/numbering.xml")?.async("string");
+  if (!numXml2) return null;
+  let numXml1 = await zip.file("word/numbering.xml")?.async("string");
+  if (!numXml1) {
+    // the original has no lists — create the part, its content-type and its rel
+    numXml1 = `<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:numbering>`;
+    const ct = await zip.file("[Content_Types].xml")?.async("string");
+    if (!ct) return null;
+    zip.file("[Content_Types].xml", ct.replace("</Types>",
+      `<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`));
+    const relsPath = "word/_rels/document.xml.rels";
+    const rels = await zip.file(relsPath)?.async("string");
+    if (!rels) return null;
+    const rid = `rId${1 + Math.max(0, ...[...rels.matchAll(/Id="rId(\d+)"/g)].map((m) => +m[1]))}`;
+    zip.file(relsPath, rels.replace("</Relationships>",
+      `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`));
+  }
+  const maxAbs = Math.max(-1, ...[...numXml1.matchAll(/<w:abstractNum w:abstractNumId="(\d+)"/g)].map((m) => +m[1]));
+  const maxNum = Math.max(0, ...[...numXml1.matchAll(/<w:num w:numId="(\d+)"/g)].map((m) => +m[1]));
+  let nextAbs = maxAbs + 1, nextNum = maxNum + 1, insertAbs = "", insertNum = "";
+  for (const id of numIds) {
+    const absId = numXml2.match(new RegExp(`<w:num w:numId="${id}"[^>]*>\\s*<w:abstractNumId w:val="(\\d+)"`))?.[1];
+    const absXml = absId != null ? numXml2.match(new RegExp(`<w:abstractNum w:abstractNumId="${absId}"[\\s\\S]*?</w:abstractNum>`))?.[0] : undefined;
+    if (!absXml) return null;
+    insertAbs += absXml.replace(`w:abstractNumId="${absId}"`, `w:abstractNumId="${nextAbs}"`);
+    insertNum += `<w:num w:numId="${nextNum}"><w:abstractNumId w:val="${nextAbs}"/></w:num>`;
+    inner = inner.replaceAll(`<w:numId w:val="${id}"`, `<w:numId w:val="${nextNum}"`);
+    nextAbs++; nextNum++;
+  }
+  // schema order: every abstractNum before the first w:num, w:num at the end
+  numXml1 = numXml1.includes("<w:num ")
+    ? numXml1.replace(/<w:num /, `${insertAbs}<w:num `)
+    : numXml1.replace("</w:numbering>", `${insertAbs}</w:numbering>`);
+  numXml1 = numXml1.replace("</w:numbering>", `${insertNum}</w:numbering>`);
+  zip.file("word/numbering.xml", numXml1);
   return inner;
 }
 
@@ -615,7 +656,7 @@ export async function patchOrRefuse(
       }
       // a new block: it grafts after the last paragraph that kept its identity
       if (anchor == null || blockSince) return refuse("a new table or block was added where it can't be placed (before the first paragraph or after a table)");
-      const blockXml = await regenerateBlock(c, regen);
+      const blockXml = await regenerateBlock(c, regen, zip);
       if (blockXml == null) return refuse("a new table or block contains content this path can't write (picture, link, list or field)");
       insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), { kind: "block", xml: blockXml }]);
       continue;
