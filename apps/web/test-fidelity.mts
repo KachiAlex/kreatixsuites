@@ -378,6 +378,35 @@ for (const fx of FIXTURES) {
   const li2 = mvL.content.findIndex((n: any) => n.type === "orderedList");
   mvL.content.push(...mvL.content.splice(li2, 1));
   check("list move to end: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mvL, regenS)) === null);
+
+  // paragraph formatting: centering a paragraph merges w:jc into its original pPr
+  const fmt = copyOf();
+  fmt.content[topIdx(fmt, "11")].attrs = { ...fmt.content[topIdx(fmt, "11")].attrs, textAlign: "center" };
+  const outF = await tpS(bytesS.buffer as ArrayBuffer, baseS, fmt, regenS);
+  check("fmt: alignment change produces a patch", outF !== null);
+  if (outF) {
+    const fx2 = await (await JSZip.loadAsync(await outF.arrayBuffer())).file("word/document.xml")!.async("string");
+    const paras = fx2.slice(fx2.indexOf("<w:body>")).match(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)!;
+    const edited = paras.find((p) => p.includes("Name:"));
+    check("fmt: the edited paragraph carries centered justification", edited?.includes('<w:jc w:val="center"') === true, edited?.match(/<w:jc[^/]*\/>/)?.[0] ?? "none");
+  }
+
+  // indent change: w:ind merges in alongside kept original properties
+  const ind = copyOf();
+  ind.content[topIdx(ind, "12")].attrs = { ...ind.content[topIdx(ind, "12")].attrs, indentPx: 96 };
+  const outI = await tpS(bytesS.buffer as ArrayBuffer, baseS, ind, regenS);
+  check("fmt: indent change produces a patch", outI !== null);
+  if (outI) {
+    const ix = await (await JSZip.loadAsync(await outI.arrayBuffer())).file("word/document.xml")!.async("string");
+    const paras = ix.slice(ix.indexOf("<w:body>")).match(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)!;
+    check("fmt: indented paragraph has w:ind", paras.some((p) => p.includes("<w:ind")));
+  }
+
+  // formatting change on a list paragraph is still refused
+  const lf = copyOf();
+  const li3 = lf.content.find((n: any) => n.type === "orderedList").content[0];
+  li3.content[0].attrs = { ...li3.content[0].attrs, textAlign: "center" };
+  check("fmt: list paragraph formatting refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, lf, regenS)) === null);
 }
 
 {

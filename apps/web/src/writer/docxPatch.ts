@@ -445,6 +445,45 @@ export async function tryPatchExport(source: ArrayBuffer, baseline: Node, curren
   try { return await patchOrRefuse(source, baseline, current, regen); } catch (e) { if (e instanceof UnpreservableEditError) return null; throw e; }
 }
 
+/** Depth-0 <w:tag> children of a <w:pPr>, as {tag, xml} slices. */
+function pprChildren(inner: string): { tag: string; xml: string }[] {
+  const out: { tag: string; xml: string }[] = [];
+  const re = /<w:(\w+)[^>]*?(?:\/>|>)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(inner))) {
+    if (m[0].endsWith("/>")) { out.push({ tag: m[1], xml: m[0] }); continue; }
+    const close = `</w:${m[1]}>`;
+    const end = inner.indexOf(close, re.lastIndex);
+    if (end < 0) break;
+    out.push({ tag: m[1], xml: inner.slice(m.index, end + close.length) });
+    re.lastIndex = end + close.length;
+  }
+  return out;
+}
+
+/** w:pPr children the editor models — these come from the regenerated
+ *  paragraph; every other child (numbering, section breaks, keep rules,
+ *  paragraph-mark run props, tracked changes) is preserved from the original. */
+const PPR_MODELLED = new Set(["pStyle", "jc", "spacing", "ind", "pBdr", "shd", "tabs", "bidi", "textAlignment", "outlineLvl"]);
+const PPR_ORDER = ["pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs", "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct", "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd", "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents", "suppressOverlap", "jc", "textDirection", "textAlignment", "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr", "pPrChange"];
+
+/** Merge an edited paragraph's formatting into the ORIGINAL <w:pPr>: the
+ *  regenerated paragraph supplies the modelled properties; unmodelled
+ *  original children are kept verbatim and the result is emitted in the
+ *  schema's child order. */
+async function mergePPr(node: Node, origPPr: string, regen: (doc: Node) => Promise<Blob>): Promise<string | null> {
+  const blob = await regen({ type: "doc", content: [node] });
+  const docXml = await (await JSZip.loadAsync(await blob.arrayBuffer())).file("word/document.xml")?.async("string");
+  const genP = docXml?.match(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/)?.[0];
+  if (!genP) return null;
+  const genInner = (genP.match(/<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "").replace(/^<w:pPr>|<\/w:pPr>$/g, "");
+  const origInner = origPPr.replace(/^<w:pPr>|<\/w:pPr>$/g, "");
+  const keep = pprChildren(origInner).filter((ch) => !PPR_MODELLED.has(ch.tag));
+  const rank = (t: string) => { const i = PPR_ORDER.indexOf(t); return i < 0 ? PPR_ORDER.length : i; };
+  const merged = [...pprChildren(genInner), ...keep].sort((a, b) => rank(a.tag) - rank(b.tag));
+  return `<w:pPr>${merged.map((m) => m.xml).join("")}</w:pPr>`;
+}
+
 /** Render a new non-paragraph block (e.g. a table the user added) to OOXML by
  *  rebuilding it alone, so it can be grafted into the original package. Refuses
  *  when the result needs parts this path doesn't merge — pictures, links,
@@ -529,7 +568,7 @@ export async function patchOrRefuse(
       if (key <= lastTopKey) return refuse("a paragraph was moved across a table or other block");
       lastTopKey = key;
       matched.add(idx);
-      if (!same(baseMap.get(idx)?.attrs, c.attrs)) return refuse("a paragraph's formatting (alignment, spacing, indents) was changed");
+      // formatting changes merge into the original w:pPr in the edit pass below
       anchor = idx;
       blockSince = false;
       continue;
@@ -557,14 +596,16 @@ export async function patchOrRefuse(
     const span = spans[idx];
     if (!span) return refuse("a changed paragraph could not be located in the original file");
     // the table/list skeleton was verified unchanged above, so a nested
-    // paragraph rebuilds in place — but only its text, not its formatting
-    if (!same(b.attrs, c.attrs) && insideAny(span, tables)) return refuse("paragraph formatting changed inside a table cell");
-    if (!same(b.attrs, c.attrs)) return refuse("a list paragraph's formatting was changed");
+    // paragraph rebuilds in place — but only its text, not its formatting.
+    // top-level paragraphs may change formatting: it merges into the w:pPr.
+    if (!same(b.attrs, c.attrs) && (insideAny(span, tables) || !baseTop.includes(b)))
+      return refuse("paragraph formatting changed inside a table cell or list item");
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0];
     if (!open) return refuse("a changed paragraph could not be read");
     if (PICTURE.test(original)) {
       // pictures stay in place: text and tracked formatting are rebuilt around them
+      if (!same(b.attrs, c.attrs)) return refuse("paragraph formatting changed where a picture sits");
       const t = textAndFmt(c);
       if (!t) return refuse("a changed paragraph has an inline object this path can't write");
       const rebuilt = patchRuns(original, t.text, t.fmt);
@@ -572,7 +613,12 @@ export async function patchOrRefuse(
       edits.push({ start: span.start, end: span.end, xml: rebuilt, kind: 0 });
       continue;
     }
-    const pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+    let pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+    if (!same(b.attrs, c.attrs)) {
+      const merged = await mergePPr(c, pPr, regen);
+      if (merged == null) return refuse("paragraph formatting could not be rewritten");
+      pPr = merged;
+    }
     const runs = await regenerateRuns(c, regen);
     if (runs == null) return refuse("a changed paragraph contains content this path can't write (drawing, field, link)");
     edits.push({ start: span.start, end: span.end, xml: open + pPr + runs + CLOSE, kind: 0 });
