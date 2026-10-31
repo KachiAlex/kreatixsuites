@@ -94,5 +94,38 @@ for (const fx of FIXTURES) {
   }
 }
 
+{
+  const { tryPatchExport: tp2 } = await import("./src/writer/docxPatch");
+  const { DOMParser: PM2 } = await import("@tiptap/pm/model");
+  const { getSchema: gs2 } = await import("@tiptap/core");
+  const SK2 = (await import("@tiptap/starter-kit")).default;
+  const IM2 = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KP2 } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: ph2 } = await import("linkedom");
+  const bytes2 = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const imp2 = await importDocx(new File([bytes2], "f.docx"));
+  const { document: d3 } = ph2(`<!doctype html><html><body><div id="r">${imp2.html}</div></body></html>`);
+  const sch2 = gs2([SK2, IM2, KP2]);
+  const base2 = PM2.fromSchema(sch2).parse(d3.getElementById("r") as never).toJSON() as any;
+  const sigIdx = base2.content.findIndex((n: any) => n.attrs?.srcIdx === "10");
+  const pics = async (b: ArrayBuffer | Blob) => {
+    const x = await (await JSZip.loadAsync(b instanceof Blob ? await b.arrayBuffer() : b)).file("word/document.xml")!.async("string");
+    const p = [...x.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)][10][0];
+    return { embeds: [...p.matchAll(/r:embed="([^"]+)"/g)].map((m) => m[1]).join(","), text: [...p.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("") };
+  };
+  const origPic = await pics(bytes2.buffer as ArrayBuffer);
+  check("sig: original has three picture embeds", origPic.embeds.split(",").length === 3, origPic.embeds);
+  for (const [label, from, to] of [["before first picture", "Dared this.30", "Dared this.31"], ["after last picture", "26", "2027"]] as const) {
+    const ed = JSON.parse(JSON.stringify(base2));
+    const n = ed.content[sigIdx];
+    const text = (n.content ?? []).map((c: any) => c.text ?? "").join("");
+    n.content = [{ type: "text", text: text.replace(from, to) }];
+    const out = await tp2(bytes2.buffer as ArrayBuffer, base2, ed, async (dd: any) => exportDocxBytes(dd, "regen"));
+    if (!out) { check("sig " + label + ": patch produced", false, "fell back"); continue; }
+    const after = await pics(out);
+    check("sig " + label + ": pictures kept in order", after.embeds === origPic.embeds, after.embeds);
+    check("sig " + label + ": edited text", after.text.includes(to), after.text);
+  }
+}
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
