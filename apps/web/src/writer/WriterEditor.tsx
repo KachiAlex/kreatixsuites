@@ -578,21 +578,41 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         meta.set("seeded", true);
       });
     };
+    // Exactly-once seeding across tabs: the old min-clientID election raced when
+    // two tabs reconnected together — each saw only its own awareness state and
+    // both seeded, duplicating the document. Instead every tab that sees an
+    // empty doc claims "seededBy" (Yjs last-write-wins, converges to one id),
+    // then after a settle delay only the surviving claimant seeds.
+    const SEED_CLAIM_MS = 700;
     let done = false;
+    const trySeed = (round: number) => {
+      if (done || editor.isDestroyed) return;
+      if (!docIsEmpty() || meta.get("seeded")) { done = true; return; }
+      meta.set("seededBy", session.awareness.clientID);
+      window.setTimeout(() => {
+        if (done || editor.isDestroyed) return;
+        if (!docIsEmpty() || meta.get("seeded")) { done = true; return; }
+        if (meta.get("seededBy") !== session.awareness.clientID) {
+          // another tab claimed it — give it time to seed; re-claim only if it died
+          if (round < 3) window.setTimeout(() => trySeed(round + 1), SEED_CLAIM_MS * (round + 1));
+          return;
+        }
+        done = true;
+        seed();
+      }, SEED_CLAIM_MS);
+    };
     const elect = () => {
       if (editor.isDestroyed) return;
       collabReady.current = true;
       if (canMutate) editor.commands.flattenVMerges(); // normalize synced rowspan tables
-      if (done || !docIsEmpty() || meta.get("seeded")) return;
-      const ids = [...session.awareness.getStates().keys()];
-      if (Math.min(...ids) === session.awareness.clientID) { done = true; seed(); }
+      trySeed(0);
     };
     void session.whenSynced.then(() => setTimeout(elect, 150));
     const t = setTimeout(() => {
       if (editor.isDestroyed) return;
-      done = true; collabReady.current = true;
+      collabReady.current = true;
       if (canMutate) editor.commands.flattenVMerges();
-      seed();
+      trySeed(0);
     }, 2500); // offline fallback
     return () => clearTimeout(t);
   }, [session, editor, initialDoc]);
