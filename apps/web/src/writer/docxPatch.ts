@@ -64,7 +64,7 @@ async function regenerateRuns(
   const p = xml.slice(bodyStart).slice(spans[0].start, spans[0].end);
   const open = p.match(/^<w:p[^>]*>/)?.[0] ?? "";
   const inner = p.slice(open.length, p.length - CLOSE.length);
-  const runs = inner.replace(/^<w:pPr>[\s\S]*?<\/w:pPr>/, "");
+  const runs = inner.replace(/^<w:pPr>[\s\S]*?<\/w:pPr>/, "").replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, "");
   if (UNSAFE_RUN.test(runs)) return null;
   return runs;
 }

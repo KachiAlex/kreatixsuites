@@ -1,5 +1,5 @@
 import {
-  AlignmentType, ColumnBreak as DocxColumnBreak, CommentRangeEnd, CommentRangeStart,
+  AlignmentType, Bookmark, ColumnBreak as DocxColumnBreak, CommentRangeEnd, CommentRangeStart,
   CommentReference, Document, Footer, FootnoteReferenceRun,
   Header, HeadingLevel, ImageRun, ImportedXmlComponent, LevelFormat, LevelSuffix,
   Math as DocxMath, MathFraction, MathFunction, MathRadical, MathRun,
@@ -401,10 +401,14 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
     case "paragraph": {
       const key = node.attrs?.styleName as string | undefined;
       if (key) usedStyleKeys.add(key);
+      const src = node.attrs?.srcIdx;
+      const runs = inlineRuns(node.content as Inline[]) as never[];
       return [new Paragraph({
         ...paraProps(node),
         style: key ? STYLE_ID(key) : undefined,
-        children: inlineRuns(node.content as Inline[]) as never,
+        children: src != null
+          ? [new Bookmark({ id: `kxsrc_${src}`, children: runs as never[] }) as never]
+          : runs,
       })];
     }
     case "blockquote":
