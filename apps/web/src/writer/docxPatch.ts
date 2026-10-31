@@ -18,6 +18,7 @@ export class UnpreservableEditError extends Error {
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PATCHABLE = new Set(["paragraph", "heading"]);
+const TEXT_BLOCK = new Set(["paragraph", "heading"]);
 // constructs a regenerated run must not contain: they reference parts of the package we keep as-is
 const UNSAFE_RUN = /r:id=|r:embed=|<w:drawing|<w:hyperlink|<w:footnoteReference|<w:commentReference|<w:fldChar|<w:instrText|<w:sdt|<w:bookmarkStart|<mc:/;
 
@@ -271,9 +272,9 @@ function indexParagraphs(blocks: Node[], out = new Map<number, Node>()): Map<num
     if (n.type === "listItem") {
       const idx = srcOf(n);
       const p = (n.content ?? [])[0];
-      if (idx != null && p) out.set(idx, p);
+      if (idx != null && p && !out.has(idx)) out.set(idx, p);
     } else if ((n.type === "paragraph" || n.type === "heading") && srcOf(n) != null) {
-      out.set(srcOf(n) as number, n);
+      if (!out.has(srcOf(n) as number)) out.set(srcOf(n) as number, n);
     }
     indexParagraphs(n.content ?? [], out);
   }
@@ -440,8 +441,10 @@ function textAndFmt(c: Node): { text: string; fmt: Fmt[] } | null {
 }
 
 /** Patch the original package with the edits between `baseline` (the document
- *  as imported) and `current` (the document now). Returns null when the change
- *  needs the full rebuild instead. */
+ *  as imported) and `current` (the document now). Edited text is rebuilt in place;
+ *  paragraphs added after a paragraph are inserted; paragraphs removed are deleted.
+ *  Moves, changes to lists, tables or other blocks, and anything else this path
+ *  can't represent return null, and the caller refuses instead of rebuilding. */
 export async function tryPatchExport(
   source: ArrayBuffer,
   baseline: Node,
@@ -451,15 +454,56 @@ export async function tryPatchExport(
   const zip = await JSZip.loadAsync(source);
   const xml = await zip.file("word/document.xml")?.async("string");
   if (!xml) return null;
-  // structure (block types, attributes, list nesting) must be unchanged; only the
-  // text and formatting inside existing paragraphs may differ
-  if (!same(skeleton(baseline), skeleton(current))) return null;
-  const baseMap = indexParagraphs((baseline.content ?? []) as Node[]);
-  const curMap = indexParagraphs((current.content ?? []) as Node[]);
+  const baseTop = (baseline.content ?? []) as Node[];
+  const curTop = (current.content ?? []) as Node[];
+  const isText = (n: Node) => TEXT_BLOCK.has(n.type);
+  // every block that isn't a top-level paragraph keeps its place, content and attributes
+  const others = (bs: Node[]) => bs.filter((b) => !isText(b)).map(skeleton);
+  if (!same(others(baseTop), others(curTop))) return null;
+  const baseTextBlocks = baseTop.filter(isText);
+  if (baseTextBlocks.some((b) => srcOf(b) == null)) return null;
+  const baseOrder = baseTextBlocks.map((b) => srcOf(b) as number);
+
   const spans = paragraphSpans(xml);
   const tables = tableSpans(xml);
+  const baseMap = indexParagraphs(baseTop);
+  const curMap = indexParagraphs(curTop);
+  for (const idx of curMap.keys()) if (!baseMap.has(idx)) return null;
 
-  const edits: { start: number; end: number; xml: string }[] = [];
+  type Edit = { start: number; end: number; xml: string; kind: number };
+  const edits: Edit[] = [];
+  const matched = new Set<number>();
+  const insertsAfter = new Map<number, string[]>();
+  let anchor: number | null = null, blockSince = false, lastPos = -1;
+  for (const c of curTop) {
+    if (!isText(c)) { blockSince = true; anchor = null; continue; }
+    const idx = srcOf(c);
+    const pos = idx == null ? -1 : baseOrder.indexOf(idx);
+    if (idx != null && pos >= 0 && curMap.get(idx) === c) {
+      // the source paragraph keeps its identity: it must stay in order and keep its formatting
+      if (pos < lastPos) return null;
+      lastPos = pos;
+      matched.add(idx);
+      if (!same(baseMap.get(idx)?.attrs, c.attrs)) return null;
+      anchor = idx;
+      blockSince = false;
+      continue;
+    }
+    // a copy or a new paragraph: it needs a paragraph directly before it to attach to
+    if (anchor == null || blockSince || c.type !== "paragraph") return null;
+    const runs = await regenerateRuns(c, regen);
+    if (runs == null) return null;
+    insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), runs]);
+  }
+
+  for (const idx of baseOrder) {
+    if (matched.has(idx)) continue;
+    const span = spans[idx];
+    if (!span || insideAny(span, tables)) return null;
+    if (PICTURE.test(xml.slice(span.start, span.end))) return null;
+    edits.push({ start: span.start, end: span.end, xml: "", kind: 0 });
+  }
+
   for (const [idx, c] of curMap) {
     const b = baseMap.get(idx);
     if (!b || same(b, c)) continue;
@@ -475,21 +519,35 @@ export async function tryPatchExport(
       if (!t) return null;
       const rebuilt = patchRuns(original, t.text, t.fmt);
       if (rebuilt == null) return null;
-      edits.push({ ...span, xml: rebuilt });
+      edits.push({ start: span.start, end: span.end, xml: rebuilt, kind: 0 });
       continue;
     }
     const pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
     const runs = await regenerateRuns(c, regen);
     if (runs == null) return null;
-    edits.push({ ...span, xml: open + pPr + runs + CLOSE });
+    edits.push({ start: span.start, end: span.end, xml: open + pPr + runs + CLOSE, kind: 0 });
+  }
+
+  let inserted = 0;
+  for (const [anchorIdx, chunks] of insertsAfter) {
+    const span = spans[anchorIdx];
+    if (!span || insideAny(span, tables)) return null;
+    const original = xml.slice(span.start, span.end);
+    const open = original.match(/^<w:p[^>]*>/)?.[0] ?? "";
+    const pPr = (original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "")
+      .replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, "").replace(/<w:sectPr[\s\S]*?<\/w:sectPr>/, "");
+    inserted += chunks.length;
+    edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => `<w:p>${pPr}${r}</w:p>`).join(""), kind: 1 });
   }
   if (!edits.length) return null;
 
   let out = xml;
-  for (const e of [...edits].sort((a, b) => b.start - a.start)) {
+  // later positions first; at one position, ranged edits before insertions
+  for (const e of [...edits].sort((a, b) => (b.start - a.start) || (a.kind - b.kind))) {
     out = out.slice(0, e.start) + e.xml + out.slice(e.end);
   }
-  if (paragraphSpans(out).length !== spans.length) return null;
+  const deleted = edits.filter((e) => e.kind === 0 && e.xml === "").length;
+  if (paragraphSpans(out).length !== spans.length - deleted + inserted) return null;
   zip.file("word/document.xml", out);
   const bytes = await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
   return new Blob([bytes], { type: DOCX_MIME });

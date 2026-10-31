@@ -276,5 +276,70 @@ for (const fx of FIXTURES) {
   check("list: deleting a list item is refused (structure changed)", outR === null);
 }
 
+{
+  const { tryPatchExport: tpS } = await import("./src/writer/docxPatch");
+  const { DOMParser: PMS } = await import("@tiptap/pm/model");
+  const { getSchema: gsS } = await import("@tiptap/core");
+  const SKS = (await import("@tiptap/starter-kit")).default;
+  const IMS = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KPS } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: phS } = await import("linkedom");
+  const bytesS = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const impS = await importDocx(new File([bytesS], "f.docx"));
+  const { document: dS } = phS(`<!doctype html><html><body><div id="r">${impS.html}</div></body></html>`);
+  const baseS = PMS.fromSchema(gsS([SKS, IMS, KPS])).parse(dS.getElementById("r") as never).toJSON() as any;
+  const paraCount = async (b: Blob) => {
+    const x = await (await JSZip.loadAsync(await b.arrayBuffer())).file("word/document.xml")!.async("string");
+    return x.slice(x.indexOf("<w:body>")).match(/<w:p(?=[ >])[^>]*?(?<!\/)>/g)!.length;
+  };
+  const regenS = async (dd: any) => exportDocxBytes(dd, "regen");
+  const topIdx = (d: any, idx: string) => d.content.findIndex((n: any) => n.attrs?.srcIdx === idx);
+  const copyOf = () => JSON.parse(JSON.stringify(baseS));
+  const baseCount = 13; // paragraphs in the original document body (checked above)
+
+  // split: "Name: Esther Isioma Akoma" → "Name: Esther" + "Isioma Akoma"
+  const split = copyOf();
+  const nameNode = split.content[topIdx(split, "11")];
+  const nt = nameNode.content[0];
+  nameNode.content = [{ type: "text", text: "Name: Esther", marks: nt.marks ?? [] }];
+  split.content.splice(topIdx(split, "11") + 1, 0, { type: "paragraph", attrs: { srcIdx: null, styleName: null }, content: [{ type: "text", text: " Isioma Akoma", marks: nt.marks ?? [] }] });
+  const outSplit = await tpS(bytesS.buffer as ArrayBuffer, baseS, split, regenS);
+  check("split: patch produced", outSplit !== null);
+  if (outSplit) {
+    check("split: one paragraph added", (await paraCount(outSplit)) === baseCount + 1);
+    const sx = await (await JSZip.loadAsync(await outSplit.arrayBuffer())).file("word/document.xml")!.async("string");
+    const sp = sx.slice(sx.indexOf("<w:body>")).match(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)!;
+    const txtOf = (p: string) => [...p.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    const k = sp.findIndex((p) => txtOf(p).includes("Name: Esther"));
+    check("split: halves in order", k >= 0 && txtOf(sp[k + 1] ?? "").includes("Isioma Akoma"), txtOf(sp[k + 1] ?? "").slice(0, 40));
+  }
+
+  // delete: the plain "Signature" paragraph (srcIdx 12) has no pictures
+  const del = copyOf();
+  del.content.splice(topIdx(del, "12"), 1);
+  const outDel = await tpS(bytesS.buffer as ArrayBuffer, baseS, del, regenS);
+  check("delete: patch produced", outDel !== null);
+  if (outDel) check("delete: one paragraph removed", (await paraCount(outDel)) === baseCount - 1);
+
+  // copy: duplicate srcIdx 11 right after itself — the copy is new content
+  const cp = copyOf();
+  const orig11 = cp.content[topIdx(cp, "11")];
+  cp.content.splice(topIdx(cp, "11") + 1, 0, JSON.parse(JSON.stringify(orig11)));
+  const outCp = await tpS(bytesS.buffer as ArrayBuffer, baseS, cp, regenS);
+  check("copy: patch produced", outCp !== null);
+  if (outCp) check("copy: one paragraph added", (await paraCount(outCp)) === baseCount + 1);
+
+  // insert at the very start has no anchor paragraph: refused
+  const start = copyOf();
+  start.content.unshift({ type: "paragraph", attrs: { srcIdx: null }, content: [{ type: "text", text: "New first line" }] });
+  check("insert at start: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, start, regenS)) === null);
+
+  // move: swap two top-level paragraphs (srcIdx 11 and 12): refused
+  const mv = copyOf();
+  const a11 = topIdx(mv, "11"), a12 = topIdx(mv, "12");
+  [mv.content[a11], mv.content[a12]] = [mv.content[a12], mv.content[a11]];
+  check("move: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mv, regenS)) === null);
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
