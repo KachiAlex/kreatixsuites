@@ -10,8 +10,8 @@ type Node = { type: string; attrs?: Record<string, unknown>; content?: Node[]; t
 /** Thrown when an edit can't be kept in the original Word file. The caller must
  *  not rebuild silently: it asks the user, and only then exports a labelled copy. */
 export class UnpreservableEditError extends Error {
-  constructor() {
-    super("This edit can't be kept in the original Word file");
+  constructor(message = "This edit can't be kept in the original Word file") {
+    super(message);
     this.name = "UnpreservableEditError";
   }
 }

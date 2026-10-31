@@ -627,27 +627,29 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!editor) throw new Error("editor not ready");
     const current = scrubbedJson();
     const base = await api.get<{ doc: unknown }>(`/api/files/${item.id}/source-baseline`).then((r) => r.doc).catch(() => null);
-    const original = base ? await fetchOriginal() : null;
-    if (base && original) {
+    const original = await fetchOriginal(); // only Word-imported documents have an original file
+    if (original && base) {
       if (JSON.stringify(current) === JSON.stringify(base)) {
         return new Blob([original], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
       }
-      const { tryPatchExport } = await import("./docxPatch");
+      const { tryPatchExport, UnpreservableEditError } = await import("./docxPatch");
       const patched = await tryPatchExport(original, base as never, current as never,
         async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
       if (patched) return patched;
       // refused: never rebuild silently — the user's latest edits stay in Kreatix,
       // and the caller decides whether to export a labelled converted copy
-      if (!opts.allowConverted) {
-        const { UnpreservableEditError } = await import("./docxPatch");
-        throw new UnpreservableEditError();
-      }
+      if (!opts.allowConverted) throw new UnpreservableEditError();
+    } else if (original && !opts.allowConverted) {
+      // imported before the import baseline was recorded: what changed can't be known,
+      // so the original is not rebuilt silently either
+      const { UnpreservableEditError } = await import("./docxPatch");
+      throw new UnpreservableEditError("This Word file was imported before its original could be tracked. Export a converted copy instead");
     }
     const rebuilt = await (await docxMod()).exportDocxBytes(current, docName, {
       comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
     });
     // converted copy: still carry the original picture paragraphs across, so signatures and rules survive
-    if (!base || !original) return rebuilt;
+    if (!original || !base) return rebuilt;
     const { carryPicturesIntoRebuild } = await import("./docxPatch");
     return carryPicturesIntoRebuild(rebuilt, original, base as never, current as never);
   };
