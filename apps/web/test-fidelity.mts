@@ -429,11 +429,17 @@ for (const fx of FIXTURES) {
     check("fmt: indented paragraph has w:ind", paras.some((p) => p.includes("<w:ind")));
   }
 
-  // formatting change on a list paragraph is still refused
+  // formatting change on a list ITEM merges into its paragraph but keeps numPr
   const lf = copyOf();
   const li3 = lf.content.find((n: any) => n.type === "orderedList").content[0];
-  li3.content[0].attrs = { ...li3.content[0].attrs, textAlign: "center" };
-  check("fmt: list paragraph formatting refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, lf, regenS)) === null);
+  li3.attrs = { ...li3.attrs, textAlign: "center" };
+  const outLF = await tpS(bytesS.buffer as ArrayBuffer, baseS, lf, regenS);
+  check("fmt: list paragraph formatting produces a patch", outLF !== null);
+  if (outLF) {
+    const lx = await (await JSZip.loadAsync(await outLF.arrayBuffer())).file("word/document.xml")!.async("string");
+    const srcLx = await (await JSZip.loadAsync(bytesS.buffer as ArrayBuffer)).file("word/document.xml")!.async("string");
+    check("fmt: numbering kept on all items", (lx.match(/<w:numPr>/g) ?? []).length === (srcLx.match(/<w:numPr>/g) ?? []).length);
+  }
 }
 
 {
@@ -476,10 +482,16 @@ for (const fx of FIXTURES) {
     check("cell: table structure kept", (tblXml.match(/<w:tc(?=[ >])/g) ?? []).length === (srcTbl.match(/<w:tc(?=[ >])/g) ?? []).length);
   }
 
-  // formatting change inside a cell is refused — the patch only rewrites text
+  // formatting change inside a cell merges into that paragraph's pPr
   const fmtT = JSON.parse(JSON.stringify(baseT));
   cellPara(fmtT, "0").attrs = { ...cellPara(fmtT, "0").attrs, textAlign: "center" };
-  check("cell: formatting change refused", (await tpT(bytesT.buffer as ArrayBuffer, baseT, fmtT, regenT)) === null);
+  const outFC = await tpT(bytesT.buffer as ArrayBuffer, baseT, fmtT, regenT);
+  check("cell: formatting change produces a patch", outFC !== null);
+  if (outFC) {
+    const fcx = await (await JSZip.loadAsync(await outFC.arrayBuffer())).file("word/document.xml")!.async("string");
+    const tblF = fcx.slice(fcx.indexOf("<w:tbl"), fcx.indexOf("</w:tbl>"));
+    check("cell: centered justification merged", tblF.includes('<w:jc w:val="center"'));
+  }
 
   // a new row changes the table skeleton: refused, not grafted
   const rowT = JSON.parse(JSON.stringify(baseT));

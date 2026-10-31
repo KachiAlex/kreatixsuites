@@ -262,7 +262,7 @@ function patchRuns(original: string, edited: string, editedFmt: Fmt[]): string |
  *  nesting. Two documents with equal skeletons differ only inside paragraphs. */
 const skeleton = (n: Node): unknown =>
   n.type === "paragraph" || n.type === "heading"
-    ? { t: n.type, a: n.attrs ?? null }
+    ? { t: n.type, s: srcOf(n) }
     : { t: n.type, a: n.attrs ?? null, x: n.text ?? null, c: (n.content ?? []).map(skeleton) };
 
 /** Source index → the paragraph that carries it (a list item's paragraph, or a
@@ -540,6 +540,9 @@ export async function patchOrRefuse(
   const insertsAfter = new Map<number, Ins[]>();
   const LIST_BLOCK = new Set(["orderedList", "bulletList"]);
   const singlePara = (li: Node) => (li.content ?? []).length === 1 && li.content?.[0]?.type === "paragraph";
+  // listItem-level formatting lands on the item's attrs, not its paragraph's —
+  // srcIdx → the attrs to merge into that paragraph's pPr
+  const itemAttrPatch = new Map<number, Record<string, unknown>>();
 
   /** A list whose items changed but whose own identity didn't: kept items must
    *  stay in order and keep their structure (inner text is patched separately);
@@ -563,7 +566,13 @@ export async function patchOrRefuse(
       if (idx != null && pos >= 0 && baseItem) {
         if (pos < lastItemPos) return refuse("list items were reordered");
         lastItemPos = pos;
-        if (!same(skeleton(baseItem), skeleton(it))) return refuse("a list item's structure changed (added paragraph, nested list or formatting)");
+        if (!same((baseItem.content ?? []).map(skeleton), (it.content ?? []).map(skeleton)))
+          return refuse("a list item's structure changed (added paragraph or nested list)");
+        if (!same(baseItem.attrs ?? null, it.attrs ?? null)) {
+          const p = (it.content ?? [])[0];
+          if (p?.type !== "paragraph") return refuse("a list item's formatting changed where there is no paragraph");
+          itemAttrPatch.set(idx, (it.attrs ?? {}) as Record<string, unknown>);
+        }
         seen.add(idx);
         matched.add(idx);
         itemAnchor = idx;
@@ -643,35 +652,41 @@ export async function patchOrRefuse(
 
   for (const [idx, c] of curMap) {
     const b = baseMap.get(idx);
-    if (!b || same(b, c)) continue;
+    const ov = itemAttrPatch.get(idx);
+    const cEff = ov ? { ...c, attrs: { ...(c.attrs ?? {}), ...ov } } : c;
+    if (!b || same(b, cEff)) continue;
     if (!PATCHABLE.has(b.type)) return refuse("a changed paragraph is not a plain paragraph or heading");
     const span = spans[idx];
     if (!span) return refuse("a changed paragraph could not be located in the original file");
-    // the table/list skeleton was verified unchanged above, so a nested
-    // paragraph rebuilds in place — but only its text, not its formatting.
-    // top-level paragraphs may change formatting: it merges into the w:pPr.
-    if (!same(b.attrs, c.attrs) && (insideAny(span, tables) || !baseTop.includes(b)))
-      return refuse("paragraph formatting changed inside a table cell or list item");
+    // the table/list skeleton was verified unchanged above, so any paragraph —
+    // top-level, inside a cell, or inside a list item — rebuilds in place;
+    // formatting changes merge into its w:pPr below
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0];
     if (!open) return refuse("a changed paragraph could not be read");
     if (PICTURE.test(original)) {
       // pictures stay in place: text and tracked formatting are rebuilt around them
-      if (!same(b.attrs, c.attrs)) return refuse("paragraph formatting changed where a picture sits");
-      const t = textAndFmt(c);
+      const t = textAndFmt(cEff);
       if (!t) return refuse("a changed paragraph has an inline object this path can't write");
-      const rebuilt = patchRuns(original, t.text, t.fmt);
+      let paraSrc = original;
+      if (!same(b.attrs, cEff.attrs)) {
+        const origPPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+        const merged = await mergePPr(cEff, origPPr, regen);
+        if (merged == null) return refuse("paragraph formatting could not be rewritten");
+        paraSrc = open + merged + original.slice(open.length + origPPr.length);
+      }
+      const rebuilt = patchRuns(paraSrc, t.text, t.fmt);
       if (rebuilt == null) return refuse("the edit reaches a picture or a construct this path can't rewrite");
       edits.push({ start: span.start, end: span.end, xml: rebuilt, kind: 0 });
       continue;
     }
     let pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
-    if (!same(b.attrs, c.attrs)) {
-      const merged = await mergePPr(c, pPr, regen);
+    if (!same(b.attrs, cEff.attrs)) {
+      const merged = await mergePPr(cEff, pPr, regen);
       if (merged == null) return refuse("paragraph formatting could not be rewritten");
       pPr = merged;
     }
-    const runs = await regenerateRuns(c, regen);
+    const runs = await regenerateRuns(cEff, regen);
     if (runs == null) return refuse("a changed paragraph contains content this path can't write (drawing, field, link)");
     edits.push({ start: span.start, end: span.end, xml: open + pPr + runs + CLOSE, kind: 0 });
   }
