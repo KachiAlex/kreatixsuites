@@ -71,18 +71,24 @@ for (const fx of FIXTURES) {
   check("patch: unchanged document yields no patch", unchanged === null);
 
   const edited = JSON.parse(JSON.stringify(baseline));
-  const target = edited.content.find((n: { attrs?: { srcIdx?: string | null } }) => n.attrs?.srcIdx === "10");
+  const target = edited.content.find((n: { attrs?: { srcIdx?: string | null } }) => n.attrs?.srcIdx === "11");
   check("patch: target paragraph located", !!target);
-  if (target) target.content = [{ type: "text", text: "Dared this.31day of October2026" }];
+  if (target) target.content = [{ type: "text", text: "Name: Esther Isioma Akoma Jr" }];
   const patched = await tryPatchExport(bytes.buffer as ArrayBuffer, baseline as never, edited, regen);
   check("patch: one-paragraph edit produces a patch", patched !== null);
+  const drawingEdit = JSON.parse(JSON.stringify(baseline));
+  const sig = drawingEdit.content.find((n: { attrs?: { srcIdx?: string | null } }) => n.attrs?.srcIdx === "10");
+  if (sig) sig.content = [{ type: "text", text: "changed text in a drawing paragraph" }];
+  check("patch: drawing paragraph edit refused (falls back, never drops pictures)",
+    (await tryPatchExport(bytes.buffer as ArrayBuffer, baseline as never, drawingEdit, regen)) === null);
   if (patched) {
     const before = paraSpans(await bodyOf(bytes.buffer as ArrayBuffer));
     const after = paraSpans(await bodyOf(patched));
     check("patch: paragraph count unchanged", before.length === after.length, `${before.length} vs ${after.length}`);
     const changed = before.map((p, i) => (p === after[i] ? -1 : i)).filter((i) => i >= 0);
-    check("patch: only the edited paragraph changed", changed.length === 1 && changed[0] === 10, `changed ${JSON.stringify(changed)}`);
-    check("patch: edited text present", after[10]?.includes("Dared this.31") === true);
+    check("patch: only the edited paragraph changed", changed.length === 1 && changed[0] === 11, `changed ${JSON.stringify(changed)}`);
+    check("patch: edited text present", after[11]?.includes("Akoma Jr") === true);
+    check("patch: signature paragraph kept byte-identical", after[10] === before[10]);
     const media = Object.keys((await JSZip.loadAsync(await patched.arrayBuffer())).files).filter((n) => n.startsWith("word/media/"));
     check("patch: media parts kept", media.length === 5, `got ${media.length}`);
   }

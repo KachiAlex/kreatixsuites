@@ -98,6 +98,9 @@ export async function tryPatchExport(
     const span = spans[idx];
     if (!span || insideAny(span, tables)) return null;
     const original = xml.slice(span.start, span.end);
+    // drawings, pictures and wrapped shapes can't be rebuilt from the editor model
+    // yet; rewriting such a paragraph would silently drop them, so refuse the patch
+    if (/<w:drawing|<w:pict|<mc:AlternateContent|<w:object/.test(original)) return null;
     const open = original.match(/^<w:p[^>]*>/)?.[0];
     if (!open) return null;
     const pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";

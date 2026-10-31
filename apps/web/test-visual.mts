@@ -75,8 +75,8 @@ for (const fx of fixtures) {
   const sch = (await import("@tiptap/core")).getSchema([StarterKit, Image, (await import("./src/writer/extensions/paraFormat")).KxParaFormat]);
   const bjson = PMDOMParser.fromSchema(sch).parse(d2.getElementById("r") as never).toJSON() as { content: { attrs?: Record<string, unknown>; content?: { type: string; text?: string }[] }[] };
   const edited = JSON.parse(JSON.stringify(bjson));
-  const tgt = edited.content.find((n) => n.attrs?.srcIdx === "10");
-  if (tgt) tgt.content = [{ type: "text", text: "Dared this.31day of October2026" }];
+  const tgt = edited.content.find((n) => n.attrs?.srcIdx === "11");
+  if (tgt) tgt.content = [{ type: "text", text: "Name: Esther Isioma Akoma Jr" }];
   const pb = await tryPatchExport(orig.buffer.slice(orig.byteOffset, orig.byteOffset + orig.byteLength) as ArrayBuffer, bjson as never, edited as never, async (dd) => exportDocxBytes(dd as never, "regen"));
   if (pb) writeFileSync(patchedPath, Buffer.from(await pb.arrayBuffer()));
   console.log("patched export produced:", !!pb);
