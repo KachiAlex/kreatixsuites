@@ -380,5 +380,56 @@ for (const fx of FIXTURES) {
   check("list move to end: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mvL, regenS)) === null);
 }
 
+{
+  // in-place table cell edits: the fixture's first block is a 1x2 table whose
+  // cell paragraphs carry srcIdx — a text-only edit patches inside the table
+  const { tryPatchExport: tpT } = await import("./src/writer/docxPatch");
+  const { DOMParser: PMT } = await import("@tiptap/pm/model");
+  const { getSchema: gsT } = await import("@tiptap/core");
+  const SKT = (await import("@tiptap/starter-kit")).default;
+  const IMT = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KPT } = await import("./src/writer/extensions/paraFormat");
+  const { KxTable, KxTableRow, KxTableHeader, KxTableCell } = await import("./src/writer/extensions/table");
+  const { parseHTML: phT } = await import("linkedom");
+  const bytesT = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const impT = await importDocx(new File([bytesT], "f.docx"));
+  const { document: dT } = phT(`<!doctype html><html><body><div id="r">${impT.html}</div></body></html>`);
+  const schemaT = gsT([SKT, IMT, KPT, KxTable, KxTableRow, KxTableHeader, KxTableCell]);
+  const baseT = PMT.fromSchema(schemaT).parse(dT.getElementById("r") as never).toJSON() as any;
+  check("cell: first block is a table", baseT.content[0]?.type === "table");
+  const cellPara = (n: any, idx: string): any => {
+    if (n.type === "paragraph" && n.attrs?.srcIdx === idx) return n;
+    for (const c of n.content ?? []) { const f = cellPara(c, idx); if (f) return f; }
+    return null;
+  };
+  const regenT = async (dd: any) => exportDocxBytes(dd, "regen");
+
+  const editT = JSON.parse(JSON.stringify(baseT));
+  const cp0 = cellPara(editT, "0");
+  check("cell: paragraph 0 located inside the table", !!cp0 && (cp0.content ?? []).some((c: any) => c.text?.includes("MTN")));
+  const ct = cp0.content.find((c: any) => c.text?.includes("MTN"));
+  ct.text = ct.text.replace("MTN", "MTNN");
+  const outC = await tpT(bytesT.buffer as ArrayBuffer, baseT, editT, regenT);
+  check("cell: text edit inside a table cell produces a patch", outC !== null);
+  if (outC) {
+    const cx = await (await JSZip.loadAsync(await outC.arrayBuffer())).file("word/document.xml")!.async("string");
+    const tblXml = cx.slice(cx.indexOf("<w:tbl"), cx.indexOf("</w:tbl>"));
+    const srcT = await (await JSZip.loadAsync(bytesT.buffer as ArrayBuffer)).file("word/document.xml")!.async("string");
+    const srcTbl = srcT.slice(srcT.indexOf("<w:tbl"), srcT.indexOf("</w:tbl>"));
+    check("cell: edited cell text present", tblXml.includes("MTNN"));
+    check("cell: table structure kept", (tblXml.match(/<w:tc(?=[ >])/g) ?? []).length === (srcTbl.match(/<w:tc(?=[ >])/g) ?? []).length);
+  }
+
+  // formatting change inside a cell is refused — the patch only rewrites text
+  const fmtT = JSON.parse(JSON.stringify(baseT));
+  cellPara(fmtT, "0").attrs = { ...cellPara(fmtT, "0").attrs, textAlign: "center" };
+  check("cell: formatting change refused", (await tpT(bytesT.buffer as ArrayBuffer, baseT, fmtT, regenT)) === null);
+
+  // a new row changes the table skeleton: refused, not grafted
+  const rowT = JSON.parse(JSON.stringify(baseT));
+  rowT.content[0].content.push(JSON.parse(JSON.stringify(rowT.content[0].content[0])));
+  check("cell: added row refused", (await tpT(bytesT.buffer as ArrayBuffer, baseT, rowT, regenT)) === null);
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

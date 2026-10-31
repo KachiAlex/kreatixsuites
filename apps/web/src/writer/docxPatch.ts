@@ -555,7 +555,11 @@ export async function patchOrRefuse(
     if (!b || same(b, c)) continue;
     if (!PATCHABLE.has(b.type)) return refuse("a changed paragraph is not a plain paragraph or heading");
     const span = spans[idx];
-    if (!span || insideAny(span, tables)) return refuse("a changed paragraph is inside a table");
+    if (!span) return refuse("a changed paragraph could not be located in the original file");
+    // the table/list skeleton was verified unchanged above, so a nested
+    // paragraph rebuilds in place — but only its text, not its formatting
+    if (!same(b.attrs, c.attrs) && insideAny(span, tables)) return refuse("paragraph formatting changed inside a table cell");
+    if (!same(b.attrs, c.attrs)) return refuse("a list paragraph's formatting was changed");
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0];
     if (!open) return refuse("a changed paragraph could not be read");
