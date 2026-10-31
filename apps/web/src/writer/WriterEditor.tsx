@@ -613,15 +613,33 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     }
   }, [item.id, session, toast]);
 
-  const originalIfUnchanged = async (): Promise<Blob | null> => {
-    if (!editor) return null;
-    const hash = localStorage.getItem(`kx_docx_base:${item.id}`);
-    if (!hash || JSON.stringify(scrubbedJson()) !== hash) return null;
+  const fetchOriginal = async (): Promise<ArrayBuffer | null> => {
     const res = await fetch(`${API_BASE}/api/files/${item.id}/versions/1/content`, {
       headers: { authorization: `Bearer ${getToken() ?? ""}` },
     }).catch(() => null);
     if (!res?.ok || (res.headers.get("content-type") ?? "").includes("application/json")) return null;
-    return res.blob();
+    return res.arrayBuffer();
+  };
+
+  // Word export: unchanged → original bytes; edited → the original package with only
+  // the changed paragraphs regenerated; anything the patch can't represent → full rebuild
+  const buildWord = async (docName: string, comments: Comment[]): Promise<Blob> => {
+    if (!editor) throw new Error("editor not ready");
+    const current = scrubbedJson();
+    const base = localStorage.getItem(`kx_docx_base:${item.id}`);
+    const original = base ? await fetchOriginal() : null;
+    if (base && original) {
+      if (JSON.stringify(current) === base) {
+        return new Blob([original], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      }
+      const { tryPatchExport } = await import("./docxPatch");
+      const patched = await tryPatchExport(original, JSON.parse(base), current as never,
+        async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
+      if (patched) return patched;
+    }
+    return (await docxMod()).exportDocxBytes(current, docName, {
+      comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
+    });
   };
 
   // Save = Drive sync, then (desktop) write the .docx to the file the document
@@ -631,9 +649,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     if (!isDesktop || !desktop || !editor) return;
     const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
       .then((r) => r.comments).catch(() => [] as Comment[]);
-    const blob = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), title, {
-      comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
-    });
+    const blob = await buildWord(title, comments);
     const b64 = await blobToBase64(blob);
     const rec = await store.files.get(item.id);
     let r: { ok: boolean; canceled?: boolean; path?: string; error?: string } = rec?.sourcePath
@@ -1328,9 +1344,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         produce: async () => {
           const comments = await api.get<{ comments: Comment[] }>(`/api/files/${item.id}/comments`)
             .then((r) => r.comments).catch(() => [] as Comment[]);
-          const blob = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
-            comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
-          });
+          const blob = await buildWord(name, comments);
           return { name: `${base}.docx`, blob };
         } },
       { id: "pdf", label: "PDF document (.pdf)", hint: "Same layout as Word — converted on the server, text stays selectable",
@@ -1345,9 +1359,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
             .then((r) => r.comments).catch(() => [] as Comment[]);
           const tBuild = performance.now();
           progress("Building Word file…", 0.35);
-          const docx = (await originalIfUnchanged()) ?? await (await docxMod()).exportDocxBytes(scrubbedJson(), name, {
-            comments, docProps: docPropsRef.current, styles: serializeStyles(editor!), pageSetup: readPageSetup(editor!),
-          });
+          const docx = await buildWord(name, comments);
           stage("build docx", tBuild);
           progress("Converting to PDF on the server — this step can take a minute…");
           const tConvert = performance.now();
