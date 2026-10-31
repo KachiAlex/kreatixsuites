@@ -228,6 +228,10 @@ for (const fx of FIXTURES) {
     check(`${label}: every picture target exists`, targets.length > 0 && absent.length === 0, JSON.stringify(absent));
     const ids = [...docK.matchAll(/<w:bookmarkStart[^>]*w:id="(\d+)"/g)].map((m) => m[1]);
     check(`${label}: bookmark ids unique`, new Set(ids).size === ids.length);
+    const numNeeded = [...new Set([...docK.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]).filter((n) => n !== "0"))];
+    const numPart = await zK.file("word/numbering.xml")!.async("string");
+    const numMissing = numNeeded.filter((n) => !numPart.includes(`<w:num w:numId="${n}"`));
+    check(`${label}: every list reference has a definition`, numNeeded.length > 0 && numMissing.length === 0, JSON.stringify(numMissing));
   };
   await verify("converted, unchanged", baseK);
   await verify("converted, name edited", editK);

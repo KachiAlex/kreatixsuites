@@ -293,7 +293,40 @@ const CT_BY_EXT: Record<string, string> = {
   bmp: "image/bmp", emf: "image/x-emf", wmf: "image/x-wmf", svg: "image/svg+xml",
 };
 
-/** Carry the original picture paragraphs into a rebuilt .docx. An unchanged paragraph
+/** Declare on the rebuilt root element every namespace prefix the original root declares,
+ *  so XML copied from the original stays well-formed. */
+function withNamespacesOf(target: string, source: string, rootTag: string): string {
+  const open = new RegExp(`<${rootTag}\\b[^>]*>`);
+  const srcRoot = source.match(open)?.[0] ?? "";
+  const tgtRoot = target.match(open)?.[0] ?? "";
+  if (!tgtRoot) return target;
+  let root = tgtRoot;
+  for (const m of srcRoot.matchAll(/\s(xmlns:[\w.-]+)="([^"]*)"/g)) {
+    if (!root.includes(` ${m[1]}=`)) root = root.replace(/>$/, ` ${m[1]}="${m[2]}">`);
+  }
+  return target.replace(tgtRoot, root);
+}
+
+/** Append the original list definitions to the rebuilt numbering part. Ids are shifted
+ *  so they can't collide with the rebuild's own lists. */
+function mergeNumbering(srcNum: string, rebuiltNum: string): { xml: string; numOffset: number } {
+  const maxOf = (re: RegExp, s: string) => Math.max(0, ...[...s.matchAll(re)].map((m) => Number(m[1])));
+  const absOffset = maxOf(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"/g, rebuiltNum) + 1;
+  const numOffset = maxOf(/<w:num\b[^>]*w:numId="(\d+)"/g, rebuiltNum);
+  const shift = (s: string) => s
+    .replace(/(<w:abstractNum\b[^>]*w:abstractNumId=")(\d+)"/g, (_m, p: string, n: string) => `${p}${Number(n) + absOffset}"`)
+    .replace(/(<w:abstractNumId\s+w:val=")(\d+)"/g, (_m, p: string, n: string) => `${p}${Number(n) + absOffset}"`)
+    .replace(/(<w:num\b[^>]*w:numId=")(\d+)"/g, (_m, p: string, n: string) => `${p}${Number(n) + numOffset}"`);
+  const abstracts = [...srcNum.matchAll(/<w:abstractNum\b[\s\S]*?<\/w:abstractNum>/g)].map((m) => shift(m[0])).join("");
+  const nums = [...srcNum.matchAll(/<w:num\b[\s\S]*?<\/w:num>/g)].map((m) => shift(m[0])).join("");
+  const firstNum = rebuiltNum.search(/<w:num\b/);
+  let xml = firstNum < 0 ? rebuiltNum : rebuiltNum.slice(0, firstNum) + abstracts + rebuiltNum.slice(firstNum);
+  if (firstNum < 0) xml = xml.replace("</w:numbering>", abstracts + "</w:numbering>");
+  xml = xml.replace("</w:numbering>", nums + "</w:numbering>");
+  return { xml: withNamespacesOf(xml, srcNum, "w:numbering"), numOffset };
+}
+
+/** Carry the original paragraphs into a rebuilt .docx. An unchanged paragraph
  *  is copied byte for byte; an edited one is rebuilt from the original by the text
  *  patch. Its image parts and relationships are copied into the rebuilt package and
  *  the relationship IDs rewritten, so the pictures still render. A paragraph that
@@ -318,17 +351,29 @@ export async function carryPicturesIntoRebuild(
   let relsXml = (await zip.file(relsPath)?.async("string")) ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
   let ctXml = await zip.file(ctPath)!.async("string");
   let changed = false;
+  const srcNum = await src.file("word/numbering.xml")?.async("string");
+  const rebuiltNum = await zip.file("word/numbering.xml")?.async("string");
+  const merged = srcNum && rebuiltNum ? mergeNumbering(srcNum, rebuiltNum) : null;
+  let numberingUsed = false;
 
   for (const [idx, node] of curMap) {
     const span = srcSpans[idx];
     if (!span) continue;
     const original = srcXml.slice(span.start, span.end);
-    if (!PICTURE.test(original)) continue;
     const before = baseMap.get(idx);
+    const unchanged = !!before && same(before, node);
     let para: string | null = null;
-    if (before && same(before, node)) para = original;
-    else { const t = textAndFmt(node); para = t ? patchRuns(original, t.text, t.fmt) : null; }
+    if (unchanged) para = original;
+    else if (PICTURE.test(original)) { const t = textAndFmt(node); para = t ? patchRuns(original, t.text, t.fmt) : null; }
+    else continue;
     if (!para) continue;
+    // footnote, comment and section references point into parts the rebuild doesn't share
+    if (/<w:(?:footnote|endnote|comment)(?:Reference|RangeStart|RangeEnd)\b|<w:sectPr\b/.test(para)) continue;
+    if (/<w:numId w:val="[1-9]\d*"/.test(para)) {
+      if (!merged) continue;
+      para = para.replace(/(<w:numId\s+w:val=")(\d+)"/g, (m, p: string, n: string) => (Number(n) === 0 ? m : `${p}${Number(n) + merged.numOffset}"`));
+      numberingUsed = true;
+    }
 
     const at = docXml.indexOf(`w:name="kxsrc_${idx}"`);
     if (at < 0) continue;
@@ -373,7 +418,8 @@ export async function carryPicturesIntoRebuild(
     return m.replace(/w:id="[^"]*"/, `w:id="${id}"`);
   });
 
-  zip.file("word/document.xml", docXml);
+  zip.file("word/document.xml", withNamespacesOf(docXml, srcXml, "w:document"));
+  if (numberingUsed && merged) zip.file("word/numbering.xml", merged.xml);
   zip.file(relsPath, relsXml);
   zip.file(ctPath, ctXml);
   return new Blob([await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" })], { type: DOCX_MIME });
