@@ -440,12 +440,20 @@ function textAndFmt(c: Node): { text: string; fmt: Fmt[] } | null {
   return { text, fmt };
 }
 
+/** Patch, or return null when this path can't keep the edit (see patchOrRefuse for the reason). */
+export async function tryPatchExport(source: ArrayBuffer, baseline: Node, current: Node, regen: (doc: Node) => Promise<Blob>): Promise<Blob | null> {
+  try { return await patchOrRefuse(source, baseline, current, regen); } catch (e) { if (e instanceof UnpreservableEditError) return null; throw e; }
+}
+
 /** Patch the original package with the edits between `baseline` (the document
  *  as imported) and `current` (the document now). Edited text is rebuilt in place;
  *  paragraphs added after a paragraph are inserted; paragraphs removed are deleted.
  *  Moves, changes to lists, tables or other blocks, and anything else this path
  *  can't represent return null, and the caller refuses instead of rebuilding. */
-export async function tryPatchExport(
+/** Stop the patch with the reason, so the user sees which edit blocks the export. */
+const refuse = (why: string): never => { throw new UnpreservableEditError(why); };
+
+export async function patchOrRefuse(
   source: ArrayBuffer,
   baseline: Node,
   current: Node,
@@ -453,22 +461,22 @@ export async function tryPatchExport(
 ): Promise<Blob | null> {
   const zip = await JSZip.loadAsync(source);
   const xml = await zip.file("word/document.xml")?.async("string");
-  if (!xml) return null;
+  if (!xml) return refuse("the original file has no readable body");
   const baseTop = (baseline.content ?? []) as Node[];
   const curTop = (current.content ?? []) as Node[];
   const isText = (n: Node) => TEXT_BLOCK.has(n.type);
   // every block that isn't a top-level paragraph keeps its place, content and attributes
   const others = (bs: Node[]) => bs.filter((b) => !isText(b)).map(skeleton);
-  if (!same(others(baseTop), others(curTop))) return null;
+  if (!same(others(baseTop), others(curTop))) return refuse("a table, list or other block was added, removed or changed");
   const baseTextBlocks = baseTop.filter(isText);
-  if (baseTextBlocks.some((b) => srcOf(b) == null)) return null;
+  if (baseTextBlocks.some((b) => srcOf(b) == null)) return refuse("a paragraph has no source link");
   const baseOrder = baseTextBlocks.map((b) => srcOf(b) as number);
 
   const spans = paragraphSpans(xml);
   const tables = tableSpans(xml);
   const baseMap = indexParagraphs(baseTop);
   const curMap = indexParagraphs(curTop);
-  for (const idx of curMap.keys()) if (!baseMap.has(idx)) return null;
+  for (const idx of curMap.keys()) if (!baseMap.has(idx)) return refuse("a paragraph from outside the original was found");
 
   type Edit = { start: number; end: number; xml: string; kind: number };
   const edits: Edit[] = [];
@@ -481,57 +489,57 @@ export async function tryPatchExport(
     const pos = idx == null ? -1 : baseOrder.indexOf(idx);
     if (idx != null && pos >= 0 && curMap.get(idx) === c) {
       // the source paragraph keeps its identity: it must stay in order and keep its formatting
-      if (pos < lastPos) return null;
+      if (pos < lastPos) return refuse("paragraphs were reordered");
       lastPos = pos;
       matched.add(idx);
-      if (!same(baseMap.get(idx)?.attrs, c.attrs)) return null;
+      if (!same(baseMap.get(idx)?.attrs, c.attrs)) return refuse("a paragraph's formatting (alignment, spacing, indents) was changed");
       anchor = idx;
       blockSince = false;
       continue;
     }
     // a copy or a new paragraph: it needs a paragraph directly before it to attach to
-    if (anchor == null || blockSince || c.type !== "paragraph") return null;
+    if (anchor == null || blockSince || c.type !== "paragraph") return refuse("a new paragraph has no paragraph before it to attach to, or follows a table or list");
     const runs = await regenerateRuns(c, regen);
-    if (runs == null) return null;
+    if (runs == null) return refuse("a new paragraph contains content this path can't write (drawing, field, link)");
     insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), runs]);
   }
 
   for (const idx of baseOrder) {
     if (matched.has(idx)) continue;
     const span = spans[idx];
-    if (!span || insideAny(span, tables)) return null;
-    if (PICTURE.test(xml.slice(span.start, span.end))) return null;
+    if (!span || insideAny(span, tables)) return refuse("a deleted paragraph is inside a table");
+    if (PICTURE.test(xml.slice(span.start, span.end))) return refuse("a deleted paragraph holds a picture");
     edits.push({ start: span.start, end: span.end, xml: "", kind: 0 });
   }
 
   for (const [idx, c] of curMap) {
     const b = baseMap.get(idx);
     if (!b || same(b, c)) continue;
-    if (!PATCHABLE.has(b.type)) return null;
+    if (!PATCHABLE.has(b.type)) return refuse("a changed paragraph is not a plain paragraph or heading");
     const span = spans[idx];
-    if (!span || insideAny(span, tables)) return null;
+    if (!span || insideAny(span, tables)) return refuse("a changed paragraph is inside a table");
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0];
-    if (!open) return null;
+    if (!open) return refuse("a changed paragraph could not be read");
     if (PICTURE.test(original)) {
       // pictures stay in place: text and tracked formatting are rebuilt around them
       const t = textAndFmt(c);
-      if (!t) return null;
+      if (!t) return refuse("a changed paragraph has an inline object this path can't write");
       const rebuilt = patchRuns(original, t.text, t.fmt);
-      if (rebuilt == null) return null;
+      if (rebuilt == null) return refuse("the edit reaches a picture or a construct this path can't rewrite");
       edits.push({ start: span.start, end: span.end, xml: rebuilt, kind: 0 });
       continue;
     }
     const pPr = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
     const runs = await regenerateRuns(c, regen);
-    if (runs == null) return null;
+    if (runs == null) return refuse("a changed paragraph contains content this path can't write (drawing, field, link)");
     edits.push({ start: span.start, end: span.end, xml: open + pPr + runs + CLOSE, kind: 0 });
   }
 
   let inserted = 0;
   for (const [anchorIdx, chunks] of insertsAfter) {
     const span = spans[anchorIdx];
-    if (!span || insideAny(span, tables)) return null;
+    if (!span || insideAny(span, tables)) return refuse("a new paragraph is anchored inside a table");
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0] ?? "";
     const pPr = (original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "")
@@ -539,7 +547,7 @@ export async function tryPatchExport(
     inserted += chunks.length;
     edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => `<w:p>${pPr}${r}</w:p>`).join(""), kind: 1 });
   }
-  if (!edits.length) return null;
+  if (!edits.length) return refuse("no change could be applied");
 
   let out = xml;
   // later positions first; at one position, ranged edits before insertions
@@ -547,7 +555,7 @@ export async function tryPatchExport(
     out = out.slice(0, e.start) + e.xml + out.slice(e.end);
   }
   const deleted = edits.filter((e) => e.kind === 0 && e.xml === "").length;
-  if (paragraphSpans(out).length !== spans.length - deleted + inserted) return null;
+  if (paragraphSpans(out).length !== spans.length - deleted + inserted) return refuse("the rebuilt paragraph count did not match the edit");
   zip.file("word/document.xml", out);
   const bytes = await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
   return new Blob([bytes], { type: DOCX_MIME });

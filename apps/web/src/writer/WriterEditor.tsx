@@ -632,13 +632,20 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       if (JSON.stringify(current) === JSON.stringify(base)) {
         return new Blob([original], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
       }
-      const { tryPatchExport, UnpreservableEditError } = await import("./docxPatch");
-      const patched = await tryPatchExport(original, base as never, current as never,
-        async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
-      if (patched) return patched;
+      const { patchOrRefuse, UnpreservableEditError } = await import("./docxPatch");
+      let refusal = "";
+      try {
+        const patched = await patchOrRefuse(original, base as never, current as never,
+          async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
+        if (patched) return patched;
+      } catch (e) {
+        refusal = e instanceof Error ? e.message : "";
+      }
       // refused: never rebuild silently — the user's latest edits stay in Kreatix,
       // and the caller decides whether to export a labelled converted copy
-      if (!opts.allowConverted) throw new UnpreservableEditError();
+      if (!opts.allowConverted) {
+        throw new UnpreservableEditError(`Can't keep this edit in the original Word file: ${refusal || "unsupported change"}. Your work is saved in Kreatix. Use Word copy — converted to export a rebuilt file`);
+      }
     } else if (original && !opts.allowConverted) {
       // imported before the import baseline was recorded: what changed can't be known,
       // so the original is not rebuilt silently either
