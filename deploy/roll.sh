@@ -67,10 +67,18 @@ if [ -z "$ok" ]; then
   die "green never became healthy — blue untouched, deploy aborted"
 fi
 
-step "flip nginx $BLUE_PORT -> $GREEN_PORT"
-cp "$NGINX_CONF" "${NGINX_CONF}.bak"
-sed -i "s/127\.0\.0\.1:$BLUE_PORT/127.0.0.1:$GREEN_PORT/g" "$NGINX_CONF"
-nginx -t >/dev/null 2>&1 || { mv "${NGINX_CONF}.bak" "$NGINX_CONF"; die "nginx -t failed — config restored"; }
+step "flip nginx $BLUE_PORT -> $GREEN_PORT (every site that serves the suite)"
+# every enabled site that proxies to the old port — the primary domain and the
+# company-site /api/ route live in separate files, so flipping one is not enough
+NGINX_CONFS=$(grep -l "127\.0\.0\.1:$BLUE_PORT\b" /etc/nginx/sites-enabled/* 2>/dev/null | grep -v '\.bak' || true)
+BACKUP_DIR=/root/nginx-bak/$(date +%s)
+mkdir -p "$BACKUP_DIR"
+for f in $NGINX_CONFS; do cp "$f" "$BACKUP_DIR/$(basename "$f")"; done
+for f in $NGINX_CONFS; do sed -i "s/127\.0\.0\.1:$BLUE_PORT\b/127.0.0.1:$GREEN_PORT/g" "$f"; done
+if ! nginx -t >/dev/null 2>&1; then
+  for f in $NGINX_CONFS; do cp "$BACKUP_DIR/$(basename "$f")" "$f"; done
+  die "nginx -t failed — configs restored from $BACKUP_DIR"
+fi
 systemctl reload nginx
 echo "$GREEN_PORT" > "$STATE"
 
