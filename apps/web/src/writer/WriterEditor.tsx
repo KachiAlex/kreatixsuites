@@ -564,10 +564,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     // The Collaboration binding fills the fragment with the default empty
     // paragraph at bind time, so XmlFragment.length is unreliable — an
     // effectively-empty doc is a single empty textblock.
-    const docIsEmpty = () => {
-      const d = editor.state.doc;
-      return d.childCount <= 1 && !!d.firstChild?.isTextblock && d.firstChild.content.size === 0;
-    };
+    // checked against the shared Y document, not the editor view: the view can lag
+    // behind a sync, and seeding on a stale "empty" check inserts the file twice
+    const docIsEmpty = () => session.ydoc.getXmlFragment("default").length === 0;
     const seed = () => {
       if (!docIsEmpty() || meta.get("seeded")) return;
       const json = ((initialDoc as { doc?: object })?.doc ?? initialDoc) as { type?: string } | null;
@@ -581,6 +580,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     };
     let done = false;
     const elect = () => {
+      if (editor.isDestroyed) return;
       collabReady.current = true;
       if (canMutate) editor.commands.flattenVMerges(); // normalize synced rowspan tables
       if (done || !docIsEmpty() || meta.get("seeded")) return;
@@ -588,7 +588,12 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       if (Math.min(...ids) === session.awareness.clientID) { done = true; seed(); }
     };
     void session.whenSynced.then(() => setTimeout(elect, 150));
-    const t = setTimeout(() => { done = true; collabReady.current = true; if (canMutate) editor.commands.flattenVMerges(); seed(); }, 2500); // offline fallback
+    const t = setTimeout(() => {
+      if (editor.isDestroyed) return;
+      done = true; collabReady.current = true;
+      if (canMutate) editor.commands.flattenVMerges();
+      seed();
+    }, 2500); // offline fallback
     return () => clearTimeout(t);
   }, [session, editor, initialDoc]);
 
