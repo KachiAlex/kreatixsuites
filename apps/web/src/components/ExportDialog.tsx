@@ -54,7 +54,7 @@ export function ExportDialog({ docName, formats, onClose, toast }: {
         toast(`Saved to Drive — ${out.name}`);
       }
     } catch (e) {
-      toast(e instanceof Error && e.message ? `Export failed: ${e.message.slice(0, 80)}` : "Export failed");
+      toast(e instanceof Error && e.message ? `Export failed: ${e.message.slice(0, 240)}` : "Export failed");
     } finally {
       setBusy(null);
       setProg(null);
