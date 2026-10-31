@@ -25,3 +25,5 @@ apps/web/mobile-audit/
 keystore.properties
 Kreatix-PenTest-Scope.docx
 .tmp-*.mjs
+
+apps/web/visual-out/
