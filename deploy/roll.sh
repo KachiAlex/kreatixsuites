@@ -25,7 +25,10 @@ NET=kreatix_default
 BLUE_PORT=$(grep -oP 'proxy_pass http://127\.0\.0\.1:\K[0-9]+' "$NGINX_CONF" | head -1)
 BLUE_PORT=${BLUE_PORT:-$(cat "$STATE" 2>/dev/null || echo 3017)}
 GREEN_PORT=$([ "$BLUE_PORT" = "3017" ] && echo 3018 || echo 3017)
-GREEN_NAME=kreatix-app-green
+# port-suffixed: a previous deploy leaves green running under its own name,
+# so a fixed name would collide with the LIVE container and `docker rm -f`
+# would kill production before the replacement is healthy
+GREEN_NAME=kreatix-app-green-$GREEN_PORT
 SRC=${1:-}
 
 step() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -34,7 +37,10 @@ die() { printf '\033[1;31mFAIL:\033[0m %s\n' "$*" >&2; exit 1; }
 step "pull ${SRC:-HEAD} + build"
 if [ -n "$SRC" ]; then git fetch --all --quiet && git checkout --quiet "$SRC"; else git pull --ff-only --quiet; fi
 docker compose build --quiet app
-IMAGE=$(docker compose config --images app | head -1)
+# `config --images app` ignores the service filter on compose ≥2.40 and lists
+# every project image (pgvector sorted first) — resolve the app service's
+# image exactly instead
+IMAGE=$(docker compose config --format json | jq -r '.services.app.image // "kreatix-app"')
 [ -n "$IMAGE" ] || die "could not resolve app image"
 
 # The live container is the config source of truth — find it by the port
@@ -43,6 +49,9 @@ IMAGE=$(docker compose config --images app | head -1)
 LIVE=$(docker ps --format '{{.Names}} {{.Ports}}' | grep "127.0.0.1:$BLUE_PORT->" | awk '{print $1}' | head -1)
 [ -n "$LIVE" ] || LIVE=$(docker ps --format '{{.Names}}' | grep -E '^kreatix-app' | head -1)
 [ -n "$LIVE" ] || die "no live app container found"
+[ "$LIVE" != "$GREEN_NAME" ] || die "green name collides with the live container — refusing to continue"
+curl -fsS "http://127.0.0.1:$BLUE_PORT/api/health" 2>/dev/null | grep -q '"ok":true' \
+  || die "blue ($LIVE on :$BLUE_PORT) is not healthy — refusing to deploy on a dead base"
 step "mirroring env+mounts from $LIVE"
 docker inspect "$LIVE" --format '{{range .Config.Env}}{{println}}{{.}}{{end}}' > /tmp/kx-green.env
 MOUNTS=$(docker inspect "$LIVE" --format \
