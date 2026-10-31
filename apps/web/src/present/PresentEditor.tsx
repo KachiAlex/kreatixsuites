@@ -2,7 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
+import { API_BASE } from "../lib/platform";
 import { saveContent } from "../lib/drafts";
 import { useCollabSession, useMapSync } from "../collab/useCollab";
 import { PresenceBar } from "../collab/PresenceBar";
@@ -467,6 +468,8 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
         for (const k of ["theme", "customTheme", "slideW", "slideH", "master", "layouts"] as const) delete deck[k];
         Object.assign(deck, d);
       }, undefined, canEdit);
+      // the import baseline is recorded once on the server, next to the original file
+      if (canEdit) void api.put(`/api/files/${item.id}/source-baseline`, { doc: d }).catch(() => {});
       setSlideIdx(0);
       setSelection(new Set());
       toast(`Imported ${d.slides.length} slide${d.slides.length === 1 ? "" : "s"} from ${f.name}`);
@@ -794,8 +797,26 @@ export function PresentEditor({ item, initialDoc, sourceFile, permission, aiProm
   const exportFormats = (): ExportFormat[] => {
     const base = title.replace(/\.[^.]+$/, "");
     return [
-      { id: "pptx", label: "PowerPoint (.pptx)", hint: "Edit in PowerPoint, Keynote, Impress",
-        produce: async () => ({ name: `${base}.pptx`,
+      { id: "pptx", label: "PowerPoint (.pptx)", hint: "The original file with only your edits applied",
+        produce: async () => {
+          const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+          const res = await fetch(`${API_BASE}/api/files/${item.id}/versions/1/content`, {
+            headers: { authorization: `Bearer ${getToken() ?? ""}` },
+          }).catch(() => null);
+          const original = res?.ok && !(res.headers.get("content-type") ?? "").includes("application/json")
+            ? await res.arrayBuffer() : null;
+          const baseline = await api.get<{ doc: unknown }>(`/api/files/${item.id}/source-baseline`).then((r) => r.doc).catch(() => null);
+          if (original && baseline) {
+            if (JSON.stringify(deck) === JSON.stringify(baseline))
+              return { name: `${base}.pptx`, blob: new Blob([original], { type: PPTX_MIME }) };
+            throw new Error("This edit can't be kept in the original PowerPoint file yet. Your work is saved in Kreatix — use PowerPoint copy — converted to export a rebuilt file");
+          }
+          if (original) throw new Error("This PowerPoint file was imported before its original could be tracked. Export a converted copy instead");
+          return { name: `${base}.pptx`,
+            blob: new Blob([await exportPptxBytes(deck, title)], { type: PPTX_MIME }) };
+        } },
+      { id: "pptx-converted", label: "PowerPoint copy — converted (formatting may change)", hint: "Explicit rebuild from the deck. Use only when the original can't keep your edits",
+        produce: async () => ({ name: `${base} (converted).pptx`,
           blob: new Blob([await exportPptxBytes(deck, title)],
             { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }) }) },
       { id: "pdf", label: "PDF document (.pdf)", hint: "One slide per page — animation states rendered final",
