@@ -257,6 +257,13 @@ function patchRuns(original: string, edited: string, editedFmt: Fmt[]): string |
   return rebuilt;
 }
 
+/** The document's structure without paragraph text: block types, attributes, and
+ *  nesting. Two documents with equal skeletons differ only inside paragraphs. */
+const skeleton = (n: Node): unknown =>
+  n.type === "paragraph" || n.type === "heading"
+    ? { t: n.type, a: n.attrs ?? null }
+    : { t: n.type, a: n.attrs ?? null, x: n.text ?? null, c: (n.content ?? []).map(skeleton) };
+
 /** Source index → the paragraph that carries it (a list item's paragraph, or a
  *  paragraph/heading itself). Walks the whole tree, so list items are included. */
 function indexParagraphs(blocks: Node[], out = new Map<number, Node>()): Map<number, Node> {
@@ -398,20 +405,19 @@ export async function tryPatchExport(
   const zip = await JSZip.loadAsync(source);
   const xml = await zip.file("word/document.xml")?.async("string");
   if (!xml) return null;
-  const base = (baseline.content ?? []) as Node[];
-  const cur = (current.content ?? []) as Node[];
-  if (base.length !== cur.length) return null;
+  // structure (block types, attributes, list nesting) must be unchanged; only the
+  // text and formatting inside existing paragraphs may differ
+  if (!same(skeleton(baseline), skeleton(current))) return null;
+  const baseMap = indexParagraphs((baseline.content ?? []) as Node[]);
+  const curMap = indexParagraphs((current.content ?? []) as Node[]);
   const spans = paragraphSpans(xml);
   const tables = tableSpans(xml);
 
   const edits: { start: number; end: number; xml: string }[] = [];
-  for (let i = 0; i < cur.length; i++) {
-    const b = base[i], c = cur[i];
-    if (same(b, c)) continue;
-    if (b.type !== c.type || !PATCHABLE.has(c.type)) return null;
-    const idx = srcOf(c);
-    if (idx == null || idx !== srcOf(b)) return null;
-    if (!same(b.attrs, c.attrs)) return null; // paragraph formatting changed — rebuild path
+  for (const [idx, c] of curMap) {
+    const b = baseMap.get(idx);
+    if (!b || same(b, c)) continue;
+    if (!PATCHABLE.has(b.type)) return null;
     const span = spans[idx];
     if (!span || insideAny(span, tables)) return null;
     const original = xml.slice(span.start, span.end);

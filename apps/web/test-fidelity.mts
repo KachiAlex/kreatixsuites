@@ -233,5 +233,44 @@ for (const fx of FIXTURES) {
   await verify("converted, name edited", editK);
 }
 
+{
+  const { tryPatchExport: tpL } = await import("./src/writer/docxPatch");
+  const { DOMParser: PML } = await import("@tiptap/pm/model");
+  const { getSchema: gsL } = await import("@tiptap/core");
+  const SKL = (await import("@tiptap/starter-kit")).default;
+  const IML = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KPL } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: phL } = await import("linkedom");
+  const bytesL = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const impL = await importDocx(new File([bytesL], "f.docx"));
+  const { document: dL } = phL(`<!doctype html><html><body><div id="r">${impL.html}</div></body></html>`);
+  const baseL = PML.fromSchema(gsL([SKL, IML, KPL])).parse(dL.getElementById("r") as never).toJSON() as any;
+  const findItem = (n: any, idx: string): any => {
+    if (n.type === "listItem" && n.attrs?.srcIdx === idx) return n;
+    for (const c of n.content ?? []) { const f = findItem(c, idx); if (f) return f; }
+    return null;
+  };
+  const editL = JSON.parse(JSON.stringify(baseL));
+  const item = findItem(editL, "5");
+  check("list: item 5 located", !!item);
+  const txt = item.content[0].content.find((c: any) => c.text?.includes("undertake") || c.text?.includes("agree"));
+  txt.text = txt.text.replace("undertake", "undertake jointly");
+  const outL = await tpL(bytesL.buffer as ArrayBuffer, baseL, editL, async (dd: any) => exportDocxBytes(dd, "regen"));
+  check("list: text edit inside a list item produces a patch", outL !== null);
+  if (outL) {
+    const xL = await (await JSZip.loadAsync(await outL.arrayBuffer())).file("word/document.xml")!.async("string");
+    const bodyL = xL.slice(xL.indexOf("<w:body>"));
+    const pL = [...bodyL.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)][5][0];
+    const joinedL = [...pL.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    check("list: edited text present", joinedL.includes("undertake jointly"), joinedL.slice(0, 60));
+    check("list: numbering kept on the item", pL.includes("<w:numPr>"));
+  }
+  const removed = JSON.parse(JSON.stringify(baseL));
+  const ol = removed.content.find((n: any) => n.type === "orderedList");
+  ol.content.splice(1, 1);
+  const outR = await tpL(bytesL.buffer as ArrayBuffer, baseL, removed, async (dd: any) => exportDocxBytes(dd, "regen"));
+  check("list: deleting a list item is refused (structure changed)", outR === null);
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
