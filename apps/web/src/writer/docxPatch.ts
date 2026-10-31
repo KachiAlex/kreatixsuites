@@ -534,18 +534,70 @@ export async function patchOrRefuse(
   for (const idx of curMap.keys()) if (!baseMap.has(idx)) return refuse("a paragraph from outside the original was found");
 
   type Edit = { start: number; end: number; xml: string; kind: number };
-  type Ins = { kind: "p"; runs: string } | { kind: "block"; xml: string };
+  type Ins = { kind: "p"; runs: string; num?: boolean } | { kind: "block"; xml: string };
   const edits: Edit[] = [];
   const matched = new Set<number>();
   const insertsAfter = new Map<number, Ins[]>();
+  const LIST_BLOCK = new Set(["orderedList", "bulletList"]);
+  const singlePara = (li: Node) => (li.content ?? []).length === 1 && li.content?.[0]?.type === "paragraph";
+
+  /** A list whose items changed but whose own identity didn't: kept items must
+   *  stay in order and keep their structure (inner text is patched separately);
+   *  new single-paragraph items graft after a kept sibling, reusing its numPr;
+   *  removed single-paragraph items are deleted. Anything else refuses. */
+  const diffListItems = async (baseL: Node, curL: Node): Promise<void> => {
+    const baseItems = (baseL.content ?? []) as Node[];
+    const curItems = (curL.content ?? []) as Node[];
+    if (baseItems.some((i) => i.type !== "listItem") || curItems.some((i) => i.type !== "listItem"))
+      return refuse("a list contains something that is not a list item");
+    const baseByIdx = new Map<number, Node>();
+    for (const it of baseItems) { const s = srcOf(it); if (s != null) baseByIdx.set(s, it); }
+    const baseIdxOrder = baseItems.map((i) => srcOf(i) as number);
+    if (baseIdxOrder.some((s) => s == null)) return refuse("a list item has no source link");
+    const seen = new Set<number>();
+    let lastItemPos = -1, itemAnchor: number | null = null;
+    for (const it of curItems) {
+      const idx = srcOf(it);
+      const pos = idx == null ? -1 : baseIdxOrder.indexOf(idx);
+      const baseItem = idx == null ? undefined : baseByIdx.get(idx);
+      if (idx != null && pos >= 0 && baseItem) {
+        if (pos < lastItemPos) return refuse("list items were reordered");
+        lastItemPos = pos;
+        if (!same(skeleton(baseItem), skeleton(it))) return refuse("a list item's structure changed (added paragraph, nested list or formatting)");
+        seen.add(idx);
+        matched.add(idx);
+        itemAnchor = idx;
+        continue;
+      }
+      // a new item: grafts after the previous kept item, reusing its numbering
+      if (itemAnchor == null || !singlePara(it) || !singlePara(baseByIdx.get(itemAnchor) as Node))
+        return refuse("a new list item can't be placed here (needs a plain single-paragraph sibling before it)");
+      const runs = await regenerateRuns((it.content ?? [])[0] as Node, regen);
+      if (runs == null) return refuse("a new list item contains content this path can't write (drawing, field, link)");
+      insertsAfter.set(itemAnchor, [...(insertsAfter.get(itemAnchor) ?? []), { kind: "p", runs, num: true }]);
+    }
+    for (const it of baseItems) {
+      const idx = srcOf(it) as number;
+      if (seen.has(idx)) continue;
+      if (!singlePara(it)) return refuse("a removed list item had more than a paragraph in it");
+      const span = spans[idx];
+      if (!span || insideAny(span, tables)) return refuse("a removed list item is inside a table");
+      if (PICTURE.test(xml.slice(span.start, span.end))) return refuse("a removed list item holds a picture");
+      edits.push({ start: span.start, end: span.end, xml: "", kind: 0 });
+    }
+  };
+
   let anchor: number | null = null, blockSince = false, lastPos = -1, lastTopKey = -1, otherCursor = 0;
   for (const c of curTop) {
     if (!isText(c)) {
       const expect = baseOthers[otherCursor];
-      if (expect && same(skeleton(expect), skeleton(c))) {
+      const matchedBlock = expect && (same(skeleton(expect), skeleton(c))
+        || (LIST_BLOCK.has(expect.type) && c.type === expect.type && same(expect.attrs ?? null, c.attrs ?? null)));
+      if (matchedBlock) {
         // the original block survives here — it must keep its place among the source blocks
+        if (!same(skeleton(expect), skeleton(c))) await diffListItems(expect as Node, c);
         otherCursor++;
-        const key = baseTopIndex.get(expect) ?? 0;
+        const key = baseTopIndex.get(expect as Node) ?? 0;
         if (key <= lastTopKey) return refuse("a table or other block was moved");
         lastTopKey = key;
         blockSince = true; anchor = null;
@@ -630,12 +682,14 @@ export async function patchOrRefuse(
     if (!span || insideAny(span, tables)) return refuse("a new paragraph is anchored inside a table");
     const original = xml.slice(span.start, span.end);
     const open = original.match(/^<w:p[^>]*>/)?.[0] ?? "";
-    const pPr = (original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "")
-      .replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, "").replace(/<w:sectPr[\s\S]*?<\/w:sectPr>/, "");
+    const pPrFull = original.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+    // new list items keep the sibling's numbering; new plain paragraphs don't
+    const pPrFor = (keepNum?: boolean) => (keepNum ? pPrFull : pPrFull.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, ""))
+      .replace(/<w:sectPr[\s\S]*?<\/w:sectPr>/, "");
     // paragraphs inside grafted blocks (e.g. table cells) count too — the final
     // count check compares every <w:p> in the output
     inserted += chunks.reduce((n, r) => n + (r.kind === "p" ? 1 : (r.xml.match(/<w:p(?=[ >])[^>]*?(?<!\/)>/g) ?? []).length), 0);
-    edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => r.kind === "p" ? `<w:p>${pPr}${r.runs}</w:p>` : r.xml).join(""), kind: 1 });
+    edits.push({ start: span.end, end: span.end, xml: chunks.map((r) => r.kind === "p" ? `<w:p>${pPrFor(r.num)}${r.runs}</w:p>` : r.xml).join(""), kind: 1 });
   }
   if (!edits.length) return refuse("no change could be applied");
 

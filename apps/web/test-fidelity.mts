@@ -269,11 +269,38 @@ for (const fx of FIXTURES) {
     check("list: edited text present", joinedL.includes("undertake jointly"), joinedL.slice(0, 60));
     check("list: numbering kept on the item", pL.includes("<w:numPr>"));
   }
+  // deleting a single-paragraph list item removes its span and keeps numbering
   const removed = JSON.parse(JSON.stringify(baseL));
   const ol = removed.content.find((n: any) => n.type === "orderedList");
+  const goneText = ol.content[1].content[0].content.map((c: any) => c.text ?? "").join("");
   ol.content.splice(1, 1);
   const outR = await tpL(bytesL.buffer as ArrayBuffer, baseL, removed, async (dd: any) => exportDocxBytes(dd, "regen"));
-  check("list: deleting a list item is refused (structure changed)", outR === null);
+  check("list: deleting an item produces a patch", outR !== null);
+  if (outR) {
+    const rx = await (await JSZip.loadAsync(await outR.arrayBuffer())).file("word/document.xml")!.async("string");
+    const srcNum = (await (await JSZip.loadAsync(bytesL.buffer as ArrayBuffer)).file("word/document.xml")!.async("string")).match(/<w:numPr>/g)?.length ?? 0;
+    check("list: removed item's text is gone", !rx.includes(goneText.slice(0, 24)));
+    check("list: remaining items keep numbering", (rx.match(/<w:numPr>/g) ?? []).length === srcNum - 1);
+  }
+
+  // a new item grafts after a kept sibling with the same numbering
+  const added = JSON.parse(JSON.stringify(baseL));
+  const oa = added.content.find((n: any) => n.type === "orderedList");
+  oa.content.splice(1, 0, { type: "listItem", attrs: { srcIdx: null }, content: [{ type: "paragraph", content: [{ type: "text", text: "New clause added here" }] }] });
+  const outA = await tpL(bytesL.buffer as ArrayBuffer, baseL, added, async (dd: any) => exportDocxBytes(dd, "regen"));
+  check("list: new item produces a patch", outA !== null);
+  if (outA) {
+    const ax = await (await JSZip.loadAsync(await outA.arrayBuffer())).file("word/document.xml")!.async("string");
+    check("list: new item's text present", ax.includes("New clause added here"));
+    const srcA = await (await JSZip.loadAsync(bytesL.buffer as ArrayBuffer)).file("word/document.xml")!.async("string");
+    check("list: one more numbered paragraph", (ax.match(/<w:numPr>/g) ?? []).length === (srcA.match(/<w:numPr>/g) ?? []).length + 1, `${(ax.match(/<w:numPr>/g) ?? []).length}`);
+  }
+
+  // reordering items is refused
+  const swapped = JSON.parse(JSON.stringify(baseL));
+  const os = swapped.content.find((n: any) => n.type === "orderedList");
+  [os.content[0], os.content[1]] = [os.content[1], os.content[0]];
+  check("list: reordering items refused", (await tpL(bytesL.buffer as ArrayBuffer, baseL, swapped, async (dd: any) => exportDocxBytes(dd, "regen"))) === null);
 }
 
 {
