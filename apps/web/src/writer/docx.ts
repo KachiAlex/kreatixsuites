@@ -2562,7 +2562,7 @@ function runFmtMarkersToHtml(html: string): string {
  *  that isn't attached to a paragraph is removed, so none reaches the editor text. */
 function srcMarkersToHtml(html: string): string {
   html = html.replace(
-    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?!<\/?(?:p|h[1-6]|li|td|th|ul|ol|table|tr|div|blockquote)\b)<[^>]+>)*)⟦KXSRC:(\d+)⟧/g,
+    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?!<\/?(?:p|h[1-6]|li|td|th|ul|ol|table|tr|div|blockquote)\b)(?:<[^>]+>|⟦KX[A-Z]+(?::[^⟧]*)?⟧))*)⟦KXSRC:(\d+)⟧/g,
     (_m, tag, attrs: string, lead: string, n: string) => `<${tag}${attrs} data-src="${n}">${lead}`,
   );
   return html.replace(/⟦KXSRC:\d+⟧/g, "");
