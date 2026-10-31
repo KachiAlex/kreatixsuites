@@ -67,11 +67,30 @@ for (const fx of fixtures) {
   mkdirSync(work, { recursive: true });
   const exported = join(work, `${name}.rebuilt.docx`);
   writeFileSync(exported, Buffer.from(await (await rebuild(fx)).arrayBuffer()));
+  const patchedPath = join(work, `${name}.patched.docx`);
+  const { tryPatchExport } = await import("./src/writer/docxPatch");
+  const orig = readFileSync(fx);
+  const base = await importDocx(new File([orig], basename(fx)));
+  const { document: d2 } = parseHTML(`<!doctype html><html><body><div id="r">${base.html}</div></body></html>`);
+  const sch = (await import("@tiptap/core")).getSchema([StarterKit, Image, (await import("./src/writer/extensions/paraFormat")).KxParaFormat]);
+  const bjson = PMDOMParser.fromSchema(sch).parse(d2.getElementById("r") as never).toJSON() as { content: { attrs?: Record<string, unknown>; content?: { type: string; text?: string }[] }[] };
+  const edited = JSON.parse(JSON.stringify(bjson));
+  const tgt = edited.content.find((n) => n.attrs?.srcIdx === "10");
+  if (tgt) tgt.content = [{ type: "text", text: "Dared this.31day of October2026" }];
+  const pb = await tryPatchExport(orig.buffer.slice(orig.byteOffset, orig.byteOffset + orig.byteLength) as ArrayBuffer, bjson as never, edited as never, async (dd) => exportDocxBytes(dd as never, "regen"));
+  if (pb) writeFileSync(patchedPath, Buffer.from(await pb.arrayBuffer()));
+  console.log("patched export produced:", !!pb);
 
   const origPdf = toPdf(resolve(fx), join(work, "orig"));
   const expPdf = toPdf(resolve(exported), join(work, "rebuilt"));
   const origPages = rasterize(origPdf, join(work, "orig", "page"));
   const expPages = rasterize(expPdf, join(work, "rebuilt", "page"));
+  if (existsSync(join(work, `${name}.patched.docx`))) {
+    const pp = toPdf(resolve(join(work, `${name}.patched.docx`)), join(work, "patched"));
+    const pagesP = rasterize(pp, join(work, "patched", "page"));
+    const dP = pagesP.map((f, i) => (origPages[i] ? pageDiff(origPages[i], f) : 1));
+    console.log(`  patched export pages: ${pagesP.length}, per-page diff vs original: ${dP.map((d) => (d * 100).toFixed(2) + "%").join(", ")}`);
+  }
 
   console.log(`\n${name}: original ${origPages.length} pages, rebuilt ${expPages.length} pages`);
   if (origPages.length !== expPages.length) { failing++; console.log("  FAIL page count differs"); }
