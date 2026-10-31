@@ -109,33 +109,46 @@ function patchRuns(original: string, edited: string): string | null {
   const segs = splitRuns(inner);
   if (!segs) return null;
   const old = textOf(segs);
+  // the editor collapses runs of whitespace, so compare on normalized text and map
+  // the changed region back to positions in the original runs
+  const norm = (t: string) => t.replace(/\s+/g, " ");
+  const oldN = norm(old), edN = norm(edited);
+  const toOrig: number[] = [];
+  let lastSpace = false;
+  for (let i = 0; i < old.length; i++) {
+    const sp = /\s/.test(old[i]);
+    if (sp && lastSpace) continue;
+    toOrig.push(i);
+    lastSpace = sp;
+  }
   let p = 0;
-  while (p < old.length && p < edited.length && old[p] === edited[p]) p++;
+  while (p < oldN.length && p < edN.length && oldN[p] === edN[p]) p++;
   let s = 0;
-  while (s < old.length - p && s < edited.length - p && old[old.length - 1 - s] === edited[edited.length - 1 - s]) s++;
-  const oldEnd = old.length - s;
-  const mid = edited.slice(p, edited.length - s);
+  while (s < oldN.length - p && s < edN.length - p && oldN[oldN.length - 1 - s] === edN[edN.length - 1 - s]) s++;
+  const pOrig = p < toOrig.length ? toOrig[p] : old.length;
+  const oldEnd = oldN.length - s < toOrig.length ? toOrig[oldN.length - s] : old.length;
+  const mid = edN.slice(p, edN.length - s);
 
   const prefix: string[] = [], suffix: string[] = [];
   let pos = 0, rAt = "";
   for (const sg of segs) {
     if (sg.kind === "p") {
-      if (pos > p && pos < oldEnd) return null;
-      (pos <= p ? prefix : suffix).push(sg.xml);
+      if (pos > pOrig && pos < oldEnd) return null;
+      (pos <= pOrig ? prefix : suffix).push(sg.xml);
       continue;
     }
     const a = pos, len = sg.text.length, b = a + len;
-    const cut1 = Math.min(Math.max(p - a, 0), len), cut2 = Math.min(Math.max(oldEnd - a, 0), len);
+    const cut1 = Math.min(Math.max(pOrig - a, 0), len), cut2 = Math.min(Math.max(oldEnd - a, 0), len);
     if (cut1 > 0) prefix.push(runXml(sg.rPr, sg.text.slice(0, cut1)));
     if (cut2 < len) suffix.push(runXml(sg.rPr, sg.text.slice(cut2)));
-    if (p >= a && p < b) rAt = sg.rPr;
-    else if (p === b && !rAt) rAt = sg.rPr;
+    if (pOrig >= a && pOrig < b) rAt = sg.rPr;
+    else if (pOrig === b && !rAt) rAt = sg.rPr;
     pos = b;
   }
   const middle = mid ? [runXml(rAt, mid)] : [];
   const rebuilt = open + pPr + prefix.join("") + middle.join("") + suffix.join("") + CLOSE;
   const again = splitRuns(rebuilt.slice(open.length + pPr.length, rebuilt.length - CLOSE.length));
-  if (!again || textOf(again) !== edited) return null;
+  if (!again || norm(textOf(again)) !== norm(edited)) return null;
   return rebuilt;
 }
 

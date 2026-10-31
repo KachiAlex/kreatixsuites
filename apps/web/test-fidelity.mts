@@ -65,7 +65,7 @@ for (const fx of FIXTURES) {
     const x = await (await JSZip.loadAsync(b instanceof Blob ? await b.arrayBuffer() : b)).file("word/document.xml")!.async("string");
     return x.slice(x.indexOf("<w:body>"));
   };
-  const paraSpans = (x: string) => [...x.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)].map((m) => m[0]);
+    const paraSpans = (x: string) => [...x.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)].map((m) => m[0]);
 
   const unchanged = await tryPatchExport(bytes.buffer as ArrayBuffer, baseline as never, JSON.parse(JSON.stringify(baseline)), regen);
   check("patch: unchanged document yields no patch", unchanged === null);
@@ -125,6 +125,36 @@ for (const fx of FIXTURES) {
     const after = await pics(out);
     check("sig " + label + ": pictures kept in order", after.embeds === origPic.embeds, after.embeds);
     check("sig " + label + ": edited text", after.text.includes(to), after.text);
+  }
+}
+{
+  const { tryPatchExport: tp3 } = await import("./src/writer/docxPatch");
+  const { DOMParser: PM3 } = await import("@tiptap/pm/model");
+  const { getSchema: gs3 } = await import("@tiptap/core");
+  const SK3 = (await import("@tiptap/starter-kit")).default;
+  const IM3 = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KP3 } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: ph3 } = await import("linkedom");
+  const bytes3 = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const imp3 = await importDocx(new File([bytes3], "f.docx"));
+  const { document: d4 } = ph3(`<!doctype html><html><body><div id="r">${imp3.html}</div></body></html>`);
+  const base3 = PM3.fromSchema(gs3([SK3, IM3, KP3])).parse(d4.getElementById("r") as never).toJSON() as any;
+  const p3Idx = base3.content.findIndex((n: any) => n.attrs?.srcIdx === "3");
+  const ed3 = JSON.parse(JSON.stringify(base3));
+  const node3 = ed3.content[p3Idx];
+  node3.content = node3.content.map((c: any) => (c.text ? { ...c, text: c.text.replace("Akoma", "Mordi") } : c));
+  const out3 = await tp3(bytes3.buffer as ArrayBuffer, base3, ed3, async (dd: any) => exportDocxBytes(dd, "regen"));
+  check("name edit in paragraph 3 produces a patch", out3 !== null);
+  if (out3) {
+    const x3 = await (await JSZip.loadAsync(await out3.arrayBuffer())).file("word/document.xml")!.async("string");
+    const paraSpans = (x: string) => x.split("</w:p>").slice(0, -1).map((s) => s.slice(Math.max(s.lastIndexOf("<w:p>"), s.lastIndexOf("<w:p "))) + "</w:p>");
+    const pp = paraSpans(x3)[3];
+    const origP3 = paraSpans(await (await JSZip.loadAsync(bytes3)).file("word/document.xml")!.async("string"))[3];
+    check("name edit: picture count kept in paragraph 3", (pp.match(/<w:drawing/g) || []).length === (origP3.match(/<w:drawing/g) || []).length, String((pp.match(/<w:drawing/g) || []).length));
+    check("name edit: Mordi present", pp.includes("Mordi"));
+    const origX = await (await JSZip.loadAsync(bytes3)).file("word/document.xml")!.async("string");
+    const paraAt = (xml: string, i: number) => paraSpans(xml)[i];
+    check("name edit: signature paragraph untouched", paraAt(origX, 10) === paraAt(x3, 10));
   }
 }
 console.log(`${passed} passed, ${failed} failed`);
