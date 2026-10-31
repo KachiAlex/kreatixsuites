@@ -413,6 +413,22 @@ for (const fx of FIXTURES) {
     check("new list: every numId has a definition", ids.every((i) => nn.includes(`<w:num w:numId="${i}"`)));
   }
 
+  // a new paragraph with an image grafts its media part + relationship
+  const img = copyOf();
+  const png1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  img.content.push({ type: "paragraph", attrs: { srcIdx: null }, content: [{ type: "image", attrs: { src: png1x1 } }] });
+  const outImg = await tpS(bytesS.buffer as ArrayBuffer, baseS, img, regenS);
+  check("image insert: patch produced", outImg !== null);
+  if (outImg) {
+    const iz = await JSZip.loadAsync(await outImg.arrayBuffer());
+    const ix = await iz.file("word/document.xml")!.async("string");
+    const ir = await iz.file("word/_rels/document.xml.rels")!.async("string");
+    const embeds = [...ix.matchAll(/r:embed="([^"]+)"/g)].map((m) => m[1]);
+    check("image insert: every embed resolves", embeds.every((e) => ir.includes(`Id="${e}"`)));
+    const targets = [...ir.matchAll(/Target="(media\/[^"]+)"/g)].map((m) => m[1]);
+    check("image insert: every media target exists", targets.every((t) => !!iz.file(`word/${t}`)));
+  }
+
   // a new table at the very start has no anchor paragraph: refused
   const t0 = copyOf();
   t0.content.unshift(tbl("X"));

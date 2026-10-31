@@ -60,9 +60,53 @@ const insideAny = (s: { start: number; end: number }, ranges: { start: number; e
 /** Regenerate one edited paragraph's runs from the editor model. Returns the
  *  run XML (paragraph properties are taken from the original), or null if the
  *  regenerated runs need package parts this path does not carry over. */
+/** Copy every relationship the grafted XML references into the target package:
+ *  internal parts (media) are copied under a fresh name and external rels
+ *  (hyperlinks) re-registered, then each rId is remapped to a fresh one. */
+async function mergeRels(zipOut: JSZip, zsrc: JSZip, xml: string): Promise<string | null> {
+  const refs = [...xml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)];
+  if (!refs.length) return xml;
+  const relsPath = "word/_rels/document.xml.rels";
+  const srcRels = await zsrc.file(relsPath)?.async("string");
+  let outRels = await zipOut.file(relsPath)?.async("string");
+  if (!srcRels || !outRels) return null;
+  const byId = new Map([...srcRels.matchAll(/<Relationship\b[^>]*\/>/g)].map((m) => [m[0].match(/Id="([^"]+)"/)![1], m[0]]));
+  let nextId = 1 + Math.max(0, ...[...outRels.matchAll(/Id="rId(\d+)"/g)].map((m) => +m[1]));
+  let mediaN = 0;
+  for (const f of zipOut.file(/word\/media\/kxpatch(\d+)\./)) mediaN = Math.max(mediaN, +f.name.match(/kxpatch(\d+)/)![1]);
+  const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", bmp: "image/bmp", webp: "image/webp", svg: "image/svg+xml", tiff: "image/tiff", emf: "image/x-emf", wmf: "image/x-wmf" };
+  for (const ref of refs) {
+    const rel = byId.get(ref[1]);
+    if (!rel) return null;
+    const target = rel.match(/Target="([^"]*)"/)?.[1] ?? "";
+    const type = rel.match(/Type="([^"]*)"/)?.[1] ?? "";
+    const external = /TargetMode="External"/.test(rel);
+    let newTarget = target;
+    const targetMode = external ? ' TargetMode="External"' : "";
+    if (!external) {
+      const data = await zsrc.file("word/" + target)?.async("uint8array");
+      if (!data) return null;
+      const ext = (target.match(/\.(\w+)$/)?.[1] ?? "bin").toLowerCase();
+      newTarget = `media/kxpatch${++mediaN}.${ext}`;
+      zipOut.file(`word/${newTarget}`, data);
+      let ct = await zipOut.file("[Content_Types].xml")!.async("string");
+      if (!new RegExp(`Extension="${ext}"`, "i").test(ct)) {
+        ct = ct.replace("</Types>", `<Default Extension="${ext}" ContentType="${MIME[ext] ?? "application/octet-stream"}"/></Types>`);
+        zipOut.file("[Content_Types].xml", ct);
+      }
+    }
+    const newId = `rId${nextId++}`;
+    outRels = outRels.replace("</Relationships>", `<Relationship Id="${newId}" Type="${type}" Target="${newTarget}"${targetMode}/></Relationships>`);
+    xml = xml.replaceAll(`"${ref[1]}"`, `"${newId}"`);
+  }
+  zipOut.file(relsPath, outRels);
+  return xml;
+}
+
 async function regenerateRuns(
   para: Node,
   regen: (doc: Node) => Promise<Blob>,
+  zipOut?: JSZip,
 ): Promise<string | null> {
   const blob = await regen({ type: "doc", content: [para] });
   const zip = await JSZip.loadAsync(await blob.arrayBuffer());
@@ -75,8 +119,11 @@ async function regenerateRuns(
   const open = p.match(/^<w:p[^>]*>/)?.[0] ?? "";
   const inner = p.slice(open.length, p.length - CLOSE.length);
   const runs = inner.replace(/^<w:pPr>[\s\S]*?<\/w:pPr>/, "").replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, "");
-  if (UNSAFE_RUN.test(runs)) return null;
-  return runs;
+  if (!UNSAFE_RUN.test(runs)) return runs;
+  // mergeable references: images and hyperlinks carry into the package
+  if (/<w:footnoteReference|<w:commentReference|<w:fldChar|<w:instrText|<w:sdt|<mc:/.test(runs)) return null;
+  if (!zipOut) return null;
+  return mergeRels(zipOut, zip, runs);
 }
 
 const unesc = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
@@ -497,7 +544,13 @@ async function regenerateBlock(n: Node, regen: (doc: Node) => Promise<Blob>, zip
   if (!body) return null;
   let inner = body.replace(/<w:sectPr[\s\S]*?<\/w:sectPr>\s*$/, "").trim();
   if (!inner) return null;
-  if (/\br:(id|embed|link)=|<w:fldChar|<w:instrText/.test(inner)) return null;
+  if (/<w:fldChar|<w:instrText|<w:sdt|<mc:/.test(inner)) return null;
+  if (/\br:(id|embed|link)=/.test(inner)) {
+    if (!zip) return null;
+    const merged = await mergeRels(zip, z2, inner);
+    if (merged == null) return null;
+    inner = merged;
+  }
   const numIds = [...new Set([...inner.matchAll(/<w:numId w:val="(\d+)"/g)].map((m) => m[1]).filter((i) => i !== "0"))];
   if (!numIds.length) return inner;
   // list graft: merge the regenerated numbering defs into the original part
@@ -623,7 +676,7 @@ export async function patchOrRefuse(
       // a new item: grafts after the previous kept item, reusing its numbering
       if (itemAnchor == null || !singlePara(it) || !singlePara(baseByIdx.get(itemAnchor) as Node))
         return refuse("a new list item can't be placed here (needs a plain single-paragraph sibling before it)");
-      const runs = await regenerateRuns((it.content ?? [])[0] as Node, regen);
+      const runs = await regenerateRuns((it.content ?? [])[0] as Node, regen, zip);
       if (runs == null) return refuse("a new list item contains content this path can't write (drawing, field, link)");
       insertsAfter.set(itemAnchor, [...(insertsAfter.get(itemAnchor) ?? []), { kind: "p", runs, num: true }]);
     }
@@ -696,7 +749,7 @@ export async function patchOrRefuse(
               if (merged == null) return refuse("a moved paragraph's formatting could not be rewritten");
               pPr = merged;
             }
-            const runs = await regenerateRuns(c, regen);
+            const runs = await regenerateRuns(c, regen, zip);
             if (runs == null) return refuse("a moved paragraph contains content this path can't write");
             movedXml = open + pPr + runs + CLOSE;
           }
@@ -719,7 +772,7 @@ export async function patchOrRefuse(
     }
     // a copy or a new paragraph: it needs a paragraph directly before it to attach to
     if (anchor == null || blockSince || c.type !== "paragraph") return refuse("a new paragraph has no paragraph before it to attach to, or follows a table or list");
-    const runs = await regenerateRuns(c, regen);
+    const runs = await regenerateRuns(c, regen, zip);
     if (runs == null) return refuse("a new paragraph contains content this path can't write (drawing, field, link)");
     insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), { kind: "p", runs }]);
   }
@@ -770,7 +823,7 @@ export async function patchOrRefuse(
       if (merged == null) return refuse("paragraph formatting could not be rewritten");
       pPr = merged;
     }
-    const runs = await regenerateRuns(cEff, regen);
+    const runs = await regenerateRuns(cEff, regen, zip);
     if (runs == null) return refuse("a changed paragraph contains content this path can't write (drawing, field, link)");
     edits.push({ start: span.start, end: span.end, xml: open + pPr + runs + CLOSE, kind: 0 });
   }
