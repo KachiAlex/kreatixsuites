@@ -49,6 +49,11 @@ export const KxParaFormat = Extension.create({
       {
         types: BLOCKS,
         attributes: {
+          srcIdx: {
+            default: null, // index of the source paragraph in the imported .docx
+            parseHTML: (el: HTMLElement) => (el.getAttribute("data-src") ?? null),
+            renderHTML: (a) => (a.srcIdx != null ? { "data-src": String(a.srcIdx) } : {}),
+          },
           indentPx: {
             default: null, // px — overrides stepped `indent` when set
             parseHTML: (el: HTMLElement) => el.style.marginLeft && el.style.marginLeft.endsWith("px")

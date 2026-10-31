@@ -233,8 +233,8 @@ const fileOf = (buf: ArrayBuffer | Uint8Array | Blob, name: string) =>
   const html = (await importDocx(new File([await zip2.generateAsync({ type: "arraybuffer" })], "sdt-in.docx"))).html;
   check("sdt import: inline span", /<span data-sdt="[^"]+" data-sdt-kind="text" data-sdt-alias="Customer name">Ada Lovelace<\/span>/.test(html));
   check("sdt import: checkbox kind+state", /data-sdt-kind="checkbox" data-sdt-checked="1"/.test(html));
-  check("sdt import: block paras carry attr", /<p data-sdt="[^"]+">Inside grouped block/.test(html) && /<p data-sdt="[^"]+">Second grouped para/.test(html));
-  check("sdt import: outside para clean", /<p>Outside<\/p>/.test(html));
+  check("sdt import: block paras carry attr", /<p data-sdt="[^"]+"(?: data-src="\d+")?>Inside grouped block/.test(html) && /<p data-sdt="[^"]+"(?: data-src="\d+")?>Second grouped para/.test(html));
+  check("sdt import: outside para clean", /<p(?: data-src="\d+")?>Outside<\/p>/.test(html));
   check("sdt import: no sentinel leak", !html.includes("⟦"));
 }
 

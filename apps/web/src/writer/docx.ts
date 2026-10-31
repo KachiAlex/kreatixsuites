@@ -1472,6 +1472,13 @@ async function preprocessDocx(arrayBuffer: ArrayBuffer): Promise<{ buffer: Array
     // comment-reference runs carry no text — drop them entirely
     .replace(/<w:r>(?:(?!<\/w:r>)[\s\S])*?<w:commentReference\b[^>]*\/?>[\s\S]*?<\/w:r>/g, "");
 
+  // source paragraph index → marker inside each w:p (after its w:pPr, so XML stays valid)
+  let srcIdx = 0;
+  docXml = docXml.replace(
+    /(<w:p(?=[ >])[^>]*?(?<!\/)>)((?:<w:pPr>[\s\S]*?<\/w:pPr>)?)/g,
+    (_m, open: string, ppr: string) => `${open}${ppr}${sentinel(`KXSRC:${srcIdx++}`)}`,
+  );
+
   if (docXml.includes("<m:oMath")) {
     // payload carries {t: linear source for display, x: raw OMML for verbatim re-export}
     const run = (body: string, tag: string) =>
@@ -2551,6 +2558,16 @@ function runFmtMarkersToHtml(html: string): string {
 
 /** ⟦KXPF:b64⟧ at a block's start → style/data attrs on the element. Tolerates
  *  other sentinels (KXPS, KXN, comment marks) sitting ahead of it. */
+/** KXSRC:n markers → data-src="n" on the paragraph that carried them. Any marker
+ *  that isn't attached to a paragraph is removed, so none reaches the editor text. */
+function srcMarkersToHtml(html: string): string {
+  html = html.replace(
+    /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?!<\/?(?:p|h[1-6]|li|td|th|ul|ol|table|tr|div|blockquote)\b)<[^>]+>)*)⟦KXSRC:(\d+)⟧/g,
+    (_m, tag, attrs: string, lead: string, n: string) => `<${tag}${attrs} data-src="${n}">${lead}`,
+  );
+  return html.replace(/⟦KXSRC:\d+⟧/g, "");
+}
+
 function paraFmtMarkersToHtml(html: string): string {
   html = html.replace(
     /<(p|h[1-6]|li|td|th)\b([^>]*)>((?:(?!<\/?(?:p|h[1-6]|li|td|th|ul|ol|table|tr|div|blockquote)\b)<[^>]+>|⟦KX[A-Z]+(?::[^⟧]*)?⟧)*)⟦KXPF:([A-Za-z0-9+/=]*)⟧/g,
@@ -2696,6 +2713,7 @@ export async function importDocx(file: File): Promise<DocxImportResult> {
   let html = footnoteMarkersToHtml(breakMarkersToHtml(mathMarkersToHtml(result.value)));
   html = runFmtMarkersToHtml(html);
   html = paraFmtMarkersToHtml(html);
+  html = srcMarkersToHtml(html);
   const { idToKey, styles } = buildStyleMaps(meta);
   let degraded = false;
   if (docXml) {
