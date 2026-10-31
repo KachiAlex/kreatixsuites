@@ -1386,7 +1386,13 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
           if (original && baseline) {
             if (JSON.stringify(wbRef.current) === JSON.stringify(baseline))
               return { name: `${base}.xlsx`, blob: new Blob([original], { type: XLSX_MIME }) };
-            throw new Error("This edit can't be kept in the original Excel file yet. Your work is saved in Kreatix — use Excel copy — converted to export a rebuilt file");
+            let refusal = "";
+            try {
+              const { patchXlsx } = await import("./xlsxPatch");
+              const patched = await patchXlsx(original, baseline as never, wbRef.current as never);
+              if (patched) return { name: `${base}.xlsx`, blob: patched };
+            } catch (e) { refusal = e instanceof Error ? e.message : ""; }
+            throw new Error(`Can't keep this edit in the original Excel file: ${refusal || "unsupported change"}. Your work is saved in Kreatix — use Excel copy — converted to export a rebuilt file`);
           }
           if (original) throw new Error("This Excel file was imported before its original could be tracked. Export a converted copy instead");
           return { name: `${base}.xlsx`,
