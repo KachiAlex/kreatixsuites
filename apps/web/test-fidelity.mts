@@ -361,11 +361,18 @@ for (const fx of FIXTURES) {
   start.content.unshift({ type: "paragraph", attrs: { srcIdx: null }, content: [{ type: "text", text: "New first line" }] });
   check("insert at start: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, start, regenS)) === null);
 
-  // move: swap two top-level paragraphs (srcIdx 11 and 12): refused
+  // move: swap two top-level paragraphs (srcIdx 11 and 12) — the moved
+  // paragraph's span relocates verbatim after the new anchor
   const mv = copyOf();
   const a11 = topIdx(mv, "11"), a12 = topIdx(mv, "12");
   [mv.content[a11], mv.content[a12]] = [mv.content[a12], mv.content[a11]];
-  check("move: refused", (await tpS(bytesS.buffer as ArrayBuffer, baseS, mv, regenS)) === null);
+  const outM = await tpS(bytesS.buffer as ArrayBuffer, baseS, mv, regenS);
+  check("move: produces a patch", outM !== null);
+  if (outM) {
+    const mx = await (await JSZip.loadAsync(await outM.arrayBuffer())).file("word/document.xml")!.async("string");
+    check("move: Signature now precedes Name", mx.indexOf("Signature:") < mx.indexOf("Name:"));
+    check("move: paragraph count unchanged", [...mx.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)].length === baseCount);
+  }
 
   // a brand-new table appended after the last paragraph grafts into the package
   const tbl = (cell: string) => ({

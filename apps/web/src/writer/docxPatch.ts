@@ -537,6 +537,7 @@ export async function patchOrRefuse(
   type Ins = { kind: "p"; runs: string; num?: boolean } | { kind: "block"; xml: string };
   const edits: Edit[] = [];
   const matched = new Set<number>();
+  const moved = new Set<number>();
   const insertsAfter = new Map<number, Ins[]>();
   const LIST_BLOCK = new Set(["orderedList", "bulletList"]);
   const singlePara = (li: Node) => (li.content ?? []).length === 1 && li.content?.[0]?.type === "paragraph";
@@ -622,8 +623,49 @@ export async function patchOrRefuse(
     const idx = srcOf(c);
     const pos = idx == null ? -1 : baseOrder.indexOf(idx);
     if (idx != null && pos >= 0 && curMap.get(idx) === c) {
-      // the source paragraph keeps its identity: it must stay in order and keep its formatting
-      if (pos < lastPos) return refuse("paragraphs were reordered");
+      if (pos < lastPos) {
+        // a move: the paragraph's span relocates after the current anchor —
+        // verbatim when unchanged (pictures ride along), patched when edited
+        if (anchor == null || blockSince) return refuse("a paragraph was moved where it can't be placed (before the first paragraph or after a table)");
+        const span = spans[idx];
+        if (!span || insideAny(span, tables)) return refuse("a moved paragraph is inside a table");
+        const src = xml.slice(span.start, span.end);
+        const b = baseMap.get(idx) as Node;
+        let movedXml = src;
+        if (!same(b, c)) {
+          const open = src.match(/^<w:p[^>]*>/)?.[0];
+          if (!open) return refuse("a moved paragraph could not be read");
+          if (PICTURE.test(src)) {
+            const t = textAndFmt(c);
+            if (!t) return refuse("a moved paragraph has an inline object this path can't write");
+            let paraSrc = src;
+            if (!same(b.attrs, c.attrs)) {
+              const origPPr = src.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+              const merged = await mergePPr(c, origPPr, regen);
+              if (merged == null) return refuse("a moved paragraph's formatting could not be rewritten");
+              paraSrc = open + merged + src.slice(open.length + origPPr.length);
+            }
+            const rebuilt = patchRuns(paraSrc, t.text, t.fmt);
+            if (rebuilt == null) return refuse("a moved paragraph's edit reaches a picture this path can't rewrite");
+            movedXml = rebuilt;
+          } else {
+            let pPr = src.slice(open.length).match(/^<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+            if (!same(b.attrs, c.attrs)) {
+              const merged = await mergePPr(c, pPr, regen);
+              if (merged == null) return refuse("a moved paragraph's formatting could not be rewritten");
+              pPr = merged;
+            }
+            const runs = await regenerateRuns(c, regen);
+            if (runs == null) return refuse("a moved paragraph contains content this path can't write");
+            movedXml = open + pPr + runs + CLOSE;
+          }
+        }
+        edits.push({ start: span.start, end: span.end, xml: "", kind: 0 });
+        insertsAfter.set(anchor, [...(insertsAfter.get(anchor) ?? []), { kind: "block", xml: movedXml }]);
+        moved.add(idx);
+        matched.add(idx);
+        continue;
+      }
       lastPos = pos;
       const key = baseTopIndex.get(baseTextBlocks[pos]) ?? 0;
       if (key <= lastTopKey) return refuse("a paragraph was moved across a table or other block");
@@ -651,6 +693,7 @@ export async function patchOrRefuse(
   }
 
   for (const [idx, c] of curMap) {
+    if (moved.has(idx)) continue;
     const b = baseMap.get(idx);
     const ov = itemAttrPatch.get(idx);
     const cEff = ov ? { ...c, attrs: { ...(c.attrs ?? {}), ...ov } } : c;
