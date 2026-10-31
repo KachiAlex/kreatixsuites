@@ -467,6 +467,10 @@ CREATE INDEX IF NOT EXISTS idx_library_views_lib ON library_views(library_id);
   await pool.query(`ALTER TABLE libraries ADD COLUMN IF NOT EXISTS versioning TEXT NOT NULL DEFAULT 'major'`);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS checked_out_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ`);
+  // Word import baseline: the editor model as imported from the original file, bound to
+  // the original's version-1 blob, so the export patch always compares against its own revision
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS source_baseline_key TEXT`);
+  await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS source_baseline_for TEXT`);
   // major.minor display versioning + draft flag on top of the monotonic `number`
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS major INTEGER`);
   await pool.query(`ALTER TABLE versions ADD COLUMN IF NOT EXISTS minor INTEGER NOT NULL DEFAULT 0`);

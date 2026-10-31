@@ -626,14 +626,14 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   const buildWord = async (docName: string, comments: Comment[], opts: { allowConverted?: boolean } = {}): Promise<Blob> => {
     if (!editor) throw new Error("editor not ready");
     const current = scrubbedJson();
-    const base = localStorage.getItem(`kx_docx_base:${item.id}`);
+    const base = await api.get<{ doc: unknown }>(`/api/files/${item.id}/source-baseline`).then((r) => r.doc).catch(() => null);
     const original = base ? await fetchOriginal() : null;
     if (base && original) {
-      if (JSON.stringify(current) === base) {
+      if (JSON.stringify(current) === JSON.stringify(base)) {
         return new Blob([original], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
       }
       const { tryPatchExport } = await import("./docxPatch");
-      const patched = await tryPatchExport(original, JSON.parse(base), current as never,
+      const patched = await tryPatchExport(original, base as never, current as never,
         async (d) => (await docxMod()).exportDocxBytes(d as never, docName));
       if (patched) return patched;
       // refused: never rebuild silently — the user's latest edits stay in Kreatix,
@@ -649,7 +649,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     // converted copy: still carry the original picture paragraphs across, so signatures and rules survive
     if (!base || !original) return rebuilt;
     const { carryPicturesIntoRebuild } = await import("./docxPatch");
-    return carryPicturesIntoRebuild(rebuilt, original, JSON.parse(base), current as never);
+    return carryPicturesIntoRebuild(rebuilt, original, base as never, current as never);
   };
 
   // Save = Drive sync, then (desktop) write the .docx to the file the document
@@ -1294,7 +1294,8 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
     if (ext === "docx") {
       void applyImport(sourceFile).then(() => {
-        if (editor) localStorage.setItem(`kx_docx_base:${item.id}`, JSON.stringify(editor.getJSON()));
+        // the import baseline is recorded once on the server, next to the original file
+        if (editor && canMutate) void api.put(`/api/files/${item.id}/source-baseline`, { doc: scrubbedJson() }).catch(() => {});
       });
     } else {
       void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));

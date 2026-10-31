@@ -486,6 +486,46 @@ export function contentRoutes(app: FastifyInstance) {
     return { version: next };
   });
 
+  /** Word import baseline. Written once per document and bound to the original's
+   *  version-1 blob: an export only uses it while the original is unchanged. */
+  app.put("/api/files/:id/source-baseline", { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "reviewer")) {
+      return reply.code(403).send({ error: "forbidden", message: "No edit access" });
+    }
+    const v1 = await one<VersionRow>("SELECT * FROM versions WHERE file_id = $1 AND number = 1", [item.id]);
+    if (!v1) return reply.code(404).send({ error: "not_found" });
+    const recorded = await one<{ key: string | null }>("SELECT source_baseline_key AS key FROM items WHERE id = $1", [item.id]);
+    if (recorded?.key) return reply.code(409).send({ error: "exists", message: "Import baseline already recorded" });
+    const body = z.object({ doc: z.unknown() }).parse(req.body);
+    const data = Buffer.from(JSON.stringify(body.doc), "utf8");
+    const quota = await storageQuota(user.orgId, data.length);
+    if (!quota.ok) return reply.code(413).send({ error: "storage_quota", message: "Workspace storage full" });
+    const { key } = await putBlob(data);
+    await run(
+      "UPDATE items SET source_baseline_key = $2, source_baseline_for = $3 WHERE id = $1 AND source_baseline_key IS NULL",
+      [item.id, key, v1.blob_key],
+    );
+    return { ok: true };
+  });
+
+  app.get("/api/files/:id/source-baseline", async (req, reply) => {
+    const { user } = req as AuthedRequest;
+    const item = await getItem((req.params as { id: string }).id);
+    if (!item || !hasPermission(await permissionFor(user.id, item), "viewer")) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const row = await one<{ key: string | null; forKey: string | null }>(
+      'SELECT source_baseline_key AS key, source_baseline_for AS "forKey" FROM items WHERE id = $1', [item.id]);
+    const v1 = await one<VersionRow>("SELECT * FROM versions WHERE file_id = $1 AND number = 1", [item.id]);
+    // a baseline is only valid for the original it was imported from
+    if (!row?.key || !v1 || row.forKey !== v1.blob_key) return reply.code(404).send({ error: "no_baseline" });
+    const blob = await getBlob(row.key);
+    if (!blob) return reply.code(404).send({ error: "no_baseline" });
+    return { doc: JSON.parse(blob.toString("utf8")) };
+  });
+
   app.get("/api/files/:id/versions", async (req, reply) => {
     const { user } = req as AuthedRequest;
     const item = await getItem((req.params as { id: string }).id);

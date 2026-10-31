@@ -12,7 +12,8 @@
     "test:scim": "tsx test-scim.mts",
     "test:saml": "tsx test-saml.mts",
     "test:tenant-admin": "tsx test-tenant-admin.mts",
-    "test:sites": "tsx test-sites.mts"
+    "test:sites": "tsx test-sites.mts",
+    "test:baseline": "tsx test-baseline.mts"
   },
   "dependencies": {
     "@fastify/compress": "^9.2.0",
