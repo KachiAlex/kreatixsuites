@@ -1263,6 +1263,9 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
       editor?.commands.fixTables(); // repair any malformed table geometry post-import
       editor?.commands.flattenVMerges(); // rowspan cells → row-splittable ghosts
       if (editor) applyDocxImport(editor, res); // named styles from styles.xml
+      // the import baseline is the tagged model the import just produced —
+      // capture it now, before a collab sync can replace unsourced content
+      if (canMutate) void api.put(`/api/files/${item.id}/source-baseline`, { doc: scrubbedJson() }).catch(() => {});
       if (Object.values(res.docProps).some(Boolean))
         setDocProps({ ...docPropsRef.current, ...res.docProps });
       if (canMutate) {
@@ -1322,10 +1325,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     autoImported.current = editor;
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
     if (ext === "docx") {
-      void applyImport(sourceFile).then(() => {
-        // the import baseline is recorded once on the server, next to the original file
-        if (editor && canMutate) void api.put(`/api/files/${item.id}/source-baseline`, { doc: scrubbedJson() }).catch(() => {});
-      });
+      void applyImport(sourceFile);
     } else {
       void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));
     }
