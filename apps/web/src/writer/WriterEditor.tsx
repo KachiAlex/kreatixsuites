@@ -31,7 +31,7 @@ import { createDoc } from "../lib/create";
 import { openLocalFile } from "../lib/offline/openLocal";
 import { store } from "../lib/offline/store";
 import { blobToBase64 } from "../lib/saveFile";
-import { desktop, isDesktop } from "../lib/platform";
+import { API_BASE, desktop, isDesktop } from "../lib/platform";
 import { OpenCancelledError } from "../lib/passwordPrompt";
 import { createCollabSession, colorFor, type CollabSession } from "../collab/session";
 import { PresenceBar } from "../collab/PresenceBar";
@@ -233,9 +233,6 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   // staged save payload — a thunk so per-keystroke updates don't pay the
   // full getJSON() serialization before the debounce window even elapses
   const pendingJson = useRef<unknown | (() => unknown)>(null);
-  // fingerprint of the content right after a Word file was imported; while it
-  // still matches, export returns the original upload byte-for-byte
-  const docxBaseline = useRef<{ itemId: string; hash: string } | null>(null);
   const editorRef = useRef<Editor | null>(null);
   // collab docs start empty until the Y.Doc syncs/seeds — staging a save before
   // that would overwrite the canonical head with an empty doc
@@ -617,10 +614,14 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
   }, [item.id, session, toast]);
 
   const originalIfUnchanged = async (): Promise<Blob | null> => {
-    const base = docxBaseline.current;
-    if (!base || base.itemId !== item.id || !editor) return null;
-    if (JSON.stringify(scrubbedJson()) !== base.hash) return null;
-    return api.get<Blob>(`/api/files/${item.id}/versions/1/content`).catch(() => null);
+    if (!editor) return null;
+    const hash = localStorage.getItem(`kx_docx_base:${item.id}`);
+    if (!hash || JSON.stringify(scrubbedJson()) !== hash) return null;
+    const res = await fetch(`${API_BASE}/api/files/${item.id}/versions/1/content`, {
+      headers: { authorization: `Bearer ${getToken() ?? ""}` },
+    }).catch(() => null);
+    if (!res?.ok || (res.headers.get("content-type") ?? "").includes("application/json")) return null;
+    return res.blob();
   };
 
   // Save = Drive sync, then (desktop) write the .docx to the file the document
@@ -1263,7 +1264,7 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "";
     if (ext === "docx") {
       void applyImport(sourceFile).then(() => {
-        if (editor) docxBaseline.current = { itemId: item.id, hash: JSON.stringify(editor.getJSON()) };
+        if (editor) localStorage.setItem(`kx_docx_base:${item.id}`, JSON.stringify(editor.getJSON()));
       });
     } else {
       void (["txt", "md", "markdown", "html", "htm"].includes(ext) ? applyTextImport(sourceFile) : applyImport(sourceFile));
