@@ -5,7 +5,7 @@
 import { DOMParser as LDParser, parseHTML } from "linkedom";
 (globalThis as Record<string, unknown>).DOMParser ??= LDParser;
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { getSchema } from "@tiptap/core";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
@@ -27,8 +27,11 @@ const schema = getSchema([StarterKit, Image, KxParaFormat]);
 
 const toPdf = (docx: string, outDir: string) => {
   mkdirSync(outDir, { recursive: true });
+  const pdf = join(outDir, basename(docx).replace(/\.docx$/i, ".pdf"));
+  rmSync(pdf, { force: true }); // never measure a PDF left over from an earlier run
   execFileSync(SOFFICE, ["--headless", "--convert-to", "pdf", "--outdir", outDir, docx], { stdio: "pipe", timeout: 180_000 });
-  return join(outDir, basename(docx).replace(/\.docx$/i, ".pdf"));
+  if (!existsSync(pdf)) throw new Error(`LibreOffice could not convert ${basename(docx)}`);
+  return pdf;
 };
 
 const rasterize = (pdf: string, prefix: string) => {
