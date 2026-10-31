@@ -643,9 +643,13 @@ export function WriterEditor({ item, initialDoc, sourceFile, permission, aiPromp
         throw new UnpreservableEditError();
       }
     }
-    return (await docxMod()).exportDocxBytes(current, docName, {
+    const rebuilt = await (await docxMod()).exportDocxBytes(current, docName, {
       comments, docProps: docPropsRef.current, styles: serializeStyles(editor), pageSetup: readPageSetup(editor),
     });
+    // converted copy: still carry the original picture paragraphs across, so signatures and rules survive
+    if (!base || !original) return rebuilt;
+    const { carryPicturesIntoRebuild } = await import("./docxPatch");
+    return carryPicturesIntoRebuild(rebuilt, original, JSON.parse(base), current as never);
   };
 
   // Save = Drive sync, then (desktop) write the .docx to the file the document

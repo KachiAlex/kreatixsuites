@@ -11,6 +11,7 @@ import { getSchema } from "@tiptap/core";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
+import { KxParaFormat } from "./src/writer/extensions/paraFormat";
 import { PNG } from "pngjs";
 import { exportDocxBytes, importDocx } from "./src/writer/docx";
 
@@ -22,7 +23,7 @@ const PAGE_DIFF_LIMIT = Number(process.env.PAGE_DIFF_LIMIT ?? "0.02"); // 2% of 
 
 mkdirSync(OUT, { recursive: true });
 const { document } = parseHTML("<!doctype html><html><body></body></html>");
-const schema = getSchema([StarterKit, Image]);
+const schema = getSchema([StarterKit, Image, KxParaFormat]);
 
 const toPdf = (docx: string, outDir: string) => {
   mkdirSync(outDir, { recursive: true });
@@ -56,7 +57,9 @@ const rebuild = async (src: string) => {
   const host = document.createElement("div");
   host.innerHTML = r.html as string;
   const json = PMDOMParser.fromSchema(schema).parse(host as never).toJSON();
-  return exportDocxBytes(json as never, basename(src));
+  const rebuilt = await exportDocxBytes(json as never, basename(src));
+  const { carryPicturesIntoRebuild } = await import("./src/writer/docxPatch");
+  return carryPicturesIntoRebuild(rebuilt, readFileSync(src).buffer as ArrayBuffer, json as never, json as never);
 };
 
 const fixtures = readdirSync("test-fixtures/docx").filter((f) => f.endsWith(".docx")).map((f) => join("test-fixtures/docx", f));

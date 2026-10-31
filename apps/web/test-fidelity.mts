@@ -195,5 +195,43 @@ for (const fx of FIXTURES) {
   }
 }
 
+{
+  const { carryPicturesIntoRebuild: cpC } = await import("./src/writer/docxPatch");
+  const { DOMParser: PMC } = await import("@tiptap/pm/model");
+  const { getSchema: gsC } = await import("@tiptap/core");
+  const SKC = (await import("@tiptap/starter-kit")).default;
+  const IMC = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KPC } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: phC } = await import("linkedom");
+  const bytesK = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const impK = await importDocx(new File([bytesK], "f.docx"));
+  const { document: dK } = phC(`<!doctype html><html><body><div id="r">${impK.html}</div></body></html>`);
+  const baseK = PMC.fromSchema(gsC([SKC, IMC, KPC])).parse(dK.getElementById("r") as never).toJSON() as any;
+  const editK = JSON.parse(JSON.stringify(baseK));
+  const nK = editK.content.flatMap((x: any) => [x, ...(x.content ?? []).flatMap((y: any) => [y, ...(y.content ?? [])])]).find((x: any) => x.attrs?.srcIdx === "3");
+  const tK = nK.content.find((c: any) => c.text?.includes("Akoma"));
+  tK.text = tK.text.replace("Akoma", "Mordi");
+
+  const verify = async (label: string, current: any) => {
+    const rebuilt = await exportDocxBytes(current, "conv");
+    const out = await cpC(rebuilt, bytesK.buffer as ArrayBuffer, baseK, current);
+    const zK = await JSZip.loadAsync(await out.arrayBuffer());
+    const docK = await zK.file("word/document.xml")!.async("string");
+    const relsK = await zK.file("word/_rels/document.xml.rels")!.async("string");
+    const drawings = (docK.match(/<w:drawing/g) || []).length;
+    check(`${label}: all 7 drawings carried`, drawings === 7, String(drawings));
+    const embeds = [...docK.matchAll(/r:embed="([^"]+)"/g)].map((m) => m[1]);
+    const missing = embeds.filter((id) => !relsK.includes(`Id="${id}"`));
+    check(`${label}: every r:embed has a relationship`, embeds.length > 0 && missing.length === 0, JSON.stringify(missing));
+    const targets = [...relsK.matchAll(/Target="(media\/[^"]+)"/g)].map((m) => m[1]);
+    const absent = targets.filter((t) => !zK.file(`word/${t}`));
+    check(`${label}: every picture target exists`, targets.length > 0 && absent.length === 0, JSON.stringify(absent));
+    const ids = [...docK.matchAll(/<w:bookmarkStart[^>]*w:id="(\d+)"/g)].map((m) => m[1]);
+    check(`${label}: bookmark ids unique`, new Set(ids).size === ids.length);
+  };
+  await verify("converted, unchanged", baseK);
+  await verify("converted, name edited", editK);
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

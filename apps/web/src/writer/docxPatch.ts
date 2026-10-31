@@ -257,6 +257,121 @@ function patchRuns(original: string, edited: string, editedFmt: Fmt[]): string |
   return rebuilt;
 }
 
+/** Source index → the paragraph that carries it (a list item's paragraph, or a
+ *  paragraph/heading itself). Walks the whole tree, so list items are included. */
+function indexParagraphs(blocks: Node[], out = new Map<number, Node>()): Map<number, Node> {
+  for (const n of blocks) {
+    if (n.type === "listItem") {
+      const idx = srcOf(n);
+      const p = (n.content ?? [])[0];
+      if (idx != null && p) out.set(idx, p);
+    } else if ((n.type === "paragraph" || n.type === "heading") && srcOf(n) != null) {
+      out.set(srcOf(n) as number, n);
+    }
+    indexParagraphs(n.content ?? [], out);
+  }
+  return out;
+}
+
+type Rel = { id: string; type: string; target: string };
+const parseRels = (xml: string): Rel[] =>
+  [...xml.matchAll(/<Relationship\b[^>]*\/>/g)].map((m) => ({
+    id: m[0].match(/\sId="([^"]+)"/)?.[1] ?? "",
+    type: m[0].match(/\sType="([^"]+)"/)?.[1] ?? "",
+    target: m[0].match(/\sTarget="([^"]+)"/)?.[1] ?? "",
+  }));
+const IMAGE_REL = /\/image$/;
+const CT_BY_EXT: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  bmp: "image/bmp", emf: "image/x-emf", wmf: "image/x-wmf", svg: "image/svg+xml",
+};
+
+/** Carry the original picture paragraphs into a rebuilt .docx. An unchanged paragraph
+ *  is copied byte for byte; an edited one is rebuilt from the original by the text
+ *  patch. Its image parts and relationships are copied into the rebuilt package and
+ *  the relationship IDs rewritten, so the pictures still render. A paragraph that
+ *  can't be carried over is left as the rebuild wrote it. */
+export async function carryPicturesIntoRebuild(
+  rebuilt: Blob,
+  source: ArrayBuffer,
+  baseline: Node,
+  current: Node,
+): Promise<Blob> {
+  const src = await JSZip.loadAsync(source);
+  const srcXml = await src.file("word/document.xml")?.async("string");
+  if (!srcXml) return rebuilt;
+  const srcRels = parseRels((await src.file("word/_rels/document.xml.rels")?.async("string")) ?? "");
+  const srcSpans = paragraphSpans(srcXml);
+  const baseMap = indexParagraphs((baseline.content ?? []) as Node[]);
+  const curMap = indexParagraphs((current.content ?? []) as Node[]);
+
+  const zip = await JSZip.loadAsync(await rebuilt.arrayBuffer());
+  let docXml = await zip.file("word/document.xml")!.async("string");
+  const relsPath = "word/_rels/document.xml.rels", ctPath = "[Content_Types].xml";
+  let relsXml = (await zip.file(relsPath)?.async("string")) ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  let ctXml = await zip.file(ctPath)!.async("string");
+  let changed = false;
+
+  for (const [idx, node] of curMap) {
+    const span = srcSpans[idx];
+    if (!span) continue;
+    const original = srcXml.slice(span.start, span.end);
+    if (!PICTURE.test(original)) continue;
+    const before = baseMap.get(idx);
+    let para: string | null = null;
+    if (before && same(before, node)) para = original;
+    else { const t = textAndFmt(node); para = t ? patchRuns(original, t.text, t.fmt) : null; }
+    if (!para) continue;
+
+    const at = docXml.indexOf(`w:name="kxsrc_${idx}"`);
+    if (at < 0) continue;
+    const ps = Math.max(docXml.lastIndexOf("<w:p>", at), docXml.lastIndexOf("<w:p ", at));
+    const pe = docXml.indexOf(CLOSE, at);
+    if (ps < 0 || pe < 0) continue;
+
+    const rids = [...new Set([...para.matchAll(/r:(?:embed|id|link)="([^"]+)"/g)].map((m) => m[1]))];
+    const plan = rids.map((rid) => {
+      const rel = srcRels.find((r) => r.id === rid);
+      const ext = rel?.target.split(".").pop()?.toLowerCase() ?? "";
+      return rel && IMAGE_REL.test(rel.type) && CT_BY_EXT[ext] ? { rid, rel, ext } : null;
+    });
+    if (plan.some((p) => p == null)) continue;
+
+    const map = new Map<string, string>();
+    let seq = 0;
+    for (const p of plan as { rid: string; rel: Rel; ext: string }[]) {
+      const data = await src.file(`word/${p.rel.target}`)?.async("uint8array");
+      if (!data) { map.clear(); break; }
+      const name = `media/kxsrc${idx}_${seq++}.${p.ext}`;
+      zip.file(`word/${name}`, data);
+      const newId = `rIdKxSrc${idx}_${seq}`;
+      relsXml = relsXml.replace("</Relationships>", `<Relationship Id="${newId}" Type="${p.rel.type}" Target="${name}"/></Relationships>`);
+      if (!ctXml.includes(`Extension="${p.ext}"`)) ctXml = ctXml.replace("</Types>", `<Default Extension="${p.ext}" ContentType="${CT_BY_EXT[p.ext]}"/></Types>`);
+      map.set(p.rid, newId);
+    }
+    if (map.size !== rids.length) continue;
+
+    const carried = para.replace(/(r:(?:embed|id|link)=")([^"]+)"/g, (_m, pre: string, rid: string) => `${pre}${map.get(rid) ?? rid}"`);
+    docXml = docXml.slice(0, ps) + carried + docXml.slice(pe + CLOSE.length);
+    changed = true;
+  }
+  if (!changed) return rebuilt;
+
+  // bookmark ids must be unique in the package: renumber each start/end pair in order
+  const stack: number[] = [];
+  let nextId = 1;
+  docXml = docXml.replace(/<w:bookmark(Start|End)\b[^>]*?\/>/g, (m, kind: string) => {
+    const id = kind === "Start" ? nextId++ : (stack.pop() ?? 0);
+    if (kind === "Start") stack.push(id);
+    return m.replace(/w:id="[^"]*"/, `w:id="${id}"`);
+  });
+
+  zip.file("word/document.xml", docXml);
+  zip.file(relsPath, relsXml);
+  zip.file(ctPath, ctXml);
+  return new Blob([await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" })], { type: DOCX_MIME });
+}
+
 /** Edited paragraph as plain text plus per-character formatting. Returns null when
  *  the paragraph holds anything other than text (for example a hard break). */
 function textAndFmt(c: Node): { text: string; fmt: Fmt[] } | null {

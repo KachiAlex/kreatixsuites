@@ -401,14 +401,10 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
     case "paragraph": {
       const key = node.attrs?.styleName as string | undefined;
       if (key) usedStyleKeys.add(key);
-      const src = node.attrs?.srcIdx;
-      const runs = inlineRuns(node.content as Inline[]) as never[];
       return [new Paragraph({
         ...paraProps(node),
         style: key ? STYLE_ID(key) : undefined,
-        children: src != null
-          ? [new Bookmark({ id: `kxsrc_${src}`, children: runs as never[] }) as never]
-          : runs,
+        children: srcChildren(node.attrs?.srcIdx, inlineRuns(node.content as Inline[]) as never[]),
       })];
     }
     case "blockquote":
@@ -421,7 +417,7 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
           p.type === "paragraph"
             ? [new Paragraph({
                 numbering: numberingRef(node, true, listDepth),
-                children: inlineRuns(p.content as Inline[]) as never,
+                children: srcChildren(li.attrs?.srcIdx, inlineRuns(p.content as Inline[]) as never[]),
               })]
             : blockToParagraphs(p, listDepth + 1),
         ),
@@ -433,7 +429,7 @@ function blockToParagraphs(node: Block, listDepth = 0): Paragraph[] {
             ? [new Paragraph({
                 numbering: numberingRef(node, false, listDepth),
                 ...paraProps(p),
-                children: inlineRuns(p.content as Inline[]) as never,
+                children: srcChildren(li.attrs?.srcIdx, inlineRuns(p.content as Inline[]) as never[]),
               })]
             : blockToParagraphs(p, listDepth + 1),
         ),
@@ -2562,6 +2558,11 @@ function runFmtMarkersToHtml(html: string): string {
 
 /** ⟦KXPF:b64⟧ at a block's start → style/data attrs on the element. Tolerates
  *  other sentinels (KXPS, KXN, comment marks) sitting ahead of it. */
+/** Wrap a paragraph's runs in the source bookmark `kxsrc_N`, so the patch exporter can
+ *  find the original paragraph again after a rebuild. */
+const srcChildren = (src: unknown, runs: never[]): never[] =>
+  src == null ? runs : [new Bookmark({ id: `kxsrc_${src}`, children: runs as never[] }) as never];
+
 /** KXSRC:n markers → data-src="n" on the paragraph that carried them. Any marker
  *  that isn't attached to a paragraph is removed, so none reaches the editor text. */
 function srcMarkersToHtml(html: string): string {
