@@ -157,5 +157,43 @@ for (const fx of FIXTURES) {
     check("name edit: signature paragraph untouched", paraAt(origX, 10) === paraAt(x3, 10));
   }
 }
+{
+  const { tryPatchExport: tpF } = await import("./src/writer/docxPatch");
+  const { DOMParser: PMF } = await import("@tiptap/pm/model");
+  const { getSchema: gsF } = await import("@tiptap/core");
+  const SKF = (await import("@tiptap/starter-kit")).default;
+  const IMF = (await import("@tiptap/extension-image")).default;
+  const { KxParaFormat: KPF } = await import("./src/writer/extensions/paraFormat");
+  const { parseHTML: phF } = await import("linkedom");
+  const bytesF = readFileSync("test-fixtures/docx/indemnity-form.docx");
+  const impF = await importDocx(new File([bytesF], "f.docx"));
+  const { document: dF } = phF(`<!doctype html><html><body><div id="r">${impF.html}</div></body></html>`);
+  const baseF = PMF.fromSchema(gsF([SKF, IMF, KPF])).parse(dF.getElementById("r") as never).toJSON() as any;
+  const edF = JSON.parse(JSON.stringify(baseF));
+  const nF = edF.content.find((x: any) => x.attrs?.srcIdx === "3");
+  const tF = nF.content.find((c: any) => c.text?.includes("Akoma"));
+  const iF = tF.text.indexOf("Akoma");
+  const preF = tF.text.slice(0, iF), afterF = tF.text.slice(iF + 5);
+  const mkF = tF.marks ?? [];
+  nF.content.splice(nF.content.indexOf(tF), 1,
+    { type: "text", text: preF, marks: mkF },
+    { type: "text", text: "Akoma", marks: [...mkF, { type: "bold" }, { type: "italic" }] },
+    { type: "text", text: afterF, marks: mkF });
+  const outF = await tpF(bytesF.buffer as ArrayBuffer, baseF, edF, async (dd: any) => exportDocxBytes(dd, "regen"));
+  check("format edit: bold+italic phrase produces a patch", outF !== null);
+  if (outF) {
+    const xF = await (await JSZip.loadAsync(await outF.arrayBuffer())).file("word/document.xml")!.async("string");
+    const bodyF = xF.slice(xF.indexOf("<w:body>"));
+    const pF = [...bodyF.matchAll(/<w:p(?=[ >])[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g)][3][0];
+    const runAt = pF.indexOf(">Akoma<");
+    const runStart = pF.lastIndexOf("<w:r>", runAt);
+    const run = pF.slice(runStart, runAt + 8);
+    check("format edit: Akoma run carries bold and italic", run.includes("<w:b/>") && run.includes("<w:i/>"), run.slice(0, 200));
+    check("format edit: pictures in paragraph kept", (pF.match(/<w:drawing/g) || []).length === 2, String((pF.match(/<w:drawing/g) || []).length));
+    const joined = [...pF.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    check("format edit: text unchanged", joined.includes("Esther Isioma Akoma(the MSISDN owner)"), joined.slice(0, 80));
+  }
+}
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
