@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Comment, DriveItem } from "@kreatix/shared";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
+import { API_BASE } from "../lib/platform";
 import { saveContent } from "../lib/drafts";
 import { useCollabSession, useMapSync, type MapSync } from "../collab/useCollab";
 import { useAuth } from "../lib/auth";
@@ -1373,8 +1374,26 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
     const base = title.replace(/\.[^.]+$/, "");
     const sheetBase = `${base}-${sheet.name}`;
     return [
-      { id: "xlsx", label: "Excel (.xlsx)", hint: "Full workbook — formulas, styles, charts",
-        produce: async () => ({ name: `${base}.xlsx`,
+      { id: "xlsx", label: "Excel (.xlsx)", hint: "Full workbook — the original file with only your edits applied",
+        produce: async () => {
+          const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+          const res = await fetch(`${API_BASE}/api/files/${item.id}/versions/1/content`, {
+            headers: { authorization: `Bearer ${getToken() ?? ""}` },
+          }).catch(() => null);
+          const original = res?.ok && !(res.headers.get("content-type") ?? "").includes("application/json")
+            ? await res.arrayBuffer() : null;
+          const baseline = await api.get<{ doc: unknown }>(`/api/files/${item.id}/source-baseline`).then((r) => r.doc).catch(() => null);
+          if (original && baseline) {
+            if (JSON.stringify(wbRef.current) === JSON.stringify(baseline))
+              return { name: `${base}.xlsx`, blob: new Blob([original], { type: XLSX_MIME }) };
+            throw new Error("This edit can't be kept in the original Excel file yet. Your work is saved in Kreatix — use Excel copy — converted to export a rebuilt file");
+          }
+          if (original) throw new Error("This Excel file was imported before its original could be tracked. Export a converted copy instead");
+          return { name: `${base}.xlsx`,
+            blob: new Blob([(await workbookToXLSXBytes(wb)).buffer as ArrayBuffer], { type: XLSX_MIME }) };
+        } },
+      { id: "xlsx-converted", label: "Excel copy — converted (formatting may change)", hint: "Explicit rebuild from the grid. Use only when the original can't keep your edits",
+        produce: async () => ({ name: `${base} (converted).xlsx`,
           blob: new Blob([(await workbookToXLSXBytes(wb)).buffer as ArrayBuffer],
             { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }) }) },
       { id: "ods", label: "OpenDocument (.ods)", hint: "LibreOffice Calc",
@@ -1411,6 +1430,8 @@ export function SheetsEditor({ item, initialDoc, sourceFile, permission, aiPromp
     try {
       const imported = await xlsxToWorkbook(f);
       mutate((w) => { for (const k of Object.keys(w)) delete (w as unknown as Record<string, unknown>)[k]; Object.assign(w, imported); }, canEdit);
+      // the import baseline is recorded once on the server, next to the original file
+      if (canEdit) void api.put(`/api/files/${item.id}/source-baseline`, { doc: imported }).catch(() => {});
       setActive(0);
       toast(`Imported ${imported.sheets.length} sheet(s) from ${f.name}${imported.importWarnings?.length ? ` — ${imported.importWarnings.join(" ")}` : ""}`);
     } catch (e) {
